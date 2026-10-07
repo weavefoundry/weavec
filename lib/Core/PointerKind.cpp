@@ -10,8 +10,8 @@
 
 #include <algorithm>
 #include <charconv>
+#include <span>
 #include <system_error>
-#include <tuple>
 #include <utility>
 
 namespace weavec::core {
@@ -159,13 +159,6 @@ parsePathTokens(std::span<const std::string_view> tokens) {
       isIdentifier(tokens[0].substr(1)))
     return ExtentPath::ofField(std::string(tokens[0].substr(1)));
   return std::nullopt;
-}
-
-std::optional<ExtentPath> ExtentPath::parse(std::string_view text) {
-  const auto tokens = splitTokens(text);
-  if (!tokens)
-    return std::nullopt;
-  return parsePathTokens(*tokens);
 }
 
 ExtentTerm ExtentTerm::constant(std::int64_t value) {
@@ -362,95 +355,6 @@ PointerKind join(const PointerKind &a, const PointerKind &b,
        atLeastOne(a.extent));
   if (singleAndCounted)
     result.shape = PointerShape::Single;
-  return result;
-}
-
-/// The canonical order of shape requirements.
-static bool requirementLess(const PointerKind &a, const PointerKind &b) {
-  return std::forward_as_tuple(a.shape, a.extent.toString(),
-                               sourceStrength(a.source)) <
-         std::forward_as_tuple(b.shape, b.extent.toString(),
-                               sourceStrength(b.source));
-}
-
-void KindRequirements::add(const PointerKind &requirement) {
-  if (requirement.nullability == Nullability::Nonnull)
-    required = Nullability::Nonnull;
-  if (requirement.shape != PointerShape::Unknown) {
-    PointerKind entry = requirement;
-    if (!hasExtent(entry.shape))
-      entry.extent = ExtentTerm{};
-    bool merged = false;
-    for (PointerKind &existing : entries) {
-      if (existing.sameShape(entry)) {
-        // Equal requirements: the stronger source is enforced more widely.
-        if (sourceStrength(entry.source) > sourceStrength(existing.source))
-          existing.source = entry.source;
-        merged = true;
-        break;
-      }
-      // Two constant terms of one shape and source: the larger implies the
-      // smaller.
-      if (existing.shape == entry.shape && hasExtent(entry.shape) &&
-          entry.shape != PointerShape::EndedBy &&
-          existing.extent.isConstant() && entry.extent.isConstant() &&
-          existing.source == entry.source) {
-        existing.extent.offset =
-            std::max(existing.extent.offset, entry.extent.offset);
-        merged = true;
-        break;
-      }
-    }
-    if (!merged)
-      entries.push_back(std::move(entry));
-  }
-  for (PointerKind &entry : entries)
-    entry.nullability = required;
-  std::ranges::sort(entries, requirementLess);
-}
-
-void KindRequirements::add(const KindRequirements &other) {
-  if (other.required == Nullability::Nonnull)
-    add(PointerKind::unknown(Nullability::Nonnull));
-  for (const PointerKind &entry : other.entries)
-    add(entry);
-}
-
-std::string KindRequirements::toString() const {
-  if (entries.empty())
-    return "unknown " + std::string(core::toString(required));
-  std::string text;
-  for (const PointerKind &entry : entries) {
-    if (!text.empty())
-      text += " & ";
-    text += entry.toString();
-  }
-  return text;
-}
-
-std::optional<KindRequirements> KindRequirements::parse(std::string_view text,
-                                                        KindSource source) {
-  KindRequirements requirements;
-  std::size_t start = 0;
-  while (true) {
-    const std::size_t separator = text.find(" & ", start);
-    const auto kind = PointerKind::parse(
-        text.substr(start, separator == std::string_view::npos
-                               ? std::string_view::npos
-                               : separator - start),
-        source);
-    if (!kind)
-      return std::nullopt;
-    requirements.add(*kind);
-    if (separator == std::string_view::npos)
-      return requirements;
-    start = separator + 3;
-  }
-}
-
-KindRequirements conjoin(const KindRequirements &a, const KindRequirements &b) {
-  KindRequirements result = a;
-  result.add(b);
   return result;
 }
 

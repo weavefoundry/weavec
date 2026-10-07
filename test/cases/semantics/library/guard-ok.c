@@ -12,7 +12,7 @@ int ok(struct x *p, int k) { if (k) return 1; if (!p) return 0; return 1; }
 
 int use(struct x *p) {
   if (!ok(p, 1)) return 0;
-  return p->v; // TRAP: nonnull
+  return p->v; // TRAP
 }
 
 int main(int argc, char **argv) {

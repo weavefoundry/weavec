@@ -103,11 +103,6 @@ public:
   /// The declaration a function name of the constraints stands for, or
   /// null (another unit's function, or `<unknown>`).
   [[nodiscard]] const clang::FunctionDecl *function(llvm::StringRef name) const;
-  /// §9.3: the slot a global variable or a record field names, so that the
-  /// engine can read the targets of a function pointer it loads from one.
-  /// None for a local, a parameter or anything else without a slot key.
-  [[nodiscard]] std::optional<core::SlotKey>
-  slotOf(const clang::ValueDecl &decl) const;
   /// The unit that qualifies internal names.
   [[nodiscard]] const std::string &unit() const noexcept { return unitName; }
 

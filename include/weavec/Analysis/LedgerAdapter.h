@@ -7,25 +7,17 @@
 //===----------------------------------------------------------------------===//
 //
 // RFC 0030 §14: the only channel from an engine to the ledger. The engine
-// publishes, per site and facet, decisions, requirement records, witnesses
-// and boundary facts, and its diagnostics with their certainty;
-// `finish` completes the unit ledger:
+// publishes, per site and facet, decisions, requirements' decisions and
+// boundary facts, and its diagnostics with their certainty; `finish`
+// completes the unit ledger (RFC 0035 §8: in memory, for the summary line):
 //
 //   1. every undecided facet takes its §2.6 default (with reason `budget` in
 //      an over-budget function); IntToPtr sites are `unresolved(raw-cast)`
 //      (§7.4), facets resting only on system-header attributes
 //      `trusted(system-api)` (§5.2);
-//   2. the ledger-side rules of `WEAVEC_UNSAFE` (§6.1) and `setjmp` (§5.4);
-//   3. `CheckPlanner::plan` (§10.1), which turns inexpressible checked
-//      records `unresolved(inexpressible)` and, with the runtime, guardable
-//      unresolved ones `guarded` (RFC 0032 §6);
-//   4. the possible findings the build enforces instead are dropped
-//      (RFC 0032 §9);
-//   5. the require-level errors (§6.3), from the planned ledger.
-//
-// Boundary propagation (§9.4, stage S7), the concurrency rules (§5.3, S4)
-// and the §7.6 upgrades (S6) slot in between 2 and 3; until then their
-// facts are only recorded.
+//   2. the ledger-side rules of `WEAVEC_UNSAFE` (§6.1), the concurrency
+//      rules (§5.3) and `setjmp` (§5.4);
+//   3. the boundary invariants' decisions and their propagation (§9.4).
 //
 // Within one authoritative pass, records of one facet merge by rank (§2.5);
 // `beginFunction` discards every row an earlier pass recorded for the
@@ -37,10 +29,7 @@
 #ifndef WEAVEC_ANALYSIS_LEDGERADAPTER_H
 #define WEAVEC_ANALYSIS_LEDGERADAPTER_H
 
-#include "weavec/Analysis/CheckPlanner.h"
-#include "weavec/Analysis/CheckWitness.h"
 #include "weavec/Analysis/SiteCollector.h"
-#include "weavec/Core/CheckPlan.h"
 #include "weavec/Core/Diagnostic.h"
 #include "weavec/Core/Ledger.h"
 #include "weavec/Core/Path.h"
@@ -142,40 +131,13 @@ struct FieldCandidate {
                           const FieldCandidate &) = default;
 };
 
-/// §14: the unit's ledger and its check plan.
-struct PlannedLedger {
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  core::Ledger ledger = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  core::CheckPlan plan = {};
-  /// Resolves the plan's place and type handles.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  PlaceHandleTable handles = {};
-  /// Resolves the plan's site ids to statements (`CheckEmitter`, S5).
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::shared_ptr<const SiteIndex> sites = {};
-};
-
 struct LedgerAdapterOptions {
-  /// §12.1 `config`: the checks mode, zero-initialisation, the require
-  /// level and the budget.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  core::LedgerConfig config = {};
-  /// The unit's main source as the user named it, and the target triple.
+  /// The unit's main source as the user named it.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string source = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::string target = {};
-  /// §3.4: whether a facet's violation was lowered to a warning.
-  std::function<bool(core::SiteId, core::Facet)> lowered = nullptr;
   /// §5.3: whether the site's pointer is loaded from a place shared with a
   /// thread or signal entry point (rooted in G).
   std::function<bool(const SiteInfo &)> concurrent = nullptr;
-  /// RFC 0032 §9: the build enforces its guards (checks and the runtime are
-  /// on, and this is the compiler), so a possible finding linked to a
-  /// guarded facet is not reported. False keeps every finding
-  /// (`-Wweavec-possible`, the `weavec` tool, unenforced builds).
-  bool dropGuardedPossible = false;
 };
 
 /// A boundary fact or store verdict as published, with its site.
@@ -184,12 +146,6 @@ struct PublishedBoundary {
   core::SiteId site = {};
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   BoundaryFacts facts = {};
-};
-struct PublishedVerdict {
-  const clang::Stmt *store = nullptr;
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  FieldCandidate candidate = {};
-  core::Verdict verdict = core::Verdict::Unknown;
 };
 
 /// The only channel from an engine to the ledger (§14).
@@ -216,25 +172,18 @@ public:
   /// A discarding or collecting adapter, which needs no sites.
   LedgerAdapter(clang::ASTContext &ctx, Mode adapterMode);
 
-  /// Whether decisions, requirements, witnesses and the other facts are
-  /// dropped: every mode but the authoritative one.
+  /// Whether decisions, requirements and the other facts are dropped: every
+  /// mode but the authoritative one.
   [[nodiscard]] bool isDiscarding() const noexcept {
     return mode != Mode::Authoritative;
   }
   [[nodiscard]] Mode adapterMode() const noexcept { return mode; }
   [[nodiscard]] const SiteIndex &siteIndex() const noexcept { return sites; }
-  [[nodiscard]] clang::ASTContext &astContext() const noexcept {
-    return context;
-  }
   /// Whether `facet` applies to the site `id` (§2.1).
   [[nodiscard]] bool applies(core::SiteId id, core::Facet facet) const;
-  /// The function whose authoritative pass is running, or null.
-  [[nodiscard]] const clang::FunctionDecl *currentFunction() const noexcept {
-    return current;
-  }
 
-  /// Starts the authoritative pass over `function` and discards every row,
-  /// witness and budget mark an earlier pass recorded for it (§2.5, §2.6).
+  /// Starts the authoritative pass over `function` and discards every row
+  /// and budget mark an earlier pass recorded for it (§2.5, §2.6).
   void beginFunction(const clang::FunctionDecl &function);
   /// One decision for one facet of a known site; may be called more than
   /// once within a pass, and records merge by rank (§2.5). For a `return`
@@ -256,12 +205,10 @@ public:
   void suggest(const clang::Stmt &site, core::SiteKind kind,
                std::optional<core::Boundary> boundary, core::Facet facet,
                core::FixItHint fixit);
-  /// One requirement record of a LibCall, Release or Call facet: kept in
-  /// the row's `requirements` with its own outcome, and merged into the
-  /// facet by rank (§2.5). A witness for it may come along.
+  /// One requirement's decision for a LibCall, Release or Call facet,
+  /// merged into the facet by rank (§2.5).
   void requirement(const clang::Stmt &site, core::Facet facet,
-                   core::Requirement record,
-                   std::optional<CheckWitness> witness = std::nullopt);
+                   const core::FacetDecision &decision);
   /// A diagnostic with its certainty; `site` and `facet` link it to its row.
   /// The diagnostic's own `certainty` is set to `certainty`. The same
   /// diagnostic (id, location and message) is reported once per unit, as
@@ -269,9 +216,6 @@ public:
   void report(core::Diagnostic diagnostic, core::Certainty certainty,
               const clang::Stmt *site = nullptr,
               std::optional<core::Facet> facet = {});
-  /// What the check of a checked (or, in verify mode, proven) facet needs.
-  void witness(const clang::Stmt &site, core::Facet facet,
-               CheckWitness checkWitness);
   /// Caller-visible places at a call or exit that may hold released
   /// pointers or aliased owners (§9.4).
   void boundary(const clang::Stmt &site, BoundaryFacts facts);
@@ -281,12 +225,9 @@ public:
   void reliesOn(core::SiteId site, std::string placeClass);
   /// A function body exceeded its budget (§5.5).
   void overBudget(const clang::FunctionDecl &function);
-  /// A store verdict for a field-invariant candidate (§7.6).
-  void storeVerdict(const clang::Stmt &store, FieldCandidate candidate,
-                    core::Verdict verdict);
   /// §9.4: what `BoundaryInvariants` made of `boundaries()`; `finish`
   /// records the broken boundaries and applies the propagation, after the
-  /// defaults and before the planner.
+  /// defaults.
   void boundaryDecisions(std::vector<BoundaryDecision> decisions);
 
   /// RFC 0034 §6.1: a definite error of the authoritative pass that the
@@ -300,21 +241,14 @@ public:
                      const core::FacetDecision &)>
       observer;
 
-  /// Completes the unit's ledger and plans its checks; see the file
-  /// comment. Call once, after the engine is done.
-  [[nodiscard]] PlannedLedger finish();
+  /// Completes the unit's ledger; see the file comment. Call once, after
+  /// the engine is done.
+  [[nodiscard]] core::Ledger finish();
 
-  /// The diagnostics to report, in publication order; `finish` appends the
-  /// require-level errors.
+  /// The diagnostics to report, in publication order.
   [[nodiscard]] const std::vector<core::Diagnostic> &
   diagnostics() const noexcept {
     return emitted;
-  }
-  /// Decisions about statements `SiteCollector` did not enumerate (§2.6
-  /// item 2: an internal error; each becomes an `unresolved(unanalysed)`
-  /// row of its function).
-  [[nodiscard]] std::size_t orphanDecisions() const noexcept {
-    return orphans.size();
   }
   [[nodiscard]] const std::vector<PublishedBoundary> &
   boundaries() const noexcept {
@@ -323,10 +257,6 @@ public:
   [[nodiscard]] const std::map<core::SiteId, std::set<std::string>> &
   reliances() const noexcept {
     return relied;
-  }
-  [[nodiscard]] const std::vector<PublishedVerdict> &
-  storeVerdicts() const noexcept {
-    return verdictList;
   }
   /// The unit's rows as published so far (tests, dumps).
   [[nodiscard]] const core::UnitLedger &unitLedger() const noexcept {
@@ -345,7 +275,6 @@ private:
   LedgerAdapterOptions options;
   Mode mode;
   core::UnitLedger unit;
-  WitnessTable witnesses;
   const clang::FunctionDecl *current = nullptr;
   llvm::DenseSet<std::uint32_t> overBudgetFunctions;
   std::vector<core::Diagnostic> emitted;
@@ -359,7 +288,6 @@ private:
   std::vector<Orphan> orphans;
   std::vector<PublishedBoundary> boundaryList;
   std::map<core::SiteId, std::set<std::string>> relied;
-  std::vector<PublishedVerdict> verdictList;
   std::vector<BoundaryDecision> boundaryRows;
   bool finished = false;
 
@@ -380,14 +308,11 @@ private:
   /// The emitted function whose definition holds `loc`, or the current one.
   [[nodiscard]] std::string
   functionNameAt(const core::SourceLocation &loc) const;
-  void fillDefaults(PlannerOptions &planner);
-  void applyOverrides(PlannerOptions &planner);
+  void fillDefaults();
+  void applyOverrides();
   /// §9.4: records the broken boundaries and their propagation.
   void applyBoundaries();
   void appendOrphanRows();
-  /// RFC 0032 §9: drops the possible findings linked to guarded facets.
-  void dropGuardedPossible();
-  void reportRequireLevel();
 };
 
 } // namespace weavec::analysis

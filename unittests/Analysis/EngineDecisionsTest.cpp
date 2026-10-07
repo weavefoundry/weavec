@@ -26,17 +26,7 @@ namespace weavec::analysis {
 using test::collectUnit;
 using Lines = std::vector<std::string>;
 
-/// A decision as `<outcome>[/<reason>][:<template>]`.
-static std::string spell(const core::FacetDecision &decision,
-                         const std::optional<core::FacetCheck> &check) {
-  std::string text = decision.compact();
-  if (check)
-    text += ":" + std::string(core::toString(check->kind));
-  return text;
-}
-
-/// `<text> <facet>=<decision>` and the requirement records (`{a0=...}`) for
-/// every site of `function`.
+/// `<text> <facet>=<decision>` for every site of `function`.
 static Lines outcomes(const core::Ledger &ledger, llvm::StringRef function) {
   Lines out;
   for (const core::FunctionLedger &row : ledger.units.front().functions) {
@@ -49,21 +39,7 @@ static Lines outcomes(const core::Ledger &ledger, llvm::StringRef function) {
         if (record == nullptr)
           continue;
         line += " " + std::string(core::toString(facet)) + "=" +
-                spell(record->decision, record->check);
-        if (record->requirements.empty())
-          continue;
-        line += '{';
-        bool first = true;
-        for (const core::Requirement &requirement : record->requirements) {
-          if (!first)
-            line += ',';
-          first = false;
-          line += "a" +
-                  (requirement.argument ? std::to_string(*requirement.argument)
-                                        : std::string("?")) +
-                  "=" + spell(requirement.decision, requirement.check);
-        }
-        line += '}';
+                test::compactOf(record->decision);
       }
       out.push_back(line);
     }
@@ -86,10 +62,10 @@ static Piped pipe(const test::CollectedUnit &unit,
   Piped out;
   for (const core::Diagnostic &d : collected.diagnostics())
     out.diagnostics.push_back(std::to_string(d.location.line) + ": " +
-                              std::string(core::toString(d.severity)) + ": " +
+                              test::severityText(d.severity) + ": " +
                               d.message);
   if (result.ledger)
-    out.ledger = result.ledger->ledger;
+    out.ledger = *result.ledger;
   return out;
 }
 
@@ -120,15 +96,16 @@ int local(void) { struct vec v = {0, 0}; struct vec *p = &v; return p->n; }
   // decision, proven by `v`'s Single default (§7.3), and so has the
   // consumed load: `a[i]` is a must-access of the exported `drop`, so its
   // caller contract (`counted(i + 1)`, §7.5 R5) covers it.
-  EXPECT_EQ(row(piped, "at", "v->items"),
-            "v->items spatial=proven null=checked:nonnull temporal=proven");
+  EXPECT_EQ(
+      row(piped, "at", "v->items"),
+      "v->items spatial=proven null=unresolved/undecided temporal=proven");
   EXPECT_EQ(row(piped, "drop", "a[i]"),
-            "a[i] spatial=trusted/caller-contract null=checked:nonnull "
+            "a[i] spatial=trusted/caller-contract null=unresolved/undecided "
             "temporal=proven");
   // RFC 0017 §5: a count bounds an index from above only; `dropSigned(a,
   // -1)` meets `counted(0)` and still reads before `a`.
   EXPECT_EQ(row(piped, "dropSigned", "a[i]"),
-            "a[i] spatial=unresolved/unknown-extent null=checked:nonnull "
+            "a[i] spatial=unresolved/unknown-extent null=unresolved/undecided "
             "temporal=proven");
   EXPECT_EQ(row(piped, "local", "p->n"),
             "p->n spatial=proven null=proven temporal=proven");
@@ -140,7 +117,7 @@ int f(char *p) { free(p); return p[1]; }
 )c");
   const Piped piped = pipe(unit);
   EXPECT_EQ(row(piped, "f", "p[1]"),
-            "p[1] spatial=trusted/caller-contract null=checked:nonnull "
+            "p[1] spatial=trusted/caller-contract null=unresolved/undecided "
             "temporal=violation");
 }
 
@@ -175,23 +152,19 @@ void none(char *d, const char *s) { memcpy(d, s, 0); }
   const Piped piped = pipe(unit);
   EXPECT_TRUE(piped.diagnostics.empty())
       << ::testing::PrintToString(piped.diagnostics);
-  // The destination is checked against its 16 bytes and the source's
-  // extent is unknown: a checked record is planned even when another
-  // requirement of the call is unresolved (§2.5). The two cannot overlap:
-  // `buf` is this activation's own storage, which no caller's pointer
-  // reaches (RFC 0031 §4.5 D4).
+  // The source's extent is unknown and the destination's is not known to
+  // hold `n` bytes: the facet takes the highest-ranked requirement (§2.5).
+  // The two cannot overlap: `buf` is this activation's own storage, which
+  // no caller's pointer reaches (RFC 0031 §4.5 D4).
   EXPECT_EQ(row(piped, "copy", "memcpy(buf,src,n)"),
-            "memcpy(buf,src,n) spatial=unresolved/unknown-extent{"
-            "a0=checked:len,a1=unresolved/unknown-extent,a0=proven} "
-            "null=checked:nonnull{a1=checked:nonnull} temporal=proven");
+            "memcpy(buf,src,n) spatial=unresolved/undecided "
+            "null=unresolved/undecided temporal=proven");
   // Arrays in scope have no null or temporal facet (§2.1).
   EXPECT_EQ(row(piped, "fits", "strcpy(buf,\"hello\")"),
-            "strcpy(buf,\"hello\") spatial=proven{a0=proven,a1=proven,"
-            "a0=proven}");
+            "strcpy(buf,\"hello\") spatial=proven");
   // §8.3: a zero length accepts null pointers.
-  EXPECT_EQ(row(piped, "none", "memcpy(d,s,0)"),
-            "memcpy(d,s,0) spatial=proven{a0=proven,a1=proven,a0=proven} "
-            "null=proven{a0=proven,a1=proven} temporal=proven");
+  EXPECT_EQ(row(piped, "none", "memcpy(d,s,0)"), "memcpy(d,s,0) spatial=proven "
+                                                 "null=proven temporal=proven");
 }
 
 // A declared kind (`SIZED_BY`) is a requirement of the call (§7.2).
@@ -202,9 +175,10 @@ void call(size_t n) { char buf[8]; fill(buf, n); fill(buf, 4); }
 )c");
   const Piped piped = pipe(unit);
   EXPECT_EQ(row(piped, "call", "fill(buf,n)"),
-            "fill(buf,n) spatial=checked:len{a0=checked:len} temporal=proven");
+            "fill(buf,n) spatial=unresolved/undecided "
+            "temporal=proven");
   EXPECT_EQ(row(piped, "call", "fill(buf,4)"),
-            "fill(buf,4) spatial=proven{a0=proven} temporal=proven");
+            "fill(buf,4) spatial=proven temporal=proven");
 }
 
 // RFC 0030 *Diagnostics*: a string literal has no writable byte.
@@ -224,7 +198,7 @@ void maybe(int c, char *b) { char *p = c ? "abc" : b; p[0] = 'x'; }
   EXPECT_EQ(row(piped, "store", "p[0]"),
             "p[0] spatial=violation null=proven temporal=proven");
   EXPECT_EQ(row(piped, "maybe", "p[0]"),
-            "p[0] spatial=unresolved/unknown-extent null=checked:nonnull "
+            "p[0] spatial=unresolved/unknown-extent null=unresolved/undecided "
             "temporal=proven");
 }
 
@@ -251,13 +225,13 @@ int plain(union pun *u) { u->p = 0; return 0; }
 )c");
   const Piped piped = pipe(unit);
   EXPECT_EQ(row(piped, "punned", "*u->p"),
-            "*u->p spatial=unresolved/raw-cast null=checked:nonnull "
+            "*u->p spatial=unresolved/raw-cast null=unresolved/undecided "
             "temporal=unresolved/raw-cast");
   EXPECT_EQ(row(piped, "bytes", "q[0]"),
-            "q[0] spatial=unresolved/raw-cast null=checked:nonnull "
+            "q[0] spatial=unresolved/raw-cast null=unresolved/undecided "
             "temporal=unresolved/raw-cast");
   EXPECT_EQ(row(piped, "vararg", "*copy"),
-            "*copy spatial=unresolved/raw-cast null=checked:nonnull "
+            "*copy spatial=unresolved/raw-cast null=unresolved/undecided "
             "temporal=unresolved/raw-cast");
 }
 
@@ -277,7 +251,7 @@ void fill(unsigned n) {
 )c");
   const Piped piped = pipe(unit);
   EXPECT_EQ(row(piped, "fill", "a[i]"),
-            "a[i] spatial=checked:index null=proven temporal=proven");
+            "a[i] spatial=unresolved/undecided null=proven temporal=proven");
 }
 
 // §7.4: a cursor into its object is checked with a span over the object;
@@ -299,7 +273,7 @@ char bytes(void) { int a[10] = {0}; char *c = (char *)(a + 2); return c[35]; }
             (Lines{"8: error: 'c[35]' is out of bounds: index 35 of an object "
                    "of 40 bytes"}));
   EXPECT_EQ(row(piped, "walk", "p[i]"),
-            "p[i] spatial=checked:span null=proven temporal=proven");
+            "p[i] spatial=unresolved/undecided null=proven temporal=proven");
   // `k < 12` keeps `q` within the 48 bytes of `m`, the complete object
   // (RFC 0030 §7.4): proven.
   EXPECT_EQ(row(piped, "flat", "q[k]"),
@@ -339,7 +313,7 @@ void flexible(int n) { struct fixed *b = malloc(sizeof *b + 4 * (size_t)n); if (
   // unresolved, never proven (KNOWN-DIFFERENCES.md, *Unit tests*; with a
   // `size_t` count it is checked).
   EXPECT_EQ(row(piped, "flexible", "b->data[5]"),
-            "b->data[5] spatial=unresolved/inexpressible temporal=proven");
+            "b->data[5] spatial=unresolved/undecided temporal=proven");
 }
 
 // -- RFC 0030 §8, §5.3: the library table in the engine (S4) ----------------
@@ -466,7 +440,7 @@ int run(void) {
   const Piped piped = pipe(unit);
   EXPECT_TRUE(piped.diagnostics.empty());
   EXPECT_EQ(row(piped, "run", "shared[0]"),
-            "shared[0] spatial=trusted/concurrency null=checked:nonnull "
+            "shared[0] spatial=trusted/concurrency null=trusted/concurrency "
             "temporal=trusted/concurrency");
   EXPECT_TRUE(llvm::StringRef(row(piped, "worker", "free(shared)"))
                   .contains("temporal=trusted/concurrency"));
@@ -519,7 +493,7 @@ int keep(struct x *p) { if (!ok(p, 1)) return 0; return p->v; }
   EXPECT_TRUE(
       llvm::StringRef(row(piped, "use", "p->v")).contains("null=proven"));
   EXPECT_TRUE(llvm::StringRef(row(piped, "keep", "p->v"))
-                  .contains("null=checked:nonnull"));
+                  .contains("null=unresolved/undecided"));
 }
 
 // §8.4: what `main` still holds when it returns is no leak.

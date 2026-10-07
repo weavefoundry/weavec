@@ -9,7 +9,7 @@ void bad(void) {
   if (!dst)
     return;
   memset(src, 'A', 100);
-  memcpy(dst, src, 100); // BUG: out-of-bounds // TRAP: len
+  memcpy(dst, src, 100); // BUG: out-of-bounds // TRAP
   free(dst);
 }
 
@@ -17,7 +17,7 @@ void bad_memset(void) {
   int *data = malloc(10 * sizeof *data);
   if (!data)
     return;
-  memset(data, 0, 20 * sizeof *data); // BUG: out-of-bounds // TRAP: len
+  memset(data, 0, 20 * sizeof *data); // BUG: out-of-bounds // TRAP
   free(data);
 }
 

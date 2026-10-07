@@ -248,7 +248,6 @@ struct CellKey {
   [[nodiscard]] bool isSelected() const noexcept { return index != ZeroSym; }
   [[nodiscard]] bool isConcrete() const noexcept { return stride == 0; }
   /// A concrete or selected cell: one runtime cell.
-  [[nodiscard]] bool isElement() const noexcept { return !isSummary(); }
   /// The cell's byte offset as a term (unknown for a summary cell).
   [[nodiscard]] Term byteTerm() const;
   /// The summary key of the element position a selected cell is at.
@@ -891,11 +890,9 @@ public:
   /// Removes the selected cell `key`; what it held becomes a weak write to
   /// every element it may have been.
   void evictCell(HeapState &state, ObjectId object, CellKey key) const;
-  /// Removes segment `index`; its value becomes a weak write to the
-  /// elements it described.
-  void evictSegment(HeapState &state, ObjectId object, std::size_t index) const;
-  /// Removes the segments `evict` marks (by index), as `evictSegment` would
-  /// one at a time, newest first, in one pass.
+  /// Removes the segments `evict` marks (by index), newest first, in one
+  /// pass: each one's value becomes a weak write to the elements it
+  /// described.
   void evictSegments(HeapState &state, ObjectId object,
                      const std::vector<bool> &evict) const;
   /// Keeps each position's newest `MaxSegmentsPerPosition` segments of the
@@ -922,12 +919,6 @@ public:
   void copyElements(HeapState &state, ObjectId object, CellKey position,
                     const Term &from, const Term &to, Sym value,
                     ObjectId source, std::int64_t shift) const;
-  /// Whether the elements `[from, to)` at `position` must contain the cell
-  /// at byte `offset` (true), cannot (false), or neither.
-  [[nodiscard]] std::optional<bool> contains(const HeapState &state,
-                                             const CellKey &position,
-                                             const Term &from, const Term &to,
-                                             const Term &offset) const;
   /// Whether two cells' byte offsets are equal (true), different (false),
   /// or neither.
   [[nodiscard]] std::optional<bool>
@@ -947,15 +938,10 @@ public:
   [[nodiscard]] SpatialVerdict spatial(const HeapState &state, Sym pointer,
                                        const Term &extraOffset,
                                        std::int64_t width) const;
-  /// The same for an access of `need` bytes (a term) from the pointer.
-  [[nodiscard]] SpatialVerdict spatialRange(const HeapState &state, Sym pointer,
-                                            const Term &need) const;
   /// Whether `left <= right` holds for every value (true), for none
   /// (false), or neither (none).
   [[nodiscard]] std::optional<bool>
   lessEqual(const HeapState &state, const Term &left, const Term &right) const;
-  /// Whether the value may be null / is null on every path.
-  [[nodiscard]] PointerNull nullness(const HeapState &state, Sym sym) const;
   /// RFC 0014: whether two pointer values compare equal, when the path
   /// decided it.
   [[nodiscard]] static std::optional<bool> pointersEqual(const HeapState &state,

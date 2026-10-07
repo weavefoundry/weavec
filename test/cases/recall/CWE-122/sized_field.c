@@ -11,7 +11,7 @@ struct buf {
 };
 
 void bad(struct buf *b) {
-  b->data[b->cap] = 0; // BUG: out-of-bounds // TRAP: index
+  b->data[b->cap] = 0; // BUG: out-of-bounds // TRAP
 }
 
 struct vec {
@@ -27,7 +27,7 @@ void vec_init(struct vec *v, size_t cap) {
 }
 
 int bad_inferred(struct vec *v) {
-  return v->items[v->cap]; // BUG: out-of-bounds // TRAP: object
+  return v->items[v->cap]; // BUG: out-of-bounds // TRAP
 }
 
 void good(struct buf *b, struct vec *v) {

@@ -2,8 +2,7 @@
 // item 14), one function per row of the table. A declared kind holds inside
 // the definition under A1 and is checked at every call; a definite shortfall
 // against an exact extent is the call's `out-of-bounds` error.
-// RUN: not %weavec --ledger=%t.json %s -- 2>&1 | FileCheck %s
-// RUN: python3 %S/Inputs/ledger-rows.py %t.json | FileCheck --check-prefix=ROWS %s
+// RUN: not %weavec %s -- 2>&1 | FileCheck %s
 #include <stddef.h>
 #include <weavec.h>
 
@@ -13,7 +12,7 @@ void *memset(void *, int, size_t);
 int counted(const int *WEAVEC_COUNTED_BY(n) p, size_t n) {
   int s = 0;
   for (size_t i = 0; i < n; i++)
-    s += p[i]; // ROWS: counted:[[@LINE]] p[i] spatial=proven
+    s += p[i];
   return s;
 }
 
@@ -22,13 +21,13 @@ int counted(const int *WEAVEC_COUNTED_BY(n) p, size_t n) {
 int counted_to(const int *WEAVEC_COUNTED_BY(n) p, size_t n, size_t m) {
   int s = 0;
   for (size_t i = 0; i < m; i++)
-    s += p[i]; // ROWS: counted_to:[[@LINE]] p[i] spatial=checked:index
+    s += p[i];
   return s;
 }
 
 // WEAVEC_SIZED_BY on a `void *` parameter counts bytes.
 void sized(void *WEAVEC_SIZED_BY(n) dst, size_t n) {
-  memset(dst, 0, n); // ROWS: sized:[[@LINE]] memset(dst,0,n) spatial=proven
+  memset(dst, 0, n);
 }
 
 // WEAVEC_ENDED_BY: `[p, end)` lies in one object (the engine has no extent
@@ -43,14 +42,14 @@ int ended(const int *WEAVEC_ENDED_BY(end) p, const int *end) {
 // WEAVEC_STRING: the scan stays inside the string.
 size_t string(const char *WEAVEC_STRING s) {
   size_t n = 0;
-  while (s[n]) // ROWS: string:[[@LINE]] s[n] spatial=proven
+  while (s[n])
     n++;
   return n;
 }
 
 // WEAVEC_NONNULL: the dereference inside is proven.
 int nonnull(const int *WEAVEC_NONNULL p) {
-  return *p; // ROWS: nonnull:[[@LINE]] *p null=proven
+  return *p;
 }
 
 // `counted_by` on a field: the index is checked against the count, whose
@@ -60,36 +59,35 @@ struct pkt {
   char *buf __attribute__((counted_by(len)));
 };
 char field(const struct pkt *p, int i) {
-  return p->buf[i]; // ROWS: field:[[@LINE]] p->buf[i] spatial=checked:index
+  return p->buf[i];
 }
 
 // `alloc_size`: the result is Sized(n) bytes, a declared kind.
 void *grab(size_t n) __attribute__((alloc_size(1)));
 char result(size_t i) {
   char *p = grab(8);
-  return p ? p[i] : 0; // ROWS: result:[[@LINE]] p[i] spatial=checked:index
+  return p ? p[i] : 0;
 }
 
 // `nonnull(1)` and `_Nonnull`: nullability at level 2.
 int attr(const int *p) __attribute__((nonnull(1)));
 int attr(const int *p) {
-  return *p; // ROWS: attr:[[@LINE]] *p null=proven
+  return *p;
 }
 int attr2(const int *_Nonnull p) {
-  return *p; // ROWS: attr2:[[@LINE]] *p null=proven
+  return *p;
 }
 
 // `T p[static N]`: Counted(N) and non-null.
 int sum4(const int a[static 4]) {
-  return a[3]; // ROWS: sum4:[[@LINE]] a[3] null=proven
-  // ROWS: sum4:[[@LINE-1]] a[3] spatial=proven
+  return a[3];
 }
 
 // A VLA parameter `T p[n]`: Counted(n), nullable.
 int vla(size_t n, const int p[n]) {
   int s = 0;
   for (size_t i = 0; i < n; i++)
-    s += p[i]; // ROWS: vla:[[@LINE]] p[i] spatial=proven
+    s += p[i];
   return s;
 }
 
@@ -101,18 +99,18 @@ void calls(size_t n) {
   int four[4] = {1, 2, 3, 4};
   int three[3] = {1, 2, 3};
   char b[4] = "abc";
-  (void)counted(four, n); // ROWS: calls:[[@LINE]] counted(four,n) spatial=checked:len
-  sized(b, n); // ROWS: calls:[[@LINE]] sized(b,n) spatial=checked:len
-  (void)ended(four, four + 4); // ROWS: calls:[[@LINE]] ended(four,four+4) spatial=proven
+  (void)counted(four, n);
+  sized(b, n);
+  (void)ended(four, four + 4);
   // CHECK: rfc0030-declared-kinds.c:[[@LINE+1]]:15: error: 'ended' requires 20 bytes behind 'four', which has 16 bytes [weavec::out-of-bounds]
   (void)ended(four, four + 5);
   // RFC 0031 §4.3 (string fact): `b` holds "abc" and its terminator, so the string the
   // call requires is proven.
-  (void)string(b); // ROWS: calls:[[@LINE]] string(b) spatial=proven
-  (void)nonnull(n ? four : 0); // ROWS: calls:[[@LINE]] nonnull(n?four:0) null=checked:nonnull
+  (void)string(b);
+  (void)nonnull(n ? four : 0);
   // CHECK: rfc0030-declared-kinds.c:[[@LINE+1]]:14: error: 'sum4' requires 16 bytes behind 'three', which has 12 bytes [weavec::out-of-bounds]
   (void)sum4(three);
-  (void)vla(n, four); // ROWS: calls:[[@LINE]] vla(n,four) spatial=checked:len
+  (void)vla(n, four);
   char *p = pool_get(8);
   if (!p)
     return;

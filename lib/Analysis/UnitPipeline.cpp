@@ -16,7 +16,6 @@
 #include "weavec/Analysis/SiteCollector.h"
 
 #include "clang/Basic/SourceManager.h"
-#include "clang/Basic/TargetInfo.h"
 
 #include <string>
 #include <string_view>
@@ -37,12 +36,9 @@ UnitPipelineResult runUnitAnalysis(clang::ASTContext &context,
                                    const UnitPipelineOptions &options,
                                    core::DiagnosticSink &out) {
   UnitPipelineResult result;
-  const core::LibrarySpec &library = options.library != nullptr
-                                         ? *options.library
-                                         : core::LibrarySpec::shipped();
+  const core::LibrarySpec &library = core::LibrarySpec::shipped();
   if (options.discoverOnly) {
     // RFC 0005 discovery: what the unit defines and calls, nothing more.
-    static const std::vector<FieldCandidate> NoAssumptions;
     const SiteIndex noSites;
     const KindTable noKinds;
     const core::FnSlots noSlots;
@@ -53,7 +49,6 @@ UnitPipelineResult runUnitAnalysis(clang::ASTContext &context,
         .library = library,
         .slots = noSlots,
         .database = options.database,
-        .fieldAssumptions = NoAssumptions,
         .options = options.engine,
     });
     return result;
@@ -71,11 +66,7 @@ UnitPipelineResult runUnitAnalysis(clang::ASTContext &context,
                  .collect();
 
   LedgerAdapterOptions adapterOptions;
-  adapterOptions.config = options.config;
   adapterOptions.source = mainSource(context);
-  adapterOptions.target = context.getTargetInfo().getTriple().str();
-  adapterOptions.lowered = options.lowered;
-  adapterOptions.dropGuardedPossible = options.dropGuardedPossible;
   // §5.3: G, what threads and signal handlers share, before the engine runs.
   if (options.buildLedger) {
     auto share = std::make_shared<const ConcurrencyShare>(
@@ -96,8 +87,6 @@ UnitPipelineResult runUnitAnalysis(clang::ASTContext &context,
        kindProblemDiagnostics(kinds->table, context.getSourceManager()))
     adapter.report(std::move(diagnostic), core::Certainty::Possible);
 
-  // The §7.6 candidates (the designated first cut) are not assumed.
-  const std::vector<FieldCandidate> fieldAssumptions{};
   const EngineInput input{
       .context = context,
       .sites = *sites,
@@ -105,7 +94,6 @@ UnitPipelineResult runUnitAnalysis(clang::ASTContext &context,
       .library = library,
       .slots = kinds->slots.constraints(),
       .database = options.database,
-      .fieldAssumptions = fieldAssumptions,
       .inferred = &kinds->inferred,
       .slotCollection = &kinds->slots,
       .slotSolution = &kinds->solution,
@@ -138,10 +126,9 @@ UnitPipelineResult runUnitAnalysis(clang::ASTContext &context,
     adapter.boundaryDecisions(std::move(verdicts.decisions));
   }
 
-  auto planned = std::make_shared<PlannedLedger>(adapter.finish());
-  planned->sites = std::move(sites);
+  core::Ledger ledger = adapter.finish();
   if (options.buildLedger)
-    result.ledger = std::move(planned);
+    result.ledger = std::make_shared<core::Ledger>(std::move(ledger));
   result.kinds = std::move(kinds);
 
   // §1 step 3: the diagnostics, in the order they were published.

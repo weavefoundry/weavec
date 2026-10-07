@@ -5,13 +5,12 @@
 // in bounds and gets no index check: the unit has no checked spatial facet. The run passes
 // n == 8, and the assertion traps before the access.
 // RUN-INPUT:
-// EXPECT-LEDGER: /summary/facets/spatial/checked == 0
 #include <weavec.h>
 
 int pick(int n) {
   char buf[8] = {0};
-  WEAVEC_ASSUME(n >= 0 && n < 8); // TRAP: assert
-  return buf[n];
+  WEAVEC_ASSUME(n >= 0 && n < 8);
+  return buf[n]; // TRAP
 }
 
 int main(int argc, char **argv) {

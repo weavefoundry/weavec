@@ -7,8 +7,6 @@
 // RUN-INPUT: 1
 // CLEAN
 // ASAN
-// EXPECT-LEDGER: /summary/facets/null/checked == 0
-// EXPECT-LEDGER: /summary/facets/null/unresolved == 0
 int main(int argc, char **argv) {
   (void)argv;
   int x = 1, y = 2, z = 3;

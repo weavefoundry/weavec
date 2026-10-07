@@ -1,100 +1,58 @@
 #!/usr/bin/env python3
 """The corpus gate: WeaveC on real C projects at pinned revisions.
 
-RFC 0030, section 17.5. Reads test/corpus/ (manifest.json, expected.json,
-triage.json, injections/, bench/, support/) and runs the 11 corpus configs
-(sds, cJSON, jsmn, log.c, printf, linenoise, cJSON-program, zlib, lua,
-linenoise-program, jansson) and, per RFC 0031 section 11.2, the 11 held-out
-configs marked "heldOut" (bzip2, hiredis, http-parser, inih, libyaml, lz4,
-miniz, mujs, sqlite, tinyexpr, utf8proc). Per RFC 0033 section 11, configs
-marked heldOut may also name a "set": the 8 "fresh" configs (zstd, libuv,
-oniguruma, redis, expat, pcre2, libevent, libsodium) and the 5 "sealed" ones
-(libxml2, libpng, mbedtls, msgpack-c, yyjson). Per RFC 0034 section 9, two
-more sets: the 10 "fresh34" configs (QuickJS, LMDB, Janet, brotli, xz,
-libdeflate, zlib-ng, curl, cmark, libgit2), each with a run-time workload,
-and the 5 "sealed34" ones. test/corpus/README.md documents the files.
+RFC 0035 (section 11 and the *Acceptance gates*). Reads test/corpus/
+(manifest.json, expected.json, triage.json, injections/, bench/, support/)
+and runs the configs of manifest.json. test/corpus/README.md documents the
+files and the gates.
 
 Modes (combine freely; at least one, or --update-from):
 
-  --quick     per-file `weavec-cc -c` of each config's files and
-              `weavec --whole-program` for wholeProgram configs; ledger
-              summaries against the expected.json ratchet, findings against
-              triage.json, gates G9 (count), G10, G13 and G15. Every PR.
-  --full      --quick plus project builds (trap mode) and test suites with
-              trap detection, a report-mode rerun that attributes checks to
-              lines (G11), the injections and the benchmarks. Weekly.
-  --inject    apply each injection patch to a copy and check that the bug is
-              reported at the injected line (G12).
-  --bench     min-of-N user CPU of each benchmark built by weavec-cc and by
-              the reference compiler (G14).
+  --quick   per config, the advisory analysis (`weavec`, per file, or
+            `weavec --whole-program` for wholeProgram configs), whose
+            definite errors need a verdict in triage.json, none of them
+            "false"; and `weavec-cc -c -O2 -fweavec-ledger=` of each file,
+            whose enforcement ledgers and the analysis' summary lines are
+            compared with the expected.json ratchet (the proven share of
+            the accesses must not drop). Every PR.
+  --full    --quick, then each config's build and test suite with
+            CC=weavec-cc in trap mode, rerun in report mode to attribute
+            failures and traps to lines, and built once more with the
+            reference compiler for the build-time gate; the injections;
+            the benchmarks. Weekly.
+  --inject  build each injection's patched copy in trap mode and check that
+            its run stops at the injected line.
+  --bench   best-of-N user CPU of each benchmark built by weavec-cc, by the
+            reference compiler and by the reference compiler with ASan.
 
 Modifiers:
 
-  --legacy          golden semantics (v0.10.0): the `weavec` tool exactly as
-                    scripts/corpus.py ran it, diagnostics only, no ledger; the
-                    binaries default to $WEAVEC_GOLDEN_DIR. With --quick it
-                    checks the tallies recorded under "legacy" in
-                    expected.json (S0); with --inject, the injection baseline.
-  --compare-golden  run the binaries under test and the golden ones and fail
-                    on any difference in the sorted diagnostics of a config
-                    (S1): the `weavec` analyses, and the per-file
-                    `weavec-cc -c` diagnostics when both weavec-cc exist.
-  --checks verify   build and test in verify mode; any trap fails (G6).
+  --checks verify   build, test and benchmark in verify mode: any
+                    `weavec.proven` report fails (gate G6).
   --reference-only  build, test and benchmark with the reference compiler
-                    (--cc) alone, no WeaveC; checks that the manifest's
-                    commands work and gives the baseline times. With
-                    --inject, runs each trap injection under ASan instead.
-  --update          rewrite expected.json from this run (the sections the
-                    run measured); --update-from RESULTS does the same from
-                    a --json file written elsewhere (for example CI).
+                    (--cc) alone; checks that the manifest's commands work.
+                    With --inject, builds each injection with ASan and checks
+                    that its run reaches the injected line.
+  --update          record this run's measurements in expected.json;
+                    --update-from RESULTS does the same from a --json file
+                    written elsewhere (for example by CI).
   --held-out / --no-held-out
-                    include or leave out the held-out configs (RFC 0031,
-                    section 11.2). By default --full includes them and the
-                    other modes leave them out, so the PR-time --quick run
-                    stays fast; a config named by --only always runs. They
-                    are reported in a section of their own, gated by RFC
-                    0031's G5, G6 and G12 (manifest gates.heldOut) instead of
-                    G9 and G10, and need no expected.json entry until
-                    --update records one. The same switch covers the fresh
-                    configs (RFC 0033, section 11), which are gated by D1 (no
-                    definite error triaged false; with --full every build
-                    and test suite passes, in report mode too, with no trap)
-                    and D5 (with --full the weavec-cc build's CPU time at
-                    most gates.rfc0033.D5.maxBuildRatio times the reference
-                    compiler's) in a section of their own.
-  --sealed          run the sealed configs (RFC 0033, section 11) alone, for
-                    gate D2, which is run once on the final tree; before it
-                    they are built with --reference-only only. A sealed
-                    config otherwise runs only when --only names it. Their
-                    D1 and D5 values are reported in a section of their own
-                    (rfc0033.sealed.*) and failures fail the run.
-  --set SET         run the configs of SET alone (repeatable): one of
-                    original, heldOut, fresh, sealed, fresh34, sealed34;
-                    --only overrides it. RFC 0034, section 9: the fresh34
-                    configs also run with the held-out ones (--full,
-                    --held-out); the sealed34 ones only with --set sealed34
-                    or --only (gate F2, once, on the final tree; before it
-                    with --reference-only alone). RFC 0034's gates
-                    (manifest gates.rfc0034): F1 over fresh34 (as D1), F2
-                    over sealed34 (F1 and F5's build ratio), F5 (with --full
-                    each config's build CPU ratio over the reference
-                    compiler's, every config but sealed34; the named
-                    single-unit compiles' CPU seconds; each compilation's
-                    peak memory, from --quick's per-file compiles and the
-                    trap build's compiler processes) and F7 (with --bench
-                    each fresh34 workload's run-time ratio, their geometric
-                    mean, and the G14 benchmarks' tighter limits).
+                    include or leave out the configs marked heldOut (the
+                    sets heldOut, fresh, fresh34 and fresh35). --full includes
+                    them, the other modes leave them out.
+  --set SET         run the configs of SET alone (repeatable). The sealed
+                    sets (sealed, sealed34, sealed35) run only when named by
+                    --set or --only.
+  --no-asan         benchmarks without the ASan build (no ASan ratio).
 
 Examples:
 
-  WEAVEC_GOLDEN_DIR=/path/to/golden scripts/corpus-gate.py --quick --legacy
-  scripts/corpus-gate.py --quick --weavec build/release/bin/weavec \\
-      --weavec-cc build/release/bin/weavec-cc --only jansson --json out.json
-  scripts/corpus-gate.py --full --reference-only --cc "$(brew --prefix llvm)/bin/clang"
-  scripts/corpus-gate.py --full --sealed --reference-only --cc "$(brew --prefix llvm)/bin/clang"
-  scripts/corpus-gate.py --full --set fresh34 --json fresh34.json
-  scripts/corpus-gate.py --full --set sealed34 --reference-only --cc "$(brew --prefix llvm)/bin/clang"
-  scripts/corpus-gate.py --inject --legacy --update
+  scripts/corpus-gate.py --quick --only cJSON --only sds
+  scripts/corpus-gate.py --quick --update
+  scripts/corpus-gate.py --full --json full.json
+  scripts/corpus-gate.py --full --checks verify --set fresh35
+  scripts/corpus-gate.py --inject --injection sds-uaf-sdsfree
+  scripts/corpus-gate.py --full --set sealed35 --reference-only
 
 Exit status: 0 when every check passes, 1 when a check fails, 2 on a usage
 or setup error. Only the Python standard library is used.
@@ -107,9 +65,7 @@ import collections
 import concurrent.futures
 import dataclasses
 import datetime
-import fnmatch
 import glob
-import hashlib
 import json
 import math
 import os
@@ -120,7 +76,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -139,90 +94,64 @@ EXPECTED_SCHEMA = "weavec-corpus-expected"
 TRIAGE_SCHEMA = "weavec-corpus-triage"
 MANIFEST_SCHEMA = "weavec-corpus-manifest"
 INJECTIONS_SCHEMA = "weavec-corpus-injections"
+# The versions this gate reads: RFC 0035 changed every file.
+RESULTS_VERSION = 2
+EXPECTED_VERSION = 2
+TRIAGE_VERSION = 2
+MANIFEST_VERSION = 2
+INJECTIONS_VERSION = 2
+# The enforcement ledger (RFC 0035, section 9).
 LEDGER_SCHEMA = "weavec-ledger"
-# 2 since RFC 0032 (the `guarded` outcome).
-LEDGER_VERSION = 2
+LEDGER_VERSION = 3
+LEDGER_COUNTS = ("accesses", "proven", "guarded", "unguarded")
+# The per-file compiles: the optimisation real builds use (a config's own
+# -O in compile.args comes later and wins).
+QUICK_FLAGS = ("-O2",)
 
-# `file:line:col: severity: message [weavec::id]`, as both tools print it.
+# `file:line:col: severity: message [weavec::id]`.
 DIAG_RE = re.compile(
     r"^(?P<file>[^:\n]+):(?P<line>\d+):(?P<col>\d+): "
-    r"(?P<severity>error|warning): (?P<message>.*) \[weavec::(?P<id>[a-z-]+)\]$"
+    r"(?P<severity>error|warning): (?P<message>.*) \[weavec::(?P<id>[a-z0-9-]+)\]$"
 )
 # Anything Clang itself reports (parse errors, missing headers) has no
-# `[weavec::...]` tag; it is counted separately so broken setups are visible.
+# `[weavec::...]` tag; it fails the analysis, so a broken setup never looks clean.
 CLANG_DIAG_RE = re.compile(r"^(?P<file>[^:\n]+):\d+:\d+: (?P<severity>error|fatal error): ")
-# The report-mode runtime (RFC 0030, section 10.7).
+# The analysis' summary lines (lib/Core/Ledger.cpp): one per unit, and one
+# for the program under --whole-program.
+SUMMARY_RE = re.compile(
+    r"^weavec: (?:program (?P<program>.+?)|(?P<source>.+?)): (?P<sites>[\d,]+) sites?"
+    r"(?: in (?P<units>[\d,]+) units?)?: (?P<proven>[\d,]+) proven, (?P<notProven>[\d,]+) not proven, "
+    r"(?P<violations>[\d,]+) violations?, (?P<trusted>[\d,]+) trusted; (?P<errors>[\d,]+) errors?, "
+    r"(?P<warnings>[\d,]+) warnings?(?:; (?P<overBudget>[\d,]+) functions? over budget \(.*\))?\s*$"
+)
+ANALYSIS_COUNTS = ("sites", "proven", "notProven", "violations", "trusted", "errors", "warnings", "overBudget")
+# A run-time report (runtime/weavec_report.c, RFC 0035 section 5.3). A test
+# harness may prefix the line (CTest -V prints "12: ").
 REPORT_RE = re.compile(
-    r"weavec: runtime check failed: (?P<template>[a-z]+) at "
-    r"(?P<file>.+?):(?P<line>\d+):(?P<col>\d+)\s*$"
+    r"weavec: (?P<proven>weavec\.proven: )?(?P<kind>[a-z-]+) at "
+    r"(?:<unknown>|(?P<file>.+?):(?P<line>\d+):(?P<col>\d+)): "
+)
+# The allocator refusing a release: it names no line (RFC 0035, section 5.3).
+INVALID_RELEASE_RE = re.compile(r"weavec: invalid release of 0x[0-9a-f]+: ")
+KINDS = (
+    "heap-buffer-overflow", "heap-use-after-free", "stack-buffer-overflow",
+    "stack-use-after-scope", "dynamic-stack-buffer-overflow", "global-buffer-overflow",
+    "buffer-overflow", "null-dereference", "unterminated-string", "index-out-of-bounds",
+    "invalid-release", "double-free", "invalid-access", "overlapping-copy",
 )
 # How shells, make and CTest describe a process that died by SIGTRAP or
-# SIGILL (the trap of a failed check), plus the 128+signal exit statuses.
-# CTest 3.29 prints "SIGTRAP***Exception:" and "***Exception: Illegal";
-# older versions print "***Exception: Other" for SIGTRAP.
+# SIGILL (a guard's trap), plus the 128+signal exit statuses. CTest 3.29
+# prints "SIGTRAP***Exception:" and "***Exception: Illegal"; older versions
+# print "***Exception: Other" for SIGTRAP.
 TRAP_TEXT_RE = re.compile(
     r"Trace/BPT trap|Trace/breakpoint trap|Illegal instruction|\bSIGTRAP\b|\bSIGILL\b|\(ILLEGAL\)"
     r"|\*\*\*Exception: (?:Illegal|Other)|\bError 13[23]\b|exit (?:status|code) 13[23]\b"
 )
-
-# Ids that report coverage rather than a bug; everything else is a bug claim.
-COVERAGE_IDS = frozenset({"analysis-incomplete", "annotation-required", "checking-incomplete", "checking-failed"})
-# Matching facet of each id (RFC 0030, section 17.3).
-FACET_OF_ID = {
-    "use-after-free": "temporal", "double-free": "temporal", "use-after-move": "temporal",
-    "conflicting-borrow": "temporal", "lifetime-too-short": "temporal",
-    "mismatched-release": "temporal", "annotation-mismatch": "temporal",
-    "null-dereference": "null", "use-of-uninitialized": "null",
-    "out-of-bounds": "spatial", "invalid-release": "spatial",
-    "contradicted-assumption": "assertion",
-}
-# Ids a trap template stands for, when a diagnostic satisfies a trap
-# expectation or a trap satisfies a diagnostic expectation (section 17.3).
-TEMPLATE_IDS = {
-    "nonnull": {"null-dereference"},
-    "index": {"out-of-bounds"}, "span": {"out-of-bounds"}, "len": {"out-of-bounds"},
-    "disjoint": {"out-of-bounds"},
-    "assert": {"contradicted-assumption"},
-    "violation": None,  # any id
-    # RFC 0032 section 3: the guards. Each fails on a dead object as well as
-    # on an access or a release outside one.
-    "object": {"out-of-bounds", "use-after-free", "use-after-move"},
-    "live": {"use-after-free", "use-after-move"},
-    "release": {"double-free", "invalid-release", "use-after-free"},
-}
-FACETS = ("spatial", "null", "temporal", "assertion")
-OUTCOMES = ("proven", "checked", "guarded", "violation", "unresolved", "trusted")
+# ... and one that died on the null page (RFC 0035, section 2.4).
+FAULT_TEXT_RE = re.compile(r"Segmentation fault|Bus error|\bSIGSEGV\b|\bSIGBUS\b|\*\*\*Exception: SegFault"
+                           r"|\bError 13[89]\b|exit (?:status|code) 13[89]\b")
 TRAP_SIGNALS = (signal.SIGTRAP, signal.SIGILL)
-
-# The ratchet (section 17.5). Exact fields must equal the recorded value: a
-# worse value is a regression, a better one an improvement that --update
-# must record, a neutral change likewise. Budget fields fail only above
-# their tolerance and are rewritten by --update.
-EXACT_FIELDS: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("errors",), "lower"),
-    (("warnings",), "lower"),
-    (("ledger", "proven"), "higher"),
-    (("ledger", "checked"), "neutral"),
-    (("ledger", "guarded"), "neutral"),
-    (("ledger", "violation"), "lower"),
-    (("ledger", "unresolved"), "lower"),
-    (("ledger", "trusted"), "lower"),
-    (("unresolvedShare", "spatialNull"), "lower"),
-)
-# Exact fields compared only once a record has them: RFC 0031 G6's temporal
-# share, recorded by the first --update after it was added.
-OPTIONAL_EXACT_FIELDS: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("unresolvedShare", "temporal"), "lower"),
-)
-BUDGET_FIELDS: tuple[tuple[tuple[str, ...], float, float, bool], ...] = (
-    # (path, relative tolerance, absolute slack, machine-dependent). The slack
-    # keeps timer noise on sub-second CPU times from failing the gate.
-    (("cpuSeconds",), 0.10, 1.0, True),
-    (("workCounters", "blockTransfers"), 0.02, 0, False),
-    (("workCounters", "functions"), 0.02, 0, False),
-    (("workCounters", "sites"), 0.02, 0, False),
-)
-ANALYSIS_KINDS = ("units", "program")
+FAULT_SIGNALS = (signal.SIGSEGV, signal.SIGBUS)
 
 _log_lock = threading.Lock()
 VERBOSE = False
@@ -300,7 +229,6 @@ class ProcResult:
 
     @property
     def output(self) -> str:
-        # scripts/corpus.py parsed stderr, then stdout.
         return self.stderr + self.stdout
 
     @property
@@ -401,6 +329,26 @@ def describe_status(result: ProcResult) -> str:
     return f"exit status {result.returncode}"
 
 
+def died_of(result: ProcResult, signals: Iterable[int], text: re.Pattern) -> list[str]:
+    """Evidence that a command, or a process it ran, died of one of `signals`."""
+    signals = tuple(signals)
+    evidence = []
+    if result.signal in signals or result.returncode in tuple(128 + s for s in signals):
+        evidence.append(f"{result.command}: {describe_status(result)}")
+    for line in result.output.splitlines():
+        if text.search(line):
+            evidence.append(line.strip()[:300])
+    return evidence
+
+
+def trap_evidence(result: ProcResult) -> list[str]:
+    return died_of(result, TRAP_SIGNALS, TRAP_TEXT_RE)
+
+
+def fault_evidence(result: ProcResult) -> list[str]:
+    return died_of(result, FAULT_SIGNALS, FAULT_TEXT_RE)
+
+
 # -- files --------------------------------------------------------------------
 
 
@@ -420,9 +368,14 @@ def write_json(path: Path, data: Any) -> None:
     temporary.replace(path)
 
 
+def check_schema(data: Any, path: Path, schema: str, version: int) -> None:
+    if not isinstance(data, dict) or data.get("schema") != schema or data.get("version") != version:
+        found = f"{data.get('schema')} version {data.get('version')}" if isinstance(data, dict) else "no object"
+        raise GateError(f"{path}: schema must be {schema} version {version} (found {found})")
+
+
 def copy_tree(source: Path, dest: Path) -> None:
-    """Copy a checkout, .git included: the copy stays the fingerprint root (RFC 0030,
-    section 12.3), so builds and injections fingerprint findings as --quick does."""
+    """Copy a checkout, .git included (some builds ask git for a version)."""
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(source, dest, symlinks=True)
@@ -440,11 +393,22 @@ def rel_path(file: str, root: Path) -> str:
         return file
 
 
-def sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def normalise_path(file: str) -> str:
+    """A report's path without the build directory's relative prefixes ("./x.c", "../x.c")."""
+    parts = [p for p in Path(file).as_posix().split("/") if p not in (".", "")]
+    while parts and parts[0] == "..":
+        parts.pop(0)
+    return "/".join(parts)
 
 
-def get_path(data: dict, path: Iterable[str]) -> Any:
+def same_file(reported: str, expected: str) -> bool:
+    """Whether a reported path names the expected file: a build may print
+    either the full path or one relative to its own directory."""
+    reported, expected = normalise_path(reported), normalise_path(expected)
+    return reported == expected or reported.endswith("/" + expected) or expected.endswith("/" + reported)
+
+
+def get_path(data: Any, path: Iterable[str]) -> Any:
     for key in path:
         if not isinstance(data, dict) or key not in data:
             return None
@@ -452,10 +416,14 @@ def get_path(data: dict, path: Iterable[str]) -> Any:
     return data
 
 
-def set_path(data: dict, path: tuple[str, ...], value: Any) -> None:
-    for key in path[:-1]:
-        data = data.setdefault(key, {})
-    data[path[-1]] = value
+def share(part: int, whole: int) -> float | None:
+    return round(part / whole, 4) if whole else None
+
+
+def geometric_mean(values: list[float]) -> float | None:
+    if not values or any(v <= 0 for v in values):
+        return None
+    return round(math.exp(sum(math.log(v) for v in values) / len(values)), 4)
 
 
 # -- manifest -----------------------------------------------------------------
@@ -491,11 +459,13 @@ class Config:
     test: list[str] = dataclasses.field(default_factory=list)
     test_timeout: float | None = None
     bench: Bench | None = None
-    link: dict | None = None
-    lowered: list[dict] = dataclasses.field(default_factory=list)
     notes: str = ""
-    held_out: bool = False  # RFC 0031, section 11.2; true for the fresh and sealed sets too
-    set: str = "original"  # one of SETS (RFC 0033, section 11)
+    held_out: bool = False
+    set: str = "original"
+
+    @property
+    def sealed(self) -> bool:
+        return self.set in SEALED_SETS
 
 
 @dataclasses.dataclass
@@ -511,46 +481,27 @@ class Manifest:
                 return config
         raise KeyError(name)
 
-    @property
-    def original(self) -> list[Config]:
-        """The configs RFC 0030's gates count: every config but the held-out ones."""
-        return [c for c in self.configs if not c.held_out]
 
-
-# The corpus sets (RFC 0033, section 11): `original` (the configs RFC 0030's
-# gates count), `heldOut` (RFC 0031, section 11.2), `fresh` and `sealed`
-# (RFC 0033). A manifest names the last two in a config's `set`, which needs
-# `heldOut: true`; without `set` a config is original, or heldOut when it is
-# marked heldOut.
-SETS = ("original", "heldOut", "fresh", "sealed", "fresh34", "sealed34")
-NAMED_SETS = ("fresh", "sealed", "fresh34", "sealed34")
-# The sets that run only when asked for (--set, --sealed, --only): RFC 0033's
-# and RFC 0034's sealed sets.
-SEALED_SETS = ("sealed", "sealed34")
-# RFC 0034, section 9: the fresh34 configs carry a run-time workload (gate F7).
-BENCH_SETS = ("fresh34",)
-SET_TITLES = {
-    "heldOut": "held-out configs (RFC 0031, section 11.2)",
-    "fresh": "fresh configs (RFC 0033, section 11; gates D1 and D5)",
-    "sealed": "sealed configs (RFC 0033, section 11; gate D2)",
-    "fresh34": "fresh34 configs (RFC 0034, section 9; gates F1, F5 and F7)",
-    "sealed34": "sealed34 configs (RFC 0034, section 9; gate F2)",
-}
-# What a finding's message calls a config of each set.
-SET_LABELS = {"original": "", "heldOut": "held-out ", "fresh": "fresh ", "sealed": "sealed ",
-              "fresh34": "fresh34 ", "sealed34": "sealed34 "}
+# The corpus sets. `original`: the configs WeaveC was developed on; `heldOut`:
+# RFC 0031's held-out projects; then each RFC's fresh projects (measured
+# during its work) and sealed ones (built once, at its end). A manifest names
+# a set in a config's `set`, which needs `heldOut: true`; without `set` a
+# config is original, or heldOut when it is marked heldOut.
+SETS = ("original", "heldOut", "fresh", "sealed", "fresh34", "sealed34", "fresh35", "sealed35")
+NAMED_SETS = SETS[2:]
+# The sets that run only when asked for (--set, --only).
+SEALED_SETS = ("sealed", "sealed34", "sealed35")
+CONFIG_KEYS = frozenset(("name", "notes", "compile", "wholeProgram", "build", "test", "testTimeout", "bench",
+                         "heldOut", "set"))
+BENCH_KEYS = frozenset(("name", "build", "command", "repeat", "input", "check"))
 
 SHA_RE = re.compile(r"[0-9a-f]{40}")
-LOWERED_RE = re.compile(r"-Wno-error=weavec-(?P<id>[a-z-]+)")
-# Flags that would lower or silence WeaveC diagnostics outside `lowered`.
-FORBIDDEN_FLAG_RE = re.compile(r"(?<![\w-])(-Wno-error(?:=\S*)?|-Wno-weavec\S*|-w)(?![\w=-])")
 
 
 def load_manifest(path: Path, support_root: Path) -> Manifest:
     data = read_json(path)
+    check_schema(data, path, MANIFEST_SCHEMA, MANIFEST_VERSION)
     problems: list[str] = []
-    if data.get("schema") != MANIFEST_SCHEMA or data.get("version") != 1:
-        problems.append(f"schema must be {MANIFEST_SCHEMA} version 1")
     projects: list[Project] = []
     configs: list[Config] = []
     names: set[str] = set()
@@ -570,6 +521,9 @@ def load_manifest(path: Path, support_root: Path) -> Manifest:
             if cname in names:
                 problems.append(f"config {cname}: duplicate name")
             names.add(cname)
+            unknown = sorted(set(c) - CONFIG_KEYS)
+            if unknown:
+                problems.append(f"config {cname}: unknown field(s) {', '.join(unknown)}")
             compile_ = c.get("compile") or {}
             if not compile_.get("files"):
                 problems.append(f"config {cname}: compile.files is missing")
@@ -578,6 +532,9 @@ def load_manifest(path: Path, support_root: Path) -> Manifest:
                 b = c["bench"]
                 if not b.get("command") or not b.get("build"):
                     problems.append(f"config {cname}: bench needs build and command")
+                unknown = sorted(set(b) - BENCH_KEYS)
+                if unknown:
+                    problems.append(f"config {cname}: unknown bench field(s) {', '.join(unknown)}")
                 bench = Bench(name=b.get("name", cname), build=list(b.get("build", [])),
                               command=b.get("command", ""), repeat=int(b.get("repeat", 7)),
                               input=b.get("input"), check=b.get("check"))
@@ -591,46 +548,25 @@ def load_manifest(path: Path, support_root: Path) -> Manifest:
                                     f"{', '.join(repr(s) for s in NAMED_SETS)} (got {c['set']!r}); "
                                     f"without it a config is original, or heldOut when marked heldOut")
                 elif held_out is not True:
-                    problems.append(f"config {cname}: set {c['set']!r} needs heldOut true (RFC 0033, section 11)")
+                    problems.append(f"config {cname}: set {c['set']!r} needs heldOut true")
                 else:
                     corpus_set = c["set"]
-            if held_out is True and bench is not None and corpus_set not in BENCH_SETS:
-                problems.append(f"config {cname}: a held-out config has no bench (RFC 0031, section 11.2), "
-                                f"unless its set is {' or '.join(BENCH_SETS)} (RFC 0034, section 9)")
+            if c.get("test") and not c.get("build"):
+                problems.append(f"config {cname}: test needs build")
+            timeout = c.get("testTimeout")
+            if timeout is not None and (not isinstance(timeout, (int, float)) or timeout <= 0):
+                problems.append(f"config {cname}: testTimeout must be a positive number of seconds")
             config = Config(
                 name=cname, project=project, files=list(compile_.get("files", [])),
                 args=list(compile_.get("args", [])), whole_program=bool(c.get("wholeProgram", False)),
-                build=list(c.get("build", [])), test=list(c.get("test", [])),
-                test_timeout=c.get("testTimeout"), bench=bench, link=c.get("link"),
-                lowered=list(c.get("lowered", [])), notes=c.get("notes", ""), held_out=held_out is True,
-                set=corpus_set)
-            problems.extend(check_lowering(config))
+                build=list(c.get("build", [])), test=list(c.get("test", [])), test_timeout=timeout,
+                bench=bench, notes=c.get("notes", ""), held_out=held_out is True, set=corpus_set)
             project.configs.append(config)
             configs.append(config)
         projects.append(project)
     if problems:
         raise GateError(f"{path}: invalid manifest:\n  " + "\n  ".join(problems))
     return Manifest(projects=projects, configs=configs, gates=data.get("gates", {}), path=path)
-
-
-def check_lowering(config: Config) -> list[str]:
-    """Only `lowered` entries may lower a WeaveC error (section 17.5)."""
-    problems = []
-    for entry in config.lowered:
-        flag = entry.get("flag", "")
-        if not LOWERED_RE.fullmatch(flag):
-            problems.append(f"config {config.name}: lowered flag {flag!r} is not -Wno-error=weavec-<id>")
-        if not entry.get("fingerprint"):
-            problems.append(f"config {config.name}: lowered flag {flag!r} has no fingerprint")
-    commands = list(config.build) + list(config.test) + list(config.args)
-    if config.bench:
-        commands += config.bench.build + [config.bench.command]
-    for command in commands:
-        match = FORBIDDEN_FLAG_RE.search(command)
-        if match:
-            problems.append(f"config {config.name}: {match.group(1)!r} in {command!r}; lower errors only "
-                            f"through `lowered` entries")
-    return problems
 
 
 def support_dir(config: Config, support_root: Path) -> Path:
@@ -643,7 +579,7 @@ def expand_args(config: Config, support_root: Path) -> list[str]:
 
 
 def expand_files(root: Path, patterns: Iterable[str]) -> list[Path]:
-    """As scripts/corpus.py did: each pattern's sorted glob, in pattern order."""
+    """Each pattern's sorted glob, in pattern order."""
     files: list[Path] = []
     for pattern in patterns:
         matches = sorted(glob.glob(str(root / pattern), recursive=True))
@@ -653,36 +589,21 @@ def expand_files(root: Path, patterns: Iterable[str]) -> list[Path]:
     return files
 
 
-def with_held_out(args: argparse.Namespace) -> bool:
-    """Whether a run without --only includes the held-out configs (RFC 0031, section 11.2)
-    and the fresh ones (RFC 0033, section 11), which are marked heldOut too.
-
-    --full runs them; the PR-time --quick run, and the other modes, leave them
-    out unless --held-out asks for them. --legacy never has them: v0.10.0 was
-    not measured on them.
-    """
-    if args.held_out is not None:
-        return args.held_out
-    return bool(args.full) and not args.legacy
-
-
-def select_configs(manifest: Manifest, only: list[str], held_out: bool = True,
-                   sealed: bool = False, sets: Iterable[str] = ()) -> list[Config]:
-    """The configs named by --only; else the configs of the sets named by
-    --set (RFC 0034 section 9), with RFC 0033's sealed set when `sealed`
-    (--sealed, RFC 0033 section 11), alone; else every config but those of
-    the sealed sets (SEALED_SETS), the held-out, fresh and fresh34 ones only
-    when `held_out`."""
-    if not only:
-        wanted = set(sets) | ({"sealed"} if sealed else set())
-        if wanted:
-            return [c for c in manifest.configs if c.set in wanted]
-        return [c for c in manifest.configs if c.set not in SEALED_SETS and (held_out or not c.held_out)]
-    known = {c.name for c in manifest.configs}
-    unknown = sorted(set(only) - known)
-    if unknown:
-        raise GateError(f"unknown config(s): {', '.join(unknown)} (known: {', '.join(sorted(known))})")
-    return [c for c in manifest.configs if c.name in only]
+def select_configs(manifest: Manifest, only: list[str], held_out: bool = False,
+                   sets: Iterable[str] = ()) -> list[Config]:
+    """The configs named by --only; else those of the sets named by --set;
+    else every config outside the sealed sets, the held-out ones only when
+    `held_out`."""
+    if only:
+        known = {c.name for c in manifest.configs}
+        unknown = sorted(set(only) - known)
+        if unknown:
+            raise GateError(f"unknown config(s): {', '.join(unknown)} (known: {', '.join(sorted(known))})")
+        return [c for c in manifest.configs if c.name in only]
+    wanted = set(sets)
+    if wanted:
+        return [c for c in manifest.configs if c.set in wanted]
+    return [c for c in manifest.configs if not c.sealed and (held_out or not c.held_out)]
 
 
 # -- checkouts ----------------------------------------------------------------
@@ -709,7 +630,7 @@ def ensure_checkout(project: Project, workdir: Path, fetch: bool, offline: bool)
             git(["checkout", "--quiet", "--detach", project.sha], dest)
         modified = git(["status", "--porcelain", "--untracked-files=no"], dest).strip()
         if modified:
-            raise GateError(f"{dest}: tracked files are modified; the gate analyses pristine checkouts:\n"
+            raise GateError(f"{dest}: tracked files are modified; the gate works on pristine checkouts:\n"
                             f"{modified}")
         return dest
     if offline:
@@ -743,7 +664,7 @@ def config_files(config: Config, root: Path, tracked: set[str] | None = None) ->
     return files
 
 
-# -- diagnostics --------------------------------------------------------------
+# -- the advisory analysis (RFC 0035, section 8) --------------------------------
 
 
 @dataclasses.dataclass
@@ -754,25 +675,12 @@ class Diagnostic:
     severity: str
     id: str
     message: str
-    certainty: str = ""
-    facet: str = ""
-    function: str = ""
-    fingerprint: str = ""
 
     def render(self) -> str:
         return f"{self.file}:{self.line}:{self.col}: {self.severity}: {self.message} [weavec::{self.id}]"
 
     def to_json(self) -> dict:
-        data = {"file": self.file, "line": self.line, "col": self.col, "severity": self.severity,
-                "id": self.id, "message": self.message}
-        for key in ("certainty", "facet", "function", "fingerprint"):
-            if getattr(self, key):
-                data[key] = getattr(self, key)
-        return data
-
-    @property
-    def facet_or_mapped(self) -> str:
-        return self.facet or FACET_OF_ID.get(self.id, "")
+        return dataclasses.asdict(self)
 
 
 def parse_diagnostics(text: str, root: Path) -> tuple[list[Diagnostic], int]:
@@ -790,52 +698,818 @@ def parse_diagnostics(text: str, root: Path) -> tuple[list[Diagnostic], int]:
     return diagnostics, clang_errors
 
 
-def classify_failure(result: ProcResult, diagnostics: list[Diagnostic], clang_errors: int) -> str:
-    """Setup and tool failures must never look like clean code (RFC 0014)."""
+def parse_summaries(text: str) -> tuple[list[dict], dict | None]:
+    """The analysis' unit summary lines, and its program line if any."""
+    units: list[dict] = []
+    program = None
+    for line in text.splitlines():
+        m = SUMMARY_RE.match(line.strip())
+        if not m:
+            continue
+        counts = {key: int((m.group(key) or "0").replace(",", "")) for key in ANALYSIS_COUNTS}
+        if m.group("program") is not None:
+            program = counts
+        else:
+            units.append({"source": m.group("source"), **counts})
+    return units, program
+
+
+def add_counts(into: dict, counts: dict, keys: Iterable[str]) -> None:
+    for key in keys:
+        into[key] = into.get(key, 0) + int(counts.get(key, 0))
+
+
+def classify_failure(result: ProcResult, diagnostics: list[Diagnostic], clang_errors: int,
+                     summaries: int) -> str:
+    """Setup and tool failures must never look like clean code."""
     if result.error:
         return result.error
     if result.timed_out:
         return f"timeout after {result.seconds:.0f} seconds"
     if clang_errors:
-        return f"{clang_errors} Clang parse error(s)"
+        return f"{clang_errors} Clang error(s)"
     if result.returncode < 0 or result.returncode > 1:
-        return f"checker exited with status {result.returncode}"
+        return f"weavec exited with {describe_status(result)}"
     if result.returncode and not any(d.severity == "error" for d in diagnostics):
-        return f"checker failed without a WeaveC error (status {result.returncode})"
-    output = result.output
-    if "non-converg" in output or "failed to converge" in output or "did not converge" in output:
-        return "program analysis did not converge"
-    if any(d.id == "analysis-incomplete" and "iteration limit reached" in d.message for d in diagnostics):
-        return "analysis reached an iteration limit"
+        return f"weavec failed without a WeaveC error (status {result.returncode})"
+    if not summaries:
+        return "weavec printed no summary line"
     return ""
 
 
-def digest_diagnostics(diagnostics: Iterable[Diagnostic]) -> str:
-    return "sha256:" + sha256_text("\n".join(sorted(d.render() for d in diagnostics)))
+@dataclasses.dataclass
+class AnalysisRun:
+    """One `weavec` process: a file, or the whole program."""
+    files: list[str]
+    counts: dict
+    diagnostics: list[Diagnostic]
+    cpu: float
+    failure: str = ""
 
 
-def is_bug_claim(id_: str) -> bool:
-    return id_ not in COVERAGE_IDS
+def analysis_command(weavec: str, config: Config, files: list[Path], support_root: Path) -> list[str]:
+    argv = [weavec]
+    if config.whole_program:
+        argv.append("--whole-program")
+    argv.extend(str(f) for f in files)
+    # Clang stops after 20 errors per unit by default.
+    argv.extend(["--", "-ferror-limit=0", *expand_args(config, support_root)])
+    return argv
 
 
-# -- binaries -----------------------------------------------------------------
+def run_analysis(weavec: str, config: Config, root: Path, files: list[Path], support_root: Path,
+                 timeout: float) -> AnalysisRun:
+    result = run_process(analysis_command(weavec, config, files, support_root), cwd=root, timeout=timeout)
+    diagnostics, clang_errors = parse_diagnostics(result.output, root)
+    units, program = parse_summaries(result.output)
+    counts: dict = {}
+    if config.whole_program and program is not None:
+        counts = dict(program)
+    else:
+        for unit in units:
+            add_counts(counts, unit, ANALYSIS_COUNTS)
+    failure = classify_failure(result, diagnostics, clang_errors, len(units) + (program is not None))
+    if not failure and len(units) != len(files):
+        failure = f"{len(units)} summary line(s) for {len(files)} file(s)"
+    return AnalysisRun(files=[f.relative_to(root).as_posix() for f in files], counts=counts,
+                       diagnostics=diagnostics, cpu=result.cpu, failure=failure)
+
+
+# -- the enforcement ledger (RFC 0035, section 9) --------------------------------
+
+
+def read_ledger(path: Path) -> tuple[dict, collections.Counter]:
+    """The summed summary of a ledger's units, and its rows by outcome:reason."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{path.name}: {exc}") from None
+    if not isinstance(data, dict) or data.get("schema") != LEDGER_SCHEMA:
+        raise ValueError(f"{path.name}: not a {LEDGER_SCHEMA} document")
+    if data.get("version") != LEDGER_VERSION:
+        raise ValueError(f"{path.name}: ledger version {data.get('version')!r}, not {LEDGER_VERSION}")
+    units = data.get("units")
+    if not isinstance(units, list) or not units:
+        raise ValueError(f"{path.name}: no units")
+    totals = {key: 0 for key in LEDGER_COUNTS}
+    reasons: collections.Counter = collections.Counter()
+    for unit in units:
+        summary = unit.get("summary")
+        if not isinstance(summary, dict):
+            raise ValueError(f"{path.name}: a unit has no summary")
+        add_counts(totals, summary, LEDGER_COUNTS)
+        for row in unit.get("rows") or []:
+            reasons[f"{row.get('outcome')}:{row.get('reason')}"] += 1
+    return totals, reasons
+
+
+@dataclasses.dataclass
+class CompileRun:
+    """One per-file `weavec-cc -c`, and the reference compiler's when timed."""
+    file: str
+    ledger: dict
+    reasons: collections.Counter
+    cpu: float
+    maxrss: int | None
+    reference_cpu: float | None = None
+    failure: str = ""
+
+
+def compile_command(weavec_cc: str, config: Config, file: Path, support_root: Path, ledger: Path,
+                    obj: Path) -> list[str]:
+    return [weavec_cc, "-c", *QUICK_FLAGS, "-fweavec-checks=trap", f"-fweavec-ledger={ledger}",
+            *expand_args(config, support_root), str(file), "-o", str(obj)]
+
+
+def run_compile(weavec_cc: str, reference_cc: str | None, config: Config, root: Path, file: Path,
+                support_root: Path, work: Path, timeout: float) -> CompileRun:
+    rel = file.relative_to(root).as_posix()
+    stem = rel.replace("/", "__")
+    ledger = work / f"{stem}.ledger.json"
+    obj = work / f"{stem}.o"
+    ledger.unlink(missing_ok=True)
+    result = run_process(compile_command(weavec_cc, config, file, support_root, ledger, obj), cwd=root,
+                         timeout=timeout)
+    run = CompileRun(file=rel, ledger={}, reasons=collections.Counter(), cpu=result.cpu, maxrss=result.maxrss)
+    if result.returncode != 0 or result.timed_out or result.error:
+        lines = result.stderr.strip().splitlines()
+        run.failure = f"weavec-cc -c: {describe_status(result)}" + (f": {lines[-1][:300]}" if lines else "")
+        return run
+    try:
+        run.ledger, run.reasons = read_ledger(ledger)
+    except ValueError as exc:
+        run.failure = f"no valid ledger ({exc})"
+        return run
+    if reference_cc:
+        argv = [reference_cc, "-c", *QUICK_FLAGS, *expand_args(config, support_root), str(file),
+                "-o", str(work / f"{stem}.reference.o")]
+        reference = run_process(argv, cwd=root, timeout=timeout)
+        if reference.returncode == 0 and not reference.timed_out:
+            run.reference_cpu = reference.cpu
+    return run
+
+
+# -- one config's --quick measurement -----------------------------------------------
+
+
+@dataclasses.dataclass
+class Quick:
+    config: str
+    analysis: dict = dataclasses.field(default_factory=dict)
+    ledger: dict = dataclasses.field(default_factory=lambda: {key: 0 for key in LEDGER_COUNTS})
+    reasons: collections.Counter = dataclasses.field(default_factory=collections.Counter)
+    diagnostics: list[Diagnostic] = dataclasses.field(default_factory=list)
+    units: dict = dataclasses.field(default_factory=dict)
+    analysis_cpu: float = 0.0
+    compile_cpu: float = 0.0
+    failures: list[str] = dataclasses.field(default_factory=list)
+
+    @property
+    def proven_share(self) -> float | None:
+        return share(self.ledger["proven"], self.ledger["accesses"])
+
+    def measured(self) -> dict:
+        """The ratchet shape (expected.json)."""
+        return {
+            "ledger": {**{key: self.ledger[key] for key in LEDGER_COUNTS}, "provenShare": self.proven_share},
+            "analysis": {key: self.analysis.get(key, 0) for key in ANALYSIS_COUNTS},
+        }
+
+    def to_json(self) -> dict:
+        return {**self.measured(), "reasons": dict(sorted(self.reasons.items())),
+                "analysisCpuSeconds": round(self.analysis_cpu, 2), "compileCpuSeconds": round(self.compile_cpu, 2),
+                "units": self.units, "failures": self.failures,
+                "diagnostics": [d.to_json() for d in self.diagnostics]}
+
+    def add_analysis(self, run: AnalysisRun) -> None:
+        self.analysis_cpu += run.cpu
+        if run.failure:
+            self.failures.append(f"weavec {' '.join(run.files)[:80]}: {run.failure}")
+            return
+        add_counts(self.analysis, run.counts, ANALYSIS_COUNTS)
+        self.diagnostics.extend(run.diagnostics)
+
+    def add_compile(self, run: CompileRun) -> None:
+        self.compile_cpu += run.cpu
+        self.units[run.file] = {
+            "cpuSeconds": round(run.cpu, 3),
+            "referenceCpuSeconds": round(run.reference_cpu, 3) if run.reference_cpu is not None else None,
+            "maxRssMiB": round(run.maxrss / 2 ** 20, 1) if run.maxrss else None,
+            **({"accesses": run.ledger["accesses"], "proven": run.ledger["proven"]} if run.ledger else {}),
+        }
+        if run.failure:
+            self.failures.append(f"{run.file}: {run.failure}")
+            return
+        add_counts(self.ledger, run.ledger, LEDGER_COUNTS)
+        self.reasons.update(run.reasons)
+
+
+# -- the ratchet (expected.json) ----------------------------------------------------
+
+# (path, the direction that is better). A worse value fails; a better one is a
+# note until --update records it.
+RATCHET_FIELDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("ledger", "provenShare"), "higher"),
+    (("ledger", "unguarded"), "lower"),
+    (("analysis", "errors"), "lower"),
+    (("analysis", "warnings"), "lower"),
+)
+# Counts whose change is a note: the code under test changes them both ways.
+TRACKED_FIELDS: tuple[tuple[str, ...], ...] = (
+    ("ledger", "accesses"), ("ledger", "proven"), ("ledger", "guarded"),
+    ("analysis", "sites"), ("analysis", "proven"),
+)
+EXPECTED_COMMENT = [
+    "The corpus ratchet (RFC 0035, section 11), written by scripts/corpus-gate.py --update (or",
+    "--update-from a results file measured elsewhere, for example by CI). For each platform,",
+    "configs.<config> records what --quick measured: `ledger`, the enforcement ledgers of the",
+    "per-file weavec-cc -c -O2 compiles (accesses, proven, guarded, unguarded, provenShare), and",
+    "`analysis`, the summary lines of the weavec analysis (sites, proven, notProven, violations,",
+    "trusted, errors, warnings, overBudget). provenShare must not drop, and unguarded, errors and",
+    "warnings must not rise; a better value and a change of the other counts are reported until",
+    "--update records them. test/corpus/README.md documents the gate.",
+]
+
+
+@dataclasses.dataclass
+class RatchetResult:
+    regressions: list[str] = dataclasses.field(default_factory=list)
+    improvements: list[str] = dataclasses.field(default_factory=list)
+    changes: list[str] = dataclasses.field(default_factory=list)
+    missing: list[str] = dataclasses.field(default_factory=list)
+
+    @property
+    def failed(self) -> bool:
+        return bool(self.regressions)
+
+    def to_json(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+def compare_ratchet(measured: dict[str, dict], expected: dict, platform: str) -> RatchetResult:
+    """Check measured configs against expected.json's record for `platform`.
+
+    A config with no record is reported, not failed: --update records it.
+    """
+    result = RatchetResult()
+    section = (expected.get("platforms") or {}).get(platform)
+    if section is None:
+        if measured:
+            result.missing.append(f"nothing recorded for {platform}; --update records it")
+        return result
+    recorded = section.get("configs") or {}
+    for name, now in sorted(measured.items()):
+        before = recorded.get(name)
+        if before is None:
+            result.missing.append(f"{name}: not recorded for {platform}; --update records it")
+            continue
+        for path, better in RATCHET_FIELDS:
+            new, old = get_path(now, path), get_path(before, path)
+            label = f"{name}.{'.'.join(path)}"
+            if new == old:
+                continue
+            if new is None or old is None:
+                result.changes.append(f"{label}: {old} -> {new}")
+            elif (new > old) == (better == "higher"):
+                result.improvements.append(f"{label}: {old} -> {new} (better)")
+            else:
+                result.regressions.append(f"{label}: {old} -> {new} (worse)")
+        for path in TRACKED_FIELDS:
+            new, old = get_path(now, path), get_path(before, path)
+            if new != old:
+                result.changes.append(f"{name}.{'.'.join(path)}: {old} -> {new}")
+    return result
+
+
+def merge_expected(expected: dict, measured: dict[str, dict], platform: str, machine: str,
+                   producer: str) -> dict:
+    """expected.json with these measurements recorded for `platform`."""
+    merged = {"schema": EXPECTED_SCHEMA, "version": EXPECTED_VERSION, "_comment": EXPECTED_COMMENT,
+              "platforms": json.loads(json.dumps(expected.get("platforms") or {}))}
+    section = merged["platforms"].setdefault(platform, {})
+    section["machine"] = machine
+    section["producer"] = producer
+    section["updated"] = datetime.date.today().isoformat()
+    configs = section.setdefault("configs", {})
+    for name, now in measured.items():
+        configs[name] = now
+    section["configs"] = dict(sorted(configs.items()))
+    merged["platforms"] = dict(sorted(merged["platforms"].items()))
+    return merged
+
+
+def load_expected(path: Path, update: bool) -> dict:
+    if not path.exists():
+        return {}
+    data = read_json(path)
+    if isinstance(data, dict) and data.get("schema") == EXPECTED_SCHEMA and data.get("version") == EXPECTED_VERSION:
+        return data
+    if update:
+        log(f"{path}: not {EXPECTED_SCHEMA} version {EXPECTED_VERSION}; --update starts it afresh")
+        return {}
+    check_schema(data, path, EXPECTED_SCHEMA, EXPECTED_VERSION)
+    return data
+
+
+# -- triage (triage.json) -------------------------------------------------------------
+
+TRIAGE_KEYS = ("config", "id", "certainty", "file", "line", "verdict", "note")
+GUARD_FAILURE_KEYS = ("config", "file", "line", "verdict", "note")
+
+
+@dataclasses.dataclass
+class Triage:
+    entries: list[dict]
+    guard_failures: list[dict]
+
+
+def load_triage(path: Path) -> Triage:
+    """Verdicts on the analysis' findings, and the guard failures of test
+    suites that are true bugs of the project."""
+    if not path.exists():
+        return Triage([], [])
+    data = read_json(path)
+    check_schema(data, path, TRIAGE_SCHEMA, TRIAGE_VERSION)
+    problems = []
+    entries = list(data.get("entries", []))
+    for entry in entries:
+        where = f"{entry.get('config')} {entry.get('file')}:{entry.get('line')}"
+        missing = [k for k in TRIAGE_KEYS if k not in entry]
+        if missing:
+            problems.append(f"entry {where}: missing {', '.join(missing)}")
+        elif entry["verdict"] not in ("true", "false"):
+            problems.append(f"entry {where}: verdict must be \"true\" or \"false\"")
+        elif entry["certainty"] not in ("definite", "possible"):
+            problems.append(f"entry {where}: certainty must be definite or possible")
+    failures = list(data.get("guardFailures", []))
+    for entry in failures:
+        where = f"{entry.get('config')} {entry.get('file')}:{entry.get('line')}"
+        missing = [k for k in GUARD_FAILURE_KEYS if k not in entry]
+        if missing:
+            problems.append(f"guardFailures entry {where}: missing {', '.join(missing)}")
+        elif entry["verdict"] != "true":
+            # A false trap is a bug to fix, not to triage.
+            problems.append(f"guardFailures entry {where}: the verdict must be \"true\"")
+        elif "kind" in entry and entry["kind"] not in KINDS:
+            problems.append(f"guardFailures entry {where}: unknown kind {entry['kind']!r}")
+    if problems:
+        raise GateError(f"{path}: invalid triage:\n  " + "\n  ".join(problems))
+    return Triage(entries, failures)
+
+
+def findings_of(config: str, diagnostics: Iterable[Diagnostic]) -> list[dict]:
+    """The analysis' findings: an error is definite, a warning possible."""
+    seen = set()
+    out = []
+    for d in diagnostics:
+        key = (d.file, d.line, d.id)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"config": config, "id": d.id, "certainty": "definite" if d.severity == "error" else "possible",
+                    "file": d.file, "line": d.line, "message": d.message})
+    return out
+
+
+@dataclasses.dataclass
+class TriageResult:
+    definite: list[dict] = dataclasses.field(default_factory=list)
+    possible: int = 0
+    untriaged: list[dict] = dataclasses.field(default_factory=list)
+    false_errors: list[dict] = dataclasses.field(default_factory=list)
+    stale: list[dict] = dataclasses.field(default_factory=list)
+
+    @property
+    def failed(self) -> bool:
+        return bool(self.untriaged or self.false_errors)
+
+    def to_json(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+def check_triage(findings: list[dict], entries: list[dict], configs_run: set[str]) -> TriageResult:
+    """Every definite error needs a verdict and none may be "false"; possible
+    findings are counted, triaged or not. An entry no finding of a config
+    that ran matches is stale."""
+    result = TriageResult()
+    by_key = {(e["config"], normalise_path(e["file"]), int(e["line"]), e["id"]): e for e in entries}
+    matched = set()
+    for finding in findings:
+        key = (finding["config"], normalise_path(finding["file"]), finding["line"], finding["id"])
+        entry = by_key.get(key)
+        if entry is not None:
+            matched.add(key)
+        if finding["certainty"] != "definite":
+            result.possible += 1
+            continue
+        result.definite.append(finding)
+        if entry is None:
+            result.untriaged.append(finding)
+        elif entry["verdict"] == "false":
+            result.false_errors.append({**finding, "note": entry.get("note", "")})
+    for key, entry in by_key.items():
+        if entry["config"] in configs_run and key not in matched:
+            result.stale.append(entry)
+    return result
+
+
+def triaged_failure(guard_failures: list[dict], config: str, report: dict) -> bool:
+    """Whether a report is a guard failure triaged as a true bug of the project."""
+    for entry in guard_failures:
+        if (entry["config"] == config and report.get("file") and int(entry["line"]) == report["line"]
+                and same_file(report["file"], entry["file"])
+                and entry.get("kind", report["kind"]) == report["kind"]):
+            return True
+    return False
+
+
+# -- builds and test suites ---------------------------------------------------------
+
+
+@dataclasses.dataclass
+class StepRun:
+    command: str
+    status: str
+    ok: bool
+    seconds: float
+    cpu: float
+    log: str
+    tail: str = ""  # the end of the output, kept after the work copy is deleted
+
+    def to_json(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass
+class BuildRun:
+    config: str
+    mode: str
+    compiler: str
+    steps: list[StepRun] = dataclasses.field(default_factory=list)
+    tests: list[StepRun] = dataclasses.field(default_factory=list)
+    built: bool = False
+    tests_passed: bool | None = None
+    trap_deaths: list[str] = dataclasses.field(default_factory=list)
+    fault_deaths: list[str] = dataclasses.field(default_factory=list)
+    reports: list[dict] = dataclasses.field(default_factory=list)
+    failures: list[str] = dataclasses.field(default_factory=list)
+
+    @property
+    def build_cpu(self) -> float:
+        return sum(s.cpu for s in self.steps)
+
+    def to_json(self) -> dict:
+        return {"config": self.config, "mode": self.mode, "compiler": self.compiler,
+                "built": self.built, "testsPassed": self.tests_passed, "buildCpuSeconds": round(self.build_cpu, 3),
+                "steps": [s.to_json() for s in self.steps], "tests": [s.to_json() for s in self.tests],
+                "trapDeaths": self.trap_deaths, "faultDeaths": self.fault_deaths, "reports": self.reports,
+                "failures": self.failures}
+
+
+def output_tail(text: str, lines: int = 40) -> str:
+    return "\n".join(text.rstrip().splitlines()[-lines:])
+
+
+def sanitizer_symbolizer(cc: str) -> dict:
+    """ASAN_SYMBOLIZER_PATH for a sanitizer run: the llvm-symbolizer beside the
+    reference compiler, unless the caller set one. Without it the sanitizer
+    runtime on Darwin runs `atos`, which needs the system's permission to
+    inspect the dying process and waits when a debugger prompt is pending."""
+    if os.environ.get("ASAN_SYMBOLIZER_PATH"):
+        return {}
+    resolved = shutil.which(cc) or cc
+    candidate = Path(resolved).resolve().parent / "llvm-symbolizer"
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return {"ASAN_SYMBOLIZER_PATH": str(candidate)}
+    return {}
+
+
+def write_wrapper(path: Path, compiler: str, flags: list[str]) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    words = " ".join(shlex.quote(w) for w in [compiler, *flags])
+    path.write_text(f"#!/bin/sh\n# written by scripts/corpus-gate.py\nexec {words} \"$@\"\n")
+    path.chmod(0o755)
+    return str(path)
+
+
+def base_env(config: Config, cc: str, src: Path, support_root: Path, bench_dir: Path, jobs: int,
+             extra: dict | None = None) -> dict:
+    env = dict(os.environ)
+    env.update({
+        "CC": cc,
+        "JOBS": str(jobs),
+        "SRC": str(src),
+        "SUPPORT": str(support_dir(config, support_root)),
+        "BENCH": str(bench_dir),
+    })
+    # A build must not pick up the caller's flags, nor the caller's runtime settings.
+    for key in ("CFLAGS", "CPPFLAGS", "LDFLAGS", "MAKEFLAGS", "MFLAGS", "WEAVEC_RT_ABORT",
+                "WEAVEC_RT_REPORT_LOG", "WEAVEC_RT_STATS"):
+        env.pop(key, None)
+    if extra:
+        env.update(extra)
+    return env
+
+
+def parse_reports(text: str, root: Path) -> list[dict]:
+    """Run-time reports, once each: {kind, file, line, col, proven}; file is
+    None for a report that names no location (an invalid release)."""
+    reports = []
+    seen = set()
+    for line in text.splitlines():
+        m = REPORT_RE.search(line)
+        if m and m.group("kind") in KINDS:
+            file = m.group("file")
+            if file is not None:
+                file = normalise_path(rel_path(file, root) if os.path.isabs(file) else file)
+            report = {"kind": m.group("kind"), "file": file, "line": int(m.group("line") or 0),
+                      "col": int(m.group("col") or 0), "proven": bool(m.group("proven"))}
+        elif INVALID_RELEASE_RE.search(line):
+            report = {"kind": "invalid-release", "file": None, "line": 0, "col": 0, "proven": False}
+        else:
+            continue
+        key = tuple(report.values())
+        if key not in seen:
+            seen.add(key)
+            reports.append(report)
+    return reports
+
+
+def describe_report(report: dict) -> str:
+    where = f"{report['file']}:{report['line']}:{report['col']}" if report["file"] else "no location"
+    return f"{'weavec.proven: ' if report['proven'] else ''}{report['kind']} at {where}"
+
+
+def apply_patch(patch: Path, src: Path) -> str:
+    """Apply a -p1 patch to a copy; returns a failure message or ''."""
+    result = run_process(["git", "apply", "--whitespace=nowarn", str(patch)], cwd=src, timeout=60)
+    if result.returncode == 0:
+        return ""
+    fallback = run_process(["patch", "-p1", "--batch", "--forward", "-i", str(patch)], cwd=src, timeout=60)
+    if fallback.returncode == 0:
+        return ""
+    return f"patch {patch.name} does not apply: {result.stderr.strip()[:200]} {fallback.output.strip()[:200]}"
+
+
+def run_build(config: Config, mode: str, compiler: str, flags: list[str], checkout: Path, run_dir: Path,
+              support_root: Path, bench_dir: Path, jobs: int, timeout: float, keep: bool, *,
+              prepare: Callable[[Path], str] | None = None, build: list[str] | None = None,
+              tests: list[str] | None = None, extra_env: dict | None = None) -> BuildRun:
+    """Copy the checkout, build it with CC set to `compiler` + `flags`, run the tests.
+
+    `prepare` changes the copy first (an injection's patch) and returns a
+    failure message or ''; `build` and `tests` replace the config's commands.
+    """
+    work = run_dir / mode
+    src = work / "src"
+    remove_tree(work)
+    copy_tree(checkout, src)
+    run = BuildRun(config=config.name, mode=mode, compiler=compiler)
+    if prepare is not None:
+        failure = prepare(src)
+        if failure:
+            run.failures.append(failure)
+            if not keep:
+                remove_tree(src)
+            return run
+    logs = work / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    cc = write_wrapper(work / "bin" / "cc", compiler, flags) if flags else compiler
+    # A harness may keep a passing test's output to itself (CTest without
+    # -V): the runtime appends every report to this file instead.
+    report_log = logs / "runtime-reports.log"
+    env = base_env(config, cc, src, support_root, bench_dir, jobs,
+                   {**(extra_env or {}), "WEAVEC_RT_REPORT_LOG": str(report_log)})
+    outputs = []
+    run.built = True
+    for index, command in enumerate(config.build if build is None else build):
+        result = run_shell(command, cwd=src, env=env, timeout=timeout)
+        log_path = logs / f"build-{index}.log"
+        log_path.write_text(f"$ {command}\n{result.output}")
+        outputs.append(result.output)
+        ok = result.returncode == 0 and not result.timed_out
+        run.steps.append(StepRun(command, describe_status(result), ok, round(result.seconds, 3),
+                                 round(result.cpu, 3), str(log_path), output_tail(result.output)))
+        if not ok:
+            run.built = False
+            run.failures.append(f"build step {command!r}: {describe_status(result)}: "
+                                f"{output_tail(result.output, 6)}")
+            break
+    if run.built:
+        commands = config.test if tests is None else tests
+        test_timeout = config.test_timeout or timeout
+        passed = True
+        for index, command in enumerate(commands):
+            result = run_shell(command, cwd=src, env=env, timeout=test_timeout)
+            log_path = logs / f"test-{index}.log"
+            log_path.write_text(f"$ {command}\n{result.output}")
+            outputs.append(result.output)
+            ok = result.returncode == 0 and not result.timed_out
+            run.tests.append(StepRun(command, describe_status(result), ok, round(result.seconds, 3),
+                                     round(result.cpu, 3), str(log_path), output_tail(result.output)))
+            run.trap_deaths.extend(trap_evidence(result))
+            run.fault_deaths.extend(fault_evidence(result))
+            if not ok:
+                passed = False
+        run.tests_passed = passed if commands else None
+    if report_log.exists():
+        outputs.append(report_log.read_text(errors="replace"))
+    run.reports = parse_reports("\n".join(outputs), src)
+    if not keep:
+        remove_tree(src)
+    return run
+
+
+# -- injections ---------------------------------------------------------------------
+
+INJECTION_KEYS = frozenset(("id", "config", "patch", "file", "line", "stop", "kinds", "unlocated", "build", "run",
+                            "fortify", "description"))
+UNLOCATED_STOPS = ("invalid-release", "fault")
+
+
+@dataclasses.dataclass
+class Injection:
+    id: str
+    config: str
+    patch: str
+    file: str
+    line: int
+    # Where the run stops, when not at the injected line: a freed pointer
+    # passed to a function that reads it stops in that function.
+    stop: tuple[str, int] | None = None
+    kinds: tuple[str, ...] = ()
+    unlocated: str | None = None
+    build: list[str] | None = None
+    run: list[str] | None = None
+    fortify: bool = False
+    description: str = ""
+
+    def commands(self, config: Config) -> list[str]:
+        return list(self.run) if self.run is not None else list(config.test)
+
+    @property
+    def stop_file(self) -> str:
+        return self.stop[0] if self.stop else self.file
+
+    @property
+    def stop_line(self) -> int:
+        return self.stop[1] if self.stop else self.line
+
+
+def as_commands(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return list(value)
+    raise ValueError("commands must be a string or a list of strings")
+
+
+def load_injections(path: Path, manifest: Manifest) -> list[Injection]:
+    data = read_json(path)
+    check_schema(data, path, INJECTIONS_SCHEMA, INJECTIONS_VERSION)
+    names = {c.name for c in manifest.configs}
+    problems = []
+    injections = []
+    ids = set()
+    for item in data.get("injections", []):
+        ident = item.get("id", "?")
+        unknown = sorted(set(item) - INJECTION_KEYS)
+        if unknown:
+            problems.append(f"{ident}: unknown field(s) {', '.join(unknown)}")
+        try:
+            stop = item.get("stop")
+            inj = Injection(id=item["id"], config=item["config"], patch=item["patch"], file=item["file"],
+                            line=int(item["line"]), stop=(stop["file"], int(stop["line"])) if stop else None,
+                            kinds=tuple(item.get("kinds", ())),
+                            unlocated=item.get("unlocated"), build=as_commands(item.get("build")),
+                            run=as_commands(item.get("run")), fortify=bool(item.get("fortify", False)),
+                            description=item.get("description", ""))
+        except (KeyError, TypeError, ValueError) as exc:
+            problems.append(f"{ident}: {exc}")
+            continue
+        if inj.id in ids:
+            problems.append(f"{inj.id}: duplicate id")
+        ids.add(inj.id)
+        if inj.config not in names:
+            problems.append(f"{inj.id}: unknown config {inj.config}")
+            continue
+        if not (path.parent / inj.patch).is_file():
+            problems.append(f"{inj.id}: patch {inj.patch} not found")
+        bad = [k for k in inj.kinds if k not in KINDS]
+        if bad:
+            problems.append(f"{inj.id}: unknown kind(s) {', '.join(bad)}")
+        if inj.unlocated is not None and inj.unlocated not in UNLOCATED_STOPS:
+            problems.append(f"{inj.id}: unlocated must be one of {', '.join(UNLOCATED_STOPS)}")
+        if not inj.commands(manifest.config(inj.config)):
+            problems.append(f"{inj.id}: no run commands (and its config has no test)")
+        injections.append(inj)
+    if problems:
+        raise GateError(f"{path}: invalid injections:\n  " + "\n  ".join(problems))
+    return injections
+
+
+def check_injected_line(src: Path, inj: Injection) -> str:
+    try:
+        lines = (src / inj.file).read_text(errors="replace").splitlines()
+    except OSError as exc:
+        return f"{inj.file}: {exc}"
+    if inj.line > len(lines) or "INJECTED" not in lines[inj.line - 1]:
+        return f"{inj.file}:{inj.line} does not carry the INJECTED marker after patching"
+    return ""
+
+
+def stops_at(inj: Injection, build: BuildRun) -> list[str]:
+    """How the patched build's run stopped at the injection, if it did: a
+    report at the injected line, or at the entry's `stop` (of one of `kinds`,
+    when the entry names them), or the unlocated stop the entry allows."""
+    via = []
+    for report in build.reports:
+        if (report["file"] and report["line"] == inj.stop_line and same_file(report["file"], inj.stop_file)
+                and (not inj.kinds or report["kind"] in inj.kinds)):
+            via.append(describe_report(report))
+    if inj.unlocated == "invalid-release":
+        via.extend(describe_report(r) for r in build.reports if r["kind"] == "invalid-release" and not r["file"])
+    if inj.unlocated == "fault":
+        via.extend(f"fault: {evidence}" for evidence in build.fault_deaths[:1])
+    return via
+
+
+@dataclasses.dataclass
+class InjectionRun:
+    injection: Injection
+    stopped: bool = False
+    via: list[str] = dataclasses.field(default_factory=list)
+    reports: list[dict] = dataclasses.field(default_factory=list)
+    failures: list[str] = dataclasses.field(default_factory=list)
+    asan: dict | None = None
+
+    def to_json(self) -> dict:
+        inj = self.injection
+        return {"id": inj.id, "config": inj.config, "file": inj.file, "line": inj.line,
+                "stop": {"file": inj.stop_file, "line": inj.stop_line}, "kinds": list(inj.kinds),
+                "unlocated": inj.unlocated, "stopped": self.stopped, "via": self.via, "reports": self.reports,
+                "failures": self.failures, "asan": self.asan}
+
+
+FRAME_RE = re.compile(r"#\d+ 0x[0-9a-f]+ in (?P<func>\S+) (?P<file>[^\s:()]+):(?P<line>\d+)")
+UBSAN_RE = re.compile(r"(?P<file>[^\s:]+):(?P<line>\d+):\d+: runtime error:")
+
+
+def sanitizer_location(text: str, src: Path) -> tuple[bool, str | None, tuple[str, int] | None]:
+    """(found, first report line, (file, line) of the first frame in the project)."""
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        m = UBSAN_RE.search(line)
+        if m:
+            return True, line.strip(), (normalise_path(rel_path(m.group("file"), src)), int(m.group("line")))
+        if "ERROR: AddressSanitizer" in line:
+            for frame in lines[index + 1:index + 80]:
+                fm = FRAME_RE.search(frame)
+                if fm:
+                    file = rel_path(fm.group("file"), src)
+                    if not os.path.isabs(file):
+                        return True, line.strip(), (normalise_path(file), int(fm.group("line")))
+            return True, line.strip(), None
+        if "buffer overflow detected" in line or "detected buffer overflow" in line:
+            return True, line.strip(), None
+    return False, None, None
+
+
+# -- benchmarks ---------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class BenchRun:
+    config: str
+    name: str
+    times: dict = dataclasses.field(default_factory=dict)
+    minimum: dict = dataclasses.field(default_factory=dict)
+    outputs: dict = dataclasses.field(default_factory=dict)
+    ratio: float | None = None
+    asan_ratio: float | None = None
+    reports: list[dict] = dataclasses.field(default_factory=list)
+    failures: list[str] = dataclasses.field(default_factory=list)
+
+    def to_json(self) -> dict:
+        return {"config": self.config, "name": self.name, "times": self.times, "minimum": self.minimum,
+                "outputs": self.outputs, "ratio": self.ratio, "asanRatio": self.asan_ratio,
+                "reports": self.reports, "failures": self.failures}
+
+
+# -- binaries -----------------------------------------------------------------------
 
 
 @dataclasses.dataclass
 class Binaries:
     weavec: str | None
     weavec_cc: str | None
-    golden_weavec: str | None
-    golden_weavec_cc: str | None
     reference_cc: str | None
 
 
 def build_type_of(path: str | None) -> str:
-    """CMAKE_BUILD_TYPE of the build tree `path` came out of, or "" if unknown.
-
-    A Debug binary reaches the same verdicts as a Release one but is several
-    times slower, so a cost run that picks one up by default measures nothing.
-    """
+    """CMAKE_BUILD_TYPE of the build tree `path` came out of, or "" if unknown."""
     if not path:
         return ""
     for parent in Path(path).resolve().parents:
@@ -860,8 +1534,7 @@ def tool_version(path: str | None) -> str:
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"unavailable: {exc}"
     text = (out.stdout or out.stderr).strip().splitlines()
-    # RFC 0033 §10: weavec-cc prints Clang's version block first; its own
-    # line follows.
+    # weavec-cc prints Clang's version block first; its own line follows.
     own = [line for line in text if line.startswith(("weavec-cc version", "weavec version"))]
     return own[0] if own else (text[0] if text else "")
 
@@ -896,1084 +1569,120 @@ def default_reference_cc() -> str | None:
     return shutil.which("clang")
 
 
-# -- legacy analysis (v0.10.0 semantics) ----------------------------------------
-
-
-@dataclasses.dataclass
-class UnitRun:
-    config: str
-    files: list[str]
-    command: str
-    seconds: float
-    cpu: float
-    exit_code: int
-    diagnostics: list[Diagnostic]
-    clang_errors: int
-    failure: str = ""
-    maxrss: int | None = None
-
-    def to_json(self) -> dict:
-        return {"config": self.config, "files": self.files, "seconds": round(self.seconds, 3),
-                "cpuSeconds": round(self.cpu, 3), "exitCode": self.exit_code, "clangErrors": self.clang_errors,
-                "failure": self.failure, "maxRssBytes": self.maxrss,
-                "diagnostics": [d.to_json() for d in self.diagnostics]}
-
-
-def legacy_groups(config: Config, files: list[Path]) -> list[list[Path]]:
-    return [files] if config.whole_program else [[f] for f in files]
-
-
-def legacy_command(weavec: str, config: Config, group: list[Path], support_root: Path,
-                   whole_program: bool | None = None) -> list[str]:
-    """The command scripts/corpus.py ran (v0.10.0)."""
-    cmd = [weavec]
-    if config.whole_program if whole_program is None else whole_program:
-        cmd.append("--whole-program")
-    cmd.extend(str(f) for f in group)
-    # Clang stops after 20 errors per unit by default; a tally that is capped
-    # per unit cannot be compared between runs (Lua's lstrlib.c hits the cap).
-    cmd.extend(["--", "-ferror-limit=0", *expand_args(config, support_root)])
-    return cmd
-
-
-def run_tool_unit(argv: list[str], config: Config, root: Path, group: list[Path],
-                  timeout: float) -> UnitRun:
-    result = run_process(argv, cwd=root, timeout=timeout)
-    diagnostics, clang_errors = parse_diagnostics(result.output, root)
-    failure = classify_failure(result, diagnostics, clang_errors)
-    return UnitRun(config=config.name, files=[f.relative_to(root).as_posix() for f in group],
-                   command=result.command, seconds=result.seconds, cpu=result.cpu,
-                   exit_code=result.returncode, diagnostics=diagnostics, clang_errors=clang_errors,
-                   failure=failure, maxrss=result.maxrss)
-
-
-def run_cc_unit(weavec_cc: str, config: Config, root: Path, file: Path, support_root: Path,
-                objdir: Path, timeout: float) -> UnitRun:
-    """Per-file `weavec-cc -c` with only the config's arguments (diagnostics)."""
-    rel = file.relative_to(root).as_posix()
-    obj = objdir / (rel.replace("/", "__") + ".o")
-    argv = [weavec_cc, "-c", "-ferror-limit=0", *expand_args(config, support_root), str(file), "-o", str(obj)]
-    result = run_process(argv, cwd=root, timeout=timeout)
-    diagnostics, clang_errors = parse_diagnostics(result.output, root)
-    return UnitRun(config=config.name, files=[rel], command=result.command, seconds=result.seconds,
-                   cpu=result.cpu, exit_code=result.returncode, diagnostics=diagnostics,
-                   clang_errors=clang_errors, failure=classify_failure(result, diagnostics, clang_errors),
-                   maxrss=result.maxrss)
-
-
-def tally_legacy(config: Config, units: list[UnitRun]) -> dict:
-    by_id: collections.Counter[str] = collections.Counter()
-    diagnostics: list[Diagnostic] = []
-    for unit in units:
-        for d in unit.diagnostics:
-            by_id[d.id] += 1
-        diagnostics.extend(unit.diagnostics)
-    return {
-        "units": len(units),
-        "byId": dict(sorted(by_id.items())),
-        "bugClaims": sum(n for id_, n in by_id.items() if is_bug_claim(id_)),
-        "digest": digest_diagnostics(diagnostics),
-        "clangErrors": sum(u.clang_errors for u in units),
-        "failures": [f"{' '.join(u.files)}: {u.failure}" for u in units if u.failure],
-        "seconds": round(sum(u.seconds for u in units), 3),
-        "cpuSeconds": round(sum(u.cpu for u in units), 3),
-    }
-
-
-def legacy_totals(tallies: dict[str, dict]) -> dict:
-    by_id: collections.Counter[str] = collections.Counter()
-    for tally in tallies.values():
-        by_id.update(tally["byId"])
-    return {
-        "units": sum(t["units"] for t in tallies.values()),
-        "byId": dict(sorted(by_id.items())),
-        "bugClaims": sum(t["bugClaims"] for t in tallies.values()),
-    }
-
-
-def compare_legacy(tallies: dict[str, dict], recorded: dict | None, platform: str) -> tuple[list[str], list[str]]:
-    """Compare legacy tallies with expected.json's legacy.quick section.
-
-    Returns (failures, notes). A baseline recorded on another platform is
-    not compared (system headers change the diagnostics).
-    """
-    if not recorded:
-        return ["no legacy baseline recorded in expected.json; run --quick --legacy --update"], []
-    if recorded.get("platform") != platform:
-        return [], [f"legacy baseline was recorded on {recorded.get('platform')}; not compared on {platform}"]
-    failures = []
-    configs = recorded.get("configs", {})
-    for name, tally in tallies.items():
-        want = configs.get(name)
-        if want is None:
-            failures.append(f"{name}: no legacy baseline recorded")
-            continue
-        for key in ("units", "byId", "bugClaims"):
-            if tally[key] != want.get(key):
-                failures.append(f"{name}: {key} {json.dumps(tally[key])} != recorded {json.dumps(want.get(key))}")
-        if want.get("digest") and tally["digest"] != want["digest"]:
-            failures.append(f"{name}: the sorted diagnostics differ from the recorded baseline "
-                            f"(digest {tally['digest'][:19]}... != {want['digest'][:19]}...)")
-    if set(tallies) == set(configs):
-        totals = legacy_totals(tallies)
-        want_totals = recorded.get("totals", {})
-        for key in ("units", "byId", "bugClaims"):
-            if totals[key] != want_totals.get(key):
-                failures.append(f"totals: {key} {json.dumps(totals[key])} != recorded "
-                                f"{json.dumps(want_totals.get(key))}")
-    return failures, []
-
-
-def diff_sorted(left: list[str], right: list[str], limit: int = 20) -> list[str]:
-    """Lines only in one of two sorted lists (multiset difference)."""
-    lc, rc = collections.Counter(left), collections.Counter(right)
-    only_left = sorted((lc - rc).elements())
-    only_right = sorted((rc - lc).elements())
-    lines = [f"- {x}" for x in only_left] + [f"+ {x}" for x in only_right]
-    if len(lines) > limit:
-        lines = lines[:limit] + [f"... {len(lines) - limit} more"]
-    return lines
-
-
-# -- ledgers (RFC 0030 semantics) -----------------------------------------------
-
-
-def empty_facets() -> dict:
-    return {facet: {outcome: 0 for outcome in OUTCOMES} for facet in FACETS}
-
-
-@dataclasses.dataclass
-class Analysis:
-    """One measured analysis of a config: its per-file units, or its program."""
-    kind: str
-    errors: int = 0
-    warnings: int = 0
-    facets: dict = dataclasses.field(default_factory=empty_facets)
-    sites: int = 0
-    functions: int = 0
-    block_transfers: int | None = None
-    over_budget: list[str] = dataclasses.field(default_factory=list)
-    unresolved_reasons: collections.Counter = dataclasses.field(default_factory=collections.Counter)
-    diagnostics: list[Diagnostic] = dataclasses.field(default_factory=list)
-    cpu: float = 0.0
-    seconds: float = 0.0
-    failures: list[str] = dataclasses.field(default_factory=list)
-    ledgers: int = 0
-    # Per-file CPU seconds and peak resident size of the units analysis
-    # (RFC 0031 G12's single-unit limits).
-    unit_costs: dict = dataclasses.field(default_factory=dict)
-
-    def outcome_total(self, outcome: str) -> int:
-        return sum(self.facets[f][outcome] for f in FACETS)
-
-    @property
-    def temporal_share(self) -> float | None:
-        """Unresolved temporal facets over all temporal facets (RFC 0031 G6)."""
-        total = sum(self.facets["temporal"].values())
-        if total == 0:
-            return None
-        return round(self.facets["temporal"]["unresolved"] / total, 4)
-
-    @property
-    def spatial_null_share(self) -> float | None:
-        total = sum(self.facets[f][o] for f in ("spatial", "null") for o in OUTCOMES)
-        if total == 0:
-            return None
-        unresolved = self.facets["spatial"]["unresolved"] + self.facets["null"]["unresolved"]
-        return round(unresolved / total, 4)
-
-    def measured(self) -> dict:
-        """The ratchet shape of this analysis (expected.json)."""
-        return {
-            "errors": self.errors,
-            "warnings": self.warnings,
-            "ledger": {"sites": self.sites, **{o: self.outcome_total(o) for o in OUTCOMES}},
-            "unresolvedShare": {"spatialNull": self.spatial_null_share, "temporal": self.temporal_share},
-            "cpuSeconds": round(self.cpu, 2),
-            "workCounters": {"blockTransfers": self.block_transfers, "functions": self.functions,
-                             "sites": self.sites},
-        }
-
-    def to_json(self) -> dict:
-        data = self.measured()
-        data.update({
-            "facets": self.facets,
-            "overBudget": sorted(set(self.over_budget)),
-            "unresolvedReasons": dict(sorted(self.unresolved_reasons.items())),
-            "ledgers": self.ledgers,
-            "unitCosts": self.unit_costs,
-            "seconds": round(self.seconds, 2),
-            "failures": self.failures,
-            "diagnostics": [d.to_json() for d in self.diagnostics],
-        })
-        return data
-
-
-def validate_ledger(data: Any, path: Path) -> dict:
-    if not isinstance(data, dict) or data.get("schema") != LEDGER_SCHEMA:
-        raise ValueError(f"{path}: not a {LEDGER_SCHEMA} document")
-    if data.get("version") != LEDGER_VERSION:
-        raise ValueError(f"{path}: unsupported ledger version {data.get('version')!r}")
-    if not isinstance(data.get("summary"), dict):
-        raise ValueError(f"{path}: no summary")
-    return data
-
-
-def ledger_diagnostics(data: dict, root: Path) -> list[Diagnostic]:
-    seen = set()
-    out = []
-    lists = [data.get("diagnostics") or []]
-    for unit in data.get("units") or []:
-        lists.append(unit.get("diagnostics") or [])
-    for items in lists:
-        for item in items:
-            file = item.get("file", "")
-            if file and os.path.isabs(file):
-                file = rel_path(file, root)
-            d = Diagnostic(file=file, line=int(item.get("line", 0)), col=int(item.get("column", 0)),
-                           severity=item.get("severity", ""), id=item.get("id", ""),
-                           message=item.get("message", ""), certainty=item.get("certainty", ""),
-                           facet=item.get("facet", ""), function=item.get("function", ""),
-                           fingerprint=item.get("fingerprint", ""))
-            key = (d.fingerprint, d.file, d.line, d.col, d.id, d.message)
-            if key not in seen:
-                seen.add(key)
-                out.append(d)
-    return out
-
-
-def add_ledger(analysis: Analysis, data: dict, root: Path) -> None:
-    summary = data["summary"]
-    analysis.ledgers += 1
-    analysis.errors += int(summary.get("errors", 0))
-    analysis.warnings += int(summary.get("warnings", 0))
-    analysis.sites += int(summary.get("sites", 0))
-    analysis.functions += int(summary.get("functions", 0))
-    facets = summary.get("facets") or {}
-    for facet in FACETS:
-        for outcome in OUTCOMES:
-            analysis.facets[facet][outcome] += int((facets.get(facet) or {}).get(outcome, 0))
-    analysis.unresolved_reasons.update({k: int(v) for k, v in (summary.get("unresolvedReasons") or {}).items()})
-    analysis.over_budget.extend(summary.get("overBudget") or [])
-    analysis.diagnostics.extend(ledger_diagnostics(data, root))
-
-
-def add_stats(analysis: Analysis, path: Path) -> None:
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return
-    value = (data.get("counters") or {}).get("block_transfers")
-    if value is not None:
-        analysis.block_transfers = (analysis.block_transfers or 0) + int(value)
-
-
-# -- quick (RFC 0030 semantics) -------------------------------------------------
-
-
-def probe_ledger_support(binaries: Binaries, scratch: Path) -> None:
-    """Fail early, with a clear message, on binaries without RFC 0030 ledgers."""
-    scratch.mkdir(parents=True, exist_ok=True)
-    source = scratch / "probe.c"
-    source.write_text("int weavec_probe(void) { return 0; }\n")
-    if binaries.weavec_cc:
-        result = run_process([binaries.weavec_cc, "-c", f"-fweavec-ledger={scratch / 'probe.ledger.json'}",
-                              str(source), "-o", str(scratch / "probe.o")], cwd=scratch, timeout=120)
-        if result.returncode != 0 or not (scratch / "probe.ledger.json").exists():
-            raise GateError(f"{binaries.weavec_cc} does not write RFC 0030 ledgers (-fweavec-ledger): "
-                            f"{describe_status(result)}; {result.stderr.strip()[:300]}\n"
-                            f"Use --legacy for v0.10.0 binaries.")
-    if binaries.weavec:
-        result = run_process([binaries.weavec, f"--ledger={scratch / 'probe.tool.json'}", str(source), "--"],
-                             cwd=scratch, timeout=120)
-        if not (scratch / "probe.tool.json").exists():
-            raise GateError(f"{binaries.weavec} does not write RFC 0030 ledgers (--ledger): "
-                            f"{describe_status(result)}; {result.stderr.strip()[:300]}\n"
-                            f"Use --legacy for v0.10.0 binaries.")
-
-
-def quick_units(binaries: Binaries, config: Config, root: Path, files: list[Path], support_root: Path,
-                work: Path, checks: str, timeout: float,
-                pool: concurrent.futures.Executor | None = None) -> Analysis:
-    analysis = Analysis(kind="units")
-    work.mkdir(parents=True, exist_ok=True)
-
-    def one(file: Path) -> tuple[Path, ProcResult, Path, Path]:
-        stem = file.relative_to(root).as_posix().replace("/", "__")
-        ledger = work / f"{stem}.ledger.json"
-        stats = work / f"{stem}.stats.json"
-        for stale in (ledger, stats):
-            stale.unlink(missing_ok=True)
-        argv = [binaries.weavec_cc, "-c", "-ferror-limit=0", f"-fweavec-checks={checks}",
-                f"-fweavec-ledger={ledger}", f"-fweavec-analysis-stats={stats}",
-                *expand_args(config, support_root), str(file), "-o", str(work / f"{stem}.o")]
-        return file, run_process(argv, cwd=root, timeout=timeout), ledger, stats
-
-    for file, result, ledger, stats in (pool.map(one, files) if pool else map(one, files)):
-        analysis.cpu += result.cpu
-        analysis.seconds += result.seconds
-        text_diags, clang_errors = parse_diagnostics(result.output, root)
-        failure = classify_failure(result, text_diags, clang_errors)
-        rel = file.relative_to(root).as_posix()
-        analysis.unit_costs[rel] = {"cpuSeconds": round(result.cpu, 2), "seconds": round(result.seconds, 2),
-                                    "maxRssMiB": round(result.maxrss / 2 ** 20, 1) if result.maxrss else None}
-        if failure:
-            analysis.failures.append(f"{rel}: {failure}")
-            continue
-        try:
-            add_ledger(analysis, validate_ledger(json.loads(ledger.read_text()), ledger), root)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            analysis.failures.append(f"{rel}: no valid ledger ({exc})")
-            continue
-        add_stats(analysis, stats)
-    return analysis
-
-
-def quick_program(binaries: Binaries, config: Config, root: Path, files: list[Path], support_root: Path,
-                  work: Path, timeout: float) -> Analysis:
-    analysis = Analysis(kind="program")
-    work.mkdir(parents=True, exist_ok=True)
-    ledger = work / "program.ledger.json"
-    stats = work / "program.stats.json"
-    for stale in (ledger, stats):
-        stale.unlink(missing_ok=True)
-    argv = [binaries.weavec, "--whole-program", f"--ledger={ledger}", f"--analysis-stats={stats}",
-            *[str(f) for f in files], "--", "-ferror-limit=0", *expand_args(config, support_root)]
-    result = run_process(argv, cwd=root, timeout=timeout)
-    analysis.cpu, analysis.seconds = result.cpu, result.seconds
-    text_diags, clang_errors = parse_diagnostics(result.output, root)
-    failure = classify_failure(result, text_diags, clang_errors)
-    if failure:
-        analysis.failures.append(f"whole program: {failure}")
-        return analysis
-    try:
-        add_ledger(analysis, validate_ledger(json.loads(ledger.read_text()), ledger), root)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        analysis.failures.append(f"whole program: no valid ledger ({exc})")
-        return analysis
-    add_stats(analysis, stats)
-    return analysis
-
-
-# -- ratchet ------------------------------------------------------------------
-
-
-@dataclasses.dataclass
-class RatchetResult:
-    regressions: list[str] = dataclasses.field(default_factory=list)
-    improvements: list[str] = dataclasses.field(default_factory=list)
-    changes: list[str] = dataclasses.field(default_factory=list)
-    over_budget: list[str] = dataclasses.field(default_factory=list)
-    missing: list[str] = dataclasses.field(default_factory=list)
-    notes: list[str] = dataclasses.field(default_factory=list)
-
-    @property
-    def failed(self) -> bool:
-        return bool(self.regressions or self.improvements or self.changes or self.over_budget or self.missing)
-
-    def to_json(self) -> dict:
-        return dataclasses.asdict(self)
-
-
-def compare_analysis(label: str, measured: dict, recorded: dict, same_machine: bool,
-                     result: RatchetResult) -> None:
-    for path, direction in EXACT_FIELDS:
-        now, before = get_path(measured, path), get_path(recorded, path)
-        name = f"{label}.{'.'.join(path)}"
-        if before is None and now is None:
-            continue
-        if before is None:
-            result.missing.append(f"{name}: not recorded (now {now})")
-            continue
-        if now == before:
-            continue
-        if now is None:
-            result.regressions.append(f"{name}: {before} -> not measured")
-        elif direction == "neutral":
-            result.changes.append(f"{name}: {before} -> {now} (changed; run --update)")
-        elif (now > before) == (direction == "lower"):
-            result.regressions.append(f"{name}: {before} -> {now} (worse)")
-        else:
-            result.improvements.append(f"{name}: {before} -> {now} (better; run --update to ratchet it in)")
-    for path, direction in OPTIONAL_EXACT_FIELDS:
-        now, before = get_path(measured, path), get_path(recorded, path)
-        if before is None or now is None or now == before:
-            continue
-        name = f"{label}.{'.'.join(path)}"
-        if (now > before) == (direction == "lower"):
-            result.regressions.append(f"{name}: {before} -> {now} (worse)")
-        else:
-            result.improvements.append(f"{name}: {before} -> {now} (better; run --update to ratchet it in)")
-    for path, tolerance, slack, machine_dependent in BUDGET_FIELDS:
-        now, before = get_path(measured, path), get_path(recorded, path)
-        name = f"{label}.{'.'.join(path)}"
-        if before is None or now is None:
-            if before is None and now is not None:
-                result.missing.append(f"{name}: not recorded (now {now})")
-            continue
-        if machine_dependent and not same_machine:
-            result.notes.append(f"{name}: recorded on another machine; {before} vs {now} not compared")
-            continue
-        if now > before * (1 + tolerance) and now - before > slack:
-            result.over_budget.append(f"{name}: {before} -> {now} (more than {tolerance:.0%} over)")
-
-
-def compare_ratchet(measured: dict[str, dict], expected: dict, platform: str, machine: str,
-                    held_out: Iterable[str] = ()) -> RatchetResult:
-    """Check measured config sections against expected.json for this platform.
-
-    A held-out config (RFC 0031, section 11.2) that has no record yet is a
-    note, not a failure: --update records it, and from then on it ratchets
-    like the others.
-    """
-    result = RatchetResult()
-    held_out = set(held_out)
-    section = (expected.get("platforms") or {}).get(platform)
-    if section is None:
-        message = (f"no expectations recorded for {platform}; run with --update (or "
-                   f"--update-from a results file measured on {platform})")
-        (result.missing if set(measured) - held_out else result.notes).append(message)
-        return result
-    same_machine = section.get("machine") == machine
-    recorded_configs = section.get("configs") or {}
-    for name, now in measured.items():
-        before = recorded_configs.get(name)
-        if before is None:
-            if name in held_out:
-                result.notes.append(f"{name}: held-out config not recorded for {platform} yet; "
-                                    f"--update records it")
-            else:
-                result.missing.append(f"{name}: not recorded for {platform}")
-            continue
-        for kind in ANALYSIS_KINDS:
-            if kind not in now:
-                continue  # not measured by this run (or failed, which is reported as such)
-            if kind not in before:
-                result.missing.append(f"{name}.{kind}: not recorded")
-                continue
-            compare_analysis(f"{name}.{kind}", now[kind], before[kind], same_machine, result)
-        if "traps" in now:
-            if "traps" not in before:
-                result.missing.append(f"{name}.traps: not recorded (now {now['traps']})")
-            elif now["traps"] > before["traps"]:
-                result.regressions.append(f"{name}.traps: {before['traps']} -> {now['traps']} (worse)")
-            elif now["traps"] < before["traps"]:
-                result.improvements.append(f"{name}.traps: {before['traps']} -> {now['traps']} "
-                                           f"(better; run --update)")
-        for field in ("overhead", "overheadNoRuntime", "rssRatio"):
-            if now.get(field) is None:
-                continue
-            if before.get(field) is None:
-                result.missing.append(f"{name}.{field}: not recorded (now {now[field]})")
-            elif not same_machine:
-                result.notes.append(f"{name}.{field}: recorded on another machine; not compared")
-            elif now[field] > before[field] * 1.10:
-                result.over_budget.append(f"{name}.{field}: {before[field]} -> {now[field]} "
-                                          f"(more than 10% over)")
-    return result
-
-
-def merge_expected(expected: dict, measured: dict[str, dict], platform: str, machine: str,
-                   producer: str) -> dict:
-    """expected.json with this run's measurements recorded for its platform."""
-    merged = json.loads(json.dumps(expected))
-    merged.setdefault("schema", EXPECTED_SCHEMA)
-    merged.setdefault("version", 1)
-    section = merged.setdefault("platforms", {}).setdefault(platform, {})
-    section["machine"] = machine
-    section["producer"] = producer
-    section["updated"] = datetime.date.today().isoformat()
-    configs = section.setdefault("configs", {})
-    for name, now in measured.items():
-        entry = configs.setdefault(name, {})
-        for key, value in now.items():
-            entry[key] = value
-    section["configs"] = dict(sorted(configs.items()))
-    return merged
-
-
-# -- triage -------------------------------------------------------------------
-
-
-@dataclasses.dataclass
-class TriageResult:
-    untriaged: list[dict] = dataclasses.field(default_factory=list)
-    false_errors: list[dict] = dataclasses.field(default_factory=list)
-    stale: list[dict] = dataclasses.field(default_factory=list)
-    invalid: list[str] = dataclasses.field(default_factory=list)
-    definite_errors: list[dict] = dataclasses.field(default_factory=list)
-    possible_temporal: list[dict] = dataclasses.field(default_factory=list)
-
-    @property
-    def failed(self) -> bool:
-        return bool(self.untriaged or self.false_errors or self.invalid)
-
-    def to_json(self) -> dict:
-        return dataclasses.asdict(self)
-
-
-def load_triage(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    data = read_json(path)
-    if isinstance(data, list):
-        return data
-    if data.get("schema") != TRIAGE_SCHEMA or data.get("version") != 1:
-        raise GateError(f"{path}: schema must be {TRIAGE_SCHEMA} version 1")
-    return list(data.get("entries", []))
-
-
-def load_guard_triage(path: Path) -> list[dict]:
-    """RFC 0032 R3: guard failures in a test suite that were triaged as true bugs.
-
-    Each is {config, file, line, template, verdict, note} under `guardFailures`;
-    only a "true" verdict excuses a failure, and the note is its source evidence.
-    """
-    if not path.exists():
-        return []
-    data = read_json(path)
-    if isinstance(data, list):
-        return []
-    entries = list(data.get("guardFailures", []))
-    for entry in entries:
-        missing = [k for k in ("config", "file", "line", "template", "verdict", "note") if k not in entry]
-        if missing:
-            raise GateError(f"{path}: a guardFailures entry lacks {', '.join(missing)}")
-        if entry["verdict"] != "true":
-            raise GateError(f"{path}: a guardFailures entry must have the verdict \"true\": a false trap "
-                            f"is a bug to fix, not to triage ({entry['config']} {entry['file']}:{entry['line']})")
-    return entries
-
-
-def finding_kind(d: Diagnostic) -> str | None:
-    """`definite` for a definite error, `possible` for a possible temporal warning."""
-    if d.severity == "error" and d.certainty in ("definite", ""):
-        return "definite"
-    if d.certainty == "possible" and d.facet_or_mapped == "temporal":
-        return "possible"
-    return None
-
-
-def findings_of(config: str, diagnostics: Iterable[Diagnostic]) -> list[dict]:
-    seen = set()
-    out = []
-    for d in diagnostics:
-        kind = finding_kind(d)
-        if kind is None:
-            continue
-        key = d.fingerprint or f"{d.file}:{d.line}:{d.col}:{d.id}:{d.message}"
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({"fingerprint": d.fingerprint, "config": config, "id": d.id, "certainty": kind,
-                    "file": d.file, "line": d.line, "message": d.message})
-    return out
-
-
-def check_triage(findings: list[dict], entries: list[dict], configs_run: set[str]) -> TriageResult:
-    result = TriageResult()
-    by_key: dict[tuple[str, str], dict] = {}
-    for entry in entries:
-        missing = [k for k in ("fingerprint", "config", "id", "certainty", "file", "line", "verdict")
-                   if k not in entry]
-        if missing:
-            result.invalid.append(f"triage entry {entry.get('fingerprint', '?')}: missing {', '.join(missing)}")
-            continue
-        if entry["verdict"] not in ("true", "false"):
-            result.invalid.append(f"triage entry {entry['fingerprint']}: verdict must be \"true\" or \"false\"")
-            continue
-        if entry["certainty"] not in ("definite", "possible"):
-            result.invalid.append(f"triage entry {entry['fingerprint']}: certainty must be definite or possible")
-            continue
-        by_key[(entry["config"], entry["fingerprint"])] = entry
-    seen = set()
-    for finding in findings:
-        key = (finding["config"], finding["fingerprint"])
-        unique = (finding["config"], finding["fingerprint"] or
-                  f"{finding['file']}:{finding['line']}:{finding['id']}:{finding['message']}")
-        if unique in seen:
-            continue  # the same finding from the unit, program and build analyses
-        seen.add(unique)
-        seen.add(key)
-        if finding["certainty"] == "definite":
-            result.definite_errors.append(finding)
-        else:
-            result.possible_temporal.append(finding)
-        entry = by_key.get(key)
-        if entry is None or not finding["fingerprint"]:
-            result.untriaged.append(finding)
-        elif finding["certainty"] == "definite" and entry["verdict"] == "false":
-            result.false_errors.append({**finding, "note": entry.get("note", "")})
-    for key, entry in by_key.items():
-        if entry["config"] in configs_run and key not in seen:
-            result.stale.append(entry)
-    return result
-
-
-def true_error_sites(entries: list[dict]) -> set[tuple[str, str, int]]:
-    """(config, file, line) of triaged-true definite errors: traps there count as true positives."""
-    return {(e["config"], e["file"], int(e["line"])) for e in entries
-            if e.get("verdict") == "true" and e.get("certainty") == "definite"}
-
-
-def check_lowered_against_triage(configs: list[Config], entries: list[dict]) -> list[str]:
-    problems = []
-    true_definite = {(e.get("config"), e.get("fingerprint")): e for e in entries
-                     if e.get("verdict") == "true" and e.get("certainty") == "definite"}
+# -- the gates of RFC 0035 the corpus measures ----------------------------------------
+#
+# Each takes the selected configs and the results' per-config entries and
+# returns (ok, detail); ok is None when nothing was measured.
+
+
+def drop_in_gate(configs: list[Config], entries: dict, checks: str) -> tuple[bool | None, dict]:
+    """G1-G3: every build passes and every test suite passes, in trap (or
+    verify) mode and in report mode, with no guard failing but those triaged
+    as true bugs of the project."""
+    detail = {}
+    ok = True
     for config in configs:
-        for low in config.lowered:
-            entry = true_definite.get((config.name, low.get("fingerprint")))
-            match = LOWERED_RE.fullmatch(low.get("flag", ""))
-            if entry is None:
-                problems.append(f"{config.name}: {low.get('flag')} lowers fingerprint {low.get('fingerprint')}, "
-                                f"which has no triaged-true definite error")
-            elif match and match.group("id") != entry.get("id"):
-                problems.append(f"{config.name}: {low.get('flag')} does not match the triaged id {entry.get('id')}")
-    return problems
-
-
-# -- builds and test suites -----------------------------------------------------
-
-
-@dataclasses.dataclass
-class StepRun:
-    command: str
-    status: str
-    ok: bool
-    seconds: float
-    cpu: float
-    log: str
-    tail: str = ""  # the end of the output, kept after the work copy is deleted
-
-    def to_json(self) -> dict:
-        return dataclasses.asdict(self)
-
-
-@dataclasses.dataclass
-class BuildRun:
-    config: str
-    mode: str
-    compiler: str
-    steps: list[StepRun] = dataclasses.field(default_factory=list)
-    tests: list[StepRun] = dataclasses.field(default_factory=list)
-    built: bool = False
-    tests_passed: bool | None = None
-    diagnostics: list[Diagnostic] = dataclasses.field(default_factory=list)
-    program: Analysis | None = None
-    trap_deaths: list[str] = dataclasses.field(default_factory=list)
-    reports: list[dict] = dataclasses.field(default_factory=list)
-    failures: list[str] = dataclasses.field(default_factory=list)
-    # RFC 0034 F5: compiler processes the wrapper logged, and the largest peak
-    # resident size among them (bytes), when the wrapper ran them under time(1).
-    compiles: int | None = None
-    compile_max_rss: int | None = None
-
-    def to_json(self) -> dict:
-        return {"config": self.config, "mode": self.mode, "compiler": self.compiler,
-                "built": self.built, "testsPassed": self.tests_passed,
-                "compiles": self.compiles,
-                "compileMaxRssMiB": round(self.compile_max_rss / 2 ** 20, 1) if self.compile_max_rss else None,
-                "steps": [s.to_json() for s in self.steps], "tests": [s.to_json() for s in self.tests],
-                "diagnostics": [d.to_json() for d in self.diagnostics],
-                "ledger": self.program.to_json() if self.program else None,
-                "trapDeaths": self.trap_deaths, "reports": self.reports, "failures": self.failures}
-
-
-def output_tail(text: str, lines: int = 40) -> str:
-    return "\n".join(text.rstrip().splitlines()[-lines:])
-
-
-def sanitizer_symbolizer(cc: str) -> dict:
-    """ASAN_SYMBOLIZER_PATH for a sanitizer run: the llvm-symbolizer beside the
-    reference compiler, unless the caller set one. Without it the sanitizer
-    runtime on Darwin runs `atos`, which needs the system's permission to
-    inspect the dying process and waits when a debugger prompt is pending."""
-    if os.environ.get("ASAN_SYMBOLIZER_PATH"):
-        return {}
-    resolved = shutil.which(cc) or cc
-    candidate = Path(resolved).resolve().parent / "llvm-symbolizer"
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return {"ASAN_SYMBOLIZER_PATH": str(candidate)}
-    return {}
-
-
-# RFC 0034 gate F5: the peak memory of each compilation of a build. The
-# wrapper runs the compiler under time(1), which appends the child's rusage to
-# a log: `-l` on BSD and Darwin ("<bytes>  maximum resident set size"), `-v`
-# with GNU time ("Maximum resident set size (kbytes): <n>").
-TIME_BINARY = "/usr/bin/time"
-RUSAGE_RSS_RE = re.compile(r"^\s*(?P<bytes>\d+)\s+maximum resident set size\s*$"
-                           r"|^\s*Maximum resident set size \(kbytes\):\s*(?P<kib>\d+)\s*$", re.MULTILINE)
-
-
-def write_wrapper(path: Path, compiler: str, flags: list[str], rusage_log: Path | None = None) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    words = " ".join(shlex.quote(w) for w in [compiler, *flags])
-    if rusage_log is not None and os.access(TIME_BINARY, os.X_OK):
-        verbose = "-l" if sys.platform == "darwin" or "bsd" in sys.platform else "-v"
-        words = f"{TIME_BINARY} -a -o {shlex.quote(str(rusage_log))} {verbose} {words}"
-    path.write_text(f"#!/bin/sh\n# written by scripts/corpus-gate.py\nexec {words} \"$@\"\n")
-    path.chmod(0o755)
-    return str(path)
-
-
-def compile_peaks(rusage_log: Path) -> list[int]:
-    """The peak resident size, in bytes, of each compiler process a wrapper logged."""
-    try:
-        text = rusage_log.read_text(errors="replace")
-    except OSError:
-        return []
-    return [int(m.group("bytes")) if m.group("bytes") else int(m.group("kib")) * 1024
-            for m in RUSAGE_RSS_RE.finditer(text)]
-
-
-def base_env(config: Config, cc: str, src: Path, support_root: Path, bench_dir: Path, jobs: int,
-             extra: dict | None = None) -> dict:
-    env = dict(os.environ)
-    env.update({
-        "CC": cc,
-        "JOBS": str(jobs),
-        "SRC": str(src),
-        "SUPPORT": str(support_dir(config, support_root)),
-        "BENCH": str(bench_dir),
-    })
-    # A build must not pick up the caller's flags.
-    for key in ("CFLAGS", "CPPFLAGS", "LDFLAGS", "MAKEFLAGS", "MFLAGS"):
-        env.pop(key, None)
-    if extra:
-        env.update(extra)
-    return env
-
-
-def trap_evidence(result: ProcResult) -> list[str]:
-    evidence = []
-    if result.signal in TRAP_SIGNALS or result.returncode in tuple(128 + s for s in TRAP_SIGNALS):
-        evidence.append(f"{result.command}: {describe_status(result)}")
-    for line in result.output.splitlines():
-        if TRAP_TEXT_RE.search(line):
-            evidence.append(line.strip()[:300])
-    return evidence
-
-
-# What the runtime's allocator prints before it traps on a release it refuses.
-INVALID_RELEASE = "weavec: invalid release of "
-
-
-def parse_reports(text: str, root: Path) -> list[dict]:
-    reports = []
-    seen = set()
-    for line in text.splitlines():
-        m = REPORT_RE.search(line)
-        if not m:
+        if not config.build:
             continue
-        file = m.group("file")
-        if os.path.isabs(file):
-            file = rel_path(file, root)
-        key = (m.group("template"), file, int(m.group("line")), int(m.group("col")))
-        if key in seen:
+        entry = entries.get(config.name) or {}
+        builds = entry.get("builds") or {}
+        checked, report = builds.get(checks) or {}, builds.get("report") or {}
+        row = {"set": config.set, "built": checked.get("built"), "testsPassed": checked.get("testsPassed"),
+               "reportBuilt": report.get("built"), "reportTestsPassed": report.get("testsPassed"),
+               "trueTrapsOnly": bool(entry.get("trueTrapsOnly")), "traps": entry.get("traps")}
+        detail[config.name] = row
+        ok &= bool(row["built"]) and bool(row["reportBuilt"])
+        ok &= row["testsPassed"] is not False or row["trueTrapsOnly"]
+        ok &= row["reportTestsPassed"] is not False
+        ok &= not row["traps"]
+    return (ok if detail else None), detail
+
+
+def build_time_gate(configs: list[Config], entries: dict, spec: dict) -> tuple[bool | None, dict]:
+    """G9: each config's weavec-cc build CPU time within maxBuildRatio of the
+    reference compiler's, and no per-file compile above maxUnitRatio (among
+    those the reference compiler takes at least minUnitCpuSeconds for: below
+    that, the ratio is start-up noise)."""
+    max_build, max_unit = spec.get("maxBuildRatio"), spec.get("maxUnitRatio")
+    min_cpu = spec.get("minUnitCpuSeconds", 0.25)
+    detail: dict = {}
+    ok = True
+    for config in configs:
+        entry = entries.get(config.name) or {}
+        row: dict = {}
+        ratio = entry.get("buildCpuRatio")
+        if ratio is not None:
+            row["buildCpuRatio"] = {"value": ratio, "limit": max_build}
+            if max_build is not None:
+                ok &= ratio <= max_build
+        worst = None
+        for file, cost in ((entry.get("quick") or {}).get("units") or {}).items():
+            base = cost.get("referenceCpuSeconds")
+            if base is None or base < min_cpu:
+                continue
+            unit_ratio = round(cost["cpuSeconds"] / base, 3)
+            if worst is None or unit_ratio > worst[1]:
+                worst = (file, unit_ratio)
+        if worst is not None:
+            row["worstUnit"] = {"file": worst[0], "value": worst[1], "limit": max_unit}
+            if max_unit is not None:
+                ok &= worst[1] <= max_unit
+        if row:
+            detail[config.name] = row
+    return (ok if detail else None), detail
+
+
+def run_time_gate(configs: list[Config], all_configs: list[Config], entries: dict,
+                  spec: dict) -> tuple[bool | None, dict]:
+    """G7: each workload of the sets in `sets` at most the larger of
+    maxOverhead and its ASan ratio, their geometric mean at most
+    maxGeometricMean (once every such workload of the manifest ran), and the
+    workloads of maxOverheadPerConfig at their own limits."""
+    limit = spec.get("maxOverhead")
+    sets = set(spec.get("sets", ()))
+    per_config = spec.get("maxOverheadPerConfig") or {}
+    detail: dict = {}
+    ok = True
+    ratios = {}
+    for config in configs:
+        bench = (entries.get(config.name) or {}).get("bench")
+        if not bench or bench.get("ratio") is None:
             continue
-        seen.add(key)
-        reports.append({"template": key[0], "file": key[1], "line": key[2], "col": key[3]})
-    return reports
+        ratio, asan = bench["ratio"], bench.get("asanRatio")
+        bound = None
+        if config.name in per_config:
+            bound = per_config[config.name]
+        elif config.set in sets and limit is not None:
+            bound = max(limit, asan or 0)
+        if config.set in sets:
+            ratios[config.name] = ratio
+        detail[config.name] = {"ratio": ratio, "asanRatio": asan, "limit": bound}
+        if bound is not None:
+            ok &= ratio <= bound
+    mean = geometric_mean(list(ratios.values()))
+    if mean is not None:
+        complete = all(c.name in ratios for c in all_configs if c.set in sets and c.bench)
+        detail["geometricMean"] = {"value": mean, "limit": spec.get("maxGeometricMean"), "complete": complete,
+                                   "configs": len(ratios)}
+        if complete and spec.get("maxGeometricMean") is not None:
+            ok &= mean <= spec["maxGeometricMean"]
+    return (ok if detail else None), detail
 
 
-def normalise_report_file(file: str) -> str:
-    # Makefiles pass paths relative to the build directory ("./x.c", "../x.c").
-    parts = [p for p in Path(file).as_posix().split("/") if p not in (".", "")]
-    while parts and parts[0] == "..":
-        parts.pop(0)
-    return "/".join(parts)
+def verify_gate(configs: list[Config], entries: dict) -> tuple[bool | None, dict]:
+    """G6: no `weavec.proven` report on the test suites or the benchmarks."""
+    detail = {}
+    for config in configs:
+        entry = entries.get(config.name) or {}
+        proven = [describe_report(r) for build in (entry.get("builds") or {}).values()
+                  for r in build.get("reports", []) if r["proven"]]
+        proven += [describe_report(r) for r in (entry.get("bench") or {}).get("reports", []) if r["proven"]]
+        if entry.get("builds") or entry.get("bench"):
+            detail[config.name] = sorted(set(proven))
+    return (not any(detail.values()) if detail else None), detail
 
 
-def collect_build_ledgers(ledger_dir: Path, src: Path, tracked: set[str]) -> Analysis:
-    """Unit and program ledgers of a build, without compiler probes and configure tests."""
-    analysis = Analysis(kind="build")
-    for path in sorted(ledger_dir.glob("*.json")):
-        try:
-            data = validate_ledger(json.loads(path.read_text()), path)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            analysis.failures.append(f"{path.name}: {exc}")
-            continue
-        sources = [u.get("source", "") for u in data.get("units") or []]
-        if sources and not any(normalise_report_file(rel_path(s, src) if os.path.isabs(s) else s)
-                               in tracked for s in sources):
-            continue  # CMake's compiler probes, configure's tests: no source of the project
-        add_ledger(analysis, data, src)
-    return analysis
-
-
-def run_build(config: Config, mode: str, compiler: str, flags: list[str], checkout: Path, run_dir: Path,
-              support_root: Path, bench_dir: Path, jobs: int, build_timeout: float, keep: bool,
-              tracked: set[str], with_ledger: bool, patch: Path | None = None,
-              run_commands: list[str] | None = None, extra_env: dict | None = None) -> BuildRun:
-    """Copy the checkout, build it with CC set to `compiler` + `flags`, run the tests.
-
-    `run_commands` replaces the config's tests (injections).
-    """
-    work = run_dir / mode
-    src = work / "src"
-    ledger_dir = work / "ledgers"
-    remove_tree(work)
-    copy_tree(checkout, src)
-    run = BuildRun(config=config.name, mode=mode, compiler=compiler)
-    if patch is not None:
-        applied = apply_patch(patch, src)
-        if applied:
-            run.failures.append(applied)
-            return run
-    logs = work / "logs"
-    logs.mkdir(parents=True, exist_ok=True)
-    rusage_log = None
-    if with_ledger:
-        ledger_dir.mkdir(parents=True, exist_ok=True)
-        flags = [*flags, f"-fweavec-ledger={ledger_dir}/"]
-        # RFC 0034 F5: each compilation's peak memory.
-        rusage_log = logs / "compile-rusage.log"
-    cc = write_wrapper(work / "bin" / "cc", compiler, flags, rusage_log) if flags else compiler
-    env = base_env(config, cc, src, support_root, bench_dir, jobs, extra_env)
-    output = []
-    run.built = True
-    for index, command in enumerate(config.build):
-        result = run_shell(command, cwd=src, env=env, timeout=build_timeout)
-        log_path = logs / f"build-{index}.log"
-        log_path.write_text(f"$ {command}\n{result.output}")
-        output.append(result.output)
-        ok = result.returncode == 0 and not result.timed_out
-        run.steps.append(StepRun(command, describe_status(result), ok, round(result.seconds, 3),
-                                 round(result.cpu, 3), str(log_path), output_tail(result.output)))
-        if not ok:
-            run.built = False
-            run.failures.append(f"build step {command!r}: {describe_status(result)}: "
-                                f"{output_tail(result.output, 6)}")
-            break
-    diagnostics, _ = parse_diagnostics("\n".join(output), src)
-    run.diagnostics = diagnostics
-    if with_ledger:
-        run.program = collect_build_ledgers(ledger_dir, src, tracked)
-        run.failures.extend(run.program.failures)
-    if run.built:
-        commands = config.test if run_commands is None else run_commands
-        timeout = config.test_timeout or build_timeout
-        test_output = []
-        passed = True
-        # A harness may keep a passing test's output to itself (CTest without
-        # -V): the runtime also appends every report to this file.
-        report_log = logs / "runtime-reports.log"
-        env = {**env, "WEAVEC_RT_REPORT_LOG": str(report_log)}
-        for index, command in enumerate(commands):
-            result = run_shell(command, cwd=src, env=env, timeout=timeout)
-            log_path = logs / f"test-{index}.log"
-            log_path.write_text(f"$ {command}\n{result.output}")
-            test_output.append(result.output)
-            ok = result.returncode == 0 and not result.timed_out
-            run.tests.append(StepRun(command, describe_status(result), ok, round(result.seconds, 3),
-                                     round(result.cpu, 3), str(log_path), output_tail(result.output)))
-            run.trap_deaths.extend(trap_evidence(result))
-            if not ok:
-                passed = False
-        run.tests_passed = passed if commands else None
-        if report_log.exists():
-            test_output.append(report_log.read_text(errors="replace"))
-        run.reports = parse_reports("\n".join(test_output), src)
-        for report in run.reports:
-            report["file"] = normalise_report_file(report["file"])
-    if rusage_log is not None:
-        peaks = compile_peaks(rusage_log)
-        run.compiles = len(peaks)
-        run.compile_max_rss = max(peaks) if peaks else None
-    if not keep:
-        remove_tree(src)
-    return run
-
-
-# -- injections ---------------------------------------------------------------
-
-
-@dataclasses.dataclass
-class Injection:
-    id: str
-    config: str
-    patch: str
-    file: str
-    line: int
-    expect: dict
-    mode: str
-    description: str = ""
-    required: bool = False
-    dossier: str | None = None
-
-    @property
-    def ids(self) -> set[str] | None:
-        if "ids" in self.expect:
-            return set(self.expect["ids"])
-        return None
-
-    @property
-    def trap(self) -> str | None:
-        return self.expect.get("trap")
-
-
-def load_injections(path: Path, manifest: Manifest) -> list[Injection]:
-    data = read_json(path)
-    if data.get("schema") != INJECTIONS_SCHEMA or data.get("version") != 1:
-        raise GateError(f"{path}: schema must be {INJECTIONS_SCHEMA} version 1")
-    names = {c.name for c in manifest.configs}
-    problems = []
-    injections = []
-    ids = set()
-    for item in data.get("injections", []):
-        try:
-            inj = Injection(id=item["id"], config=item["config"], patch=item["patch"], file=item["file"],
-                            line=int(item["line"]), expect=dict(item["expect"]), mode=item["mode"],
-                            description=item.get("description", ""), required=bool(item.get("required")),
-                            dossier=item.get("dossier"))
-        except (KeyError, TypeError, ValueError) as exc:
-            problems.append(f"entry {item.get('id', '?')}: {exc}")
-            continue
-        if inj.id in ids:
-            problems.append(f"{inj.id}: duplicate id")
-        ids.add(inj.id)
-        if inj.config not in names:
-            problems.append(f"{inj.id}: unknown config {inj.config}")
-        if inj.mode not in ("unit", "whole-program"):
-            problems.append(f"{inj.id}: mode must be unit or whole-program")
-        if not (path.parent / inj.patch).is_file():
-            problems.append(f"{inj.id}: patch {inj.patch} not found")
-        if inj.ids is None and inj.trap is None:
-            problems.append(f"{inj.id}: expect needs ids or trap")
-        if inj.trap is not None and (inj.trap not in TEMPLATE_IDS or not inj.expect.get("run")):
-            problems.append(f"{inj.id}: expect.trap must be a template with a run command")
-        if inj.expect.get("severity", "any") not in ("error", "warning", "any"):
-            problems.append(f"{inj.id}: severity must be error, warning or any")
-        injections.append(inj)
-    if problems:
-        raise GateError(f"{path}: invalid injections:\n  " + "\n  ".join(problems))
-    return injections
-
-
-def apply_patch(patch: Path, src: Path) -> str:
-    """Apply a -p1 patch to a copy; returns a failure message or ''."""
-    result = run_process(["git", "apply", "--whitespace=nowarn", str(patch)], cwd=src, timeout=60)
-    if result.returncode == 0:
-        return ""
-    fallback = run_process(["patch", "-p1", "--batch", "--forward", "-i", str(patch)], cwd=src, timeout=60)
-    if fallback.returncode == 0:
-        return ""
-    return f"patch {patch.name} does not apply: {result.stderr.strip()[:200]} {fallback.output.strip()[:200]}"
-
-
-def diagnostic_matches(d: Diagnostic, inj: Injection, legacy: bool) -> bool:
-    if d.file != inj.file or d.line != inj.line:
-        return False
-    ids = inj.ids
-    if ids is None:
-        allowed = TEMPLATE_IDS.get(inj.trap or "")
-        if allowed is not None and d.id not in allowed:
-            return False
-    elif d.id not in ids:
-        return False
-    severity = inj.expect.get("severity", "any")
-    # v0.10.0 reported temporal findings as errors whatever their certainty;
-    # the legacy baseline matches by line and id alone.
-    return legacy or severity == "any" or d.severity == severity
-
-
-def report_matches(report: dict, inj: Injection) -> bool:
-    if report["file"] != inj.file or report["line"] != inj.line:
-        return False
-    if inj.trap is not None:
-        return report["template"] == inj.trap
-    # A diagnostic expectation for a null or spatial id is also met by a trap
-    # of a matching template (section 17.3).
-    allowed = TEMPLATE_IDS.get(report["template"], set())
-    return allowed is None or bool((inj.ids or set()) & allowed)
-
-
-@dataclasses.dataclass
-class InjectionRun:
-    injection: Injection
-    reported: bool = False
-    via: list[str] = dataclasses.field(default_factory=list)
-    halves: dict = dataclasses.field(default_factory=dict)
-    matches: list[dict] = dataclasses.field(default_factory=list)
-    nearby: list[dict] = dataclasses.field(default_factory=list)
-    cpu: float = 0.0
-    failures: list[str] = dataclasses.field(default_factory=list)
-    asan: dict | None = None
-
-    def to_json(self) -> dict:
-        inj = self.injection
-        return {"id": inj.id, "config": inj.config, "file": inj.file, "line": inj.line, "mode": inj.mode,
-                "expect": inj.expect, "required": inj.required, "dossier": inj.dossier,
-                "reported": self.reported, "via": self.via, "halves": self.halves, "matches": self.matches,
-                "nearby": self.nearby, "cpuSeconds": round(self.cpu, 2), "failures": self.failures,
-                "asan": self.asan}
-
-
-def check_injected_line(src: Path, inj: Injection) -> str:
-    try:
-        lines = (src / inj.file).read_text(errors="replace").splitlines()
-    except OSError as exc:
-        return f"{inj.file}: {exc}"
-    if inj.line > len(lines) or "INJECTED" not in lines[inj.line - 1]:
-        return f"{inj.file}:{inj.line} does not carry the INJECTED marker after patching"
-    return ""
-
-
-def same_file(reported: str, expected: str) -> bool:
-    """Whether a sanitizer's path names the expected file: symbolizers print
-    either the full path or, on macOS, only the file name."""
-    reported, expected = normalise_report_file(reported), normalise_report_file(expected)
-    return reported == expected or expected.endswith("/" + reported) or reported.endswith("/" + expected)
-
-
-FRAME_RE = re.compile(r"#\d+ 0x[0-9a-f]+ in (?P<func>\S+) (?P<file>[^\s:()]+):(?P<line>\d+)")
-UBSAN_RE = re.compile(r"(?P<file>[^\s:]+):(?P<line>\d+):\d+: runtime error:")
-
-
-def sanitizer_location(text: str, src: Path) -> tuple[bool, str | None, tuple[str, int] | None]:
-    """(found, first report line, (file, line) of the first frame in the project)."""
-    lines = text.splitlines()
-    for index, line in enumerate(lines):
-        m = UBSAN_RE.search(line)
-        if m:
-            return True, line.strip(), (normalise_report_file(rel_path(m.group("file"), src)), int(m.group("line")))
-        if "ERROR: AddressSanitizer" in line:
-            for frame in lines[index + 1:index + 80]:
-                fm = FRAME_RE.search(frame)
-                if fm:
-                    file = rel_path(fm.group("file"), src)
-                    if not os.path.isabs(file):
-                        return True, line.strip(), (normalise_report_file(file), int(fm.group("line")))
-            return True, line.strip(), None
-        if "buffer overflow detected" in line or "detected buffer overflow" in line:
-            return True, line.strip(), None
-    return False, None, None
-
-
-# -- benchmarks ---------------------------------------------------------------
-
-
-@dataclasses.dataclass
-class BenchRun:
-    config: str
-    name: str
-    times: dict = dataclasses.field(default_factory=dict)
-    minimum: dict = dataclasses.field(default_factory=dict)
-    outputs: dict = dataclasses.field(default_factory=dict)
-    ratio: float | None = None
-    # RFC 0032 R6: the same build without the runtime, and the peak resident
-    # size of the default build over the reference's.
-    ratio_no_runtime: float | None = None
-    rss: dict = dataclasses.field(default_factory=dict)
-    rss_ratio: float | None = None
-    failures: list[str] = dataclasses.field(default_factory=list)
-
-    def to_json(self) -> dict:
-        return dataclasses.asdict(self)
-
-
-# -- the gate -----------------------------------------------------------------
+# -- the gate -----------------------------------------------------------------------
 
 
 class Gate:
@@ -1982,105 +1691,79 @@ class Gate:
         self.support_root = args.support_dir
         self.bench_dir = args.bench_dir
         self.manifest = load_manifest(args.manifest, self.support_root)
-        self.configs = select_configs(self.manifest, args.only, with_held_out(args), args.sealed, args.set)
-        # Every selected config outside the original set: RFC 0030's gates
-        # (G9, G10, G11) and the ratchet's records leave them out.
-        self.held_out = {c.name for c in self.configs if c.held_out}
-        self.sets = {s: [c for c in self.configs if c.set == s] for s in SETS}
+        self.configs = select_configs(self.manifest, args.only, with_held_out(args), args.set)
+        if not self.configs:
+            raise GateError(f"no config is in the set(s) {', '.join(args.set)}")
+        self.selected = {c.name for c in self.configs}
         self.platform = platform_key()
         self.machine = machine_key()
         self.failures: list[str] = []
-        self.tool_failures: list[str] = []
+        self.tool_failures: set[str] = set()  # configs whose measurement is incomplete
         self.notes: list[str] = []
         self.results: dict[str, Any] = {
-            "schema": RESULTS_SCHEMA, "version": 1, "started": now_iso(),
+            "schema": RESULTS_SCHEMA, "version": RESULTS_VERSION, "started": now_iso(),
             "platform": self.platform, "machine": self.machine,
             "modes": [m for m in ("quick", "full", "inject", "bench") if getattr(args, m)],
-            "legacy": args.legacy, "compareGolden": args.compare_golden, "checks": args.checks,
-            "referenceOnly": args.reference_only, "configs": {}, "gates": {},
-            "heldOutConfigs": sorted(c.name for c in self.configs if c.set == "heldOut"),
-            "freshConfigs": sorted(c.name for c in self.configs if c.set == "fresh"),
-            "sealedConfigs": sorted(c.name for c in self.configs if c.set == "sealed"),
+            "checks": args.checks, "referenceOnly": args.reference_only,
+            "sets": {s: sorted(c.name for c in self.configs if c.set == s) for s in SETS
+                     if any(c.set == s for c in self.configs)},
+            "configs": {}, "gates": {},
         }
         self.checkouts: dict[str, Path] = {}
         self.tracked: dict[str, set[str]] = {}
         self.checkout_lock = threading.Lock()
         self.run_dir = args.workdir / ".gate" / f"{int(time.time())}-{os.getpid()}"
         self.jobs = max(1, args.jobs)
-        self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.jobs)
-        self.triage_entries = load_triage(args.triage)
-        self.guard_triage = load_guard_triage(args.triage)
+        self.triage = load_triage(args.triage)
         self.measured: dict[str, dict] = {}
         self.findings: list[dict] = []
-        # Configs whose test suite trapped only at triaged-true sites.
-        self.true_traps_only: set[str] = set()
+        self.injection_runs: list[InjectionRun] = []
         self.binaries = self.resolve_binaries()
         self.announce_binaries()
 
     # ---- setup ----
 
-    def announce_binaries(self) -> None:
-        """Say which binary is under test, and refuse to time a Debug one.
+    def resolve_binaries(self) -> Binaries:
+        a = self.args
+        built = [ROOT / "build" / "release" / "bin", ROOT / "build" / "dev" / "bin"]
+        weavec_needed = (a.quick or a.full) and not a.reference_only
+        cc_needed = (a.quick or a.full or a.inject or a.bench) and not a.reference_only
+        reference_needed = a.reference_only or a.full or a.bench
+        weavec = resolve_binary(a.weavec, [d / "weavec" for d in built], "--weavec", weavec_needed)
+        weavec_cc = resolve_binary(a.weavec_cc, [d / "weavec-cc" for d in built], "--weavec-cc", cc_needed)
+        reference = a.cc or default_reference_cc()
+        if reference:
+            reference = resolve_binary(reference, [], "--cc", reference_needed)
+        elif reference_needed:
+            raise GateError("--cc: no reference compiler; set WEAVEC_LLVM_PREFIX or pass --cc")
+        if a.reference_only:
+            weavec = weavec_cc = None
+        self.results["binaries"] = {
+            name: {"path": path, "version": tool_version(path)}
+            for name, path in (("weavec", weavec), ("weavec-cc", weavec_cc), ("reference-cc", reference))
+            if path
+        }
+        return Binaries(weavec, weavec_cc, reference)
 
-        The default search finds whatever build tree exists, so a cost run can
-        pick up a Debug binary and measure several times the real figure. The
-        verdicts would still be right, which is what makes it easy to miss.
-        """
-        for what, path in (("weavec", self.binaries.weavec),
-                           ("weavec-cc", self.binaries.weavec_cc)):
+    def announce_binaries(self) -> None:
+        """Say which binaries are under test, and refuse to time a Debug one:
+        its verdicts are right and its timings mean nothing."""
+        for what, path in (("weavec", self.binaries.weavec), ("weavec-cc", self.binaries.weavec_cc),
+                           ("reference compiler", self.binaries.reference_cc)):
             if not path:
                 continue
             build = build_type_of(path)
-            log(f"{what}: {path}" + (f" ({build})" if build else ""))
-            if self.args.weavec or self.args.weavec_cc:
+            log(f"{what}: {path}" + (f" ({build})" if build else
+                                     " (build type unknown: an installed tree?)"
+                                     if what != "reference compiler" else ""))
+            if what == "reference compiler" or not build or build.lower() == "release":
                 continue
-            if not build or build.lower() == "release":
-                continue
-            if self.args.bench:
-                raise GateError(
-                    f"{what}: {path} is a {build} build and --bench measures CPU time. "
-                    f"Pass --{what} explicitly, or build a Release tree.")
+            explicit = self.args.weavec if what == "weavec" else self.args.weavec_cc
+            if self.args.bench and not explicit:
+                raise GateError(f"{what}: {path} is a {build} build and --bench measures CPU time. "
+                                f"Pass --{what} explicitly, or build a Release tree.")
             if self.args.full:
-                # The verdicts hold; only the G14 and G15 figures are worthless.
-                log(f"warning: {what} is a {build} build, so the timings in this run mean "
-                    f"nothing. Verdicts are unaffected.")
-
-    # ---- setup ----
-
-    def resolve_binaries(self) -> Binaries:
-        a = self.args
-        golden_dir = Path(a.golden_dir) if a.golden_dir else None
-        golden = [golden_dir / "weavec"] if golden_dir else []
-        golden_cc = [golden_dir / "weavec-cc"] if golden_dir else []
-        built = [ROOT / "build" / "release" / "bin", ROOT / "build" / "rfc28-release" / "bin",
-                 ROOT / "build" / "dev" / "bin"]
-        needs_weavec = (a.quick or a.full or a.inject or a.compare_golden) and not a.reference_only
-        needs_cc = ((a.quick or a.full or a.bench) and not a.legacy and not a.reference_only) or \
-                   (a.inject and not a.legacy and not a.reference_only)
-        if a.legacy:
-            weavec = resolve_binary(a.weavec, golden, "--weavec (legacy: $WEAVEC_GOLDEN_DIR/weavec)",
-                                    needs_weavec)
-            weavec_cc = resolve_binary(a.weavec_cc, golden_cc, "--weavec-cc (legacy: $WEAVEC_GOLDEN_DIR/weavec-cc)",
-                                       a.full)
-        else:
-            weavec = resolve_binary(a.weavec, [d / "weavec" for d in built], "--weavec", needs_weavec)
-            weavec_cc = resolve_binary(a.weavec_cc, [d / "weavec-cc" for d in built], "--weavec-cc", needs_cc)
-        golden_weavec = resolve_binary(None, golden, "golden weavec", a.compare_golden)
-        golden_weavec_cc = resolve_binary(None, golden_cc, "golden weavec-cc", False)
-        needs_reference = a.reference_only or ((a.bench or a.full) and not a.legacy)
-        reference = a.cc or default_reference_cc()
-        if reference:
-            reference = resolve_binary(reference, [], "--cc", needs_reference)
-        elif needs_reference:
-            raise GateError("--cc: no reference compiler; set WEAVEC_LLVM_PREFIX or pass --cc")
-        binaries = Binaries(weavec, weavec_cc, golden_weavec, golden_weavec_cc, reference)
-        self.results["binaries"] = {
-            name: {"path": path, "version": tool_version(path)}
-            for name, path in (("weavec", weavec), ("weavec-cc", weavec_cc), ("golden-weavec", golden_weavec),
-                               ("golden-weavec-cc", golden_weavec_cc), ("reference-cc", reference))
-            if path
-        }
-        return binaries
+                log(f"warning: {what} is a {build} build, so the timings in this run mean nothing")
 
     def checkout(self, config: Config) -> Path:
         project = config.project
@@ -2092,521 +1775,322 @@ class Gate:
                 self.checkouts[project.name] = path
             return self.checkouts[project.name]
 
-    def config_entry(self, config: Config) -> dict:
-        return self.results["configs"].setdefault(config.name, {})
+    def entry(self, config: Config | str) -> dict:
+        name = config if isinstance(config, str) else config.name
+        return self.results["configs"].setdefault(name, {"set": self.manifest.config(name).set})
 
-    def fail(self, message: str, tool: bool = False) -> None:
-        """Record a failure; `tool` marks a failed analysis, build or run, after
-        which the run's measurements are incomplete and are not recorded."""
+    def fail(self, message: str, config: str | None = None) -> None:
+        """Record a failure; with `config`, one after which that config's
+        measurements are incomplete and are not recorded by --update."""
         self.failures.append(message)
-        if tool:
-            self.tool_failures.append(message)
+        if config is not None:
+            self.tool_failures.add(config)
         log(f"FAIL: {message}")
 
-    # ---- legacy ----
+    def note(self, message: str) -> None:
+        self.notes.append(message)
+        log(f"note: {message}")
 
-    def legacy_units(self, weavec: str, configs: list[Config]) -> dict[str, list[UnitRun]]:
-        jobs = []
-        for config in configs:
-            root = self.checkout(config)
-            files = config_files(config, root, self.tracked[config.project.name])
-            for group in legacy_groups(config, files):
-                jobs.append((config, root, group))
-        # The whole programs first: Lua takes minutes.
-        jobs.sort(key=lambda j: -len(j[2]))
-        futures = {}
-        for config, root, group in jobs:
-            argv = legacy_command(weavec, config, group, self.support_root)
-            futures[self.pool.submit(run_tool_unit, argv, config, root, group, self.args.timeout)] = config
-        runs: dict[str, list[UnitRun]] = {c.name: [] for c in configs}
-        for future in concurrent.futures.as_completed(futures):
-            unit = future.result()
-            runs[unit.config].append(unit)
-            status = unit.failure or f"{len(unit.diagnostics)} diagnostics"
-            vlog(f"[{unit.config}] {' '.join(unit.files)[:60]}: {status} ({unit.seconds:.1f} s)")
-        for config in configs:
-            order = {tuple(f.relative_to(self.checkouts[config.project.name]).as_posix() for f in g): i
-                     for i, g in enumerate(legacy_groups(config, config_files(
-                         config, self.checkouts[config.project.name])))}
-            runs[config.name].sort(key=lambda u: order.get(tuple(u.files), 0))
-        return runs
-
-    def run_legacy_quick(self) -> None:
-        log(f"legacy analysis with {self.binaries.weavec}")
-        runs = self.legacy_units(self.binaries.weavec, self.configs)
-        tallies = {}
-        for config in self.configs:
-            units = runs[config.name]
-            tally = tally_legacy(config, units)
-            tallies[config.name] = tally
-            entry = self.config_entry(config)
-            entry["legacy"] = {**tally, "unitRuns": [u.to_json() for u in units]}
-            for failure in tally["failures"]:
-                self.fail(f"{config.name}: {failure}", tool=True)
-        totals = legacy_totals(tallies)
-        self.results["legacyTotals"] = totals
-        print_legacy_table(self.configs, tallies, totals)
-        self.legacy_tallies = tallies
-        expected = self.load_expected()
-        recorded = (expected.get("legacy") or {}).get("quick")
-        if self.args.update:
-            return
-        failures, notes = compare_legacy(tallies, recorded, self.platform)
-        for note in notes:
-            self.note(note)
-        for failure in failures:
-            self.fail(f"legacy baseline: {failure}")
-        if recorded and not failures and not notes:
-            log(f"legacy baseline reproduced: {totals['bugClaims']} bug claims over {totals['units']} units")
-
-    def run_compare_golden(self) -> None:
-        """S1: the binaries under test print exactly the golden diagnostics."""
-        tested, golden = self.binaries.weavec, self.binaries.golden_weavec
-        if not tested or not golden:
-            raise GateError("--compare-golden needs --weavec and a golden weavec ($WEAVEC_GOLDEN_DIR)")
-        log(f"comparing {tested} with the golden {golden}")
-        # Both runs share the pool, so the two Lua analyses overlap.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as outer:
-            mine_future = outer.submit(self.legacy_units, tested, self.configs)
-            theirs_future = outer.submit(self.legacy_units, golden, self.configs)
-            mine, theirs = mine_future.result(), theirs_future.result()
-        summary: dict[str, dict] = {}
-        for config in self.configs:
-            summary[config.name] = {"weavec": self.compare_runs(config, "weavec", mine[config.name],
-                                                                theirs[config.name])}
-        if self.binaries.weavec_cc and self.binaries.golden_weavec_cc:
-            log(f"comparing per-file weavec-cc -c: {self.binaries.weavec_cc} vs {self.binaries.golden_weavec_cc}")
-            objroot = self.run_dir / "compare-golden"
-            futures = {}
-            for config in self.configs:
-                root = self.checkout(config)
-                for label, cc in (("tested", self.binaries.weavec_cc), ("golden", self.binaries.golden_weavec_cc)):
-                    out = objroot / config.name / label
-                    out.mkdir(parents=True, exist_ok=True)
-                    for file in config_files(config, root, self.tracked[config.project.name]):
-                        future = self.pool.submit(run_cc_unit, cc, config, root, file, self.support_root, out,
-                                                  self.args.timeout)
-                        futures[future] = (config.name, label, file)
-            units: dict[tuple[str, str], list[tuple[Path, UnitRun]]] = collections.defaultdict(list)
-            for future in concurrent.futures.as_completed(futures):
-                name, label, file = futures[future]
-                units[(name, label)].append((file, future.result()))
-            for config in self.configs:
-                runs = {label: [u for _, u in sorted(units[(config.name, label)], key=lambda x: str(x[0]))]
-                        for label in ("tested", "golden")}
-                summary[config.name]["weavec-cc"] = self.compare_runs(config, "weavec-cc -c", runs["tested"],
-                                                                      runs["golden"])
-            if not self.args.keep:
-                remove_tree(objroot)
+    def gate(self, name: str, ok: bool | None, detail: Any, failed_above: bool = False) -> None:
+        """Record a gate. `failed_above`: each of its failures was already
+        recorded on its own, so the gate adds no failure of its own."""
+        status = "skip" if ok is None else "pass" if ok else "fail"
+        self.results["gates"][name] = {"status": status, "detail": detail}
+        if ok is False and not failed_above:
+            self.fail(f"gate {name}: {json.dumps(detail)[:600]}")
         else:
-            self.note("compare-golden: weavec-cc not compared (needs --weavec-cc and a golden weavec-cc)")
-        self.results["compareGoldenResults"] = summary
+            log(f"gate {name}: {status}")
 
-    def compare_runs(self, config: Config, what: str, mine: list[UnitRun], theirs: list[UnitRun]) -> dict:
-        a = [d.render() for u in mine for d in u.diagnostics]
-        b = [d.render() for u in theirs for d in u.diagnostics]
-        fails = [f"{' '.join(u.files)}: {u.failure}" for u in mine + theirs if u.failure]
-        diff = diff_sorted(b, a)
-        if fails:
-            self.fail(f"compare-golden {config.name} ({what}): " + "; ".join(fails), tool=True)
-        if diff:
-            self.fail(f"compare-golden {config.name}: {what} diagnostics differ from the golden run "
-                      f"({len(a)} vs {len(b)}):\n    " + "\n    ".join(diff))
-        else:
-            log(f"compare-golden {config.name}: {what} identical ({len(a)} diagnostics)")
-        return {"tested": len(a), "golden": len(b), "identical": not diff, "diff": diff, "failures": fails}
+    def probe(self) -> None:
+        """Fail early, and clearly, on binaries that predate RFC 0035."""
+        scratch = self.run_dir / "probe"
+        scratch.mkdir(parents=True, exist_ok=True)
+        source = scratch / "probe.c"
+        source.write_text("int weavec_probe(int *p) { return *p; }\n")
+        ledger = scratch / "probe.ledger.json"
+        result = run_process([self.binaries.weavec_cc, "-c", f"-fweavec-ledger={ledger}", str(source),
+                              "-o", str(scratch / "probe.o")], cwd=scratch, timeout=120)
+        try:
+            read_ledger(ledger)
+        except ValueError as exc:
+            raise GateError(f"{self.binaries.weavec_cc} does not write a {LEDGER_SCHEMA} version {LEDGER_VERSION} "
+                            f"ledger (RFC 0035): {describe_status(result)}; {exc}; "
+                            f"{result.stderr.strip()[:300]}") from None
+        result = run_process([self.binaries.weavec, str(source), "--"], cwd=scratch, timeout=120)
+        if not parse_summaries(result.output)[0]:
+            raise GateError(f"{self.binaries.weavec} prints no summary line (RFC 0035, section 8): "
+                            f"{describe_status(result)}; {result.output.strip()[:300]}")
 
     # ---- quick ----
 
     def run_quick(self) -> None:
-        probe_ledger_support(self.binaries, self.run_dir / "probe")
-        log(f"quick: weavec-cc {self.binaries.weavec_cc}, weavec {self.binaries.weavec}")
-        jobs = []
+        self.probe()
+        timed = self.binaries.reference_cc if self.args.full else None
+        log(f"quick: weavec {self.binaries.weavec}, weavec-cc {self.binaries.weavec_cc}"
+            + (f", per-file compiles timed against {timed}" if timed else ""))
+        tasks: list[tuple[Config, Callable[[], Any]]] = []
         for config in self.configs:
             root = self.checkout(config)
             files = config_files(config, root, self.tracked[config.project.name])
-            jobs.append((config, root, files))
-        # Whole-program analyses in the background, per-file compiles meanwhile.
-        program_futures = {}
-        for config, root, files in sorted(jobs, key=lambda j: -len(j[2])):
-            if config.whole_program:
-                work = self.run_dir / "quick" / config.name / "program"
-                program_futures[config.name] = self.pool.submit(
-                    quick_program, self.binaries, config, root, files, self.support_root, work, self.args.timeout)
-        unit_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.jobs)
-        try:
-            for config, root, files in jobs:
-                work = self.run_dir / "quick" / config.name / "units"
-                units = quick_units(self.binaries, config, root, files, self.support_root, work,
-                                    self.args.checks, self.args.timeout, unit_pool)
-                self.record_analysis(config, units)
-        finally:
-            unit_pool.shutdown()
-        for config, root, files in jobs:
-            if config.name in program_futures:
-                self.record_analysis(config, program_futures[config.name].result())
+            work = self.run_dir / "quick" / config.name
+            work.mkdir(parents=True, exist_ok=True)
+            groups = [files] if config.whole_program else [[f] for f in files]
+            for group in groups:
+                tasks.append((config, lambda c=config, r=root, g=group: run_analysis(
+                    self.binaries.weavec, c, r, g, self.support_root, self.args.timeout)))
+            for file in files:
+                tasks.append((config, lambda c=config, r=root, f=file, w=work: run_compile(
+                    self.binaries.weavec_cc, timed, c, r, f, self.support_root, w, self.args.timeout)))
+        # The whole programs first: they take longest.
+        tasks.sort(key=lambda t: not t[0].whole_program)
+        quick = {c.name: Quick(config=c.name) for c in self.configs}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.jobs) as pool:
+            futures = {pool.submit(task): config for config, task in tasks}
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                measure = quick[futures[future].name]
+                if isinstance(result, AnalysisRun):
+                    measure.add_analysis(result)
+                    vlog(f"[{measure.config}] weavec {' '.join(result.files)[:60]}: {result.failure or 'ok'}")
+                else:
+                    measure.add_compile(result)
+                    vlog(f"[{measure.config}] weavec-cc -c {result.file}: {result.failure or 'ok'}")
+        for config in self.configs:
+            self.record_quick(config, quick[config.name])
 
-    def record_analysis(self, config: Config, analysis: Analysis) -> None:
-        entry = self.config_entry(config)
-        entry.setdefault("analyses", {})[analysis.kind] = analysis.to_json()
-        for failure in analysis.failures:
-            self.fail(f"{config.name} ({analysis.kind}): {failure}", tool=True)
-        if not analysis.failures:
-            self.measured.setdefault(config.name, {})[analysis.kind] = analysis.measured()
-        self.findings.extend(findings_of(config.name, analysis.diagnostics))
-        share = analysis.spatial_null_share
-        log(f"[{config.name}] {analysis.kind}: {analysis.errors} errors, {analysis.warnings} warnings, "
-            f"{analysis.sites} sites ({analysis.outcome_total('proven')} proven, "
-            f"{analysis.outcome_total('checked')} checked, {analysis.outcome_total('unresolved')} unresolved), "
-            f"spatial/null unresolved share {share if share is not None else '-'}, {analysis.cpu:.1f} s CPU")
+    def record_quick(self, config: Config, measure: Quick) -> None:
+        measure.diagnostics.sort(key=lambda d: (d.file, d.line, d.col, d.id))
+        self.entry(config)["quick"] = measure.to_json()
+        for failure in measure.failures:
+            self.fail(f"{config.name}: {failure}", config=config.name)
+        if not measure.failures:
+            self.measured[config.name] = measure.measured()
+        self.findings.extend(findings_of(config.name, measure.diagnostics))
+        a = measure.analysis
+        provenness = measure.proven_share
+        log(f"[{config.name}] {measure.ledger['accesses']} accesses, "
+            f"{'-' if provenness is None else f'{provenness:.1%}'} proven, {measure.ledger['unguarded']} unguarded; "
+            f"analysis: {a.get('sites', 0)} sites, {a.get('errors', 0)} errors, {a.get('warnings', 0)} warnings "
+            f"({measure.analysis_cpu + measure.compile_cpu:.1f} s CPU)")
+
+    def evaluate_triage(self) -> None:
+        result = check_triage(self.findings, self.triage.entries, self.selected)
+        self.results["triage"] = result.to_json()
+        for finding in result.untriaged:
+            self.fail(f"untriaged definite {finding['id']} in {finding['config']} at {finding['file']}:"
+                      f"{finding['line']}: {finding['message']}")
+        for finding in result.false_errors:
+            self.fail(f"definite {finding['id']} triaged false in {finding['config']} at {finding['file']}:"
+                      f"{finding['line']}: {finding['message']}")
+        for entry in result.stale:
+            self.note(f"stale triage entry: {entry['config']} {entry['file']}:{entry['line']} {entry['id']}")
+        per_config = collections.Counter(f["config"] for f in result.definite)
+        self.gate("triage", not result.failed,
+                  {"definiteErrors": len(result.definite), "possible": result.possible,
+                   "untriaged": len(result.untriaged), "triagedFalse": len(result.false_errors),
+                   "perConfig": dict(sorted(per_config.items()))}, failed_above=True)
 
     # ---- full: builds and tests ----
 
-    def wrapper_flags(self, mode: str, config: Config) -> tuple[str, list[str]]:
-        lowered = [low["flag"] for low in config.lowered]
+    def compiler_for(self, mode: str) -> tuple[str, list[str]]:
         if mode == "reference":
             return self.binaries.reference_cc, []
-        if mode == "legacy":
-            return self.binaries.weavec_cc, ["-Wno-error=weavec"]
-        return self.binaries.weavec_cc, [f"-fweavec-checks={mode}", "-fno-weavec-summary", *lowered]
+        return self.binaries.weavec_cc, [f"-fweavec-checks={mode}"]
 
     def run_builds(self) -> None:
         if self.args.reference_only:
             modes = ["reference"]
-        elif self.args.legacy:
-            modes = ["legacy"]
         else:
-            modes = [self.args.checks, "report"]
-        true_sites = true_error_sites(self.triage_entries)
-        true_sites |= {(e["config"], e["file"], int(e["line"])) for e in self.guard_triage}
+            # The rerun in report mode names every failing guard; the
+            # reference build only times the build (gate build-time).
+            modes = [self.args.checks, "report", "reference"]
         for config in self.configs:
             if not config.build:
                 continue
             checkout = self.checkout(config)
-            entry = self.config_entry(config)
-            runs = {}
-            config_modes = list(modes)
-            if modes != ["reference"] and modes != ["legacy"] and self.binaries.reference_cc:
-                # RFC 0031 G12, RFC 0033 D5 and RFC 0034 F5 (which counts the
-                # original configs too): the build's CPU time against the
-                # reference compiler's.
-                config_modes.append("reference")
+            entry = self.entry(config)
             cache = self.args.workdir / ".cache" / config.project.name
             cache.mkdir(parents=True, exist_ok=True)
-            for mode in config_modes:
-                compiler, flags = self.wrapper_flags(mode, config)
-                with_ledger = mode in ("trap", "verify")
+            runs: dict[str, BuildRun] = {}
+            for mode in modes:
+                compiler, flags = self.compiler_for(mode)
                 log(f"[{config.name}] {mode} build with {compiler}")
-                # The reference build next to a WeaveC build only times the build.
-                no_tests = [] if mode == "reference" and mode not in modes else None
+                timed_only = mode == "reference" and not self.args.reference_only
                 build = run_build(config, mode, compiler, flags, checkout, self.run_dir / "builds" / config.name,
                                   self.support_root, self.bench_dir, self.jobs, self.args.build_timeout,
-                                  self.args.keep, self.tracked[config.project.name], with_ledger,
-                                  run_commands=no_tests, extra_env={"CACHE": str(cache)})
+                                  self.args.keep, tests=[] if timed_only else None,
+                                  extra_env={"CACHE": str(cache)})
                 runs[mode] = build
                 for failure in build.failures:
-                    self.fail(f"{config.name} ({mode}): {failure}", tool=True)
-                if build.program is not None:
-                    self.findings.extend(findings_of(config.name, build.program.diagnostics))
-                total = sum(s.seconds for s in build.steps)
+                    self.fail(f"{config.name} ({mode}): {failure}", config=config.name)
                 log(f"[{config.name}] {mode}: built={build.built} tests={build.tests_passed} "
-                    f"({total:.1f} s build, {len(build.trap_deaths)} trap signs, {len(build.reports)} reports)")
-            for mode, build in runs.items():
-                if not build.built or build.tests_passed is not False:
-                    continue
-                if mode in ("trap", "verify") and self.only_true_positives(config, runs, true_sites):
-                    self.note(f"{config.name} ({mode}): the test suite trapped only at triaged-true definite "
-                              f"errors and guard failures (G11 counts them as true positives)")
-                    self.true_traps_only.add(config.name)
-                    continue
-                failed = [t for t in build.tests if not t.ok]
-                self.fail(f"{config.name} ({mode}): test suite failed: " + "; ".join(
-                    f"{t.command!r}: {t.status}: {output_tail(t.tail, 6)}" for t in failed), tool=True)
+                    f"({build.build_cpu:.1f} s build CPU, {len(build.trap_deaths)} trap signs, "
+                    f"{len(build.reports)} reports)")
             entry["builds"] = {mode: run.to_json() for mode, run in runs.items()}
-            if not self.args.reference_only and not self.args.legacy:
-                traps = self.count_traps(config, runs, true_sites)
-                self.measured.setdefault(config.name, {})["traps"] = traps
-                entry["traps"] = traps
-                build = runs.get(self.args.checks)
-                if build and build.program:
-                    entry["buildLedger"] = build.program.measured()
+            self.judge_tests(config, runs)
+            if not self.args.reference_only:
+                entry["traps"] = self.count_traps(config, runs)
+                checked, reference = runs.get(self.args.checks), runs.get("reference")
+                if checked and reference and checked.built and reference.built and reference.build_cpu > 0:
+                    entry["buildCpuRatio"] = round(checked.build_cpu / reference.build_cpu, 3)
 
-    def only_true_positives(self, config: Config, runs: dict[str, BuildRun], true_sites: set) -> bool:
-        """A trap-mode test failure explained by checks at triaged-true definite errors alone."""
+    def judge_tests(self, config: Config, runs: dict[str, BuildRun]) -> None:
+        for mode, build in runs.items():
+            if not build.built or build.tests_passed is not False:
+                continue
+            if mode == self.args.checks and self.only_triaged_failures(config, runs):
+                self.note(f"{config.name} ({mode}): the test suite trapped only at guard failures triaged as "
+                          f"true bugs")
+                self.entry(config)["trueTrapsOnly"] = True
+                continue
+            failed = [t for t in build.tests if not t.ok]
+            self.fail(f"{config.name} ({mode}): test suite failed: " + "; ".join(
+                f"{t.command!r}: {t.status}: {output_tail(t.tail, 6)}" for t in failed), config=config.name)
+
+    def only_triaged_failures(self, config: Config, runs: dict[str, BuildRun]) -> bool:
+        """A trap-mode test failure explained by triaged guard failures alone:
+        the report-mode rerun passes and names only triaged sites."""
         report = runs.get("report")
         if report is None or not report.built or report.tests_passed is False or not report.reports:
             return False
-        return all((config.name, r["file"], r["line"]) in true_sites for r in report.reports)
+        return all(triaged_failure(self.triage.guard_failures, config.name, r) for r in report.reports)
 
-    def count_traps(self, config: Config, runs: dict[str, BuildRun], true_sites: set) -> int:
-        """G11 (G6 in verify mode): check failures in the test suites.
-
-        Each site the report-mode rerun names counts once, except the sites of
-        triaged-true definite errors; a trap-mode death that the rerun names no
-        site for counts once.
-        """
-        report = runs.get("report")
-        reports = report.reports if report else []
-        sites = [r for r in reports if (config.name, r["file"], r["line"]) not in true_sites]
-        if report and report.built:
-            seen = {(r["file"], r["line"]) for r in reports}
-            for entry in self.guard_triage:
-                if entry["config"] == config.name and (entry["file"], int(entry["line"])) not in seen:
-                    self.note(f"stale guardFailures entry ({config.name} {entry['file']}:{entry['line']})")
+    def count_traps(self, config: Config, runs: dict[str, BuildRun]) -> int:
+        """Failing guards in the test suites: each site that the checked run or
+        the report-mode rerun names once, except guard failures triaged as
+        true bugs; each report without a location once; a trap-mode death
+        that no report explains once. A `weavec.proven` report in verify mode
+        fails gate G6 as well."""
         checked = runs.get(self.args.checks)
+        reports: dict[tuple, dict] = {}
+        for build in (checked, runs.get("report")):
+            for r in (build.reports if build else []):
+                reports.setdefault((r["kind"], r["file"], r["line"], r["col"], r["proven"]), r)
+        counted = [r for r in reports.values() if not triaged_failure(self.triage.guard_failures, config.name, r)]
+        for r in counted:
+            self.fail(f"{config.name}: a guard failed in the test suite: {describe_report(r)}")
+        proven = [r for r in counted if r["proven"]]
+        self.entry(config)["provenReports"] = len(proven)
         deaths = checked.trap_deaths if checked else []
-        for r in sites:
-            self.fail(f"{config.name}: check failed in the test suite: {r['template']} at "
-                      f"{r['file']}:{r['line']}:{r['col']}")
-        unattributed = bool(deaths) and not reports
-        if unattributed:
-            self.fail(f"{config.name}: the test suite trapped ({deaths[0]}) and the report-mode rerun "
-                      f"names no check")
-        if self.args.checks == "verify" and deaths and (sites or unattributed):
-            self.fail(f"{config.name}: trap in verify mode (G6): {deaths[0]}")
-        return len(sites) + (1 if unattributed else 0)
+        unexplained = bool(deaths) and not reports
+        if unexplained:
+            self.fail(f"{config.name}: the test suite trapped ({deaths[0]}) and no report names a guard")
+        stale = [e for e in self.triage.guard_failures if e["config"] == config.name and not any(
+            triaged_failure([e], config.name, r) for r in reports.values())]
+        for e in stale:
+            self.note(f"stale guardFailures entry ({config.name} {e['file']}:{e['line']})")
+        return len(counted) + (1 if unexplained else 0)
 
     # ---- injections ----
 
     def run_injections(self) -> None:
-        injections = load_injections(self.args.injections, self.manifest)
-        selected = {c.name for c in self.configs}
-        injections = [i for i in injections if i.config in selected]
+        injections = [i for i in load_injections(self.args.injections, self.manifest) if i.config in self.selected]
         if self.args.injection:
             wanted = set(self.args.injection)
             unknown = wanted - {i.id for i in injections}
             if unknown:
-                raise GateError(f"unknown injection(s): {', '.join(sorted(unknown))}")
+                raise GateError(f"unknown or unselected injection(s): {', '.join(sorted(unknown))}")
             injections = [i for i in injections if i.id in wanted]
         if not injections:
-            # For example a run of held-out configs only: they are never patched.
             log("injections: none for the selected configs")
             return
-        if not self.args.legacy and not self.args.reference_only:
-            probe_ledger_support(self.binaries, self.run_dir / "probe")
-        log(f"injections: {len(injections)} ({'legacy' if self.args.legacy else 'reference' if self.args.reference_only else 'current'} semantics)")
+        log(f"injections: {len(injections)}" + (" (ASan)" if self.args.reference_only else ""))
         for inj in injections:
             self.checkout(self.manifest.config(inj.config))
-        order = sorted(injections, key=lambda i: (i.mode != "whole-program", i.config != "lua"))
-        futures = {self.pool.submit(self.run_injection, inj): inj for inj in order}
+        workers = max(1, min(len(injections), self.jobs // 2 or 1))
         runs: dict[str, InjectionRun] = {}
-        for future in concurrent.futures.as_completed(futures):
-            inj = futures[future]
-            try:
-                run = future.result()
-            except GateError as exc:
-                run = InjectionRun(injection=inj, failures=[str(exc)])
-            runs[inj.id] = run
-            state = "reported" if run.reported else "not reported"
-            if self.args.reference_only:
-                if run.asan is None:
-                    state = "no run command (static expectation)"
-                elif run.asan.get("atLine"):
-                    state = f"{run.asan['sanitizer']} reports the injected line"
-                elif run.asan.get("reached"):
-                    state = (f"{run.asan['sanitizer']}: {run.asan.get('report')} "
-                             f"(at {run.asan.get('location') or 'no location'})")
-                else:
-                    state = f"{run.asan['sanitizer']}: nothing reported"
-            log(f"[inject] {inj.id}: {state}{' (' + ', '.join(run.via) + ')' if run.via else ''}"
-                f"{'; ' + '; '.join(run.failures) if run.failures else ''}")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(self.run_injection, inj): inj for inj in injections}
+            for future in concurrent.futures.as_completed(futures):
+                inj = futures[future]
+                try:
+                    run = future.result()
+                except GateError as exc:
+                    run = InjectionRun(injection=inj, failures=[str(exc)])
+                runs[inj.id] = run
+                log(f"[inject] {inj.id}: {self.describe_injection(run)}")
         ordered = [runs[i.id] for i in injections]
+        self.injection_runs = ordered
         self.results["injections"] = [r.to_json() for r in ordered]
         for run in ordered:
             for failure in run.failures:
-                self.fail(f"injection {run.injection.id}: {failure}", tool=True)
+                self.fail(f"injection {run.injection.id}: {failure}")
         if self.args.reference_only:
             for r in ordered:
-                if r.asan is None:
+                if r.asan is None or r.failures:
                     continue
                 if not r.asan.get("reached"):
-                    self.fail(f"injection {r.injection.id}: its run command does not reach the bug "
+                    self.fail(f"injection {r.injection.id}: its run does not reach the bug "
                               f"({r.asan['sanitizer']} reports nothing)")
                 elif r.asan.get("atLine") is False:
                     self.fail(f"injection {r.injection.id}: {r.asan['sanitizer']} reports "
-                              f"{r.asan.get('location')}, not {r.injection.file}:{r.injection.line}")
+                              f"{r.asan.get('location')}, not {r.injection.stop_file}:{r.injection.stop_line}")
             return
         print_injection_table(ordered)
-        reported = sum(r.reported for r in ordered)
-        dossier = [r for r in ordered if r.injection.dossier]
-        agree = sum((r.reported == (r.injection.dossier == "caught")) for r in dossier)
-        self.results["injectionSummary"] = {"reported": reported, "total": len(ordered),
-                                            "dossierAgreement": f"{agree}/{len(dossier)}"}
-        log(f"injections reported at the injected line: {reported}/{len(ordered)}; "
-            f"agreement with the v0.10.0 dossier: {agree}/{len(dossier)}")
-        if self.args.legacy:
-            self.check_legacy_injections(ordered)
-        else:
-            self.gate_g12(ordered, all_selected=len(injections) == len(load_injections(
-                self.args.injections, self.manifest)))
+        missed = [r.injection.id for r in ordered if not r.stopped]
+        self.gate("injections", not missed and not any(r.failures for r in ordered),
+                  {"stopped": len(ordered) - len(missed), "total": len(ordered), "missed": missed})
+
+    def describe_injection(self, run: InjectionRun) -> str:
+        if run.failures:
+            return "; ".join(run.failures)
+        if run.asan is not None:
+            a = run.asan
+            if a.get("atLine"):
+                return f"{a['sanitizer']} reports the injected line"
+            if a.get("reached"):
+                return f"{a['sanitizer']}: {a.get('report')} (at {a.get('location') or 'no location'})"
+            return f"{a['sanitizer']}: nothing reported"
+        if run.stopped:
+            return f"stops ({run.via[0]})"
+        seen = ", ".join(describe_report(r) for r in run.reports[:3]) or "no report"
+        return f"does not stop at {run.injection.stop_file}:{run.injection.stop_line} ({seen})"
 
     def run_injection(self, inj: Injection) -> InjectionRun:
         config = self.manifest.config(inj.config)
         checkout = self.checkout(config)
         run = InjectionRun(injection=inj)
         work = self.run_dir / "inject" / inj.id
-        src = work / "src"
         patch = (self.args.injections.parent / inj.patch).resolve()
-        injection_dir = patch.parent
+
+        def prepare(src: Path) -> str:
+            return apply_patch(patch, src) or check_injected_line(src, inj)
+
+        extra = {"INJECTION_DIR": str(patch.parent), "CACHE": str(self.args.workdir / ".cache" / config.project.name)}
         try:
             if self.args.reference_only:
-                if inj.expect.get("run"):
-                    run.asan = self.asan_injection(inj, config, checkout, patch, work, injection_dir)
+                run.asan = self.asan_injection(inj, config, checkout, prepare, work, extra)
                 return run
-            copy_tree(checkout, src)
-            failure = apply_patch(patch, src) or check_injected_line(src, inj)
-            if failure:
-                run.failures.append(failure)
+            build = run_build(config, "trap", self.binaries.weavec_cc, ["-fweavec-checks=trap"], checkout, work,
+                              self.support_root, self.bench_dir, self.jobs, self.args.build_timeout,
+                              self.args.keep, prepare=prepare, build=inj.build, tests=inj.commands(config),
+                              extra_env=extra)
+            if not build.built:
+                run.failures.append("the patched copy does not build: " + "; ".join(build.failures))
                 return run
-            files = config_files(config, src)
-            target = src / inj.file
-            diagnostics: list[Diagnostic] = []
-            if self.args.legacy:
-                group = files if inj.mode == "whole-program" else [target]
-                argv = legacy_command(self.binaries.weavec, config, group, self.support_root,
-                                      whole_program=inj.mode == "whole-program")
-                unit = run_tool_unit(argv, config, src, group, self.args.timeout)
-                run.cpu += unit.cpu
-                if unit.failure:
-                    run.failures.append(unit.failure)
-                diagnostics = unit.diagnostics
-                run.halves["tool"] = any(diagnostic_matches(d, inj, True) for d in diagnostics)
-            else:
-                diagnostics = self.inject_current(inj, config, src, files, target, work, run)
-            run.matches = [d.to_json() for d in diagnostics if diagnostic_matches(d, inj, self.args.legacy)]
-            run.nearby = [d.to_json() for d in diagnostics
-                          if d.file == inj.file and abs(d.line - inj.line) <= 3 and d.id not in COVERAGE_IDS]
-            if run.matches:
-                run.via.append("diagnostic")
-            if not self.args.legacy and inj.trap and not run.matches:
-                self.inject_trap(inj, config, checkout, patch, work, injection_dir, run)
-            if self.args.legacy:
-                run.reported = bool(run.matches)
-            else:
-                needed = [k for k in ("tool", "link", "unit") if k in run.halves]
-                run.reported = (bool(needed) and all(run.halves[k] for k in needed)) or "trap" in run.via
+            run.reports = build.reports
+            run.via = stops_at(inj, build)
+            run.stopped = bool(run.via)
         finally:
             if not self.args.keep:
                 remove_tree(work)
         return run
 
-    def inject_current(self, inj: Injection, config: Config, src: Path, files: list[Path], target: Path,
-                       work: Path, run: InjectionRun) -> list[Diagnostic]:
-        diagnostics: list[Diagnostic] = []
-        if inj.mode == "unit":
-            analysis = quick_units(self.binaries, config, src, [target], self.support_root, work / "unit",
-                                   self.args.checks, self.args.timeout)
-            run.cpu += analysis.cpu
-            run.failures.extend(analysis.failures)
-            diagnostics.extend(analysis.diagnostics)
-            run.halves["unit"] = any(diagnostic_matches(d, inj, False) for d in analysis.diagnostics)
-            return diagnostics
-        analysis = quick_program(self.binaries, config, src, files, self.support_root, work / "program",
-                                 self.args.timeout)
-        run.cpu += analysis.cpu
-        run.failures.extend(analysis.failures)
-        diagnostics.extend(analysis.diagnostics)
-        run.halves["tool"] = any(diagnostic_matches(d, inj, False) for d in analysis.diagnostics)
-        if config.link:
-            link_diags = self.inject_link(config, src, files, work / "link", run)
-            diagnostics.extend(link_diags)
-            run.halves["link"] = any(diagnostic_matches(d, inj, False) for d in link_diags)
-        return diagnostics
-
-    def inject_link(self, config: Config, src: Path, files: list[Path], work: Path,
-                    run: InjectionRun) -> list[Diagnostic]:
-        """Compile every file with weavec-cc -c and link the objects directly (G12)."""
-        work.mkdir(parents=True, exist_ok=True)
-        objects = []
-        diagnostics: list[Diagnostic] = []
-        for file in files:
-            stem = file.relative_to(src).as_posix().replace("/", "__")
-            obj = work / f"{stem}.o"
-            argv = [self.binaries.weavec_cc, "-c", "-ferror-limit=0", f"-fweavec-checks={self.args.checks}",
-                    f"-fweavec-ledger={work / (stem + '.ledger.json')}", *expand_args(config, self.support_root),
-                    str(file), "-o", str(obj)]
-            result = run_process(argv, cwd=src, timeout=self.args.timeout)
-            run.cpu += result.cpu
-            found, clang_errors = parse_diagnostics(result.output, src)
-            diagnostics.extend(found)
-            failure = classify_failure(result, found, clang_errors)
-            if failure:
-                run.failures.append(f"link half: {file.name}: {failure}")
-                return diagnostics
-            if not obj.exists():
-                return diagnostics  # a definite error at compile time: no object, reported above
-            objects.append(str(obj))
-        ledger = work / "program.ledger.json"
-        # RFC 0033 section 7: the link step analyses the program again only when
-        # asked, and G12 is about what that analysis finds; with no budget, so a
-        # slow machine does not decide it.
-        argv = [self.binaries.weavec_cc, "-o", str(work / "a.out"), *objects, "-fweavec-link=analyze",
-                "-fweavec-link-budget=0", f"-fweavec-ledger={ledger}", *(config.link or {}).get("args", [])]
-        result = run_process(argv, cwd=src, timeout=self.args.timeout)
-        run.cpu += result.cpu
-        found, _ = parse_diagnostics(result.output, src)
-        diagnostics.extend(found)
-        if ledger.exists():
-            try:
-                diagnostics.extend(ledger_diagnostics(validate_ledger(json.loads(ledger.read_text()), ledger), src))
-            except (ValueError, json.JSONDecodeError) as exc:
-                run.failures.append(f"link half: {exc}")
-        elif result.returncode not in (0, 1):
-            run.failures.append(f"link half: {describe_status(result)}")
-        return diagnostics
-
-    def inject_trap(self, inj: Injection, config: Config, checkout: Path, patch: Path, work: Path,
-                    injection_dir: Path, run: InjectionRun) -> None:
-        compiler, flags = self.wrapper_flags("report", config)
-        build = run_build(config, "report", compiler, flags, checkout, work / "trap", self.support_root,
-                          self.bench_dir, self.jobs, self.args.build_timeout, self.args.keep,
-                          self.tracked[config.project.name], with_ledger=False, patch=patch,
-                          run_commands=[inj.expect["run"]], extra_env={"INJECTION_DIR": str(injection_dir)})
-        run.failures.extend(f for f in build.failures if not f.startswith("build step"))
-        # A build that stops on a definite error is judged by its diagnostics.
-        for d in build.diagnostics:
-            if diagnostic_matches(d, inj, False):
-                run.matches.append(d.to_json())
-                if "diagnostic" not in run.via:
-                    run.via.append("diagnostic")
-        hits = [r for r in build.reports if report_matches(r, inj)]
-        # RFC 0032 section 2.3: a release behind a function pointer has no
-        # site to guard; the allocator itself refuses it, in every mode, with
-        # `weavec: invalid release of 0x...` and a trap, and names no line.
-        refused = [t.command for t in build.tests if inj.trap == "release" and INVALID_RELEASE in t.tail]
-        run.halves["trap"] = bool(hits or refused)
-        if hits:
-            run.via.append("trap")
-            run.matches.extend({"trap": r} for r in hits)
-        elif refused:
-            run.via.append("trap")
-            run.matches.extend({"invalidRelease": command} for command in refused)
-        elif not build.built and not run.matches:
-            run.failures.append("the patched build failed without a matching diagnostic: " +
-                                "; ".join(build.failures))
-
-    def asan_injection(self, inj: Injection, config: Config, checkout: Path, patch: Path, work: Path,
-                       injection_dir: Path) -> dict:
-        """Check that an injection's run command reaches the injected line.
-
-        The reference compiler with ASan and UBSan for index and null bugs;
-        without ASan but with _FORTIFY_SOURCE for `len` bugs, whose short
-        writes ASan cannot see (the fortified call traps or aborts instead,
-        without a location).
-        """
+    def asan_injection(self, inj: Injection, config: Config, checkout: Path, prepare: Callable[[Path], str],
+                       work: Path, extra: dict) -> dict:
+        """Check that an injection's run reaches the injected line: the
+        reference compiler with ASan and UBSan, or, for `fortify` entries
+        (short writes ASan cannot see), with _FORTIFY_SOURCE."""
         cc = self.binaries.reference_cc
-        fortify = inj.trap == "len"
-        if fortify:
+        if inj.fortify:
             flags = ["-O1", "-g", "-U_FORTIFY_SOURCE", "-D_FORTIFY_SOURCE=2"]
         else:
             flags = ["-fsanitize=address,undefined", "-fno-sanitize-recover=undefined", "-g", "-O1",
                      "-fno-omit-frame-pointer"]
-        build = run_build(config, "asan", cc, flags, checkout, work / "asan", self.support_root, self.bench_dir,
-                          self.jobs, self.args.build_timeout, self.args.keep, self.tracked[config.project.name],
-                          with_ledger=False, patch=patch, run_commands=[inj.expect["run"]],
-                          extra_env={"INJECTION_DIR": str(injection_dir),
-                                     "ASAN_OPTIONS": "detect_leaks=0",
-                                     "UBSAN_OPTIONS": "print_stacktrace=1",
+        build = run_build(config, "asan", cc, flags, checkout, work, self.support_root, self.bench_dir, self.jobs,
+                          self.args.build_timeout, self.args.keep, prepare=prepare, build=inj.build,
+                          tests=inj.commands(config),
+                          extra_env={**extra, "ASAN_OPTIONS": "detect_leaks=0", "UBSAN_OPTIONS": "print_stacktrace=1",
                                      **sanitizer_symbolizer(cc)})
         text = ""
         for step in build.tests:
@@ -2615,692 +2099,176 @@ class Gate:
             except OSError:
                 pass
         found, report, location = sanitizer_location(text, work / "asan" / "src")
-        if fortify and not found and build.trap_deaths:
+        if inj.fortify and not found and build.trap_deaths:
             found, report = True, f"fortified call trapped: {build.trap_deaths[0]}"
-        at_line = None if location is None else (same_file(location[0], inj.file) and location[1] == inj.line)
-        return {"built": build.built, "sanitizer": "fortify" if fortify else "asan+ubsan",
+        at_line = None if location is None else (same_file(location[0], inj.stop_file)
+                                                 and location[1] == inj.stop_line)
+        return {"built": build.built, "sanitizer": "fortify" if inj.fortify else "asan+ubsan",
                 "reached": found, "report": report,
                 "location": f"{location[0]}:{location[1]}" if location else None,
-                "atLine": at_line, "failures": [f for f in build.failures if not f.startswith("build step")]}
-
-    def check_legacy_injections(self, runs: list[InjectionRun]) -> None:
-        expected = self.load_expected()
-        recorded = (expected.get("legacy") or {}).get("injections")
-        self.legacy_injection_runs = runs
-        if self.args.update:
-            return
-        if not recorded:
-            self.fail("legacy injection baseline: none recorded in expected.json; run --inject --legacy --update")
-            return
-        if recorded.get("platform") != self.platform:
-            self.note(f"legacy injection baseline recorded on {recorded.get('platform')}; not compared")
-            return
-        results = recorded.get("results", {})
-        for run in runs:
-            want = results.get(run.injection.id)
-            if want is None:
-                self.fail(f"legacy injection baseline: {run.injection.id} not recorded")
-            elif want != run.reported:
-                self.fail(f"legacy injection baseline: {run.injection.id} reported={run.reported}, "
-                          f"recorded {want}")
-
-    def gate_g12(self, runs: list[InjectionRun], all_selected: bool) -> None:
-        spec = self.manifest.gates.get("G12", {})
-        share = sum(r.reported for r in runs) / len(runs) if runs else 0.0
-        required_missed = [r.injection.id for r in runs if r.injection.required and not r.reported]
-        ok = not required_missed and (share >= spec.get("minReportedShare", 0.9) or not all_selected)
-        detail = {"reported": sum(r.reported for r in runs), "total": len(runs), "share": round(share, 3),
-                  "requiredMissed": required_missed, "allInjections": all_selected}
-        self.gate("G12", ok, detail)
+                "atLine": at_line, "failures": build.failures}
 
     # ---- benchmarks ----
 
     def run_benches(self) -> None:
         for config in self.configs:
-            if not config.bench:
-                continue
-            bench = config.bench
-            repeat = self.args.repeat or bench.repeat
-            checkout = self.checkout(config)
-            compilers = [("reference", self.binaries.reference_cc)]
-            run = BenchRun(config=config.name, name=bench.name)
-            work = self.run_dir / "bench" / config.name
-            remove_tree(work)
-            if not self.args.reference_only:
-                compilers.append(("weavec-cc", self.binaries.weavec_cc))
-                compilers.append(("weavec-cc-no-runtime",
-                                  write_wrapper(work / "bin" / "weavec-cc-no-runtime", self.binaries.weavec_cc,
-                                                ["-fno-weavec-runtime"])))
-            env_extra = {}
-            if bench.input:
-                input_path = work / "input.bin"
-                input_path.parent.mkdir(parents=True, exist_ok=True)
-                env = base_env(config, "cc", work, self.support_root, self.bench_dir, self.jobs,
-                               {"INPUT": str(input_path)})
-                result = run_shell(bench.input, cwd=work, env=env, timeout=self.args.build_timeout)
-                if result.returncode != 0:
-                    run.failures.append(f"input: {describe_status(result)}: {result.output.strip()[:300]}")
-                env_extra["INPUT"] = str(input_path)
-            builds = {}
-            if not run.failures:
-                for label, cc in compilers:
-                    src = work / label
-                    copy_tree(checkout, src)
-                    env = base_env(config, cc, src, self.support_root, self.bench_dir, self.jobs, env_extra)
-                    for command in bench.build:
-                        result = run_shell(command, cwd=src, env=env, timeout=self.args.build_timeout)
-                        if result.returncode != 0:
-                            run.failures.append(f"{label} build {command!r}: {describe_status(result)}: "
-                                                f"{result.output.strip()[-300:]}")
-                            break
-                    else:
-                        builds[label] = (src, env)
-            if len(builds) == len(compilers):
-                log(f"[{config.name}] bench {bench.name}: {repeat} runs per build")
-                for label, (src, env) in builds.items():  # warm up caches and the input
-                    run_shell(bench.command, cwd=src, env=env, timeout=self.args.build_timeout)
-                for index in range(repeat):
-                    for label, (src, env) in builds.items():
-                        result = run_shell(bench.command, cwd=src, env=env, timeout=self.args.build_timeout)
-                        if result.returncode != 0:
-                            run.failures.append(f"{label} run {index}: {describe_status(result)}: "
-                                                f"{result.output.strip()[-300:]}")
-                            break
-                        run.times.setdefault(label, []).append(round(result.user, 4))
-                        run.outputs.setdefault(label, result.stdout.strip()[:200])
-                        if result.maxrss:
-                            run.rss[label] = min(run.rss.get(label, result.maxrss), result.maxrss)
-                    if run.failures:
+            if config.bench:
+                self.run_bench(config)
+
+    def run_bench(self, config: Config) -> None:
+        bench = config.bench
+        repeat = self.args.repeat or bench.repeat
+        checkout = self.checkout(config)
+        run = BenchRun(config=config.name, name=bench.name)
+        work = self.run_dir / "bench" / config.name
+        remove_tree(work)
+        reference = self.binaries.reference_cc
+        compilers = [("reference", reference, {})]
+        if not self.args.reference_only:
+            compilers.append(("weavec-cc", write_wrapper(work / "bin" / "weavec-cc", self.binaries.weavec_cc,
+                                                         [f"-fweavec-checks={self.args.checks}"]), {}))
+            if not self.args.no_asan:
+                compilers.append(("asan", write_wrapper(work / "bin" / "asan", reference,
+                                                        ["-fsanitize=address", "-fno-omit-frame-pointer"]),
+                                  {"ASAN_OPTIONS": "detect_leaks=0"}))
+        env_extra = {}
+        if bench.input:
+            input_path = work / "input.bin"
+            input_path.parent.mkdir(parents=True, exist_ok=True)
+            env = base_env(config, "cc", work, self.support_root, self.bench_dir, self.jobs,
+                           {"INPUT": str(input_path)})
+            result = run_shell(bench.input, cwd=work, env=env, timeout=self.args.build_timeout)
+            if result.returncode != 0:
+                run.failures.append(f"input: {describe_status(result)}: {result.output.strip()[:300]}")
+            env_extra["INPUT"] = str(input_path)
+        report_log = work / "runtime-reports.log"
+        builds = {}
+        if not run.failures:
+            for label, cc, extra in compilers:
+                src = work / label
+                copy_tree(checkout, src)
+                env = base_env(config, cc, src, self.support_root, self.bench_dir, self.jobs, {**env_extra, **extra})
+                if label == "weavec-cc":
+                    env["WEAVEC_RT_REPORT_LOG"] = str(report_log)
+                for command in bench.build:
+                    result = run_shell(command, cwd=src, env=env, timeout=self.args.build_timeout)
+                    if result.returncode != 0:
+                        run.failures.append(f"{label} build {command!r}: {describe_status(result)}: "
+                                            f"{result.output.strip()[-300:]}")
                         break
-                if bench.check and not run.failures:
-                    for label, (src, env) in builds.items():
-                        result = run_shell(bench.check, cwd=src, env=env, timeout=self.args.build_timeout)
-                        if result.returncode != 0:
-                            run.failures.append(f"{label} check: {describe_status(result)}")
-                run.minimum = {label: min(times) for label, times in run.times.items() if times}
-                if len(set(run.outputs.values())) > 1:
-                    run.failures.append(f"the builds print different results: {run.outputs}")
-                if "weavec-cc" in run.minimum and run.minimum.get("reference"):
-                    run.ratio = round(run.minimum["weavec-cc"] / run.minimum["reference"], 4)
-                if "weavec-cc-no-runtime" in run.minimum and run.minimum.get("reference"):
-                    run.ratio_no_runtime = round(
-                        run.minimum["weavec-cc-no-runtime"] / run.minimum["reference"], 4)
-                if "weavec-cc" in run.rss and run.rss.get("reference"):
-                    run.rss_ratio = round(run.rss["weavec-cc"] / run.rss["reference"], 4)
-            if not self.args.keep:
-                remove_tree(work)
-            for failure in run.failures:
-                self.fail(f"{config.name} bench: {failure}", tool=True)
-            self.config_entry(config)["bench"] = run.to_json()
-            if run.ratio is not None:
-                self.measured.setdefault(config.name, {})["overhead"] = run.ratio
-            if run.ratio_no_runtime is not None:
-                self.measured.setdefault(config.name, {})["overheadNoRuntime"] = run.ratio_no_runtime
-            if run.rss_ratio is not None:
-                self.measured.setdefault(config.name, {})["rssRatio"] = run.rss_ratio
-            log(f"[{config.name}] bench {bench.name}: min user CPU "
-                + ", ".join(f"{k} {v:.3f} s" for k, v in run.minimum.items())
-                + (f"; overhead {run.ratio:.3f}" if run.ratio is not None else "")
-                + (f"; without the runtime {run.ratio_no_runtime:.3f}" if run.ratio_no_runtime is not None else "")
-                + (f"; peak memory {run.rss_ratio:.2f}x" if run.rss_ratio is not None else ""))
+                else:
+                    builds[label] = (src, env)
+        if builds and len(builds) == len(compilers):
+            log(f"[{config.name}] bench {bench.name}: {repeat} runs per build ({', '.join(builds)})")
+            for src, env in builds.values():  # warm up caches and the input
+                run_shell(bench.command, cwd=src, env=env, timeout=self.args.build_timeout)
+            for index in range(repeat):
+                for label, (src, env) in builds.items():
+                    result = run_shell(bench.command, cwd=src, env=env, timeout=self.args.build_timeout)
+                    if result.returncode != 0:
+                        run.failures.append(f"{label} run {index}: {describe_status(result)}: "
+                                            f"{result.output.strip()[-300:]}")
+                        break
+                    run.times.setdefault(label, []).append(round(result.user, 4))
+                    run.outputs.setdefault(label, result.stdout.strip()[:200])
+                if run.failures:
+                    break
+            if bench.check and not run.failures:
+                for label, (src, env) in builds.items():
+                    result = run_shell(bench.check, cwd=src, env=env, timeout=self.args.build_timeout)
+                    if result.returncode != 0:
+                        run.failures.append(f"{label} check: {describe_status(result)}")
+            run.minimum = {label: min(times) for label, times in run.times.items() if times}
+            if len(set(run.outputs.values())) > 1:
+                run.failures.append(f"the builds print different results: {run.outputs}")
+            base = run.minimum.get("reference")
+            if base:
+                if "weavec-cc" in run.minimum:
+                    run.ratio = round(run.minimum["weavec-cc"] / base, 4)
+                if "asan" in run.minimum:
+                    run.asan_ratio = round(run.minimum["asan"] / base, 4)
+        if report_log.exists():
+            run.reports = parse_reports(report_log.read_text(errors="replace"), work / "weavec-cc")
+        if not self.args.keep:
+            remove_tree(work)
+        for failure in run.failures:
+            self.fail(f"{config.name} bench: {failure}", config=config.name)
+        self.entry(config)["bench"] = run.to_json()
+        log(f"[{config.name}] bench {bench.name}: min user CPU "
+            + ", ".join(f"{k} {v:.3f} s" for k, v in run.minimum.items())
+            + (f"; ratio {run.ratio:.3f}" if run.ratio is not None else "")
+            + (f"; ASan {run.asan_ratio:.3f}" if run.asan_ratio is not None else ""))
 
-    # ---- gates and ratchet ----
+    # ---- gates ----
 
-    def gate(self, name: str, ok: bool | None, detail: Any) -> None:
-        status = "skip" if ok is None else "pass" if ok else "fail"
-        self.results["gates"][name] = {"status": status, "detail": detail}
-        if ok is False:
-            self.fail(f"gate {name}: {json.dumps(detail)[:500]}")
-        else:
-            log(f"gate {name}: {status}")
-
-    def note(self, message: str) -> None:
-        self.notes.append(message)
-        log(f"note: {message}")
-
-    def evaluate_new_semantics(self) -> None:
+    def evaluate(self) -> None:
+        a = self.args
         gates = self.manifest.gates
-        analysed = self.args.quick or self.args.full
-        if analysed:
-            self.evaluate_findings_and_analyses()
-        if self.args.bench or self.args.full:
-            # RFC 0032 R6 set G14's limits: the default build, the build
-            # without the runtime, and the default build's peak memory.
-            g14 = gates.get("G14", {})
-            detail14 = {}
-            ok14 = True
-            selected = {c.name for c in self.configs}
-            for field, key in (("maxOverhead", "overhead"), ("maxOverheadNoRuntime", "overheadNoRuntime"),
-                               ("maxRssRatio", "rssRatio")):
-                for name, limit in (g14.get(field) or {}).items():
-                    ratio = self.measured.get(name, {}).get(key)
-                    if name in selected and ratio is not None:
-                        detail14.setdefault(name, {})[key] = {"value": ratio, "limit": limit}
-                        ok14 &= ratio <= limit
-            self.gate("G14", ok14 if detail14 else None, detail14)
-        if self.args.full:
-            traps = {name: m.get("traps") for name, m in self.measured.items()
-                     if "traps" in m and name not in self.held_out}
-            self.gate("G6" if self.args.checks == "verify" else "G11",
-                      all(t == 0 for t in traps.values()) if traps else None, traps)
-        if self.sets["heldOut"]:
-            self.evaluate_held_out()
-        for corpus_set in ("fresh", "sealed"):
-            if self.sets[corpus_set]:
-                self.evaluate_rfc0033(corpus_set)
-        self.evaluate_rfc0034()
-
-    def evaluate_findings_and_analyses(self) -> None:
-        # RFC 0030's gates (G9, G10) count the original configs; the held-out
-        # ones are gated by RFC 0031's (evaluate_held_out), the fresh and
-        # sealed ones by RFC 0033's (evaluate_rfc0033).
-        selected = {c.name for c in self.configs}
-        all_configs = all(c.name in selected for c in self.manifest.original)
-        gates = self.manifest.gates
-        original = [f for f in self.findings if f["config"] not in self.held_out]
-        triage = check_triage(original, self.triage_entries, selected - self.held_out)
-        self.results["triage"] = triage.to_json()
-        self.check_held_out_triage()
-        for finding in triage.untriaged:
-            self.fail(f"untriaged {finding['certainty']} {finding['id']} in {finding['config']} at "
-                      f"{finding['file']}:{finding['line']} (fingerprint {finding['fingerprint'] or 'none'}): "
-                      f"{finding['message']}")
-        for finding in triage.false_errors:
-            self.fail(f"G9: definite error triaged false in {finding['config']} at {finding['file']}:"
-                      f"{finding['line']}: {finding['message']}")
-        for problem in triage.invalid + check_lowered_against_triage(self.configs, self.triage_entries):
-            self.fail(f"triage: {problem}")
-        for entry in triage.stale:
-            self.note(f"stale triage entry {entry['fingerprint']} ({entry['config']} {entry['file']}:"
-                      f"{entry['line']})")
-        g9 = gates.get("G9", {})
-        definite = len(triage.definite_errors)
-        detail9 = {"definiteErrors": definite, "limit": g9.get("maxDefiniteErrors", 10),
-                   "falseVerdicts": len(triage.false_errors)}
-        must = self.must_report(g9.get("mustReport", []))
-        if must is not None:
-            detail9["mustReport"] = must
-        ok9 = (not triage.false_errors and (definite <= g9.get("maxDefiniteErrors", 10) or not all_configs)
-               and all(m["reported"] for m in (must or [])))
-        self.gate("G9", ok9 if all_configs or triage.false_errors else None, detail9)
-        g10 = gates.get("G10", {})
-        per_config = collections.Counter(f["config"] for f in triage.possible_temporal)
-        limits = g10.get("maxPossibleTemporalPerConfig", {})
-        over = {c: n for c, n in per_config.items() if c in limits and n > limits[c]}
-        total = len(triage.possible_temporal)
-        ok10 = not over and (total <= g10.get("maxPossibleTemporal", 60) or not all_configs)
-        self.gate("G10", ok10 if (all_configs or over) else None,
-                  {"possibleTemporal": total, "perConfig": dict(per_config), "over": over})
-        g13 = gates.get("G13", {}).get("maxUnitUnresolvedShare", {})
-        detail13 = {}
-        ok13 = True
-        for name, limit in g13.items():
-            share = get_path(self.measured.get(name, {}), ("units", "unresolvedShare", "spatialNull"))
-            if name in {c.name for c in self.configs}:
-                detail13[name] = {"share": share, "limit": limit}
-                if share is None or share > limit:
-                    ok13 = False
-        self.gate("G13", ok13 if detail13 else None, detail13)
-        self.evaluate_unresolved_shares(all_configs)
-        g15 = gates.get("G15", {})
-        detail15 = {}
-        ok15 = True
-        on_reference = self.machine == gates.get("referenceMachine")
-        for name, limit in (g15.get("maxProgramCpuSeconds") or {}).items():
-            cpu = get_path(self.measured.get(name, {}), ("program", "cpuSeconds"))
-            if cpu is None:
-                continue
-            if on_reference:
-                detail15[f"{name}.programCpuSeconds"] = {"cpu": cpu, "limit": limit}
-                ok15 &= cpu <= limit
+        if (a.quick or a.full) and not a.reference_only:
+            self.evaluate_triage()
+        if a.full and not a.reference_only:
+            self.evaluate_drop_in()
+            if a.checks == "trap":
+                self.evaluate_build_time(gates.get("buildTime") or {})
             else:
-                detail15[f"{name}.programCpuSeconds"] = {"cpu": cpu, "limit": None,
-                                                         "note": "not the reference machine; compare with "
-                                                                 "the golden binary's time"}
-        functions = over_budget = 0
-        # RFC 0031 G11: over the original and the held-out configs together
-        # (RFC 0033's fresh and sealed sets are not counted).
-        for name in self.measured:
-            if self.manifest.config(name).set not in ("original", "heldOut"):
-                continue
-            for kind in ANALYSIS_KINDS:
-                analysis = self.results["configs"].get(name, {}).get("analyses", {}).get(kind)
-                if analysis:
-                    functions += analysis["workCounters"]["functions"] or 0
-                    over_budget += len(analysis["overBudget"])
-        if functions:
-            share = over_budget / functions
-            detail15["overBudget"] = {"functions": functions, "overBudget": over_budget, "share": round(share, 4)}
-            ok15 &= share <= g15.get("maxOverBudgetShare", 0.01)
-        for name, spec in (g15.get("maxBuildStepWallSeconds") or {}).items():
-            builds = self.results["configs"].get(name, {}).get("builds", {})
-            build = builds.get(self.args.checks)
-            if not build:
-                continue
-            step = next((s for s in build["steps"] if s["command"] == spec["step"]), None)
-            if step is None:
-                continue
-            limit = spec["seconds"] if on_reference else self.golden_step_seconds(name, spec["step"])
-            detail15[f"{name}.{spec['step']}"] = {"seconds": step["seconds"], "limit": limit}
-            if limit is not None:
-                ok15 &= step["seconds"] <= limit
-        self.gate("G15", ok15 if detail15 else None, detail15)
-    # ---- held-out configs (RFC 0031, section 11.2) ----
+                self.note("--checks verify: the build-time gate is not evaluated (verify builds are slower)")
+        if (a.full or a.bench) and not a.reference_only:
+            if a.checks == "trap":
+                self.evaluate_run_time(gates.get("runTime") or {})
+            else:
+                self.note("--checks verify: the run-time gate is not evaluated (verify builds are slower)")
+        if a.checks == "verify" and (a.full or a.bench) and not a.reference_only:
+            self.evaluate_verify()
 
-    def check_held_out_triage(self) -> None:
-        """Definite errors of held-out configs need a verdict; possible warnings are only counted.
+    def evaluate_drop_in(self) -> None:
+        # Each failure was recorded where it was found; the gate sums them up.
+        ok, detail = drop_in_gate(self.configs, self.results["configs"], self.args.checks)
+        # A config that fails the gate with no failure of its own recorded (a
+        # build the run never made) fails here.
+        unrecorded = [name for name, row in detail.items()
+                      if not (row["built"] and row["reportBuilt"])
+                      and not any(name in failure for failure in self.failures)]
+        for name in unrecorded:
+            self.fail(f"gate drop-in: {name}: a build is missing")
+        self.gate("drop-in", ok, detail, failed_above=True)
 
-        RFC 0031 G5 allows no definite error triaged false. The held-out
-        triage entries may record verdicts only (section 11.2), so the
-        possible temporal warnings, which G4 bounds for the original configs,
-        are reported here but need no entry. The fresh and sealed configs
-        (RFC 0033, section 11; gates D1 and D2) are triaged the same way.
-        """
-        if not self.held_out:
+    def evaluate_build_time(self, spec: dict) -> None:
+        self.gate("build-time", *build_time_gate(self.configs, self.results["configs"], spec))
+
+    def evaluate_run_time(self, spec: dict) -> None:
+        self.gate("run-time", *run_time_gate(self.configs, self.manifest.configs, self.results["configs"], spec))
+
+    def evaluate_verify(self) -> None:
+        self.gate("verify", *verify_gate(self.configs, self.results["configs"]))
+
+    def ratchet(self) -> None:
+        expected = load_expected(self.args.expected, self.args.update)
+        if self.args.update:
+            measured = {n: m for n, m in self.measured.items() if n not in self.tool_failures}
+            skipped = sorted(set(self.measured) - set(measured))
+            if skipped:
+                log(f"not recording {', '.join(skipped)}: their analyses, compiles, builds or runs failed")
+            if not measured:
+                log("nothing to record in expected.json")
+                return
+            write_json(self.args.expected, merge_expected(expected, measured, self.platform, self.machine,
+                                                          self.producer()))
+            log(f"updated {self.args.expected} ({self.platform}: {', '.join(sorted(measured))})")
             return
-        findings = [f for f in self.findings if f["config"] in self.held_out]
-        triage = check_triage(findings, self.triage_entries, self.held_out)
-        triage.untriaged = [f for f in triage.untriaged if f["certainty"] == "definite"]
-        self.held_out_triage = triage
-        self.results.setdefault("heldOut", {})["triage"] = triage.to_json()
-        for finding in triage.untriaged:
-            label = SET_LABELS[self.manifest.config(finding["config"]).set]
-            self.fail(f"untriaged definite {finding['id']} in {label}{finding['config']} at "
-                      f"{finding['file']}:{finding['line']} (fingerprint {finding['fingerprint'] or 'none'}): "
-                      f"{finding['message']}")
-        for problem in triage.invalid:
-            self.fail(f"triage: {problem}")
-
-    def evaluate_unresolved_shares(self, all_original: bool) -> None:
-        """RFC 0032 R4: the unresolved share of each facet, over the original
-        configs together and over the held-out configs together (the program
-        ledger where a whole-program analysis exists, the unit ledgers
-        otherwise). A group is gated only when all of it was selected. The
-        shares of RFC 0033's fresh and sealed sets are reported, not gated."""
-        limits = (self.manifest.gates.get("rfc0032") or {}).get("R4", {}).get("maxUnresolvedShare", {})
-        groups = {s: list(self.sets[s]) for s in SETS if s in ("original", "heldOut") or self.sets[s]}
-        selected = {c.name for c in self.configs}
-        complete = {"original": all_original,
-                    "heldOut": bool(self.sets["heldOut"]) and all(c.name in selected for c in self.manifest.configs
-                                                                  if c.set == "heldOut"),
-                    **{s: False for s in NAMED_SETS}}
-        detail: dict = {}
-        ok = True
-        gated = False
-        for group, configs in groups.items():
-            totals = {facet: [0, 0] for facet in limits}
-            for config in configs:
-                analyses = self.results["configs"].get(config.name, {}).get("analyses") or {}
-                facets = (analyses.get("program") or analyses.get("units") or {}).get("facets") or {}
-                for facet in limits:
-                    counts = facets.get(facet) or {}
-                    totals[facet][0] += counts.get("unresolved", 0)
-                    totals[facet][1] += sum(counts.values())
-            shares = {facet: round(u / n, 4) if n else None for facet, (u, n) in totals.items()}
-            detail[group] = {"shares": shares, "complete": complete[group]}
-            if group in NAMED_SETS:
-                detail[group]["gated"] = False
-            if not complete[group]:
-                continue
-            for facet, limit in limits.items():
-                if shares[facet] is not None:
-                    gated = True
-                    ok &= shares[facet] <= limit
-        detail["limits"] = limits
-        self.gate("rfc0032.R4", ok if gated and limits else None, detail)
-
-    def held_out_rows(self, corpus_set: str = "heldOut") -> dict[str, dict]:
-        """One summary row per selected config of a set (heldOut, fresh or sealed)."""
-        rows: dict[str, dict] = {}
-        triage = getattr(self, "held_out_triage", None)
-        for config in self.configs:
-            if config.set != corpus_set:
-                continue
-            entry = self.results["configs"].get(config.name, {})
-            units = (entry.get("analyses") or {}).get("units") or {}
-            # RFC 0031 G6: the program ledger where a whole-program analysis
-            # exists, the unit ledgers otherwise.
-            shares = (entry.get("analyses") or {}).get("program") or units
-            facets = (shares.get("facets") or {}).get("temporal") or {}
-            builds = entry.get("builds") or {}
-            checked = builds.get(self.args.checks) or builds.get("reference") or {}
-            ratio = build_cpu_ratio(builds, self.args.checks)
-            rows[config.name] = {
-                "errors": units.get("errors"), "warnings": units.get("warnings"),
-                "temporalUnresolved": facets.get("unresolved"), "temporalTotal": sum(facets.values()) if facets else None,
-                "temporalShare": (shares.get("unresolvedShare") or {}).get("temporal"),
-                "definiteErrors": sum(1 for f in (triage.definite_errors if triage else []) if f["config"] == config.name),
-                "falseDefiniteErrors": sum(1 for f in (triage.false_errors if triage else [])
-                                           if f["config"] == config.name),
-                "untriagedDefiniteErrors": sum(1 for f in (triage.untriaged if triage else [])
-                                               if f["config"] == config.name and f["certainty"] == "definite"),
-                "possibleTemporal": sum(1 for f in (triage.possible_temporal if triage else [])
-                                        if f["config"] == config.name),
-                "built": checked.get("built") if config.build and checked else None,
-                "testsPassed": checked.get("testsPassed") if checked else None,
-                # RFC 0033 D1: failures triaged true with source evidence pass.
-                "trueTrapsOnly": config.name in self.true_traps_only,
-                # RFC 0033 D1: no failure in report mode either.
-                "reportTestsPassed": (builds.get("report") or {}).get("testsPassed"),
-                "traps": entry.get("traps"),
-                "buildCpuRatio": ratio,
-                "compileMaxRssMiB": checked.get("compileMaxRssMiB"),
-                "unitCosts": units.get("unitCosts") or {},
-            }
-        return rows
-
-    def evaluate_held_out(self) -> None:
-        """RFC 0031's gates over the held-out configs: G5, G6 and G12 (manifest gates.heldOut)."""
-        spec = self.manifest.gates.get("heldOut", {})
-        rows = self.held_out_rows()
-        self.results.setdefault("heldOut", {})["configs"] = rows
-        g5 = spec.get("G5", {})
-        detail5 = {}
-        ok5 = True
-        for name, row in rows.items():
-            detail5[name] = {k: row[k] for k in ("definiteErrors", "falseDefiniteErrors", "built", "testsPassed",
-                                                 "traps")}
-            ok5 &= row["falseDefiniteErrors"] <= g5.get("maxFalseDefiniteErrors", 0)
-            if self.args.full:
-                # RFC 0031 G5: a build that stops at definite errors is kept
-                # only when each of them is triaged true.
-                stopped_by_true_errors = (row["built"] is False and row["definiteErrors"] > 0
-                                          and not row["falseDefiniteErrors"]
-                                          and not row["untriagedDefiniteErrors"])
-                ok5 &= (row["built"] is not False or stopped_by_true_errors) and row["testsPassed"] is not False
-                ok5 &= (row["traps"] or 0) <= g5.get("maxTraps", 0)
-        self.gate("rfc0031.G5", ok5 if rows else None, detail5)
-        g6 = spec.get("G6", {})
-        unresolved = sum(r["temporalUnresolved"] or 0 for r in rows.values())
-        total = sum(r["temporalTotal"] or 0 for r in rows.values())
-        share = round(unresolved / total, 4) if total else None
-        limit6 = g6.get("maxTemporalUnresolvedShare")
-        self.gate("rfc0031.G6", None if share is None or limit6 is None else share <= limit6,
-                  {"temporalShare": share, "limit": limit6, "unresolved": unresolved, "total": total,
-                   "perConfig": {n: r["temporalShare"] for n, r in rows.items()}})
-        g12 = spec.get("G12", {})
-        detail12 = {}
-        ok12 = True
-        max_ratio = g12.get("maxBuildCpuRatio")
-        for name, row in rows.items():
-            if row["buildCpuRatio"] is not None and max_ratio is not None:
-                detail12[f"{name}.buildCpuRatio"] = {"ratio": row["buildCpuRatio"], "limit": max_ratio}
-                ok12 &= row["buildCpuRatio"] <= max_ratio
-        for name, limits in (g12.get("maxUnitCost") or {}).items():
-            cost = (rows.get(name) or {}).get("unitCosts", {}).get(limits.get("file"))
-            if not cost:
-                continue
-            detail12[f"{name}.{limits['file']}"] = {**cost, "limits": {k: v for k, v in limits.items() if k != "file"}}
-            if "cpuSeconds" in limits:
-                ok12 &= cost["cpuSeconds"] <= limits["cpuSeconds"]
-            if "maxRssMiB" in limits and cost.get("maxRssMiB") is not None:
-                ok12 &= cost["maxRssMiB"] <= limits["maxRssMiB"]
-        self.gate("rfc0031.G12", ok12 if detail12 else None, detail12)
-
-    # ---- fresh and sealed configs (RFC 0033, section 11) ----
-
-    def evaluate_rfc0033(self, corpus_set: str) -> None:
-        """RFC 0033's gates over the fresh configs (D1, D5) or the sealed ones
-        (the same values, under rfc0033.sealed.*: gate D2 records the one run).
-
-        D1: no definite error triaged false; with --full every build and test
-        suite passes, in report mode too, with no trap (RFC 0031 G5's
-        machinery). D5: each config's weavec-cc build CPU time over the
-        reference compiler's at most gates.rfc0033.D5.maxBuildRatio (--full).
-        """
-        spec = self.manifest.gates.get("rfc0033", {})
-        rows = self.held_out_rows(corpus_set)
-        self.results.setdefault(corpus_set, {})["configs"] = rows
-        prefix = "rfc0033" if corpus_set == "fresh" else f"rfc0033.{corpus_set}"
-        d1 = spec.get("D1", {})
-        detail1 = {}
-        ok1 = True
-        for name, row in rows.items():
-            detail1[name] = {k: row[k] for k in ("definiteErrors", "falseDefiniteErrors", "untriagedDefiniteErrors",
-                                                 "built", "testsPassed", "trueTrapsOnly", "reportTestsPassed",
-                                                 "traps")}
-            ok1 &= row["falseDefiniteErrors"] <= d1.get("maxFalseDefiniteErrors", 0)
-            if self.args.full:
-                stopped_by_true_errors = (row["built"] is False and row["definiteErrors"] > 0
-                                          and not row["falseDefiniteErrors"]
-                                          and not row["untriagedDefiniteErrors"])
-                ok1 &= row["built"] is not False or stopped_by_true_errors
-                ok1 &= row["testsPassed"] is not False or row["trueTrapsOnly"]
-                ok1 &= row["reportTestsPassed"] is not False
-                ok1 &= (row["traps"] or 0) <= d1.get("maxTraps", 0)
-        self.gate(f"{prefix}.D1", ok1 if rows else None, detail1)
-        limit5 = spec.get("D5", {}).get("maxBuildRatio")
-        detail5 = {}
-        ok5 = True
-        for name, row in rows.items():
-            if row["buildCpuRatio"] is None:
-                continue
-            detail5[name] = {"ratio": row["buildCpuRatio"], "limit": limit5}
-            if limit5 is not None:
-                ok5 &= row["buildCpuRatio"] <= limit5
-        self.gate(f"{prefix}.D5", ok5 if detail5 and limit5 is not None else None, detail5)
-
-    # ---- fresh34 and sealed34 configs (RFC 0034, section 9) ----
-
-    def drop_in_ok(self, row: dict, spec: dict) -> bool:
-        """RFC 0033 D1, as RFC 0034 F1 and F2 restate it for their sets: no
-        definite error triaged false; with --full the build passes (or stops
-        only at definite errors all triaged true) and the test suite passes,
-        in trap mode with no trap (or only at triaged-true sites) and in
-        report mode with no failure."""
-        ok = row["falseDefiniteErrors"] <= spec.get("maxFalseDefiniteErrors", 0)
-        if self.args.full:
-            stopped_by_true_errors = (row["built"] is False and row["definiteErrors"] > 0
-                                      and not row["falseDefiniteErrors"] and not row["untriagedDefiniteErrors"])
-            ok &= row["built"] is not False or stopped_by_true_errors
-            ok &= row["testsPassed"] is not False or row["trueTrapsOnly"]
-            ok &= row["reportTestsPassed"] is not False
-            ok &= (row["traps"] or 0) <= spec.get("maxTraps", 0)
-        return ok
-
-    def evaluate_rfc0034(self) -> None:
-        """RFC 0034's gates (manifest gates.rfc0034).
-
-        F1: every fresh34 config builds with the default flags and passes its
-        test suite, in trap mode with no trap and in report mode with no
-        failure; a build may stop only at definite errors triaged true.
-        F2: the same over the sealed34 configs, with F5's build ratio (the one
-        sealed run, recorded as measured; a failure fails the run).
-        F5: each selected config's weavec-cc build CPU time at most
-        maxBuildRatio times the reference compiler's (--full; the reference
-        compiler builds every config once more for it); the named single-unit
-        compiles (sqlite3.c) within their CPU seconds; and no compilation
-        above maxCompileRssMiB, from the per-file compiles of --quick and,
-        with --full, from every compiler process of the trap-mode builds.
-        F7: the run-time ratios of --bench (the default build, with the
-        runtime, over the reference): each fresh34 workload at most
-        maxOverhead and their geometric mean at most maxGeometricMean, and
-        RFC 0032's G14 benchmarks (lua, zlib, cJSON) at their own limits.
-        """
-        spec = self.manifest.gates.get("rfc0034")
-        if not spec:
-            return
-        selected = {c.name for c in self.configs}
-        for corpus_set, name in (("fresh34", "F1"), ("sealed34", "F2")):
-            if not self.sets[corpus_set]:
-                continue
-            rows = self.held_out_rows(corpus_set)
-            self.results.setdefault(corpus_set, {})["configs"] = rows
-            limits = spec.get(name, {})
-            detail = {}
-            ok = True
-            for config, row in rows.items():
-                detail[config] = {k: row[k] for k in (
-                    "definiteErrors", "falseDefiniteErrors", "untriagedDefiniteErrors", "built", "testsPassed",
-                    "trueTrapsOnly", "reportTestsPassed", "traps")}
-                ok &= self.drop_in_ok(row, limits)
-                if corpus_set == "sealed34" and row["buildCpuRatio"] is not None:
-                    limit = spec.get("F5", {}).get("maxBuildRatio")
-                    detail[config]["buildCpuRatio"] = {"ratio": row["buildCpuRatio"], "limit": limit}
-                    if limit is not None:
-                        ok &= row["buildCpuRatio"] <= limit
-            self.gate(f"rfc0034.{name}", ok if rows else None, detail)
-        # F5: build ratios, named unit costs, and every compilation's memory.
-        f5 = spec.get("F5", {})
-        detail5: dict = {}
-        ok5 = True
-        limit_ratio = f5.get("maxBuildRatio")
-        limit_rss = f5.get("maxCompileRssMiB")
-        for config in self.configs:
-            if config.set == "sealed34":
-                continue  # F2 records the sealed run
-            entry = self.results["configs"].get(config.name, {})
-            ratio = build_cpu_ratio(entry.get("builds") or {}, self.args.checks)
-            units = ((entry.get("analyses") or {}).get("units") or {}).get("unitCosts") or {}
-            peaks = [c["maxRssMiB"] for c in units.values() if c.get("maxRssMiB") is not None]
-            build_peak = ((entry.get("builds") or {}).get(self.args.checks) or {}).get("compileMaxRssMiB")
-            if build_peak is not None:
-                peaks.append(build_peak)
-            row: dict = {}
-            if ratio is not None:
-                row["buildCpuRatio"] = {"ratio": ratio, "limit": limit_ratio}
-                if limit_ratio is not None:
-                    ok5 &= ratio <= limit_ratio
-            if peaks:
-                row["compileMaxRssMiB"] = {"value": max(peaks), "limit": limit_rss}
-                if limit_rss is not None:
-                    ok5 &= max(peaks) <= limit_rss
-            if row:
-                detail5[config.name] = row
-        for name, limits in (f5.get("maxUnitCpuSeconds") or {}).items():
-            if name not in selected:
-                continue
-            entry = self.results["configs"].get(name, {})
-            cost = (((entry.get("analyses") or {}).get("units") or {}).get("unitCosts") or {}).get(limits["file"])
-            if not cost:
-                continue
-            detail5[f"{name}.{limits['file']}"] = {"cpuSeconds": cost["cpuSeconds"], "limit": limits["cpuSeconds"]}
-            ok5 &= cost["cpuSeconds"] <= limits["cpuSeconds"]
-        self.gate("rfc0034.F5", ok5 if detail5 else None, detail5)
-        # F7: run time with the runtime.
-        f7 = spec.get("F7", {})
-        detail7: dict = {}
-        ok7 = True
-        fresh = {}
-        for config in self.sets["fresh34"]:
-            ratio = self.measured.get(config.name, {}).get("overhead")
-            if ratio is not None:
-                fresh[config.name] = ratio
-                detail7[config.name] = {"overhead": ratio, "limit": f7.get("maxOverhead")}
-                if f7.get("maxOverhead") is not None:
-                    ok7 &= ratio <= f7["maxOverhead"]
-        mean = geometric_mean(list(fresh.values()))
-        if mean is not None:
-            detail7["geometricMean"] = {"value": mean, "limit": f7.get("maxGeometricMean"),
-                                        "configs": len(fresh),
-                                        "complete": all(c.name in fresh for c in self.manifest.configs
-                                                        if c.set == "fresh34")}
-            if f7.get("maxGeometricMean") is not None:
-                ok7 &= mean <= f7["maxGeometricMean"]
-        for name, limit in (f7.get("maxOverheadG14") or {}).items():
-            ratio = self.measured.get(name, {}).get("overhead")
-            if name in selected and ratio is not None:
-                detail7[name] = {"overhead": ratio, "limit": limit}
-                ok7 &= ratio <= limit
-        self.gate("rfc0034.F7", ok7 if detail7 else None, detail7)
-
-    def must_report(self, entries: list[dict]) -> list[dict] | None:
-        if not self.args.full:
-            return None
-        out = []
-        for entry in entries:
-            if entry["config"] not in {c.name for c in self.configs}:
-                continue
-            build = self.results["configs"].get(entry["config"], {}).get("builds", {}).get(self.args.checks, {})
-            diagnostics = list(build.get("diagnostics", [])) + list((build.get("ledger") or {}).get("diagnostics", []))
-            hit = any(d["file"] == entry["file"] and d["line"] == entry["line"] and d["id"] in entry["ids"]
-                      for d in diagnostics)
-            out.append({**entry, "reported": hit})
-        return out
-
-    def golden_step_seconds(self, name: str, step: str) -> float | None:
-        """G15 off the reference machine: the golden weavec-cc's time for the same step."""
-        if not self.binaries.golden_weavec_cc:
-            self.note(f"G15 {name}: not the reference machine and no golden weavec-cc to compare with")
-            return None
-        config = self.manifest.config(name)
-        build = run_build(config, "golden", self.binaries.golden_weavec_cc, ["-Wno-error=weavec"],
-                          self.checkout(config), self.run_dir / "builds" / name, self.support_root,
-                          self.bench_dir, self.jobs, self.args.build_timeout, self.args.keep,
-                          self.tracked[config.project.name], with_ledger=False, run_commands=[])
-        match = next((s for s in build.steps if s.command == step and s.ok), None)
-        return match.seconds if match else None
-
-    def load_expected(self) -> dict:
-        if not self.args.expected.exists():
-            return {"schema": EXPECTED_SCHEMA, "version": 1}
-        data = read_json(self.args.expected)
-        if data.get("schema") != EXPECTED_SCHEMA or data.get("version") != 1:
-            raise GateError(f"{self.args.expected}: schema must be {EXPECTED_SCHEMA} version 1")
-        return data
+        result = compare_ratchet(self.measured, expected, self.platform)
+        self.results["ratchet"] = result.to_json()
+        for item in result.regressions:
+            self.fail(f"ratchet regression: {item}")
+        for item in result.improvements + result.changes:
+            self.note(f"ratchet: {item}; --update records it")
+        for item in result.missing:
+            self.note(f"ratchet: {item}")
+        if not result.failed:
+            log("ratchet: no regression")
 
     def producer(self) -> str:
         versions = self.results.get("binaries", {})
         return (versions.get("weavec-cc") or versions.get("weavec") or {}).get("version", "")
-
-    def ratchet(self) -> None:
-        expected = self.load_expected()
-        if self.args.update:
-            if self.tool_failures:
-                log("not updating expected.json: analyses, builds or runs failed")
-                return
-            merged = merge_expected(expected, self.measured, self.platform, self.machine, self.producer())
-            write_json(self.args.expected, merged)
-            log(f"updated {self.args.expected} ({self.platform}: {', '.join(sorted(self.measured))})")
-            return
-        result = compare_ratchet(self.measured, expected, self.platform, self.machine, self.held_out)
-        self.results["ratchet"] = result.to_json()
-        for kind in ("regressions", "improvements", "changes", "over_budget", "missing"):
-            for item in getattr(result, kind):
-                self.fail(f"ratchet {kind.replace('_', ' ')}: {item}")
-        for note in result.notes:
-            self.note(note)
-        if not result.failed:
-            log("ratchet: expected.json matches")
-
-    def update_legacy(self) -> None:
-        if self.tool_failures:
-            log("not updating the legacy baseline: analyses failed")
-            return
-        expected = self.load_expected()
-        legacy = expected.setdefault("legacy", {})
-        legacy["_comment"] = [
-            "v0.10.0 (golden) semantics, recorded with the golden binaries by corpus-gate.py --legacy",
-            "--update: quick holds each config's diagnostic tally and the SHA-256 of its sorted",
-            "diagnostics; injections holds whether each injection is reported at its line. S0",
-            "reproduces them (--quick --legacy, --inject --legacy), and S1's binaries must too."
-        ]
-        producer = self.results["binaries"].get("weavec", {}).get("version", "")
-        if getattr(self, "legacy_tallies", None) is not None:
-            quick = legacy.setdefault("quick", {})
-            quick.update({"platform": self.platform, "producer": producer,
-                          "recorded": datetime.date.today().isoformat()})
-            configs = quick.setdefault("configs", {})
-            for name, tally in self.legacy_tallies.items():
-                configs[name] = {k: tally[k] for k in ("units", "byId", "bugClaims", "digest")}
-            ordered = [c.name for c in self.manifest.original if c.name in configs]
-            quick["configs"] = {name: configs[name] for name in ordered}
-            if len(quick["configs"]) == len(self.manifest.original):
-                quick["totals"] = legacy_totals(quick["configs"])
-            log(f"updated the legacy quick baseline ({len(self.legacy_tallies)} configs)")
-        if getattr(self, "legacy_injection_runs", None) is not None:
-            injections = legacy.setdefault("injections", {})
-            injections.update({"platform": self.platform, "producer": producer,
-                               "recorded": datetime.date.today().isoformat()})
-            results = injections.setdefault("results", {})
-            for run in self.legacy_injection_runs:
-                results[run.injection.id] = run.reported
-            known = [i.id for i in load_injections(self.args.injections, self.manifest)]
-            injections["results"] = {k: results[k] for k in known if k in results}
-            reported = sum(injections["results"].values())
-            injections["summary"] = {"reported": reported, "total": len(injections["results"])}
-            log(f"updated the legacy injection baseline ({reported}/{len(injections['results'])} reported)")
-        write_json(self.args.expected, expected)
 
     # ---- main flow ----
 
@@ -3308,43 +2276,27 @@ class Gate:
         a = self.args
         start = time.perf_counter()
         try:
-            if a.legacy:
-                if a.quick or a.full:
-                    self.run_legacy_quick()
-                if a.compare_golden:
-                    self.run_compare_golden()
-                if a.full:
-                    self.run_builds()
-                if a.inject or a.full:
-                    self.run_injections()
-                if a.update:
-                    self.update_legacy()
-            elif a.reference_only:
-                if a.full:
-                    self.run_builds()
-                if a.inject or a.full:
-                    self.run_injections()
-                if a.bench or a.full:
-                    self.run_benches()
-            else:
-                if a.compare_golden:
-                    self.run_compare_golden()
-                if a.quick or a.full:
-                    self.run_quick()
-                if a.full:
-                    self.run_builds()
-                if a.inject or a.full:
-                    self.run_injections()
-                if a.bench or a.full:
-                    self.run_benches()
-                if a.quick or a.full or a.bench:
-                    self.evaluate_new_semantics()
-                    self.ratchet()
+            if (a.quick or a.full) and not a.reference_only:
+                self.run_quick()
+            if a.full:
+                self.run_builds()
+            if a.inject or a.full:
+                self.run_injections()
+            if a.bench or a.full:
+                self.run_benches()
+            self.evaluate()
+            if (a.quick or a.full) and not a.reference_only:
+                self.ratchet()
         finally:
-            self.pool.shutdown(wait=True, cancel_futures=True)
             if not a.keep:
                 remove_tree(self.run_dir)
         self.results["seconds"] = round(time.perf_counter() - start, 1)
+        # A gate that failed fails the run, whether or not its failures were
+        # recorded one by one.
+        for name, gate in self.results["gates"].items():
+            if gate.get("status") == "fail" and not any(
+                    failure.startswith(f"gate {name}") or name in failure for failure in self.failures):
+                self.failures.append(f"gate {name}: fail")
         self.results["measured"] = self.measured
         self.results["failures"] = self.failures
         self.results["notes"] = self.notes
@@ -3353,11 +2305,7 @@ class Gate:
             write_json(a.json, self.results)
             log(f"wrote {a.json}")
         print()
-        if not a.legacy:
-            for corpus_set in ("heldOut", *NAMED_SETS):
-                if self.sets[corpus_set]:
-                    print_held_out_summary(self.results.get(corpus_set, {}).get("configs")
-                                           or self.held_out_rows(corpus_set), self.results["gates"], corpus_set)
+        print_summary(self.configs, self.results)
         if self.failures:
             print(f"corpus gate: FAIL ({len(self.failures)} problem(s))")
             for failure in self.failures[:40]:
@@ -3369,153 +2317,110 @@ class Gate:
         return 0
 
 
-# -- reporting ----------------------------------------------------------------
+def with_held_out(args: argparse.Namespace) -> bool:
+    """Whether a run without --only or --set includes the held-out configs:
+    --full does, the PR-time --quick and the other modes do not."""
+    if args.held_out is not None:
+        return args.held_out
+    return bool(args.full)
 
 
-def build_cpu_ratio(builds: dict, checks: str) -> float | None:
-    """A config's WeaveC build CPU time over the reference compiler's, both built."""
-    checked = builds.get(checks) or {}
-    reference = builds.get("reference") or {}
-    if not checked or not reference or not checked.get("built") or not reference.get("built"):
-        return None
-    reference_cpu = sum(s["cpu"] for s in reference.get("steps", []))
-    if reference_cpu <= 0:
-        return None
-    return round(sum(s["cpu"] for s in checked.get("steps", [])) / reference_cpu, 2)
+# -- reporting ----------------------------------------------------------------------
 
 
-def geometric_mean(values: list[float]) -> float | None:
-    if not values or any(v <= 0 for v in values):
-        return None
-    return round(math.exp(sum(math.log(v) for v in values) / len(values)), 4)
-
-
-def print_legacy_table(configs: list[Config], tallies: dict[str, dict], totals: dict) -> None:
-    ids = sorted(totals["byId"])
-    name_w = max(len("config"), *(len(c.name) for c in configs))
-    header = (f"{'config':<{name_w}}  {'units':>5} {'time':>8} {'clang':>5} {'bugs':>5}  "
-              + "  ".join(ids))
-    print(header)
-    print("-" * len(header))
-    for config in configs:
-        t = tallies[config.name]
-        cells = "  ".join(f"{t['byId'].get(i, 0):>{len(i)}}" for i in ids)
-        print(f"{config.name:<{name_w}}  {t['units']:>5} {t['seconds']:>7.1f}s {t['clangErrors']:>5} "
-              f"{t['bugClaims']:>5}  {cells}")
-    print("-" * len(header))
-    cells = "  ".join(f"{totals['byId'].get(i, 0):>{len(i)}}" for i in ids)
-    seconds = sum(t["seconds"] for t in tallies.values())
-    clang = sum(t["clangErrors"] for t in tallies.values())
-    print(f"{'total':<{name_w}}  {totals['units']:>5} {seconds:>7.1f}s {clang:>5} {totals['bugClaims']:>5}  {cells}")
-    print(f"bug claims (every id but {', '.join(sorted(COVERAGE_IDS))}): {totals['bugClaims']}")
-
-
-SET_GATES = {
-    "heldOut": ("rfc0031.G5", "rfc0031.G6", "rfc0031.G12"),
-    "fresh": ("rfc0033.D1", "rfc0033.D5"),
-    "sealed": ("rfc0033.sealed.D1", "rfc0033.sealed.D5"),
-    "fresh34": ("rfc0034.F1", "rfc0034.F5", "rfc0034.F7"),
-    "sealed34": ("rfc0034.F2",),
-}
-
-
-def print_held_out_summary(rows: dict[str, dict], gates: dict, corpus_set: str = "heldOut") -> None:
-    """The section of the summary of the held-out configs (RFC 0031, section
-    11.2), or of the fresh or the sealed ones (RFC 0033, section 11)."""
-    print(f"{SET_TITLES[corpus_set]}:")
+def print_summary(configs: list[Config], results: dict) -> None:
+    """One row per config, grouped by set."""
     def cell(value, fmt="{}"):
         return "-" if value is None else fmt.format(value)
-    width = max([len("config")] + [len(n) for n in rows])
-    print(f"  {'config':<{width}}  {'errors':>6} {'warnings':>8} {'temporal':>8} {'definite':>8} "
-          f"{'false':>5} {'built':>5} {'tests':>5} {'traps':>5} {'cpu x':>6}")
-    for name, r in rows.items():
-        built = cell(r.get("built"), "{}").replace("True", "yes").replace("False", "NO")
-        tests = cell(r.get("testsPassed"), "{}").replace("True", "pass").replace("False", "FAIL")
-        print(f"  {name:<{width}}  {cell(r.get('errors')):>6} {cell(r.get('warnings')):>8} "
-              f"{cell(r.get('temporalShare'), '{:.3f}'):>8} {cell(r.get('definiteErrors')):>8} "
-              f"{cell(r.get('falseDefiniteErrors')):>5} {built:>5} {tests:>5} {cell(r.get('traps')):>5} "
-              f"{cell(r.get('buildCpuRatio'), '{:.2f}'):>6}")
-    for name in SET_GATES[corpus_set]:
-        if name in gates:
-            print(f"  gate {name}: {gates[name]['status']}")
+
+    def yes_no(value):
+        return "-" if value is None else ("yes" if value else "NO")
+
+    width = max([len("config")] + [len(c.name) for c in configs])
+    for corpus_set in SETS:
+        group = [c for c in configs if c.set == corpus_set]
+        if not group:
+            continue
+        print(f"{corpus_set} configs:")
+        print(f"  {'config':<{width}}  {'accesses':>8} {'proven':>7} {'errors':>6} {'warnings':>8} "
+              f"{'built':>5} {'tests':>5} {'traps':>5} {'build x':>7} {'run x':>6}")
+        for c in group:
+            entry = results["configs"].get(c.name) or {}
+            quick = entry.get("quick") or {}
+            ledger, analysis = quick.get("ledger") or {}, quick.get("analysis") or {}
+            checked = (entry.get("builds") or {}).get(results["checks"]) or {}
+            proven = ledger.get("provenShare")
+            print(f"  {c.name:<{width}}  {cell(ledger.get('accesses')):>8} "
+                  f"{cell(None if proven is None else proven * 100, '{:.1f}%'):>7} "
+                  f"{cell(analysis.get('errors')):>6} {cell(analysis.get('warnings')):>8} "
+                  f"{yes_no(checked.get('built')):>5} {yes_no(checked.get('testsPassed')):>5} "
+                  f"{cell(entry.get('traps')):>5} {cell(entry.get('buildCpuRatio'), '{:.2f}'):>7} "
+                  f"{cell((entry.get('bench') or {}).get('ratio'), '{:.2f}'):>6}")
+    for name, gate in results["gates"].items():
+        print(f"gate {name}: {gate['status']}")
 
 
 def print_injection_table(runs: list[InjectionRun]) -> None:
     width = max([len("injection")] + [len(r.injection.id) for r in runs])
-    print(f"{'injection':<{width}}  {'config':<17} {'mode':<13} {'where':<28} reported")
+    print(f"{'injection':<{width}}  {'config':<17} {'where':<28} stops")
     for r in runs:
         inj = r.injection
-        where = f"{inj.file}:{inj.line}"
-        mark = "yes" if r.reported else "NO"
-        extra = f" ({', '.join(r.via)})" if r.via else ""
-        dossier = f"  [dossier: {inj.dossier}]" if inj.dossier else ""
-        print(f"{inj.id:<{width}}  {inj.config:<17} {inj.mode:<13} {where:<28} {mark}{extra}{dossier}")
+        mark = "yes" if r.stopped else ("ERROR" if r.failures else "NO")
+        extra = f" ({r.via[0]})" if r.via else ""
+        print(f"{inj.id:<{width}}  {inj.config:<17} {f'{inj.file}:{inj.line}':<28} {mark}{extra}")
 
 
-# -- --update-from ------------------------------------------------------------
+# -- --update-from --------------------------------------------------------------------
 
 
 def update_from(results_path: Path, expected_path: Path) -> int:
     results = read_json(results_path)
-    if results.get("schema") != RESULTS_SCHEMA:
-        raise GateError(f"{results_path}: not a corpus-gate results file")
-    if results.get("status") != "pass" and not results.get("measured"):
+    check_schema(results, results_path, RESULTS_SCHEMA, RESULTS_VERSION)
+    measured = results.get("measured") or {}
+    if not measured:
         raise GateError(f"{results_path}: the run measured nothing")
-    if results.get("legacy"):
-        raise GateError(f"{results_path}: a --legacy run; rerun --legacy --update on that platform instead")
-    expected = read_json(expected_path) if expected_path.exists() else {"schema": EXPECTED_SCHEMA, "version": 1}
+    expected = load_expected(expected_path, update=True)
     versions = results.get("binaries", {})
     producer = (versions.get("weavec-cc") or versions.get("weavec") or {}).get("version", "")
-    merged = merge_expected(expected, results.get("measured", {}), results["platform"], results["machine"], producer)
-    write_json(expected_path, merged)
-    log(f"updated {expected_path} for {results['platform']} from {results_path}")
+    write_json(expected_path, merge_expected(expected, measured, results["platform"], results["machine"], producer))
+    log(f"updated {expected_path} for {results['platform']} from {results_path} ({', '.join(sorted(measured))})")
     return 0
 
 
-# -- main ---------------------------------------------------------------------
+# -- main -----------------------------------------------------------------------------
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     modes = ap.add_argument_group("modes")
-    modes.add_argument("--quick", action="store_true", help="per-file compiles and whole-program analyses")
+    modes.add_argument("--quick", action="store_true", help="the analysis and the per-file ledgers")
     modes.add_argument("--full", action="store_true", help="quick + builds, tests, injections, benchmarks")
-    modes.add_argument("--inject", action="store_true", help="injected bugs (G12)")
-    modes.add_argument("--bench", action="store_true", help="benchmarks (G14)")
+    modes.add_argument("--inject", action="store_true", help="the injected bugs")
+    modes.add_argument("--bench", action="store_true", help="the benchmarks")
     modes.add_argument("--update-from", type=Path, metavar="RESULTS",
                        help="record a --json results file (for example from CI) in expected.json and exit")
     mods = ap.add_argument_group("modifiers")
-    mods.add_argument("--legacy", action="store_true", help="v0.10.0 semantics with the golden binaries")
-    mods.add_argument("--compare-golden", action="store_true",
-                      help="fail on any difference from the golden binaries' diagnostics (S1)")
-    mods.add_argument("--checks", choices=("trap", "verify"), default="trap", help="check mode (default trap)")
+    mods.add_argument("--checks", choices=("trap", "verify"), default="trap",
+                      help="the mode of the builds, tests and benchmarks (default trap)")
     mods.add_argument("--reference-only", action="store_true",
-                      help="build, test and bench with --cc only; with --inject, ASan-check the trap injections")
-    mods.add_argument("--update", action="store_true", help="rewrite expected.json from this run")
+                      help="build, test and bench with --cc only; with --inject, check the injections under ASan")
+    mods.add_argument("--update", action="store_true", help="record this run's measurements in expected.json")
+    mods.add_argument("--no-asan", action="store_true", help="benchmarks without the ASan build")
     bins = ap.add_argument_group("binaries")
-    bins.add_argument("--weavec", help="weavec under test (default build/release/bin, then build/dev/bin; "
-                                       "with --legacy $WEAVEC_GOLDEN_DIR/weavec)")
+    bins.add_argument("--weavec", help="weavec under test (default build/release/bin, then build/dev/bin)")
     bins.add_argument("--weavec-cc", help="weavec-cc under test (same defaults)")
-    bins.add_argument("--golden-dir", default=os.environ.get("WEAVEC_GOLDEN_DIR"),
-                      help="golden v0.10.0 binaries (default $WEAVEC_GOLDEN_DIR)")
     bins.add_argument("--cc", help="reference compiler (default $WEAVEC_LLVM_PREFIX/bin/clang, else clang)")
     sel = ap.add_argument_group("selection and resources")
     sel.add_argument("--only", action="append", nargs="+", default=[], metavar="CONFIG",
                      help="run only these configs (repeatable)")
     sel.add_argument("--held-out", action=argparse.BooleanOptionalAction, default=None,
-                     help="include (or with --no-held-out leave out) the held-out configs of RFC 0031, "
-                          "section 11.2, and the fresh ones of RFC 0033, section 11 (default: included by "
-                          "--full, left out otherwise; --only overrides)")
-    sel.add_argument("--sealed", action="store_true",
-                     help="run the sealed configs of RFC 0033, section 11 (gate D2), alone unless --only names "
-                          "configs; otherwise they run only when --only names them")
+                     help="include (or leave out) the configs marked heldOut, but the sealed sets "
+                          "(default: included by --full)")
     sel.add_argument("--set", action="append", default=[], choices=SETS, metavar="SET",
-                     help="run the configs of this set alone (repeatable; one of " + ", ".join(SETS)
-                          + "): --set fresh34 for RFC 0034's gates F1, F5 and F7, --set sealed34 for "
-                            "its gate F2; --only overrides it")
+                     help="run the configs of this set alone (repeatable; one of " + ", ".join(SETS) + ")")
     sel.add_argument("--injection", action="append", default=[], metavar="ID", help="run only this injection")
     sel.add_argument("--jobs", type=int, default=os.cpu_count() or 4, help="parallel processes (default: CPUs)")
-    sel.add_argument("--timeout", type=float, default=1800, help="seconds per analysis process (default 1800)")
+    sel.add_argument("--timeout", type=float, default=1800, help="seconds per analysis or compile (default 1800)")
     sel.add_argument("--build-timeout", type=float, default=3600, help="seconds per build or test step")
     sel.add_argument("--repeat", type=int, help="benchmark runs per build (default: the manifest's, 7)")
     sel.add_argument("--workdir", type=Path, default=DEFAULT_WORKDIR,
@@ -3534,22 +2439,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     files.add_argument("--bench-dir", type=Path, default=CORPUS_DIR / "bench")
     args = ap.parse_args(argv)
     args.only = [name for group in args.only for name in group]
-    if not (args.quick or args.full or args.inject or args.bench or args.update_from or args.compare_golden):
-        ap.error("choose a mode: --quick, --full, --inject, --bench, --compare-golden or --update-from")
-    if args.legacy and args.bench:
-        ap.error("--bench measures the RFC 0030 compiler; it has no --legacy form")
-    if args.legacy and args.held_out:
-        ap.error("--held-out has no --legacy form: v0.10.0 was never measured on the held-out configs")
-    if args.legacy and args.sealed:
-        ap.error("--sealed has no --legacy form: v0.10.0 was never measured on the sealed configs")
-    if args.legacy and set(args.set) - {"original"}:
-        ap.error("--set has no --legacy form but for the original set: v0.10.0 was measured on it alone")
-    if args.reference_only and (args.quick or args.compare_golden or args.legacy):
-        ap.error("--reference-only runs builds, tests, benchmarks and injection checks only")
-    if args.update and (args.compare_golden and not (args.quick or args.full or args.inject or args.bench)):
-        ap.error("--update records --quick, --full, --inject or --bench measurements")
+    if not (args.quick or args.full or args.inject or args.bench or args.update_from):
+        ap.error("choose a mode: --quick, --full, --inject, --bench or --update-from")
+    if args.reference_only and args.quick:
+        ap.error("--reference-only builds, tests, benchmarks and checks injections; it has no --quick")
     if args.update and args.reference_only:
         ap.error("--reference-only measurements are not recorded")
+    if args.update and not (args.quick or args.full):
+        ap.error("--update records what --quick (or --full) measures")
     if args.jobs < 1:
         ap.error("--jobs must be at least 1")
     for key in ("workdir", "manifest", "expected", "triage", "injections", "support_dir", "bench_dir"):

@@ -48,11 +48,6 @@ bool SummaryPath::isProperPrefixOf(const SummaryPath &other) const {
   return true;
 }
 
-bool SummaryPath::hasDeref() const noexcept {
-  return std::ranges::any_of(
-      steps, [](const PathElem &elem) { return elem.step == PathStep::Deref; });
-}
-
 std::string SummaryPath::toString(std::string_view rootName) const {
   std::string name(rootName);
   std::size_t i = 0;

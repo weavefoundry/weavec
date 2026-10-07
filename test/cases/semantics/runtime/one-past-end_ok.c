@@ -11,12 +11,12 @@ static char first[16];
 static char second[16];
 struct span { const char *begin, *end; };
 static int last(const struct span *s) {
-  return s->end[-1]; // GUARDED: spatial
+  return s->end[-1];
 }
 static int count(const struct span *s) {
   int n = 0;
   for (const char *p = s->begin; p != s->end; p++)
-    n += *p != 0; // GUARDED: spatial
+    n += *p != 0;
   return n;
 }
 int main(void) {

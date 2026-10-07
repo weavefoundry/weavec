@@ -7,7 +7,6 @@
 // blocks after the access start from it.
 // CLEAN
 // TOOL
-// EXPECT-LEDGER: /summary/facets/null/checked == 1
 #include <stddef.h>
 
 struct hdr8 {

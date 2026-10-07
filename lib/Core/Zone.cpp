@@ -177,12 +177,6 @@ bool Zone::entails(Sym x, Sym y, std::int64_t c) const {
   return b && *b <= c;
 }
 
-void Zone::forget(Sym x) {
-  if (x == ZeroSym)
-    return;
-  restrictTo([x](Sym sym) { return sym != x; });
-}
-
 void Zone::restrictTo(const std::function<bool(Sym)> &keep) {
   if (bottom)
     return;

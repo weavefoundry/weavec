@@ -12,7 +12,7 @@ int main(void) {
   for (unsigned s = 0; s < 2; ++s) {
     const char **cursor = all[s];
     for (unsigned i = 0; i < 3 + s; ++i) {
-      total += (int)strlen(*cursor); // BUG: out-of-bounds // TRAP: object
+      total += (int)strlen(*cursor); // BUG: out-of-bounds // TRAP
       cursor++;
     }
   }

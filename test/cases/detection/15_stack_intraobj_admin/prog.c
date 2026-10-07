@@ -20,7 +20,7 @@ static void login(struct account *a, const char *user) {
 #ifdef FIX
   snprintf(a->user, sizeof a->user, "%s", user);
 #else
-  strcpy(a->user, user); // STOP
+  strcpy(a->user, user); // STOP // MISS: an overflow inside one object (a field into the next) is not caught (RFC 0035 guarantee)
 #endif
 }
 

@@ -14,7 +14,7 @@ export default defineConfig({
     starlight({
       title: 'WeaveC',
       description:
-        'Inferred ownership and borrowing for existing C code, with runtime checks where proofs end. Built on Clang and LLVM.',
+        'Run-time memory safety for existing C code, and an ownership analysis that reports bugs before it runs. Built on Clang and LLVM.',
       logo: { src: './src/assets/mark.svg', replacesTitle: false },
       favicon: '/favicon.svg',
       social: [

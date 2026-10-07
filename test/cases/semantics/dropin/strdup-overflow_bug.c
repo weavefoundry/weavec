@@ -8,7 +8,7 @@
 #include <string.h>
 static void scrub(char *p, int n) {
   if (getenv("WEAVEC_CASE_KEEP") != NULL) return;
-  p[n] = '*'; // BUG: out-of-bounds // TRAP: object
+  p[n] = '*'; // BUG: out-of-bounds // TRAP
 }
 int main(int argc, char **argv) {
   if (argc < 2) return 2;

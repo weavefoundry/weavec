@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static int consume(const int *v, int idx) { return v ? v[idx] : -1; }
+static int consume(const int *v, int idx) { return v ? v[idx] : -1; } // STOP
 
 int main(int argc, char **argv) {
   if (argc < 3)

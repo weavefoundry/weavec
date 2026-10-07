@@ -5,11 +5,9 @@
 // the loop head. No temporal facet of the program is left unresolved (v0.11.0 leaves the
 // read of 'p->next' and 'free(p)' as may-alias-released).
 // Not met: the read of 'p->next' and 'free(p)' stay may-alias-released, never proven
-// (test/cases/KNOWN-DIFFERENCES.md, *Cases*; RFC 0031 *Unresolved questions*).
+// (the retired golden comparison of RFC 0030, *Cases*; RFC 0031 *Unresolved questions*).
 // CLEAN
 // ASAN
-// EXPECT-LEDGER: /summary/facets/temporal/guarded == 2
-// EXPECT-LEDGER: /summary/guardedReasons/may-alias-released == 2
 #include <stdlib.h>
 struct node { struct node *next; int v; };
 void free_list(struct node *p) {

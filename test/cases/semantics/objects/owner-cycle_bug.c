@@ -11,7 +11,7 @@
 struct node { struct node *next; int v; };
 void free_list(struct node *p) {
   while (p) {
-    struct node *next = p->next; // TRAP: object
+    struct node *next = p->next; // TRAP
     free(p);
     p = next;
   }
@@ -21,6 +21,6 @@ int main(void) {
   if (!n) abort();
   n->v = 1;
   n->next = n;
-  free_list(n); // BUG: use-after-free // NOT-PROVEN: temporal
+  free_list(n); // BUG: use-after-free // MISS: an owning cycle is not reported by the analysis; the guard stops at the use after free in the callee
   return 0;
 }

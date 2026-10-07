@@ -12,12 +12,12 @@
 
 int sumv(size_t n, const int p[n]) {
   int s = 0;
-  for (size_t i = 0; i < n; i++) s += p[i]; // NOT-PROVEN: null
+  for (size_t i = 0; i < n; i++) s += p[i]; // TRAP
   return s;
 }
 
 int main(int argc, char **argv) {
   int a[4] = {1, 2, 3, 4};
   size_t n = argc > 1 ? (size_t)atoi(argv[1]) : 4;
-  return sumv(n, a); // BUG: out-of-bounds // TRAP: len
+  return sumv(n, a); // BUG: out-of-bounds // MISS: the analysis does not report a call's argument against the callee's requirement (RFC 0035 §8); the guard stops in the callee
 }

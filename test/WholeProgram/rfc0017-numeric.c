@@ -1,7 +1,5 @@
 // RFC 0017: numeric results, output values and access intervals compose.
-// RUN: not %weavec --no-runtime --whole-program %s %S/Inputs/rfc0017-numeric.c -- -ferror-limit=0 2>&1 | FileCheck %s
-// RUN: not %weavec --no-runtime --whole-program --ledger=%t.json %s %S/Inputs/rfc0017-numeric.c -- 2>/dev/null
-// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
+// RUN: not %weavec --whole-program %s %S/Inputs/rfc0017-numeric.c -- -ferror-limit=0 2>&1 | FileCheck %s
 //
 // RFC 0031 §6.1: format-30 summaries carry no extent requirements and no
 // numeric output expressions; a call's constant arguments reach the callee
@@ -79,10 +77,3 @@ void ordered_outputs(void) {
 // CHECK: 6 errors generated.
 // The callees' accesses at a negative index and past the array are not
 // proven (RFC 0017 §5: `counted(i + 1)` does not cover a signed index).
-// LEDGER: "source": "{{.*}}Inputs/rfc0017-numeric.c",
-// LEDGER: "text": "p[i]",
-// LEDGER: "spatial": {
-// LEDGER-NEXT: "outcome": "unresolved",
-// LEDGER: "text": "p[i]",
-// LEDGER: "spatial": {
-// LEDGER-NEXT: "outcome": "unresolved",

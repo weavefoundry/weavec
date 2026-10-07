@@ -7,7 +7,7 @@ int main(void) {
   if (!p) return 1;
   char *q = NULL;
   memcpy(&q, &p, 4);
-  int r = q ? q[0] : 0; // BUG: out-of-bounds // NOT-PROVEN: spatial
+  int r = q ? q[0] : 0; // BUG: out-of-bounds // MISS: a pointer forged from half of another points outside every object; it stops only as a fault
   free(p);
   return r;
 }

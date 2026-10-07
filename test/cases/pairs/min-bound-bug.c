@@ -4,6 +4,7 @@
 // the case pins the link-time error only.
 // RFC 0017: added regression pair. Both upper bounds of the helper loop determine its caller requirement.
 // UNITS: Inputs/numeric-helpers.c
+// TRAP-AT: Inputs/numeric-helpers.c:6
 // FLAGS: -std=c11
 #include "Inputs/numeric-helpers.h"
 void run(void) {

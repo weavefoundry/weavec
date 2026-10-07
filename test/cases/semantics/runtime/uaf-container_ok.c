@@ -49,7 +49,7 @@ int main(int argc, char **argv) {
   push(&l, "c");
   struct item *b = find(&l, "b");
   if (argc > 1) remove_item(&l, argv[1]);
-  int r = b ? b->name == NULL : 0; // GUARDED: temporal
+  int r = b ? b->name == NULL : 0;
   clear(&l);
   return r;
 }

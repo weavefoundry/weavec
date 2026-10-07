@@ -8,8 +8,6 @@
 // that allocates), and nothing about it is proven. A raw value a local join
 // makes stays an error (`test/Analysis/rfc0004-raw.c`, "Rawness joins").
 // CLEAN
-// EXPECT-LEDGER: /summary/violation == 0
-// EXPECT-LEDGER: /summary/unresolvedReasons/raw-cast >= 2
 // RUN-INPUT:
 #include <stdint.h>
 #include <stdlib.h>

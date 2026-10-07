@@ -9,10 +9,10 @@
 // ASAN
 #include <stdlib.h>
 
-int peek(const int *p) { return p[0]; }
+int peek(const int *p) { return p[0]; } // TRAP
 
 int main(int argc, char **argv) {
   int a[4] = {1, 2, 3, 4};
   int k = argc > 1 ? atoi(argv[1]) : 0;
-  return peek(a + k); // BUG: out-of-bounds // UNRESOLVED: spatial:unknown-extent
+  return peek(a + k); // BUG: out-of-bounds // MISS: the analysis does not report a call's argument against the callee's requirement (RFC 0035 §8); the guard stops in the callee
 }

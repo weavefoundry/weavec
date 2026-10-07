@@ -3,10 +3,9 @@
 // the caller or to a struct, unknown callees, `getline`, loops over arrays,
 // nulled and conditionally-freed fields, wrappers, `goto` cleanup, `exit`,
 // by-value struct returns, and pointers laundered through integers.
-// RUN: %weavec --ledger=%t.json %s -- 2>&1 | FileCheck --allow-empty --check-prefix=QUIET %s
+// RUN: %weavec %s -- 2>&1 | FileCheck --allow-empty --check-prefix=QUIET %s
 // QUIET-NOT: {{warning|error}}:
-// RFC 0030 §5.1: the calls into unknown code are ledger rows, not warnings.
-// RUN: FileCheck --check-prefix=BOUNDARY %s < %t.json
+// RFC 0030 §5.1: the calls into unknown code are not proven, not warnings.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,9 +46,6 @@ void kept(char *p) {
   static char *keep;
   keep = p;
 }
-// BOUNDARY: "text": "register_thing(p)",
-// BOUNDARY: "reason": "unknown-callee",
-// BOUNDARY-NEXT: "detail": "declare 'register_thing' with WEAVEC_BORROWED on 'p' if it neither keeps nor frees it",
 void to_unknown(void) {
   char *p = malloc(8);
   register_thing(p);
@@ -290,18 +286,9 @@ void owned_param_stored(struct buf *b, char *WEAVEC_OWNED p) { b->data = p; }
 // A callback context handed to an unknown registrar.
 void cb(void *ctx);
 void register_cb(void (*fn)(void *), void *ctx);
-// BOUNDARY: "text": "register_cb(cb,ctx)",
-// BOUNDARY: "reason": "unknown-callee",
 void with_ctx(void) {
   char *ctx = malloc(8);
   register_cb(cb, ctx);
 }
 
 // The only diagnostic is the leak in `handed_out_or_null`.
-// BOUNDARY: "diagnostics": [
-// BOUNDARY-NEXT: {
-// BOUNDARY-NEXT: "id": "leak",
-// BOUNDARY: "function": "handed_out_or_null",
-// BOUNDARY: "fingerprint":
-// BOUNDARY-NEXT: }
-// BOUNDARY-NEXT: ]

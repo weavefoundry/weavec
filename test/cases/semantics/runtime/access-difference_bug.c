@@ -13,26 +13,26 @@
 struct pair { int a; long b; };
 struct box { char *s, *e; struct pair *v, *ve; struct pair **pp; };
 static int minus(struct box *b, long k) {
-  return *(b->e - k); // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return *(b->e - k); // BUG: out-of-bounds // TRAP
 }
 static int minus_arrow(struct box *b, long k) {
-  return (int)(b->ve - k)->b; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return (int)(b->ve - k)->b; // BUG: out-of-bounds // TRAP
 }
 static int minus_end(struct box *b, long k) {
-  return *(b->e - k); // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return *(b->e - k); // BUG: out-of-bounds // TRAP
 }
 static int negative(struct box *b, long k) {
-  return b->e[-k]; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return b->e[-k]; // BUG: out-of-bounds // TRAP
 }
 static int walk_back(struct box *b, long k) {
   const char *p = b->e;
   long j;
   for (j = 0; j < k; j++) --p;
-  return *p; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return *p; // BUG: out-of-bounds // TRAP
 }
 static int predecrement(struct box *b, long k) {
   const char *p = b->e - k;
-  return *--p; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return *--p; // BUG: out-of-bounds // TRAP
 }
 int main(int argc, char **argv) {
   struct box b;

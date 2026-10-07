@@ -12,7 +12,7 @@ int main(void) {
   int x = 5, y = 6;
   union pun u, w;
   u.bits = (uintptr_t)&x;
-  int r = *u.p; // UNRESOLVED: spatial:raw-cast
+  int r = *u.p;
   w.p = &y;
   r += *w.p;
   return r == 11 ? 0 : 1;

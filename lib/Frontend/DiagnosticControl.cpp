@@ -64,14 +64,6 @@ static bool hasWarningForm(std::string_view id) {
              core::Severity::Warning;
 }
 
-/// Whether every diagnostic of `id` is a warning by default.
-static bool isAlwaysWarning(std::string_view id) {
-  return core::diag::defaultSeverity(id, core::Certainty::Definite) ==
-             core::Severity::Warning &&
-         core::diag::defaultSeverity(id, core::Certainty::Possible) ==
-             core::Severity::Warning;
-}
-
 bool DiagnosticControl::parse(llvm::StringRef flag, std::string &error) {
   const std::optional<Request> request = classify(flag);
   if (!request)
@@ -98,19 +90,9 @@ bool DiagnosticControl::parse(llvm::StringRef flag, std::string &error) {
   }
 
   const llvm::StringRef id = request->target.drop_front(sizeof("weavec-") - 1);
-  // RFC 0032 §9: not an id, a switch.
-  if (id == "possible") {
-    if (request->level != Level::Default && request->level != Level::Off) {
-      error = "'" + flag.str() +
-              "': expected -Wweavec-possible or -Wno-weavec-possible";
-      return true;
-    }
-    possible = request->level == Level::Default;
-    return true;
-  }
   if (core::diag::isRemoved(id)) {
-    error =
-        "unknown WeaveC diagnostic '" + id.str() + "' (removed by RFC 0030)";
+    error = "unknown WeaveC diagnostic '" + id.str() + "' (removed by " +
+            std::string(core::diag::removedBy(id)) + ")";
     return true;
   }
   if (!core::diag::isKnown(id)) {
@@ -118,13 +100,20 @@ bool DiagnosticControl::parse(llvm::StringRef flag, std::string &error) {
         "unknown WeaveC diagnostic '" + id.str() + "' in '" + flag.str() + "'";
     return true;
   }
-  if (request->disables && !hasWarningForm(id)) {
+  // An id whose errors an earlier flag lowered (`-Wno-error=weavec`, as
+  // `weavec-cc -fweavec-diagnose` does) may be disabled.
+  const bool lowered = levelFor(id) == Level::Warning;
+  if (request->disables && !hasWarningForm(id) && !lowered) {
     error = "'" + flag.str() + "': '" + id.str() +
             "' is an error and cannot be disabled; use -Wno-error=weavec-" +
             id.str() + " to make it a warning";
     return true;
   }
   perId[id.str()] = request->level;
+  if (request->disables && lowered)
+    silenced.emplace(id.str());
+  else
+    silenced.erase(std::string(id));
   if (request->level != Level::Warning)
     enabledIds[id.str()] = request->level != Level::Off;
   return true;
@@ -145,11 +134,6 @@ bool DiagnosticControl::enabledByFlags(std::string_view id) const {
   return enableAll;
 }
 
-bool DiagnosticControl::isEnabled(std::string_view id) const {
-  return enabledByFlags(id) &&
-         (levelFor(id) != Level::Off || !isAlwaysWarning(id));
-}
-
 std::optional<core::Diagnostic>
 DiagnosticControl::apply(const core::Diagnostic &diagnostic) const {
   if (!enabledByFlags(diagnostic.id))
@@ -163,8 +147,8 @@ DiagnosticControl::apply(const core::Diagnostic &diagnostic) const {
     return diagnostic;
   case Level::Off:
     // `-Wno-weavec` is a group request: it disables the warnings and leaves
-    // the errors alone.
-    if (warning)
+    // the errors alone, unless they were lowered first.
+    if (warning || silenced.contains(diagnostic.id))
       return std::nullopt;
     return diagnostic;
   case Level::Warning: {
@@ -186,8 +170,6 @@ DiagnosticControl::apply(const core::Diagnostic &diagnostic) const {
 void FilteringSink::report(const core::Diagnostic &diagnostic) {
   const std::optional<core::Diagnostic> adjusted = table.apply(diagnostic);
   if (!adjusted)
-    return;
-  if (only != nullptr && !only->contains(adjusted->id))
     return;
   const ReportedDiagnostic key = ReportedDiagnostic::of(*adjusted);
   if (skip != nullptr && skip->contains(key))

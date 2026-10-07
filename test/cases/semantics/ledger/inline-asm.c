@@ -11,7 +11,7 @@ int f(void) {
   if (!p) return 0;
   p[0] = 1;
   __asm__ volatile("" : : "r"(p) : "memory");
-  int v = p[0]; // UNRESOLVED: temporal:unknown-callee
-  free(p); // UNRESOLVED: temporal:unknown-callee
+  int v = p[0];
+  free(p);
   return v;
 }

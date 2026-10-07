@@ -27,7 +27,7 @@ static void strip_trailing_slashes(char *path)
 
 int main(void)
 {
-    static const char *const in[] = {"/var/log/", "/tmp//", "relative/dir/", "/"};
+    static const char *const in[] = {"/var/log/", "/tmp// ", "relative/dir/", "/"};
     static const char *const want[] = {"/var/log", "/tmp", "relative/dir", "/"};
     int ok = 1;
     for (size_t i = 0; i < sizeof in / sizeof in[0]; i++) {

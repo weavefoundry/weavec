@@ -11,7 +11,7 @@ static char *g_cache;
 
 static void remember(char *p) { g_cache = p; }
 
-static int peek(void) { return g_cache[0]; } // BUG: use-after-free // UNRESOLVED: temporal:dangling-escape // TRAP: live
+static int peek(void) { return g_cache[0]; } // BUG: use-after-free // TRAP
 
 int main(void) {
   char *p = malloc(8);
@@ -19,5 +19,5 @@ int main(void) {
   p[0] = 3;
   remember(p);
   free(p);
-  return peek(); // UNRESOLVED: temporal:dangling-escape
+  return peek();
 }

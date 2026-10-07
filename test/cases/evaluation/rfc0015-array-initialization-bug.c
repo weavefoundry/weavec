@@ -3,7 +3,7 @@
 void *memcpy(void *, const void *, size_t);
 void *memmove(void *, const void *, size_t);
 void run(char *p) { char *a[2]; a[0]=p;
-  a[1][0]=1; // BUG: use-of-uninitialized // TRAP: nonnull
+  a[1][0]=1; // BUG: use-of-uninitialized // TRAP
 }
 // Driver (RFC 0030 section 17.2): executes the defect so the runtime oracle can observe the check.
 int main(void) { char c = 0; run(&c); return 0; }

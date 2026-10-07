@@ -13,7 +13,7 @@ struct T { int key; const char *name; };
 static int cmp(const void *pa, const void *pb) {
   const struct T *a = pa;
   const struct T *b = pb;
-  return (a->key > b->key) - (a->key < b->key); // UNRESOLVED: spatial:unknown-extent
+  return (a->key > b->key) - (a->key < b->key);
 }
 
 int main(void) {

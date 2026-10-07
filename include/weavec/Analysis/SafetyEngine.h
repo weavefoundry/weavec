@@ -9,8 +9,8 @@
 // RFC 0030 §14: what an engine gets for one unit (`EngineInput`) and what it
 // implements (`SafetyEngine`). Everything an engine produces flows through
 // `LedgerAdapter`, which let RFC 0031 replace the engine (today's is
-// `ObjectEngine`) without touching the ledger, the kinds, the library table,
-// the planner or the emitter.
+// `ObjectEngine`) without touching the ledger, the kinds or the library
+// table.
 //
 //===----------------------------------------------------------------------===//
 
@@ -54,10 +54,6 @@ struct EngineOptions {
   std::optional<std::uint64_t> unitBudget = std::nullopt;
   /// §11: locals and allocations are zero-initialised.
   bool zeroInit = true;
-  /// §6.3.
-  core::RequireLevel require = core::RequireLevel::None;
-  /// §10.7: publish witnesses for proven spatial facets too.
-  bool verify = false;
   /// §3.1: the unit follows C's effective-type rules (not
   /// `-fno-strict-aliasing`).
   bool strictAliasing = true;
@@ -76,10 +72,8 @@ struct EngineInput {
   const core::LibrarySpec &library;
   /// The function-pointer slots' local or program-wide solution (§9.3).
   const core::FnSlots &slots;
-  /// Other units' records at link; null otherwise.
+  /// The other units' exports in `weavec --whole-program`; null otherwise.
   const ProgramDatabase *database = nullptr;
-  /// §7.6 candidates assumed at entry.
-  const std::vector<FieldCandidate> &fieldAssumptions;
   /// What `KindInference` found besides the table (§7.3–§7.6): the
   /// Single-valid judgements and the store groups; null without inference.
   const KindInferenceResult *inferred = nullptr;
@@ -102,7 +96,7 @@ public:
 
   /// Analyses every emitted function of the unit, publishing through `out`.
   virtual void analyzeUnit(const EngineInput &input, LedgerAdapter &out) = 0;
-  /// Summaries and exported facts for the unit record (§13.1).
+  /// Summaries and exported facts for the other units of the program.
   [[nodiscard]] virtual UnitExports exports() = 0;
   /// `--dump-analysis` text for one function (unstable format).
   virtual void dump(const clang::FunctionDecl &function,

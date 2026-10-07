@@ -3,9 +3,7 @@
 // engine has no array element limit: `a` is one entry object whose elements
 // are cells by offset (RFC 0031 §4.6, §4.9), so all 33 accesses are within
 // budget and none is `unresolved(budget)`.
-// RUN: not %weavec --ledger=%t.json %s -- 2>&1 | FileCheck %s
-// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
-// LEDGER-NOT: "reason": "budget",
+// RUN: not %weavec %s -- 2>&1 | FileCheck %s
 #include "../Inputs/prelude.h"
 void bounded(char **a) {
   free(a[0]);

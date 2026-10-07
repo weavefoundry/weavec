@@ -12,6 +12,6 @@ void poke(volatile unsigned *WEAVEC_RAW reg) {
 }
 
 void poke_address(uintptr_t addr) {
-  volatile unsigned *mmio = (volatile unsigned *)addr; // UNRESOLVED: spatial:raw-cast // UNRESOLVED: temporal:raw-cast
-  *mmio = 1; // UNRESOLVED: spatial:raw-cast // UNRESOLVED: temporal:raw-cast // GUARDED: spatial
+  volatile unsigned *mmio = (volatile unsigned *)addr;
+  *mmio = 1;
 }

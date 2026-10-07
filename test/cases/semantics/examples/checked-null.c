@@ -5,13 +5,11 @@
 // ((struct node *)__weavec_chk_nonnull(((struct node *)__weavec_chk_nonnull(n))->next))->v.
 // The driver passes a node whose 'next' is null, so the outer dereference traps.
 // RUN-INPUT:
-// EXPECT-LEDGER: /summary/facets/spatial/unresolved == 0
-// EXPECT-LEDGER: /summary/facets/temporal/unresolved == 0
 #include <stddef.h>
 
 struct node { struct node *next; int v; };
 
-int second(struct node *n) { return n->next->v; } // TRAP: nonnull
+int second(struct node *n) { return n->next->v; } // TRAP
 
 int main(int argc, char **argv) {
   struct node b = {NULL, 2};

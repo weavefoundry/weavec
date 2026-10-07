@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 static void erase(int *a, size_t *n, size_t i) {
-  memmove(&a[i], &a[i + 1], (*n - i) * sizeof *a); // BUG: out-of-bounds // TRAP: object
+  memmove(&a[i], &a[i + 1], (*n - i) * sizeof *a); // BUG: out-of-bounds // TRAP
   --*n;
 }
 int main(void) {

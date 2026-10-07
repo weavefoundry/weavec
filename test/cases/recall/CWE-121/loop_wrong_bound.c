@@ -6,7 +6,7 @@ void bad(void) {
   int src[100];
   int dst[50];
   for (int i = 0; i < 100; i++)
-    dst[i] = src[i]; // BUG: out-of-bounds // TRAP: index
+    dst[i] = src[i]; // BUG: out-of-bounds // TRAP
   print_int(dst[0]);
 }
 

@@ -8,7 +8,7 @@
 struct session { char user[16]; int id; };
 static void audit(struct session *s, int ended) {
   if (ended) free(s);
-  printf("audit: %s\n", s->user); // BUG: use-after-free possible // TRAP: object
+  printf("audit: %s\n", s->user); // BUG: use-after-free possible // TRAP
 }
 int main(int argc, char **argv) {
   struct session *s = calloc(1, sizeof *s);

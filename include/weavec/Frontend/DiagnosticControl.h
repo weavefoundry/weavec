@@ -18,15 +18,15 @@
 //                          the same for every WeaveC id; of these only
 //                          -Wweavec enables the off-by-default ids
 //
-// An error cannot be disabled outright; it can be lowered to a warning.
-// Under RFC 0030 the default severity depends on the diagnostic's certainty
-// (`core::diag::defaultSeverity`): `-Wno-weavec-use-after-free` drops the
-// possible (warning) findings and leaves the definite errors, and is
-// refused only for an id that is always an error. A flag naming an id RFC
-// 0030 removed is refused with `(removed by RFC 0030)`.
+// An error cannot be disabled outright; it can be lowered to a warning,
+// and then disabled. The default severity depends on the diagnostic's
+// certainty (`core::diag::defaultSeverity`): `-Wno-weavec-use-after-free`
+// drops the possible (warning) findings and leaves the definite errors, and
+// is refused only for an id that is always an error. A flag naming a
+// removed id is refused with `(removed by RFC 00NN)`.
 //
-// Also here: the key under which an emitted diagnostic is remembered so the
-// driver's link step does not print what the compile step already did.
+// Also here: the key under which an emitted diagnostic is remembered so a
+// unit `weavec --whole-program` runs again does not print it twice.
 //
 //===----------------------------------------------------------------------===//
 
@@ -73,19 +73,6 @@ public:
 
   [[nodiscard]] Level levelFor(std::string_view id) const;
 
-  /// Whether a diagnostic with `id` can be shown at all: false for an id
-  /// that is off by default and no flag enabled, and for an id whose every
-  /// form is a warning that `-Wno-weavec[-<id>]` disabled. An analysis may
-  /// skip the work behind such an id.
-  [[nodiscard]] bool isEnabled(std::string_view id) const;
-
-  /// RFC 0032 §9: `-Wweavec-possible` and `-Wno-weavec-possible`, or none
-  /// when neither was given. `possible` is not a diagnostic id: it decides
-  /// whether possible findings on guarded facets are reported.
-  [[nodiscard]] std::optional<bool> possibleFindings() const noexcept {
-    return possible;
-  }
-
   /// RFC 0033 §8: makes `id` off unless a flag enables it (`-Wweavec-<id>`,
   /// `-Wweavec`), as `allocation-failure` is everywhere; `weavec-cc` does
   /// this for `leak`.
@@ -106,12 +93,14 @@ private:
   /// the one they name.
   bool enableAll = false;
   std::map<std::string, bool, std::less<>> enabledIds;
-  std::optional<bool> possible;
   std::set<std::string, std::less<>> offByDefault;
+  /// The ids `-Wno-weavec-<id>` disabled after they were lowered to
+  /// warnings: their errors are dropped too.
+  std::set<std::string, std::less<>> silenced;
 };
 
-/// Where a diagnostic was emitted, for deduplication between the compile
-/// step and the link step of `weavec-cc` (RFC 0005).
+/// Where a diagnostic was emitted, for deduplication between the runs of
+/// one unit in `weavec --whole-program` (RFC 0005).
 struct ReportedDiagnostic {
   std::string id;
   std::string file;
@@ -133,16 +122,11 @@ struct ReportedDiagnostic {
 
 /// A sink that applies a `DiagnosticControl`, drops diagnostics already in
 /// `alreadyReported`, remembers what it forwarded, and forwards the rest.
-/// With `onlyIds`, every diagnostic
-/// whose id is not in the set is dropped (RFC 0012: a unit analysed once
-/// more for its sized fields shows only what they can change).
 class FilteringSink final : public core::DiagnosticSink {
 public:
   FilteringSink(core::DiagnosticSink &next, DiagnosticControl control,
-                const std::set<ReportedDiagnostic> *alreadyReported = nullptr,
-                const std::set<std::string_view> *onlyIds = nullptr)
-      : downstream(next), table(std::move(control)), skip(alreadyReported),
-        only(onlyIds) {}
+                const std::set<ReportedDiagnostic> *alreadyReported = nullptr)
+      : downstream(next), table(std::move(control)), skip(alreadyReported) {}
 
   void report(const core::Diagnostic &diagnostic) override;
 
@@ -157,7 +141,6 @@ private:
   core::DiagnosticSink &downstream;
   DiagnosticControl table;
   const std::set<ReportedDiagnostic> *skip;
-  const std::set<std::string_view> *only;
   std::set<ReportedDiagnostic> forwarded;
   std::size_t errorCount = 0;
   std::size_t warningCount = 0;

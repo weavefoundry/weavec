@@ -121,9 +121,6 @@ struct RequirementGuard {
   /// `<lhs> < <rhs>` or `<lhs> <= <rhs>`, each term spelled by
   /// `ExtentTerm::toString`.
   [[nodiscard]] std::string toString() const;
-  /// Reads back what `toString` wrote (§13.1 `functions[].requirements[]`).
-  [[nodiscard]] static std::optional<RequirementGuard>
-  parse(std::string_view text);
 
   friend bool operator==(const RequirementGuard &,
                          const RequirementGuard &) = default;
@@ -160,8 +157,7 @@ enum class RequirementEnforcement : std::uint8_t {
   CallSites,
   /// An exported or address-taken function: inside the body, accesses
   /// covered only by an extent requirement beyond `single` are
-  /// `trusted(caller-contract)`, their null facets stay checked, and the
-  /// requirement is exported and verified at link.
+  /// `trusted(caller-contract)`, and their null facets stay checked.
   CallerContract,
 };
 
@@ -235,9 +231,6 @@ struct KindEntry {
   [[nodiscard]] bool shapeFromSystemHeader() const noexcept;
   /// The nullability rests only on system-header attributes (level 4).
   [[nodiscard]] bool nullabilityFromSystemHeader() const noexcept;
-  /// A check may compare against the extent: it is exact or declared
-  /// (§7.1), and not only a system-header attribute (§7.2).
-  [[nodiscard]] bool isCheckOperand() const noexcept;
 
   friend bool operator==(const KindEntry &, const KindEntry &) = default;
 };
@@ -324,10 +317,6 @@ public:
   void setGovernedByLibrary(const clang::FunctionDecl &function);
   void addProblem(KindProblem problem);
 
-  /// §6.3: `WEAVEC_REQUIRE_SAFE` on some declaration of `function`.
-  [[nodiscard]] bool requireSafe(const clang::FunctionDecl &function) const;
-  void setRequireSafe(const clang::FunctionDecl &function);
-
   /// §7.2: the ownership contract `function`'s attributes state, or null.
   [[nodiscard]] const OwnershipContract *
   ownership(const clang::FunctionDecl &function) const;
@@ -345,8 +334,6 @@ public:
   [[nodiscard]] const std::vector<KindProblem> &problems() const noexcept {
     return problemList;
   }
-  /// The number of entries of every kind.
-  [[nodiscard]] std::size_t size() const noexcept;
   /// §7.5: the requirements that cover `access` (one of their `covers`).
   [[nodiscard]] llvm::ArrayRef<CoveringRequirement>
   covering(const clang::Stmt &access) const;
@@ -381,7 +368,6 @@ private:
   llvm::DenseMap<const clang::FieldDecl *, KindEntry> fields;
   llvm::DenseMap<const clang::VarDecl *, KindEntry> variables;
   llvm::DenseSet<const clang::FunctionDecl *> library;
-  llvm::DenseSet<const clang::FunctionDecl *> safe;
   llvm::DenseMap<const clang::FunctionDecl *, OwnershipContract> contracts;
   std::vector<KindProblem> problemList;
   std::vector<KindSuggestion> suggestionList;

@@ -10,7 +10,7 @@ static int *g[4];
 static int seen;
 static void add(int *p) { g[1] = p; }
 static void fire(void) {
-  if (g[1]) seen += *g[1]; // BUG: use-after-free // NOT-PROVEN: temporal // TRAP: live
+  if (g[1]) seen += *g[1]; // BUG: use-after-free // TRAP
 }
 int main(void) {
   int *x = malloc(sizeof *x);
@@ -18,6 +18,6 @@ int main(void) {
   *x = 7;
   add(x);
   free(x);
-  fire(); // NOT-PROVEN: temporal
+  fire();
   return seen == 0;
 }

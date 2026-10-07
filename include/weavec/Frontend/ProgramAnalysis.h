@@ -15,7 +15,7 @@
 //
 // The orchestrator does not know how a unit is parsed: `ProgramUnit` runs a
 // frontend action over one unit, from a compilation database (`weavec
-// --whole-program`) or a recorded cc1 command line (`weavec-cc`).
+// --whole-program`) or from memory (the unit tests).
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,12 +26,11 @@
 #include "weavec/Core/Ledger.h"
 #include "weavec/Frontend/DiagnosticControl.h"
 #include "weavec/Frontend/FrontendAction.h"
-#include "weavec/Frontend/RecordPayload.h"
+#include "weavec/Frontend/InterfaceFacts.h"
 
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Tooling/Tooling.h"
 
-#include <chrono>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -73,17 +72,12 @@ public:
     /// Cyclic components that did not settle within `MaxRounds`, as lists
     /// of unit names: their widened summaries stand (RFC 0033 §7).
     std::vector<std::vector<std::string>> nonConverging;
-    /// RFC 0033 §7: units whose analysis the budget cut; their
-    /// compile-time results stand.
-    std::vector<std::string> unfinished;
     /// WeaveC errors and warnings printed.
     std::size_t errors = 0;
     std::size_t warnings = 0;
 
-    /// RFC 0033 §7: a unit the analysis could not finish, or a group that
-    /// did not converge, keeps what it had; a unit that cannot be parsed
-    /// at all (in `weavec --whole-program`) or an error fails it. The link
-    /// step fails only on an error.
+    /// A group that did not converge keeps its widened summaries; a unit
+    /// that cannot be parsed or an error fails the analysis.
     [[nodiscard]] bool ok() const noexcept {
       return failed.empty() && errors == 0;
     }
@@ -94,30 +88,10 @@ public:
   /// apply to every unit.
   explicit ProgramAnalysis(FrontendOptions opts);
 
-  /// Adds a unit to analyse. `known` are its exports if they are already
-  /// on hand (from a record); otherwise the unit is parsed once to discover
-  /// them. `reported` are the diagnostics an earlier step already printed
-  /// for it.
-  void addUnit(std::unique_ptr<ProgramUnit> unit,
-               std::optional<analysis::UnitExports> known = std::nullopt,
-               std::set<ReportedDiagnostic> reported = {});
-
-  /// Adds a unit whose compile-time view stands (`known`, `reported`), run
-  /// again only to serve a context another unit asks of it (RFC 0031 §7
-  /// *Amendment (cross-unit contexts)*).
-  void addServingUnit(std::unique_ptr<ProgramUnit> unit,
-                      analysis::UnitExports known,
-                      std::set<ReportedDiagnostic> reported = {});
-
-  /// Adds the exports of a unit that is part of the program but is not
-  /// analysed again (an object whose compile-time view already stands).
-  void addExports(analysis::UnitExports exports);
+  /// Adds a unit to analyse; `run` parses it once to discover its exports.
+  void addUnit(std::unique_ptr<ProgramUnit> unit);
 
   [[nodiscard]] Result run();
-
-  /// RFC 0033 §7: stop analysing once `seconds` of wall-clock time have
-  /// passed since `run` began; 0 (the default) means no limit.
-  void setBudget(double seconds) { budgetSeconds = seconds; }
 
   /// After `run`: the exports of every unit, joined.
   [[nodiscard]] const analysis::ProgramDatabase &database() const noexcept {
@@ -126,36 +100,21 @@ public:
 
   // RFC 0030 §13.2 (begin).
 
-  /// The program facts every run sees through its database
-  /// (`ProgramDatabase::programFacts`): at link, the slots solved over the
-  /// records and their boundary rows.
-  void setProgramFacts(std::shared_ptr<const analysis::ProgramFacts> facts) {
-    programFacts = std::move(facts);
-  }
-  /// `weavec --whole-program`: collect every unit's interface facts, and
-  /// solve the program's slots from what discovery collected when no facts
-  /// were set. The program is an executable (its slots closed, §9.3) when
-  /// some unit defines `main`.
+  /// `weavec --whole-program`: collect every unit's interface facts, keep
+  /// every unit's last ledger, and solve the program's slots from what
+  /// discovery collected (the program facts every run sees through its
+  /// database, `ProgramDatabase::programFacts`). The program is an
+  /// executable (its slots closed, §9.3) when some unit defines `main`.
   void collectInterfaces(bool collect) { interfaces = collect; }
-  /// Keep the ledger of every unit's last reporting run for `ledgerOf` (on
-  /// with `collectInterfaces`).
-  void keepLedgers(bool keep) { ledgers = keep; }
 
   /// After `run`, for the unit added `index`-th: the ledger of its last
-  /// reporting run, its interface facts, exports and reported diagnostics
-  /// (null or empty when it was not analysed).
+  /// reporting run, its interface facts and exports (null when it was not
+  /// analysed).
   [[nodiscard]] const core::Ledger *ledgerOf(std::size_t index) const;
-  [[nodiscard]] const record::InterfaceFacts *
-  interfaceOf(std::size_t index) const;
+  [[nodiscard]] const InterfaceFacts *interfaceOf(std::size_t index) const;
   [[nodiscard]] const analysis::UnitExports *exportsOf(std::size_t index) const;
-  [[nodiscard]] const std::set<ReportedDiagnostic> &
-  reportedOf(std::size_t index) const;
   [[nodiscard]] std::size_t unitCount() const noexcept { return units.size(); }
   [[nodiscard]] std::string unitName(std::size_t index) const;
-  [[nodiscard]] const std::shared_ptr<const analysis::ProgramFacts> &
-  facts() const noexcept {
-    return programFacts;
-  }
 
   // RFC 0030 §13.2 (end).
 
@@ -167,17 +126,18 @@ public:
   static constexpr unsigned WidenAfter = 6;
   /// The widening step: joins each of `exports`' function summaries with
   /// the same function's summary in a member's `previous` exports (when
-  /// both number globals alike), and unions the count fields.
+  /// both number globals alike).
   static void widen(analysis::UnitExports &exports,
                     const analysis::UnitExports &previous);
 
 private:
   struct Unit {
     std::unique_ptr<ProgramUnit> unit;
-    std::optional<analysis::UnitExports> exports;
-    std::set<ReportedDiagnostic> reported;
-    /// Run only to serve contexts (`addServingUnit`), until it has.
-    bool dormant = false;
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    std::optional<analysis::UnitExports> exports = {};
+    /// The diagnostics its runs have shown.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    std::set<ReportedDiagnostic> reported = {};
     /// The last run was held for a context (`FrontendOptions::holdFor`):
     /// the unit has not reported.
     bool held = false;
@@ -187,22 +147,16 @@ private:
     // NOLINTNEXTLINE(readability-redundant-member-init)
     std::shared_ptr<const core::Ledger> ledger = {};
     // NOLINTNEXTLINE(readability-redundant-member-init)
-    std::shared_ptr<const record::InterfaceFacts> interface = {};
+    std::shared_ptr<const InterfaceFacts> interface = {};
   };
 
   FrontendOptions options;
-  double budgetSeconds = 0;
-  std::chrono::steady_clock::time_point started;
-  /// Whether the budget has run out.
-  [[nodiscard]] bool exhausted() const;
   std::vector<Unit> units;
-  std::vector<analysis::UnitExports> fixed;
   analysis::ProgramDatabase settled;
   /// RFC 0031 §7: the context requests whose definers have run for them.
   std::set<analysis::ContextRequest> attempted;
   std::shared_ptr<const analysis::ProgramFacts> programFacts;
   bool interfaces = false;
-  bool ledgers = false;
   /// The units' summary lines, printed after the last run.
   bool unitSummaries = false;
   /// `weavec --whole-program`: the program facts from what discovery

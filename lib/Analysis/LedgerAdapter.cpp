@@ -30,7 +30,6 @@ LedgerAdapter::LedgerAdapter(clang::ASTContext &ctx, const SiteIndex &siteIndex,
   if (mode == Mode::Authoritative || mode == Mode::Witness)
     unit.functions = sites.ledgers();
   unit.source = options.source;
-  unit.target = options.target;
 }
 
 /// The sites of a unit nothing is decided about.
@@ -63,7 +62,6 @@ void LedgerAdapter::beginFunction(const clang::FunctionDecl &function) {
   if (analysed == nullptr)
     return;
   unit.functions[analysed->index].resetDecisions();
-  witnesses.clear(analysed->index);
   overBudgetFunctions.erase(analysed->index);
 }
 
@@ -140,8 +138,7 @@ void LedgerAdapter::suggest(const clang::Stmt &site, core::SiteKind kind,
 }
 
 void LedgerAdapter::requirement(const clang::Stmt &site, core::Facet facet,
-                                core::Requirement record,
-                                std::optional<CheckWitness> witness) {
+                                const core::FacetDecision &decision) {
   if (isDiscarding())
     return;
   const std::optional<core::SiteId> id = sites.find(site);
@@ -151,25 +148,8 @@ void LedgerAdapter::requirement(const clang::Stmt &site, core::Facet facet,
     noteOrphan(site, facet);
     return;
   }
-  core::FacetRecord *facetRecord = this->record(*id, facet);
-  if (facetRecord == nullptr)
-    return;
-  const auto index =
-      static_cast<std::uint16_t>(facetRecord->requirements.size());
-  facetRecord->addRequirement(std::move(record));
-  if (witness) {
-    witness->requirement = index;
-    witnesses.add(*id, facet, std::move(*witness));
-  }
-}
-
-void LedgerAdapter::witness(const clang::Stmt &site, core::Facet facet,
-                            CheckWitness checkWitness) {
-  if (isDiscarding())
-    return;
-  const std::optional<core::SiteId> id = sites.find(site);
-  if (id && record(*id, facet) != nullptr)
-    witnesses.add(*id, facet, std::move(checkWitness));
+  if (core::FacetRecord *facetRecord = this->record(*id, facet))
+    facetRecord->decide(decision);
 }
 
 void LedgerAdapter::boundary(const clang::Stmt &site, BoundaryFacts facts) {
@@ -201,8 +181,8 @@ void LedgerAdapter::applyBoundaries() {
     if (facet == nullptr)
       continue;
     // §9.4 *Propagation*: only a proven facet rests on the assumption the
-    // boundary broke. A checked one is enforced at run time and a trusted
-    // one rests on its own reason, so neither is downgraded.
+    // boundary broke. A trusted one rests on its own reason, so it is not
+    // downgraded.
     if (row.propagated &&
         (!facet->decided || facet->outcome() != core::SiteOutcome::Proven))
       continue;
@@ -215,15 +195,6 @@ void LedgerAdapter::overBudget(const clang::FunctionDecl &function) {
     return;
   if (const SiteIndex::FunctionSites *analysed = sites.function(function))
     overBudgetFunctions.insert(analysed->index);
-}
-
-void LedgerAdapter::storeVerdict(const clang::Stmt &store,
-                                 FieldCandidate candidate,
-                                 core::Verdict verdict) {
-  if (isDiscarding())
-    return;
-  verdictList.push_back(PublishedVerdict{
-      .store = &store, .candidate = std::move(candidate), .verdict = verdict});
 }
 
 static bool contains(const clang::SourceManager &sm, clang::SourceRange range,
@@ -292,8 +263,7 @@ void LedgerAdapter::link(std::uint32_t index,
     return;
   // §3.4 and (V): a definite error is a violation of its facet, whatever
   // path reported it. The facet is made to apply when the site kind would
-  // not otherwise carry it (a callee's requirement at a Call site), so the
-  // planner guards the site when the error is lowered with -Wno-error.
+  // not otherwise carry it (a callee's requirement at a Call site).
   if (facet && certainty == core::Certainty::Definite &&
       diagnostic.severity == core::Severity::Error) {
     if (core::Site *site = unit.site(*id))
@@ -349,8 +319,8 @@ void LedgerAdapter::report(core::Diagnostic diagnostic,
     if (!id)
       id = sites.findExit(*site);
   }
-  // (V): a definite error must reach a site the planner can guard (§3.4).
-  // One reported without its site, or at a subexpression that is no site of
+  // (V): a definite error is a violation of a site (§3.4). One reported
+  // without its site, or at a subexpression that is no site of
   // its own (the argument of a call whose callee requires more than it has),
   // belongs to the innermost site around it, on the facet its id governs.
   if (!id && certainty == core::Certainty::Definite &&
@@ -384,13 +354,9 @@ void LedgerAdapter::unconfirm(const clang::Stmt &site, core::Facet facet,
   if (found)
     if (core::FacetRecord *facetRecord = record(*found, facet);
         facetRecord != nullptr &&
-        facetRecord->outcome() == core::SiteOutcome::Violation) {
+        facetRecord->outcome() == core::SiteOutcome::Violation)
       // (Assigned: a violation outranks every other decision.)
       facetRecord->decision = unresolved;
-      for (core::Requirement &requirement : facetRecord->requirements)
-        if (requirement.decision.outcome == core::SiteOutcome::Violation)
-          requirement.decision = unresolved;
-    }
   const clang::SourceManager &sm = context.getSourceManager();
   const auto inSite = [&](const core::SourceLocation &location) {
     const clang::SourceLocation at = toClangLocation(location);
@@ -433,17 +399,13 @@ static core::FacetDecision defaultFor(const SiteInfo &site, core::Facet facet,
       (facet == core::Facet::Spatial || facet == core::Facet::Temporal))
     return core::FacetDecision::unresolvedFor(core::UnresolvedReason::RawCast,
                                               "made from a non-pointer value");
-  core::FacetDecision decision =
-      core::defaultDecision(facet, overBudget, site.spatialCheckable());
+  core::FacetDecision decision = core::defaultDecision(overBudget);
   if (decision.unresolved == core::UnresolvedReason::Unanalysed)
     decision.detail = "no decision was published";
   return decision;
 }
 
-void LedgerAdapter::fillDefaults(PlannerOptions &planner) {
-  // §10.7: in verify mode a proven spatial facet is monitored like a checked
-  // one, so it needs a witness too.
-  const bool verify = planner.checks == core::ChecksMode::Verify;
+void LedgerAdapter::fillDefaults() {
   for (const SiteIndex::FunctionSites &function : sites.functions()) {
     core::FunctionLedger &row = unit.functions[function.index];
     for (const SiteInfo &info : function.sites) {
@@ -456,34 +418,20 @@ void LedgerAdapter::fillDefaults(PlannerOptions &planner) {
           continue;
         if (!facetRecord->decided)
           facetRecord->decide(defaultFor(info, facet, row.overBudget));
-        // A `checked` spatial facet the engine gave no witness (and a
-        // default one) is checked against the extent the declarations give
-        // (§2.6); without one the planner finds it inexpressible. A proven
-        // one takes the same default in verify mode (§10.7).
-        const core::SiteOutcome outcome = facetRecord->outcome();
-        if (facet == core::Facet::Spatial &&
-            (outcome == core::SiteOutcome::Checked ||
-             (verify && outcome == core::SiteOutcome::Proven)) &&
-            witnesses.of(info.id, facet).empty())
-          for (const CheckWitness &witness : info.spatialDefaults)
-            witnesses.add(info.id, facet, witness);
       }
     }
   }
 }
 
-/// Replaces a decision, and those of the requirement records, unless it is
-/// a violation: definite violations stand in every region (§6.1).
+/// Replaces a decision unless it is a violation: definite violations stand
+/// in every region (§6.1).
 static void overrideRecord(core::FacetRecord &facetRecord,
                            const core::FacetDecision &decision) {
   if (facetRecord.outcome() != core::SiteOutcome::Violation)
     facetRecord.decision = decision;
-  for (core::Requirement &requirement : facetRecord.requirements)
-    if (requirement.decision.outcome != core::SiteOutcome::Violation)
-      requirement.decision = decision;
 }
 
-void LedgerAdapter::applyOverrides(PlannerOptions &planner) {
+void LedgerAdapter::applyOverrides() {
   for (const SiteIndex::FunctionSites &function : sites.functions()) {
     core::FunctionLedger &row = unit.functions[function.index];
     for (const SiteInfo &info : function.sites) {
@@ -507,9 +455,8 @@ void LedgerAdapter::applyOverrides(PlannerOptions &planner) {
         }
       }
       // §5.3: a pointer shared with a thread or signal handler. Its
-      // temporal facet is trusted(concurrency); a null or spatial facet flow
-      // facts proved is checked (trusted(concurrency) when inexpressible);
-      // what the types prove stays proven.
+      // temporal facet, and a null or spatial facet flow facts proved, are
+      // trusted(concurrency); what the types prove stays proven.
       if (options.concurrent && options.concurrent(info)) {
         if (core::FacetRecord *temporal = site->facet(core::Facet::Temporal);
             temporal != nullptr &&
@@ -523,12 +470,8 @@ void LedgerAdapter::applyOverrides(PlannerOptions &planner) {
               facetRecord->outcome() != core::SiteOutcome::Proven ||
               info.provenByType)
             continue;
-          facetRecord->decision = core::FacetDecision::checked();
-          planner.concurrencyDowngraded.insert({info.id, facet});
-          if (facet == core::Facet::Spatial &&
-              witnesses.of(info.id, facet).empty())
-            for (const CheckWitness &witness : info.spatialDefaults)
-              witnesses.add(info.id, facet, witness);
+          facetRecord->decision =
+              core::FacetDecision::trustedFor(core::TrustReason::Concurrency);
         }
       }
       if (!function.callsSetjmp)
@@ -544,13 +487,9 @@ void LedgerAdapter::applyOverrides(PlannerOptions &planner) {
             facetRecord->outcome() != core::SiteOutcome::Proven ||
             info.provenByType)
           continue;
-        // A proof from flow facts becomes a check (§5.4).
-        facetRecord->decision = core::FacetDecision::checked();
-        planner.setjmpDowngraded.insert({info.id, facet});
-        if (facet == core::Facet::Spatial &&
-            witnesses.of(info.id, facet).empty())
-          for (const CheckWitness &witness : info.spatialDefaults)
-            witnesses.add(info.id, facet, witness);
+        // A proof from flow facts no longer stands (§5.4).
+        facetRecord->decision =
+            core::FacetDecision::unresolvedFor(core::UnresolvedReason::Setjmp);
       }
     }
   }
@@ -603,238 +542,23 @@ void LedgerAdapter::appendOrphanRows() {
   }
 }
 
-/// The source text of an expression, with whitespace removed (§12.1).
-static std::string textOf(const clang::Expr *expr,
-                          const clang::ASTContext &context) {
-  if (expr == nullptr)
-    return {};
-  const clang::SourceManager &sm = context.getSourceManager();
-  const llvm::StringRef text = clang::Lexer::getSourceText(
-      sm.getExpansionRange(expr->IgnoreParenImpCasts()->getSourceRange()), sm,
-      context.getLangOpts());
-  return core::siteText(std::string_view(text.data(), text.size()));
-}
-
-/// The template a check of `facet` uses when none was planned.
-static core::CheckTemplate naturalTemplate(core::Facet facet) {
-  switch (facet) {
-  case core::Facet::Null:
-    return core::CheckTemplate::Nonnull;
-  case core::Facet::Spatial:
-    return core::CheckTemplate::Index;
-  case core::Facet::Assertion:
-    return core::CheckTemplate::Assert;
-  case core::Facet::Temporal:
-    return core::CheckTemplate::Live;
-  }
-  return core::CheckTemplate::Assert;
-}
-
-void LedgerAdapter::reportRequireLevel() {
-  for (const SiteIndex::FunctionSites &function : sites.functions()) {
-    const core::FunctionLedger &row = unit.functions[function.index];
-    core::RequireLevel level = options.config.require;
-    // `WEAVEC_REQUIRE_SAFE` holds the function to `checked` (§6.3).
-    if (row.requireSafe && level == core::RequireLevel::None)
-      level = core::RequireLevel::Checked;
-    if (level == core::RequireLevel::None)
-      continue;
-    for (const SiteInfo &info : function.sites) {
-      const core::Site *site = row.site(info.id.ordinal);
-      if (site == nullptr)
-        continue;
-      std::string pointer =
-          info.operand != nullptr ? textOf(info.operand, context) : site->text;
-      std::string callee = !site->callee.empty() ? site->callee : pointer;
-      if (info.kind == core::SiteKind::Call &&
-          info.boundary == core::Boundary::Call) {
-        // §5.1: what an unknown callee may have freed or kept: its first
-        // pointer argument.
-        if (const auto *call = llvm::dyn_cast<clang::CallExpr>(info.stmt))
-          for (const clang::Expr *arg : call->arguments())
-            if (arg->getType()->isPointerType()) {
-              pointer = textOf(arg, context);
-              break;
-            }
-      }
-      std::string type;
-      if (const auto *expr = llvm::dyn_cast<clang::Expr>(info.stmt))
-        type = expr->getType().getAsString();
-      std::string operation;
-      switch (info.kind) {
-      case core::SiteKind::Deref:
-        operation =
-            core::operationText(core::OperationForm::Dereference, pointer);
-        break;
-      case core::SiteKind::Raw:
-        operation =
-            core::operationText(info.library ? core::OperationForm::Release
-                                             : core::OperationForm::Dereference,
-                                pointer);
-        break;
-      case core::SiteKind::Release:
-        operation = core::operationText(core::OperationForm::Release, pointer);
-        break;
-      case core::SiteKind::Cast:
-      case core::SiteKind::IntToPtr:
-        operation =
-            core::operationText(core::OperationForm::Conversion, pointer, type);
-        break;
-      case core::SiteKind::LibCall:
-        operation = core::operationText(core::OperationForm::CallTo, callee);
-        break;
-      case core::SiteKind::Call:
-        operation =
-            info.boundary == core::Boundary::Exit
-                ? core::operationText(core::OperationForm::BoundaryOf, row.name)
-                : core::operationText(core::OperationForm::CallTo, callee);
-        break;
-      case core::SiteKind::Index:
-      case core::SiteKind::PtrArith:
-      case core::SiteKind::Assume:
-        operation =
-            core::operationText(core::OperationForm::Access, site->text);
-        break;
-      }
-      for (const core::Facet facet : core::AllFacets) {
-        const core::FacetRecord *facetRecord = site->facet(facet);
-        if (facetRecord == nullptr)
-          continue;
-        const core::SiteOutcome outcome = facetRecord->outcome();
-        // RFC 0032 §1: `guarded` allows guarded facets; `checked` and
-        // `proven` do not.
-        const bool guarded = outcome == core::SiteOutcome::Guarded &&
-                             level != core::RequireLevel::Guarded;
-        const bool unresolved =
-            outcome == core::SiteOutcome::Unresolved || guarded;
-        const bool unchecked = level == core::RequireLevel::Proven &&
-                               outcome == core::SiteOutcome::Checked;
-        if (!unresolved && !unchecked)
-          continue;
-        core::Diagnostic diagnostic{
-            .severity = core::Severity::Error,
-            .id = unresolved ? core::diag::UnresolvedOperation
-                             : core::diag::UncheckedOperation,
-            .message = {},
-            .location = site->location,
-            .notes = {},
-            .fixits = {},
-        };
-        if (unresolved) {
-          // §5.1: at a use, the unknown code the record names.
-          const bool useOfUnknown = *facetRecord->decision.unresolved ==
-                                        core::UnresolvedReason::UnknownCallee &&
-                                    info.kind != core::SiteKind::Call &&
-                                    !facetRecord->decision.detail.empty();
-          const core::PhraseArguments arguments{
-              .pointer = pointer,
-              .callee = useOfUnknown ? facetRecord->decision.detail : callee,
-              .slot = pointer,
-              .function = row.name,
-              .detail = facetRecord->decision.detail,
-          };
-          diagnostic.message =
-              guarded
-                  ? core::guardedOperationMessage(
-                        operation, *facetRecord->decision.unresolved, arguments)
-                  : core::unresolvedOperationMessage(
-                        operation, *facetRecord->decision.unresolved,
-                        arguments);
-        } else {
-          diagnostic.message = core::uncheckedOperationMessage(
-              operation, facetRecord->check ? facetRecord->check->kind
-                                            : naturalTemplate(facet));
-          if (facet == core::Facet::Null)
-            diagnostic.addNote("nothing is known about the nullness of '" +
-                                   pointer + "'",
-                               site->location);
-        }
-        publish(std::move(diagnostic), core::Certainty::Definite, info.id,
-                facet);
-      }
-    }
-  }
-}
-
-void LedgerAdapter::dropGuardedPossible() {
-  if (!options.dropGuardedPossible)
-    return;
-  // In the authoritative mode `emitted` and `ledgerDiagnostics` are parallel:
-  // `publish` appends to both.
-  assert(emitted.size() == ledgerDiagnostics.size() &&
-         "the diagnostics to report and the ledger's must be parallel");
-  std::vector<std::optional<std::uint32_t>> position(ledgerDiagnostics.size());
-  std::vector<core::Diagnostic> keptEmitted;
-  std::vector<core::LedgerDiagnostic> keptLedger;
-  for (std::size_t i = 0; i < ledgerDiagnostics.size(); ++i) {
-    const core::LedgerDiagnostic &diagnostic = ledgerDiagnostics[i];
-    bool drop = false;
-    if (diagnostic.certainty == core::Certainty::Possible &&
-        diagnostic.severity == core::Severity::Warning && diagnostic.site &&
-        diagnostic.facet) {
-      // The site of a diagnostic is an ordinal within its function.
-      for (const core::FunctionLedger &function : unit.functions) {
-        if (function.name != diagnostic.function)
-          continue;
-        const core::Site *site = function.site(*diagnostic.site);
-        const core::FacetRecord *facet =
-            site != nullptr ? site->facet(*diagnostic.facet) : nullptr;
-        if (facet != nullptr)
-          drop = facet->outcome() == core::SiteOutcome::Guarded;
-      }
-    }
-    if (drop)
-      continue;
-    position[i] = static_cast<std::uint32_t>(keptLedger.size());
-    keptLedger.push_back(diagnostic);
-    if (i < emitted.size())
-      keptEmitted.push_back(emitted[i]);
-  }
-  if (keptLedger.size() == ledgerDiagnostics.size())
-    return;
-  ledgerDiagnostics = std::move(keptLedger);
-  emitted = std::move(keptEmitted);
-  for (auto &[key, index] : emittedKeys)
-    if (index)
-      index = *index < position.size() ? position[*index] : std::nullopt;
-  for (core::FunctionLedger &function : unit.functions)
-    for (core::Site &site : function.sites)
-      for (std::optional<core::FacetRecord> &record : site.facets)
-        if (record && record->diagnostic)
-          record->diagnostic = *record->diagnostic < position.size()
-                                   ? position[*record->diagnostic]
-                                   : std::nullopt;
-}
-
-PlannedLedger LedgerAdapter::finish() {
-  PlannedLedger result;
+core::Ledger LedgerAdapter::finish() {
+  core::Ledger result;
   if (isDiscarding() || finished)
     return result;
   finished = true;
-  PlannerOptions planner;
-  planner.checks = options.config.checks;
-  planner.runtime = options.config.runtime == core::RuntimeUse::On;
-  planner.lowered = options.lowered;
-  for (const SiteIndex::FunctionSites &function : sites.functions()) {
-    core::FunctionLedger &row = unit.functions[function.index];
-    row.overBudget = overBudgetFunctions.contains(function.index);
-    row.callsSetjmp = function.callsSetjmp;
-  }
-  fillDefaults(planner);
-  applyOverrides(planner);
+  for (const SiteIndex::FunctionSites &function : sites.functions())
+    unit.functions[function.index].overBudget =
+        overBudgetFunctions.contains(function.index);
+  fillDefaults();
+  applyOverrides();
   applyBoundaries();
-  const CheckPlanner checkPlanner(context, sites, std::move(planner));
-  result.plan = checkPlanner.plan(unit, witnesses, result.handles);
   appendOrphanRows();
-  dropGuardedPossible();
-  reportRequireLevel();
 
-  result.ledger.scope = core::LedgerScope::Unit;
-  result.ledger.config = options.config;
-  result.ledger.units.push_back(std::move(unit));
-  result.ledger.diagnostics = ledgerDiagnostics;
-  core::sortDiagnostics(result.ledger);
-  assert(core::completenessProblems(result.ledger).empty() &&
+  result.units.push_back(std::move(unit));
+  result.diagnostics = ledgerDiagnostics;
+  core::sortDiagnostics(result);
+  assert(core::completenessProblems(result).empty() &&
          "RFC 0030 §2.6: the ledger must be complete by construction");
   return result;
 }

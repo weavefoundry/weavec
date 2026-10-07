@@ -58,10 +58,7 @@ void caller(void) { usedStatic(); usedInline(); }
   EXPECT_EQ(emittedNames(unit),
             (Lines{"external", "usedStatic", "usedInline", "keptStatic",
                    "c99Inline", "gnuInline", "caller"}));
-  const core::FunctionLedger *row = unit.row("usedStatic");
-  ASSERT_NE(row, nullptr);
-  EXPECT_EQ(row->linkage, core::Linkage::Internal);
-  EXPECT_EQ(unit.row("external")->linkage, core::Linkage::External);
+  ASSERT_NE(unit.row("usedStatic"), nullptr);
   EXPECT_EQ(unit.row("external")->line, 3U);
 }
 
@@ -312,34 +309,6 @@ unsigned long f(int *p, int n, int (*vla)[n]) {
                    "call/exit returna+b+(unsignedlong)(c+d+e) temporal"}));
 }
 
-// §2.1: the shared operand of `a ?: b`, constant expressions and pointers
-// into a non-default address space are marked.
-TEST(SiteCollector, MarksSitesNoCheckCanServe) {
-  const auto unit = collectUnit(R"c(
-int arr[4];
-int f(int **pp, __attribute__((address_space(1))) int *far, int i) {
-  static int *fixed = &arr[1];
-  int *p = *pp ?: arr;
-  switch (i) { case sizeof(arr): return 0; }
-  return *p + *far + *fixed;
-}
-)c");
-  const SiteIndex::FunctionSites *function =
-      unit.sites.function(*unit.function("f"));
-  ASSERT_NE(function, nullptr);
-  bool shared = false;
-  bool far = false;
-  for (const SiteInfo &site : function->sites) {
-    if (site.sharedOperand) {
-      shared = true;
-      EXPECT_EQ(site.kind, core::SiteKind::Deref);
-    }
-    far = far || site.nonDefaultAddressSpace;
-  }
-  EXPECT_TRUE(shared);
-  EXPECT_TRUE(far);
-}
-
 // §6.1, §5.4: unsafe regions and returns-twice callers are marked.
 TEST(SiteCollector, MarksUnsafeRegionsAndSetjmp) {
   const auto unit = collectUnit(R"c(
@@ -363,21 +332,6 @@ int h(int *p) { if (setjmp(env)) return 0; return *p; }
   EXPECT_EQ(flags("g"), (std::vector<bool>{true, true}));
   EXPECT_FALSE(unit.sites.function(*unit.function("f"))->callsSetjmp);
   EXPECT_TRUE(unit.sites.function(*unit.function("h"))->callsSetjmp);
-  EXPECT_TRUE(unit.row("h")->callsSetjmp);
-}
-
-// RFC 0030 §6.3: `WEAVEC_REQUIRE_SAFE` marks the function's row, which
-// `LedgerAdapter` holds to `checked`.
-TEST(SiteCollector, MarksRequireSafeFunctions) {
-  const auto unit = collectUnit(R"c(
-#define REQUIRE_SAFE __attribute__((annotate("weavec.require_safe")))
-REQUIRE_SAFE int strict(int *p) { return *p; }
-int lax(int *p) { return *p; }
-)c");
-  ASSERT_NE(unit.row("strict"), nullptr);
-  ASSERT_NE(unit.row("lax"), nullptr);
-  EXPECT_TRUE(unit.row("strict")->requireSafe);
-  EXPECT_FALSE(unit.row("lax")->requireSafe);
 }
 
 // The index finds every site by statement, and the exit of a call that does
@@ -408,12 +362,11 @@ int f(int *p) {
       core::SiteKind::Deref);
   // `weavec_assume_` is unused here, so `f` is the only emitted function.
   EXPECT_EQ(unit.sites.functions().size(), 1U);
-  EXPECT_EQ(unit.sites.siteCount(), 4U);
 }
 
-// §2.6: a spatial facet defaults to checked only against an extent exact
-// from the type or declared over unmodified parameters and constants.
-TEST(SiteCollector, SpatialDefaults) {
+// §5.3: a constant index inside a non-flexible array is proven by the
+// types alone.
+TEST(SiteCollector, ProvenByType) {
   const auto unit = collectUnit(R"c(
 struct flex { int n; int tail[1]; };
 struct fixed { int a[4]; int n; };
@@ -427,68 +380,11 @@ int f(int *SIZED_BY(n) p, int n, int *q, int *SIZED_BY(m) r, int m,
   const SiteIndex::FunctionSites *function =
       unit.sites.function(*unit.function("f"));
   ASSERT_NE(function, nullptr);
-  std::vector<std::string> defaults;
-  for (const SiteInfo &site : function->sites) {
-    if (site.kind != core::SiteKind::Index)
-      continue;
-    std::string text = unit.row("f")->sites[site.id.ordinal].text + ":";
-    if (!site.spatialCheckable())
-      text += "none";
-    else
-      text += std::string(
-                  core::toString(site.spatialDefaults.front().extentClass)) +
-              " " + site.spatialDefaults.front().extent->toString();
-    if (site.provenByType)
-      text += " by-type";
-    defaults.push_back(text);
-  }
-  EXPECT_EQ(defaults, (Lines{"local[i]:exact 3", "p[i]:declared n", "q[i]:none",
-                             "r[i]:none", "x->tail[i]:none", "y->a[i]:exact 4",
-                             "local[1]:exact 3 by-type"}));
-}
-
-// §2.6 for calls: a spatial facet defaults to checked when every
-// requirement compares simple terms against an extent the types or a
-// declaration give.
-TEST(SiteCollector, CallSpatialDefaults) {
-  const auto unit = collectUnit(R"c(
-void take(int *SIZED_BY(n) p, int n);
-void f(char *d, const char *s, unsigned long n, int *q) {
-  char buf[8];
-  char other[8];
-  int ints[4];
-  memcpy(buf, other, n);
-  memcpy(d, s, n);
-  take(ints, 4);
-  take(q, 4);
-  (void)strlen(buf);
-}
-)c");
-  const SiteIndex::FunctionSites *function =
-      unit.sites.function(*unit.function("f"));
-  ASSERT_NE(function, nullptr);
-  Lines defaults;
-  for (const SiteInfo &site : function->sites) {
-    if (site.kind != core::SiteKind::LibCall &&
-        site.kind != core::SiteKind::Call)
-      continue;
-    std::string line = unit.row("f")->sites[site.id.ordinal].text + ":";
-    for (const CheckWitness &witness : site.spatialDefaults) {
-      line += witness.shape == CheckWitness::Shape::Length ? " length#"
-                                                           : " disjoint#";
-      line += std::to_string(*witness.argument);
-      if (witness.extent)
-        line += " " + witness.extent->toString();
-    }
-    defaults.push_back(line);
-  }
-  EXPECT_EQ(
-      defaults,
-      (Lines{std::string(
-                 "memcpy(buf,other,n): length#0 sizeof(char[8]) length#1 ") +
-                 "sizeof(char[8]) disjoint#0",
-             "memcpy(d,s,n):", "take(ints,4): length#0 sizeof(int[4])",
-             "take(q,4):", "strlen(buf):", "}:"}));
+  Lines byType;
+  for (const SiteInfo &site : function->sites)
+    if (site.kind == core::SiteKind::Index && site.provenByType)
+      byType.push_back(unit.row("f")->sites[site.id.ordinal].text);
+  EXPECT_EQ(byType, (Lines{"local[1]"}));
 }
 
 } // namespace

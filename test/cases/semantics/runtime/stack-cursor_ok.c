@@ -6,7 +6,7 @@
 #include <stdio.h>
 static void fill(char *dst, const char *src) {
   while (*src)
-    *dst++ = *src++; // GUARDED: spatial
+    *dst++ = *src++;
   *dst = 0;
 }
 int main(int argc, char **argv) {

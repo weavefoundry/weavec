@@ -16,7 +16,7 @@ again:;
   char *p = hide(v);
   memset(v, 1, sizeof v);
   for (i = 0; i < 3; i++)
-    total += p[round ? idx : 0]; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+    total += p[round ? idx : 0]; // BUG: out-of-bounds // TRAP
   if (round++ == 0)
     goto again;
   return total;

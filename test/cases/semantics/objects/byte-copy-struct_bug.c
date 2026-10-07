@@ -15,5 +15,5 @@ int main(void) {
   orig.buf[0] = 1;
   memcpy(&copy, &orig, sizeof orig);
   free(copy.buf);
-  return orig.buf[0]; // BUG: use-after-free // NOT-PROVEN: temporal
+  return orig.buf[0]; // BUG: use-after-free
 }

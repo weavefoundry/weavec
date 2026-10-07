@@ -5,5 +5,5 @@ int main(int argc, char **argv) {
   int a[4] = {0, 1, 2, 3};
   int *p = a;
   p += 3 + argc;
-  return *p; // BUG: out-of-bounds // TRAP: span
+  return *p; // BUG: out-of-bounds // TRAP
 }

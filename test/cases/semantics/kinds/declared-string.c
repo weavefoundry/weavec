@@ -10,7 +10,7 @@
 
 static size_t count_x(const char *WEAVEC_STRING s) {
   size_t n = 0;
-  for (; *s; s++)
+  for (; *s; s++) // TRAP
     if (*s == 'x') n++;
   return n;
 }
@@ -19,5 +19,5 @@ int main(int argc, char **argv) {
   char b[4] = {'a', 'x', 'c', 0};
   (void)argv;
   if (argc > 1) b[3] = 'd';
-  return (int)count_x(b); // BUG: out-of-bounds // TRAP: len
+  return (int)count_x(b); // BUG: out-of-bounds // MISS: the analysis does not report a call's argument against the callee's requirement (RFC 0035 §8); the guard stops in the callee
 }

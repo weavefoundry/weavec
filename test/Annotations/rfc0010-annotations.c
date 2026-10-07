@@ -52,7 +52,7 @@ int after(void) {
 // through it, so the share the local takes and drops is a leak. The object
 // engine does not read WEAVEC_REFCOUNT: the increment is an integer store
 // that leaves the caller's count unknown, no share is taken and no leak is
-// reported (test/cases/KNOWN-DIFFERENCES.md, *Lit tests*). A leak is never
+// reported (the retired golden comparison of RFC 0030, *Lit tests*). A leak is never
 // a facet (RFC 0030 §3.4), so no outcome is lost.
 struct node {
   int WEAVEC_REFCOUNT refs;

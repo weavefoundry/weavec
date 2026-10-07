@@ -19,17 +19,15 @@
 // RUN: not %weavec -Wno-weavec-nonsense %s -- 2>&1 | FileCheck --check-prefix=UNKNOWN %s
 // RUN: not %weavec -Wno-weavec-annotation-required %s -- 2>&1 | FileCheck --check-prefix=REMOVED %s
 //
-// The same spellings on the driver. -fno-weavec compiles without analysis
-// and without a unit record; -fsyntax-only analyses but writes nothing.
+// The same spellings on the driver, whose analysis (-fweavec-diagnose, RFC
+// 0035 §8) reports warnings unless -Werror=weavec raises them. -fno-weavec
+// compiles without WeaveC; -fsyntax-only analyses but writes nothing.
 // RUN: rm -rf %t && mkdir -p %t
-// RUN: not %weavec_cc -c %s -o %t/bug.o -DBUG 2>&1 | FileCheck --check-prefix=BUG %s
+// RUN: not %weavec_cc -fweavec-diagnose -Werror=weavec -c %s -o %t/bug.o -DBUG 2>&1 | FileCheck --check-prefix=BUG %s
 // RUN: not ls %t/bug.o
-// RUN: not ls %t/bug.o.weavec
-// RUN: %weavec_cc -Wno-error=weavec -c %s -o %t/bug.o -DBUG 2>&1 | FileCheck --check-prefix=LOWERED %s
-// RUN: %weavec --dump-record=%t/bug.o.weavec | FileCheck --check-prefix=RECORDED %s
-// RUN: %weavec_cc -fno-weavec -c %s -o %t/plain.o -DBUG 2>&1 | count 0
-// RUN: not ls %t/plain.o.weavec
-// RUN: %weavec_cc -fsyntax-only -Wno-weavec-leak %s 2>&1 | count 0
+// RUN: %weavec_cc -fweavec-diagnose -c %s -o %t/bug.o -DBUG 2>&1 | FileCheck --check-prefix=LOWERED %s
+// RUN: %weavec_cc -fno-weavec -fweavec-diagnose -c %s -o %t/plain.o -DBUG 2>&1 | count 0
+// RUN: %weavec_cc -fweavec-diagnose -fsyntax-only -Wno-weavec-leak %s 2>&1 | count 0
 // RUN: not %weavec_cc -fweavec-bogus -c %s -o %t/x.o 2>&1 | FileCheck --check-prefix=BOGUS %s
 // RUN: not %weavec_cc -Wno-weavec-unsafe-operation -c %s -o %t/x.o 2>&1 | FileCheck --check-prefix=REFUSED %s
 //
@@ -55,11 +53,6 @@
 // VERSION: clang version
 // VERSION: weavec-cc version {{[0-9]+\.[0-9]+\.[0-9]+}}
 // VERSION-NEXT: built with LLVM {{[0-9]+\.}}
-// RECORDED: "reported": [
-// RECORDED: "id": "use-after-free",
-// RECORDED-NEXT: "file": "{{.*}}rfc0005-flags.c",
-// RECORDED-NEXT: "line": [[#]],
-// RECORDED-NEXT: "column": 10
 void f(void) {
   char *q = malloc(1);
   (void)q;

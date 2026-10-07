@@ -23,7 +23,7 @@ static LClosure *newclosure(int n) {
 int sumupvals(const LClosure *cl) {
   int s = 0;
   for (int i = 0; i < cl->nupvalues; i++)
-    if (cl->upvals[i] != NULL) s += cl->upvals[i]->v; // UNRESOLVED: spatial:unknown-extent
+    if (cl->upvals[i] != NULL) s += cl->upvals[i]->v;
   return s;
 }
 

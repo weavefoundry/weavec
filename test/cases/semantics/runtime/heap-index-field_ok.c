@@ -15,7 +15,7 @@ static struct vec *vec_new(size_t cap) {
   return v;
 }
 static void vec_set(struct vec *v, size_t i, int x) {
-  v->data[i] = x; // GUARDED: spatial
+  v->data[i] = x;
 }
 int main(int argc, char **argv) {
   struct vec *v = vec_new(8);

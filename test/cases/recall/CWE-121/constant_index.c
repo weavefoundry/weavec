@@ -3,7 +3,7 @@
 
 void bad(void) {
   char buf[10];
-  buf[10] = 'A'; // BUG: out-of-bounds // TRAP: index
+  buf[10] = 'A'; // BUG: out-of-bounds // TRAP
 }
 
 void good(void) {

@@ -12,6 +12,6 @@ int f(void) {
   char *p = malloc(8);
   if (!p) return 0;
   p[0] = 1;
-  hook(p); // UNRESOLVED: temporal:callback // TRAP: nonnull
-  return p[0]; // UNRESOLVED: temporal:callback
+  hook(p); // TRAP
+  return p[0];
 }

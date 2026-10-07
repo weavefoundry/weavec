@@ -7,7 +7,7 @@ void run(unsigned n) {
   n = 8;
   char *p = malloc(sizeof array);
   if (!p) return;
-  p[n - 4] = 0; // BUG: out-of-bounds // TRAP: index
+  p[n - 4] = 0; // BUG: out-of-bounds // TRAP
   free(p);
 }
 // Driver (RFC 0030 section 17.2): executes the defect so the runtime oracle can observe the check.

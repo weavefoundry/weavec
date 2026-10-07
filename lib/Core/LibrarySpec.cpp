@@ -118,30 +118,6 @@ std::string LibTerm::str() const {
   return {};
 }
 
-bool LibTerm::mentions(Kind wanted) const {
-  return kind == wanted ||
-         std::ranges::any_of(operands, [wanted](const LibTerm &operand) {
-           return operand.mentions(wanted);
-         });
-}
-
-static void collectArguments(const LibTerm &term,
-                             std::vector<unsigned> &found) {
-  const bool leaf = term.kind == LibTerm::Kind::Argument ||
-                    term.kind == LibTerm::Kind::StringLength ||
-                    term.kind == LibTerm::Kind::FormatLength;
-  if (leaf && std::ranges::find(found, term.arg) == found.end())
-    found.push_back(term.arg);
-  for (const LibTerm &operand : term.operands)
-    collectArguments(operand, found);
-}
-
-std::vector<unsigned> LibTerm::arguments() const {
-  std::vector<unsigned> found;
-  collectArguments(*this, found);
-  return found;
-}
-
 static std::optional<std::int64_t>
 ask(const std::function<std::optional<std::int64_t>(unsigned)> &function,
     unsigned index) {
@@ -278,10 +254,6 @@ bool LibraryEntry::knownToReturn() const noexcept {
   return !noreturn && !exits;
 }
 
-bool LibraryEntry::isCompilerBuiltin() const noexcept {
-  return header.empty();
-}
-
 bool LibraryEntry::trustsLibrarySpec() const noexcept {
   const auto hidden = [](const LibraryResult &value) {
     return value.kind == LibraryResult::Kind::Static ||
@@ -348,27 +320,6 @@ const LibraryParam *LibraryMatch::param(unsigned callArgument) const noexcept {
                                      : entry->param(static_cast<unsigned>(row));
 }
 
-//===----------------------------------------------------------------------===//
-// Canonical spelling
-//===----------------------------------------------------------------------===//
-
-static std::string callbackText(const LibCallback &callback) {
-  std::string text;
-  switch (callback.kind) {
-  case LibCallback::Kind::Sync:
-    text = "sync(";
-    break;
-  case LibCallback::Kind::Entry:
-    text = "entry(";
-    break;
-  case LibCallback::Kind::AtExit:
-    return "at-exit";
-  }
-  for (std::size_t i = 0; i < callback.arguments.size(); ++i)
-    text += (i != 0 ? "," : "") + std::to_string(callback.arguments[i]);
-  return text + ")";
-}
-
 /// The nullability a result kind has when the row does not say.
 static LibraryResult::Null defaultNull(LibraryResult::Kind kind) {
   switch (kind) {
@@ -385,180 +336,6 @@ static LibraryResult::Null defaultNull(LibraryResult::Kind kind) {
     return LibraryResult::Null::Never;
   }
   return LibraryResult::Null::Never;
-}
-
-static std::string resultText(const LibraryResult &result, bool noreturn) {
-  using Kind = LibraryResult::Kind;
-  std::string text;
-  switch (result.kind) {
-  case Kind::Void:
-    return noreturn ? "noreturn" : "void";
-  case Kind::Int:
-    return result.value ? "int:value(" + result.value->str() + ")" : "int";
-  case Kind::Fresh:
-    text = "fresh(" + result.family + ")";
-    break;
-  case Kind::Static:
-    text = "static(" + result.state + ")";
-    break;
-  case Kind::Arg:
-    text = "arg(" + std::to_string(result.arg) + ")";
-    break;
-  case Kind::Interior:
-    text = "interior(" + std::to_string(result.arg) + ")";
-    break;
-  case Kind::InteriorState:
-    text = "interior-state(" + result.state + ")";
-    break;
-  case Kind::Unknown:
-    text = "ptr";
-    break;
-  }
-  if (result.extent)
-    text += ":extent(" + result.extent->str() + ")";
-  if (result.offset)
-    text += ":offset(" + result.offset->str() + ")";
-  if (result.null != defaultNull(result.kind)) {
-    switch (result.null) {
-    case LibraryResult::Null::Never:
-      text += ":nonnull";
-      break;
-    case LibraryResult::Null::OnFailure:
-      text += ":null-on-failure";
-      break;
-    case LibraryResult::Null::May:
-      text += ":null-ok";
-      break;
-    }
-  }
-  if (result.kind == Kind::Arg && !result.family.empty())
-    text += ":or-fresh(" + result.family + ")";
-  if (result.kind == Kind::Arg && !result.state.empty())
-    text += ":or-static(" + result.state + ")";
-  if (result.zeroInit)
-    text += ":zero-init";
-  else if (result.family == HeapFamily)
-    text += ":no-zero-init";
-  if (result.zeroFilled)
-    text += ":zero-filled";
-  if (result.string)
-    text += ":str";
-  if (result.replaces)
-    text += ":replaces";
-  return text;
-}
-
-static std::string_view accessText(LibraryParam::Access access) {
-  switch (access) {
-  case LibraryParam::Access::None:
-    return "none";
-  case LibraryParam::Access::Read:
-    return "r";
-  case LibraryParam::Access::Write:
-    return "w";
-  case LibraryParam::Access::ReadWrite:
-    return "rw";
-  }
-  return "none";
-}
-
-static std::string effectText(const LibraryParam &param) {
-  switch (param.effect) {
-  case LibraryParam::Effect::Borrow:
-    return {};
-  case LibraryParam::Effect::Release:
-    return ":release(" + param.family + ")";
-  case LibraryParam::Effect::Realloc:
-    return ":realloc(" + param.family + ")";
-  case LibraryParam::Effect::Retain:
-    return ":retain(" + param.state + ")";
-  case LibraryParam::Effect::Escape:
-    return ":escape";
-  case LibraryParam::Effect::Init:
-    return ":init(" + param.family + ")";
-  case LibraryParam::Effect::Fini:
-    return ":fini(" + param.family + ")";
-  }
-  return {};
-}
-
-static std::string paramText(const LibraryParam &param) {
-  std::string text;
-  switch (param.type) {
-  case LibraryParam::Type::Int:
-    return "int";
-  case LibraryParam::Type::Other:
-    return "other";
-  case LibraryParam::Type::Function:
-    text = "fn";
-    break;
-  case LibraryParam::Type::Pointer:
-    text = accessText(param.access);
-    break;
-  }
-  if (param.bytes)
-    text += ":bytes(" + param.bytes->str() + ")";
-  if (param.count)
-    text += ":count(" + param.count->str() + ")";
-  if (param.string)
-    text += ":str";
-  if (param.null == LibraryParam::Null::Allowed)
-    text += ":null-ok";
-  else if (param.null == LibraryParam::Null::AllowedIfZero && param.zeroTerm)
-    text += ":null-if-zero(" + param.zeroTerm->str() + ")";
-  text += effectText(param);
-  if (param.range)
-    text += ":range(" + param.range->str() + ")";
-  if (param.callback)
-    text += ":" + callbackText(*param.callback);
-  if (param.out)
-    text += ":out(" + resultText(*param.out, false) + ")";
-  return text;
-}
-
-std::string LibraryEntry::str() const {
-  std::string text = name + " (";
-  for (std::size_t i = 0; i < params.size(); ++i)
-    text += (i != 0 ? ", " : "") + paramText(params[i]);
-  if (variadic)
-    text += params.empty() ? "..." : ", ...";
-  text += ") -> " + resultText(result, noreturn);
-  for (const LibDisjoint &d : disjoint)
-    text += " disjoint(" + std::to_string(d.first) + "," +
-            std::to_string(d.second) + "," + d.length.str() + ")";
-  for (const LibCopy &copy : copies)
-    text += " copies(" + std::to_string(copy.dst) + "," +
-            std::to_string(copy.src) + "," + copy.length.str() + ")";
-  for (const LibFill &fill : fills)
-    text += " fills(" + std::to_string(fill.dst) + "," + fill.value.str() +
-            "," + fill.length.str() + ")";
-  for (const LibStringWrite &write : writesString)
-    text += " writes-str(" + std::to_string(write.dst) +
-            (write.length ? "," + write.length->str() : "") + ")";
-  for (const std::string &state : invalidates)
-    text += " invalidates(" + state + ")";
-  for (const std::string &state : reads)
-    text += " reads(" + state + ")";
-  if (exits)
-    text += " exits";
-  if (returnsTwice)
-    text += " returns-twice";
-  if (format) {
-    text += format->kind == LibFormat::Kind::Printf ? " printf(" : " scanf(";
-    text += std::to_string(format->format) + "," +
-            std::to_string(format->first) + ")";
-  }
-  if (wrapper)
-    text += " wrapper(" + wrapper->name + (wrapper->room ? ",room" : "") +
-            (wrapper->source ? ",source" : "") +
-            (wrapper->disjoint ? ",disjoint" : "") + ")";
-  for (const LibraryChk &alias : chk) {
-    text += " chk(" + alias.name + ":";
-    for (std::size_t i = 0; i < alias.argumentOf.size(); ++i)
-      text += (i != 0 ? "," : "") + std::to_string(alias.argumentOf[i]);
-    text += ')';
-  }
-  return text + ";";
 }
 
 //===----------------------------------------------------------------------===//
@@ -1267,8 +1044,10 @@ bool LibrarySpecParser::parseResultFlag(LibraryResult &result,
 
 bool LibrarySpecParser::parseClause(LibraryEntry &entry,
                                     const std::string &clause) {
-  if (clause == "exits" || clause == "returns-twice") {
-    bool &flag = clause == "exits" ? entry.exits : entry.returnsTwice;
+  if (clause == "exits" || clause == "returns-twice" || clause == "wide") {
+    bool &flag = clause == "exits"  ? entry.exits
+                 : clause == "wide" ? entry.wide
+                                    : entry.returnsTwice;
     if (flag)
       return fail("duplicate clause '" + clause + "'");
     flag = true;
@@ -1364,24 +1143,9 @@ bool LibrarySpecParser::parseClause(LibraryEntry &entry,
     auto wrapped = name("a wrapper name");
     if (!wrapped)
       return false;
-    LibWrapper wrapper{.name = std::move(*wrapped)};
-    while (accept(',')) {
-      const std::string what = word();
-      bool *flag = nullptr;
-      if (what == "room")
-        flag = &wrapper.room;
-      else if (what == "source")
-        flag = &wrapper.source;
-      else if (what == "disjoint")
-        flag = &wrapper.disjoint;
-      if (flag == nullptr || *flag)
-        return fail("expected 'room', 'source' or 'disjoint', once each, in "
-                    "'wrapper(…)'");
-      *flag = true;
-    }
-    if (!expect(')', "after 'wrapper(…'"))
+    if (!expect(')', "after the wrapper name"))
       return false;
-    entry.wrapper = std::move(wrapper);
+    entry.wrapper = LibWrapper{.name = std::move(*wrapped)};
   } else if (clause == "chk") {
     if (!expect('(', "after 'chk'"))
       return false;
@@ -1607,18 +1371,17 @@ bool LibrarySpecParser::validateEntry(LibraryEntry &entry) {
   }
   if (!validateResult(entry, entry.result, "the result"))
     return false;
+  // The runtime's version of a call is named after it: a row copied from
+  // another must not keep that one's wrapper.
+  if (entry.wrapper && entry.wrapper->name != entry.name)
+    return fail("'wrapper(" + entry.wrapper->name +
+                ")' must name the row's "
+                "own function, '" +
+                entry.name + "'");
   if (entry.exits && !entry.noreturn)
     return fail("'exits' needs a 'noreturn' result");
   if (entry.returnsTwice && entry.result.kind != LibraryResult::Kind::Int)
     return fail("'returns-twice' needs an 'int' result");
-  if (entry.wrapper && entry.wrapper->disjoint && entry.disjoint.empty())
-    return fail("'wrapper(…, disjoint)' needs a 'disjoint' clause");
-  if (entry.wrapper && entry.wrapper->room &&
-      (!isPointer(0) || !entry.params[0].bytes))
-    return fail("'wrapper(…, room)' needs bytes behind argument 0");
-  if (entry.wrapper && entry.wrapper->source &&
-      (entry.params.size() < 2 || !isPointer(1) || !entry.params[1].bytes))
-    return fail("'wrapper(…, source)' needs bytes behind argument 1");
   for (const LibDisjoint &disjoint : entry.disjoint) {
     if (!isPointer(disjoint.first) || !isPointer(disjoint.second) ||
         disjoint.first == disjoint.second)
@@ -1754,15 +1517,6 @@ const LibraryEntry *LibrarySpec::find(std::string_view name) const {
   return it == byName.end() || it->first != name ? nullptr : &rows[it->second];
 }
 
-std::vector<const LibraryEntry *>
-LibrarySpec::overloads(std::string_view name) const {
-  std::vector<const LibraryEntry *> found;
-  const auto [first, last] = byName.equal_range(name);
-  for (auto it = first; it != last; ++it)
-    found.push_back(&rows[it->second]);
-  return found;
-}
-
 std::optional<LibraryMatch>
 LibrarySpec::resolve(std::string_view callee,
                      const LibSignature *declared) const {
@@ -1827,31 +1581,12 @@ std::string_view LibrarySpec::shippedText() {
   return {LibrarySpecTextData, LibrarySpecTextSize};
 }
 
-namespace {
-/// The shipped table, or the error that kept it empty.
-struct ShippedLibrarySpec {
-  LibrarySpec spec;
-  std::string error;
-};
-} // namespace
-
-static const ShippedLibrarySpec &shippedLibrarySpec() {
-  static const ShippedLibrarySpec Shipped = [] {
-    ShippedLibrarySpec result;
-    if (auto parsed =
-            LibrarySpec::parse(LibrarySpec::shippedText(), result.error))
-      result.spec = std::move(*parsed);
-    return result;
+const LibrarySpec &LibrarySpec::shipped() {
+  static const LibrarySpec Shipped = [] {
+    std::string error;
+    return parse(shippedText(), error).value_or(LibrarySpec{});
   }();
   return Shipped;
-}
-
-const LibrarySpec &LibrarySpec::shipped() {
-  return shippedLibrarySpec().spec;
-}
-
-const std::string &LibrarySpec::shippedError() {
-  return shippedLibrarySpec().error;
 }
 
 std::optional<unsigned> formatArgumentCount(std::string_view format,
@@ -1925,17 +1660,6 @@ std::optional<unsigned> formatArgumentCount(std::string_view format,
       ++count;
   }
   return count;
-}
-
-std::string boundedWriterName(std::string_view writer) {
-  // The name knowledge stays in the table's own file (§19, gate H2).
-  constexpr std::string_view Suffix = "printf";
-  if (writer.size() <= Suffix.size() || !writer.ends_with(Suffix))
-    return {};
-  const std::string_view stem = writer.substr(0, writer.size() - Suffix.size());
-  if (stem != "s" && stem != "vs")
-    return {};
-  return std::string(stem) + "nprintf";
 }
 
 } // namespace weavec::core

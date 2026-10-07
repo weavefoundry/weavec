@@ -4,7 +4,7 @@
 void bad(void) {
   char buf[8];
   char *p = buf + 4;
-  p[4] = 0; // BUG: out-of-bounds // TRAP: span
+  p[4] = 0; // BUG: out-of-bounds // TRAP
   print_bytes(buf, 8);
 }
 

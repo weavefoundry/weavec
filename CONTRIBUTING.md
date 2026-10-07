@@ -77,7 +77,7 @@ with a few deliberate deviations, all enforced by `.clang-format` / `.clang-tidy
 | Functions and methods   | `camelBack`            | `addressOf`, `toCoreLocation`   |
 | Variables and members   | `camelBack`            | `placeOf`, `tracker`            |
 | Enumerators             | `CamelCase`            | `OwnershipKind::Shared`         |
-| Compile-time constants  | `CamelCase`            | `diag::UseAfterFree`, `Prelude` |
+| Compile-time constants  | `CamelCase`            | `diag::UseAfterFree`, `FrameAlign` |
 | Macros                  | `UPPER_CASE`           | `WEAVEC_OWNED`                  |
 | Header guards           | `WEAVEC_<PATH>_H`      | `WEAVEC_CORE_HEAP_H`            |
 
@@ -92,12 +92,13 @@ Additional rules:
   file starts with the standard LLVM-style header block.
 - **Warnings** are errors in CI. Do not suppress warnings without a comment
   explaining why.
-- **Tests.** New checker behaviour needs both a unit test (in `unittests/`)
-  exercising the core logic and an end-to-end test: a lit test (in `test/`)
-  when the exact diagnostic text matters, or a case under `test/cases/`
-  whose markers pin what must be reported, checked or left unproven (see
-  `test/cases/README.md`). New tests are named by feature
-  (`test/cases/<area>/…`, `test/Emission/<feature>-*.c`), not by RFC number;
+- **Tests.** New analysis or guard behaviour needs both a unit test (in
+  `unittests/`) exercising the core logic and an end-to-end test: a lit test
+  (in `test/`) when the exact diagnostic, IR or report text matters, or a
+  case under `test/cases/` whose markers pin what must be reported, where
+  the program must stop and what stays guarded (see `test/cases/README.md`).
+  New tests are named by feature (`test/cases/<area>/…`,
+  `test/Guards/<feature>.c`), not by RFC number;
   existing `rfcNNNN-` names may stay. False-positive fixes need a regression
   case under `test/cases/` (a `// CLEAN` file).
 

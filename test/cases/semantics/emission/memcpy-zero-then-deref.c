@@ -12,7 +12,7 @@
 
 int copy_then_read(int *p, const int *src, size_t n) {
   memcpy(p, src, n * sizeof *p);
-  return p[0]; // TRAP: nonnull
+  return p[0]; // TRAP
 }
 
 int main(int argc, char **argv) {

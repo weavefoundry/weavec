@@ -11,12 +11,12 @@ void *pool_get(size_t n) __attribute__((ownership_returns(pool)));
 void pool_keep(void *p) __attribute__((ownership_holds(pool, 1)));
 void pool_put(void *p) __attribute__((ownership_takes(pool, 1)));
 
-void hold(char *q) { pool_keep(q); } // TRUSTED: temporal:extern-contract
+void hold(char *q) { pool_keep(q); }
 
 int use(void) {
-  char *p = pool_get(8); // TRUSTED: temporal:extern-contract
+  char *p = pool_get(8);
   if (p == NULL) return 0;
   p[0] = 1;
-  pool_put(p); // TRUSTED: temporal:extern-contract
+  pool_put(p);
   return p[0]; // BUG: use-after-free definite
 }

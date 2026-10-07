@@ -71,7 +71,6 @@ void use(void) { f(0, 0, 0, 0, 0, 0, 0); (void)g(); }
   const KindEntry *counted = unit.kinds.param(*unit.function("f"), 0);
   ASSERT_NE(counted, nullptr);
   EXPECT_EQ(counted->extentClass, core::ExtentClass::Declared);
-  EXPECT_TRUE(counted->isCheckOperand());
   EXPECT_TRUE(counted->hasShape());
   EXPECT_EQ(counted->kind.source, core::KindSource::Declared);
 }
@@ -185,7 +184,6 @@ void *memcpy(void *, const void *, size_t) __attribute__((nonnull));
   EXPECT_EQ(spell(system), "unknown nonnull -/system-header");
   ASSERT_NE(system, nullptr);
   EXPECT_TRUE(system->nullabilityFromSystemHeader());
-  EXPECT_FALSE(system->isCheckOperand());
   EXPECT_TRUE(unit.kinds.governedByLibrary(*unit.function("memcpy")));
   EXPECT_EQ(param(unit, "memcpy", 0), "none");
   // The call site's null facet rests on the level-4 attribute alone.
@@ -202,7 +200,6 @@ constexpr const char *KindMacros = R"c(
 #define COUNTED_BY(n) __attribute__((annotate("weavec.counted_by." #n)))
 #define ENDED_BY(q) __attribute__((annotate("weavec.ended_by." #q)))
 #define STRING __attribute__((annotate("weavec.string")))
-#define REQUIRE_SAFE __attribute__((annotate("weavec.require_safe")))
 )c";
 
 // §7.2: the new macros resolve by name to any sibling, in any position.
@@ -263,17 +260,15 @@ void use(void) { f(0, 0, 0, 0, 0); (void)g(); h(0, 0, 0); }
   const KindEntry *counted = unit.kinds.param(*unit.function("f"), 0);
   ASSERT_NE(counted, nullptr);
   EXPECT_TRUE(counted->hasDeclaredShape());
-  EXPECT_TRUE(counted->isCheckOperand());
 }
 
-// §6.3 and §7.2: `WEAVEC_REQUIRE_SAFE` marks the function; the ownership
-// attributes become its contract; a constant array bound without `static`
-// is a suggestion.
-TEST(AttributeReader, RequireSafeContractsAndSuggestions) {
+// §7.2: the ownership attributes become the function's contract; a constant
+// array bound without `static` is a suggestion; an extent on a non-pointer
+// is a problem.
+TEST(AttributeReader, ContractsSuggestionsAndProblems) {
   const auto unit = collectUnit(std::string(KindMacros) + R"c(
-REQUIRE_SAFE int strict(void) { return 0; }
-int lax(void) { return 0; }
-REQUIRE_SAFE int flag;
+unsigned long n;
+int COUNTED_BY(n) flag;
 void *pool_get(unsigned long n) __attribute__((ownership_returns(pool)));
 void pool_put(int t, void *p) __attribute__((ownership_takes(pool, 2)));
 void pool_keep(void *p) __attribute__((ownership_holds(pool, 1)));
@@ -281,11 +276,9 @@ void *fresh(unsigned long n) __attribute__((malloc));
 void loose(int k[4]) { (void)k; }
 void use(void) { pool_put(0, pool_get(1)); pool_keep(fresh(1)); }
 )c");
-  EXPECT_TRUE(unit.kinds.requireSafe(*unit.function("strict")));
-  EXPECT_FALSE(unit.kinds.requireSafe(*unit.function("lax")));
   ASSERT_EQ(unit.kinds.problems().size(), 1U);
   EXPECT_EQ(unit.kinds.problems().front().message,
-            "WEAVEC_REQUIRE_SAFE on 'flag', which is not a function");
+            "'flag' is declared WEAVEC_COUNTED_BY(n) but is not a pointer");
   const OwnershipContract *get =
       unit.kinds.ownership(*unit.function("pool_get"));
   ASSERT_NE(get, nullptr);
@@ -351,17 +344,6 @@ TEST(KindTable, DeclaredShapesAndRequirements) {
   EXPECT_EQ(toString(RequirementEnforcement::CallerContract),
             "caller-contract");
   EXPECT_EQ(toString(MustAccessRule::R4), "R4");
-  // RFC 0030 §13.1: the guard round-trips through the record, so the link
-  // step can decide the requirement at a caller in another unit.
-  const auto guard = RequirementGuard::parse(requirement.guard->toString());
-  ASSERT_TRUE(guard);
-  EXPECT_EQ(*guard, *requirement.guard);
-  const auto inclusive = RequirementGuard::parse("1 <= param 2 scale 4 plus 3");
-  ASSERT_TRUE(inclusive);
-  EXPECT_EQ(inclusive->relation, RequirementGuard::Relation::LessEqual);
-  EXPECT_EQ(inclusive->rhs.toString(), "param 2 scale 4 plus 3");
-  EXPECT_FALSE(RequirementGuard::parse("param 1 scale 1 plus 0"));
-  EXPECT_FALSE(RequirementGuard::parse("0 < not-a-term here"));
 }
 
 TEST(KindTable, EntryHelpers) {
@@ -376,12 +358,9 @@ TEST(KindTable, EntryHelpers) {
   EXPECT_TRUE(entry.hasShape());
   EXPECT_TRUE(entry.isNonnull());
   EXPECT_TRUE(entry.shapeFromSystemHeader());
-  EXPECT_FALSE(entry.isCheckOperand());
   entry.shapeLevel = KindLevel::Ecosystem;
-  EXPECT_TRUE(entry.isCheckOperand());
   entry.kind = core::PointerKind::single();
   entry.extentClass = core::extentClassOf(entry.kind);
-  EXPECT_FALSE(entry.isCheckOperand());
   EXPECT_EQ(toString(KindLevel::LibrarySpec), "library-spec");
 }
 

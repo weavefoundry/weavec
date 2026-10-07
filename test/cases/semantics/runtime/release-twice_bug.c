@@ -7,7 +7,7 @@
 #include <stdlib.h>
 struct conn { char *buf; int fd; };
 static void conn_close(struct conn *c) {
-  free(c->buf); // TRAP: release
+  free(c->buf); // TRAP
   free(c);
 }
 static int handle(struct conn *c, int err) {

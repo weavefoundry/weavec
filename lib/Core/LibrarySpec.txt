@@ -59,9 +59,9 @@
 #              | 'fills(' INT ',' term ',' term ')'+
 #              | 'writes-str(' INT [ ',' term ] ')'+
 #              | 'invalidates(' STATE ')' | 'reads(' STATE ')' | 'exits'
-#              | 'returns-twice' | 'printf(' INT ',' INT ')'
+#              | 'returns-twice' | 'wide'+ | 'printf(' INT ',' INT ')'
 #              | 'scanf(' INT ',' INT ')' | 'chk(' NAME ':' INT { ',' INT } ')'
-#              | 'wrapper(' NAME { ',' ( 'room' | 'source' | 'disjoint' ) } ')'+
+#              | 'wrapper(' NAME ')'+
 #   term     ::= INT | 'a' N | 'strlen(a' N ')' | 'fmtlen(a' N ')' | MACRO+
 #              | term '*' term | term '+' term | term '-' INT
 #              | term '/' INT+
@@ -169,22 +169,18 @@
 #   exits            the call ends the process: leaks are not reported there
 #                    (section 8.4). Needs noreturn.
 #   returns-twice    setjmp-like (section 5.4).
+#   wide+            the row's strings end in a zero wchar_t, and count(t)
+#                    and strlen(aN) count wchar_t elements (wcslen).
 #   printf(f,v), scanf(f,v)
 #                    argument f is the format; v is the first variadic
 #                    argument, or the va_list parameter of a v- function.
-#   wrapper(N, W...)+
-#                    RFC 0034 section 5.2: the prelude's checked wrapper
-#                    __weavec_chk_N may replace the call when a requirement
-#                    it computes has no check or guard of its own (no term
-#                    states it at the site, or a guard would check only a
-#                    lower bound, as for a format's output). It takes the
-#                    row's arguments, then a fortified alias's object size,
-#                    and computes at run time: 'room', the bytes argument 0
-#                    needs, against the room left in the tracked object it
-#                    points into (a format row writes through the bounded
-#                    writer instead and fails when the output did not fit);
-#                    'source', the bytes argument 1 needs (a copy's);
-#                    'disjoint', the row's disjoint clause.
+#   wrapper(N)+      RFC 0035 section 2.5: weavec-cc replaces the call with
+#                    the runtime's checked __weavec_rt_N, which takes the
+#                    call's arguments and its site (first when the call is
+#                    variadic, last otherwise) and checks what the call reads
+#                    and writes as it runs: bytes no term states before the
+#                    call (a format's output), or fewer than the terms state
+#                    (memchr reads only up to the byte it finds).
 #   chk(A: i0, i1, ...)
 #                    A is an alias of the entry (a fortified form): its k-th
 #                    argument is the entry's argument i_k, or dropped (-1).
@@ -489,7 +485,7 @@ strndup (r:bytes(min(a1,strlen(a0)+1)):null-if-zero(a1), int) -> \
     fresh(free):extent(min(a1,strlen(a0))+1):null-on-failure:zero-init:str;
 
 header wchar.h;
-wcsdup (r:str) -> fresh(free):null-on-failure:zero-init:str;
+wcsdup (r:str) -> fresh(free):null-on-failure:zero-init:str wide;
 
 header stdio.h;
 asprintf (w:out(fresh(free):extent(fmtlen(a1)+1):null-on-failure:zero-init:str), \
@@ -525,10 +521,9 @@ backtrace_symbols_fd (r:count(a1), int, int) -> void;
 header string.h;
 memcpy (w:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) \
     -> arg(0) disjoint(0,1,a2) copies(0,1,a2) \
-    wrapper(memcpy,room,source,disjoint) \
     chk(__builtin___memcpy_chk: 0,1,2,-1) chk(__memcpy_chk: 0,1,2,-1);
 memmove (w:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) \
-    -> arg(0) copies(0,1,a2) wrapper(memmove,room,source) \
+    -> arg(0) copies(0,1,a2) \
     chk(__builtin___memmove_chk: 0,1,2,-1) chk(__memmove_chk: 0,1,2,-1);
 memset (w:bytes(a2):null-if-zero(a2), int, int) -> arg(0) fills(0,a1,a2) \
     chk(__builtin___memset_chk: 0,1,2,-1) chk(__memset_chk: 0,1,2,-1);
@@ -539,7 +534,7 @@ memcmp (r:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) \
 # C11: memchr stops at the first match, so a NUL ends what memchr(s, 0, n)
 # reads; a byte other than NUL found earlier is not described.
 memchr (r:bytes(min(a2,strlen(a0)+1)):null-if-zero(a2), int, int) -> \
-    interior(0):null-ok;
+    interior(0):null-ok wrapper(memchr);
 memrchr (r:bytes(a2):null-if-zero(a2), int, int) -> interior(0):null-ok;
 # GNU: searches without a bound for a byte the caller promises is there.
 rawmemchr (r:bytes(__WEAVEC_UNBOUNDED), int) -> interior(0):nonnull;
@@ -557,7 +552,7 @@ memccpy (w:bytes(min(a3,strlen(a1)+1)):null-if-zero(a3), \
     chk(__builtin___memccpy_chk: 0,1,2,3,-1);
 strcpy (w:bytes(strlen(a1)+1), r:str) -> arg(0) \
     disjoint(0,1,strlen(a1)+1) writes-str(0,strlen(a1)) \
-    wrapper(strcpy,room,disjoint) \
+    wrapper(strcpy) \
     chk(__builtin___strcpy_chk: 0,1,-1) chk(__strcpy_chk: 0,1,-1);
 strncpy (w:bytes(a2):null-if-zero(a2), \
     r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> arg(0) \
@@ -566,7 +561,7 @@ strncpy (w:bytes(a2):null-if-zero(a2), \
 stpcpy (w:bytes(strlen(a1)+1), r:str) -> \
     interior(0):offset(strlen(a1)):nonnull \
     disjoint(0,1,strlen(a1)+1) writes-str(0,strlen(a1)) \
-    wrapper(stpcpy,room,disjoint) \
+    wrapper(stpcpy) \
     chk(__builtin___stpcpy_chk: 0,1,-1) chk(__stpcpy_chk: 0,1,-1);
 stpncpy (w:bytes(a2):null-if-zero(a2), \
     r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) \
@@ -575,7 +570,7 @@ stpncpy (w:bytes(a2):null-if-zero(a2), \
     chk(__builtin___stpncpy_chk: 0,1,2,-1) chk(__stpncpy_chk: 0,1,2,-1);
 strcat (rw:bytes(strlen(a0)+strlen(a1)+1):str, r:str) -> arg(0) \
     disjoint(0,1,strlen(a0)+strlen(a1)+1) \
-    writes-str(0,strlen(a0)+strlen(a1)) wrapper(strcat,room) \
+    writes-str(0,strlen(a0)+strlen(a1)) wrapper(strcat) \
     chk(__builtin___strcat_chk: 0,1,-1) chk(__strcat_chk: 0,1,-1);
 strncat (rw:bytes(strlen(a0)+min(a2,strlen(a1))+1):str, \
     r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> arg(0) \
@@ -590,15 +585,16 @@ strlcat (rw:bytes(a2):null-if-zero(a2), r:str, int) -> int \
     chk(__builtin___strlcat_chk: 0,1,2,-1) chk(__strlcat_chk: 0,1,2,-1);
 strlen (r:str) -> int:value(strlen(a0));
 strnlen (r:bytes(min(a1,strlen(a0)+1)):null-if-zero(a1), int) -> int:value(min(a1,strlen(a0)));
-strcmp (r:str, r:str) -> int;
+strcmp (r:str, r:str) -> int wrapper(strcmp);
 strncmp (r:bytes(min(a2,strlen(a0)+1)):null-if-zero(a2), \
-    r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int;
+    r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int \
+    wrapper(strncmp);
 strcoll (r:str, r:str) -> int;
 strcoll_l (r:str, r:str, none:null-ok) -> int;
 strxfrm (w:bytes(a2):null-if-zero(a2), r:str, int) -> int;
 strxfrm_l (w:bytes(a2):null-if-zero(a2), r:str, int, none:null-ok) -> int;
 strverscmp (r:str, r:str) -> int;
-strchr (r:str, int) -> interior(0):null-ok;
+strchr (r:str, int) -> interior(0):null-ok wrapper(strchr);
 strrchr (r:str, int) -> interior(0):null-ok;
 strchrnul (r:str, int) -> interior(0):nonnull;
 strstr (r:str, r:str) -> interior(0):null-ok;
@@ -630,9 +626,10 @@ bcopy (r:bytes(a2):null-if-zero(a2), w:bytes(a2):null-if-zero(a2), int) -> void 
 bcmp (r:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) -> int;
 index (r:str, int) -> interior(0):null-ok;
 rindex (r:str, int) -> interior(0):null-ok;
-strcasecmp (r:str, r:str) -> int;
+strcasecmp (r:str, r:str) -> int wrapper(strcasecmp);
 strncasecmp (r:bytes(min(a2,strlen(a0)+1)):null-if-zero(a2), \
-    r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int;
+    r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int \
+    wrapper(strncasecmp);
 strcasecmp_l (r:str, r:str, none:null-ok) -> int;
 strncasecmp_l (r:bytes(min(a2,strlen(a0)+1)):null-if-zero(a2), \
     r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int, none:null-ok) -> int;
@@ -694,7 +691,8 @@ fgets (w:bytes(a1):null-if-zero(a1), int, rw) -> arg(0):null-ok writes-str(0) \
     chk(__fgets_chk: 0,-1,1,2);
 # gets has no bound: no unit defines the macro, so its requirement is never
 # proven (C11 removed gets).
-gets (w:bytes(__WEAVEC_UNBOUNDED)) -> arg(0):null-ok chk(__gets_chk: 0,-1);
+gets (w:bytes(__WEAVEC_UNBOUNDED)) -> arg(0):null-ok wrapper(gets) \
+    chk(__gets_chk: 0,-1);
 # BSD: the line is in the stream's buffer, not terminated.
 fgetln (rw, w) -> interior(0):null-ok;
 fread (w:bytes(a1*a2):null-if-zero(a1*a2), int, int, rw) -> int chk(__fread_chk: 0,-1,1,2,3);
@@ -711,11 +709,11 @@ fprintf (rw, r:str, ...) -> int printf(1,2) \
     chk(__builtin___fprintf_chk: 0,-1,1,2) chk(__fprintf_chk: 0,-1,1,2);
 dprintf (int, r:str, ...) -> int printf(1,2) chk(__dprintf_chk: 0,-1,1,2);
 sprintf (w:bytes(fmtlen(a1)+1), r:str, ...) -> int:value(fmtlen(a1)) \
-    writes-str(0,fmtlen(a1)) printf(1,2) wrapper(sprintf,room) \
+    writes-str(0,fmtlen(a1)) printf(1,2) wrapper(sprintf) \
     chk(__builtin___sprintf_chk: 0,-1,-1,1,2) chk(__sprintf_chk: 0,-1,-1,1,2);
 snprintf (w:bytes(a1):null-if-zero(a1), int, r:str, ...) \
     -> int:value(fmtlen(a2)) writes-str(0,min(a1-1,fmtlen(a2))) printf(2,3) \
-    chk(__builtin___snprintf_chk: 0,1,-1,-1,2,3) \
+    wrapper(snprintf) chk(__builtin___snprintf_chk: 0,1,-1,-1,2,3) \
     chk(__snprintf_chk: 0,1,-1,-1,2,3);
 vprintf (r:str, other) -> int printf(0,1) \
     chk(__builtin___vprintf_chk: -1,0,1) chk(__vprintf_chk: -1,0,1);
@@ -723,25 +721,25 @@ vfprintf (rw, r:str, other) -> int printf(1,2) \
     chk(__builtin___vfprintf_chk: 0,-1,1,2) chk(__vfprintf_chk: 0,-1,1,2);
 vdprintf (int, r:str, other) -> int printf(1,2) chk(__vdprintf_chk: 0,-1,1,2);
 vsprintf (w:bytes(fmtlen(a1)+1), r:str, other) -> int:value(fmtlen(a1)) \
-    writes-str(0,fmtlen(a1)) printf(1,2) wrapper(vsprintf,room) \
+    writes-str(0,fmtlen(a1)) printf(1,2) wrapper(vsprintf) \
     chk(__builtin___vsprintf_chk: 0,-1,-1,1,2) \
     chk(__vsprintf_chk: 0,-1,-1,1,2);
 vsnprintf (w:bytes(a1):null-if-zero(a1), int, r:str, other) \
     -> int:value(fmtlen(a2)) writes-str(0,min(a1-1,fmtlen(a2))) printf(2,3) \
-    chk(__builtin___vsnprintf_chk: 0,1,-1,-1,2,3) \
+    wrapper(vsnprintf) chk(__builtin___vsnprintf_chk: 0,1,-1,-1,2,3) \
     chk(__vsnprintf_chk: 0,1,-1,-1,2,3);
 # glibc renames the scanf family for C99 and C23 semantics.
-scanf (r:str, ...) -> int scanf(0,1) \
+scanf (r:str, ...) -> int scanf(0,1) wrapper(scanf) \
     chk(__isoc99_scanf: 0,1) chk(__isoc23_scanf: 0,1);
-fscanf (rw, r:str, ...) -> int scanf(1,2) \
+fscanf (rw, r:str, ...) -> int scanf(1,2) wrapper(fscanf) \
     chk(__isoc99_fscanf: 0,1,2) chk(__isoc23_fscanf: 0,1,2);
-sscanf (r:str, r:str, ...) -> int scanf(1,2) \
+sscanf (r:str, r:str, ...) -> int scanf(1,2) wrapper(sscanf) \
     chk(__isoc99_sscanf: 0,1,2) chk(__isoc23_sscanf: 0,1,2);
-vscanf (r:str, other) -> int scanf(0,1) \
+vscanf (r:str, other) -> int scanf(0,1) wrapper(vscanf) \
     chk(__isoc99_vscanf: 0,1) chk(__isoc23_vscanf: 0,1);
-vfscanf (rw, r:str, other) -> int scanf(1,2) \
+vfscanf (rw, r:str, other) -> int scanf(1,2) wrapper(vfscanf) \
     chk(__isoc99_vfscanf: 0,1,2) chk(__isoc23_vfscanf: 0,1,2);
-vsscanf (r:str, r:str, other) -> int scanf(1,2) \
+vsscanf (r:str, r:str, other) -> int scanf(1,2) wrapper(vsscanf) \
     chk(__isoc99_vsscanf: 0,1,2) chk(__isoc23_vsscanf: 0,1,2);
 remove (r:str) -> int;
 rename (r:str, r:str) -> int;
@@ -1037,9 +1035,10 @@ timer_delete (none:null-ok) -> int;
 header sys/mman.h;
 # mmap fails with MAP_FAILED, not null.
 mmap (none:null-ok, int, int, int, int, int) -> \
-    fresh(munmap):extent(a1):nonnull;
+    fresh(munmap):extent(a1):nonnull wrapper(mmap);
 # munmap may unmap part of a mapping (a guard page): RFC 0034 section 6.3.
-munmap (none:null-ok:release(munmap):range(a1), int) -> int;
+munmap (none:null-ok:release(munmap):range(a1), int) -> int \
+    wrapper(munmap);
 mprotect (none:null-ok, int, int) -> int;
 msync (none:null-ok, int, int) -> int;
 madvise (none:null-ok, int, int) -> int;
@@ -1329,12 +1328,14 @@ sem_open (r:str, int, ...) -> fresh(sem_close):null-ok;
 sem_close (rw:release(sem_close)) -> int;
 sem_unlink (r:str) -> int;
 sem_init (w, int, int) -> int;
-sem_destroy (rw) -> int;
-sem_wait (rw) -> int;
-sem_trywait (rw) -> int;
-sem_timedwait (rw, r) -> int;
-sem_post (rw) -> int;
-sem_getvalue (rw, w) -> int;
+# A semaphore sem_open returns may be no address at all (Darwin's is a
+# small integer handle), so the calls on one read nothing a guard can name.
+sem_destroy (none) -> int;
+sem_wait (none) -> int;
+sem_trywait (none) -> int;
+sem_timedwait (none, r) -> int;
+sem_post (none) -> int;
+sem_getvalue (none, w) -> int;
 
 header search.h;
 # The tree keeps the key; comparisons see the key and the tree's keys.
@@ -1541,121 +1542,122 @@ fts_close (rw:release(fts_close)) -> int;
 # Wide and multibyte characters (<wchar.h>, <wctype.h>, <uchar.h>)
 #============================================================================
 
-# Lengths count wchar_t elements: count(t), and strlen(aN) is wcslen. No
-# disjoint clauses: their lengths are in bytes.
+# Lengths count wchar_t elements ('wide'): count(t), and strlen(aN) is
+# wcslen. No disjoint clauses: their lengths are in bytes.
 header wchar.h;
-wcslen (r:str) -> int:value(strlen(a0));
+wcslen (r:str) -> int:value(strlen(a0)) wide;
 wcsnlen (r:count(min(a1,strlen(a0)+1)):null-if-zero(a1), int) -> \
-    int:value(min(a1,strlen(a0)));
-wcscpy (w:count(strlen(a1)+1), r:str) -> arg(0) chk(__wcscpy_chk: 0,1,-1);
+    int:value(min(a1,strlen(a0))) wide;
+wcscpy (w:count(strlen(a1)+1), r:str) -> arg(0) chk(__wcscpy_chk: 0,1,-1) wide;
 wcsncpy (w:count(a2):null-if-zero(a2), \
     r:count(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> arg(0) \
-    chk(__wcsncpy_chk: 0,1,2,-1);
+    chk(__wcsncpy_chk: 0,1,2,-1) wide;
 wcpcpy (w:count(strlen(a1)+1), r:str) -> interior(0):nonnull \
-    chk(__wcpcpy_chk: 0,1,-1);
+    chk(__wcpcpy_chk: 0,1,-1) wide;
 wcpncpy (w:count(a2):null-if-zero(a2), \
     r:count(min(a2,strlen(a1)+1)):null-if-zero(a2), int) \
-    -> interior(0):nonnull chk(__wcpncpy_chk: 0,1,2,-1);
+    -> interior(0):nonnull chk(__wcpncpy_chk: 0,1,2,-1) wide;
 wcscat (rw:count(strlen(a0)+strlen(a1)+1):str, r:str) -> arg(0) \
-    chk(__wcscat_chk: 0,1,-1);
+    chk(__wcscat_chk: 0,1,-1) wide;
 wcsncat (rw:count(strlen(a0)+min(a2,strlen(a1))+1):str, \
     r:count(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> arg(0) \
-    chk(__wcsncat_chk: 0,1,2,-1);
-wcscmp (r:str, r:str) -> int;
+    chk(__wcsncat_chk: 0,1,2,-1) wide;
+wcscmp (r:str, r:str) -> int wide;
 wcsncmp (r:count(min(a2,strlen(a0)+1)):null-if-zero(a2), \
-    r:count(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int;
-wcscasecmp (r:str, r:str) -> int;
+    r:count(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int wide;
+wcscasecmp (r:str, r:str) -> int wide;
 wcsncasecmp (r:count(min(a2,strlen(a0)+1)):null-if-zero(a2), \
-    r:count(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int;
-wcscoll (r:str, r:str) -> int;
-wcsxfrm (w:count(a2):null-if-zero(a2), r:str, int) -> int;
-wcschr (r:str, int) -> interior(0):null-ok;
-wcsrchr (r:str, int) -> interior(0):null-ok;
-wcsstr (r:str, r:str) -> interior(0):null-ok;
-wcspbrk (r:str, r:str) -> interior(0):null-ok;
-wcsspn (r:str, r:str) -> int;
-wcscspn (r:str, r:str) -> int;
+    r:count(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int wide;
+wcscoll (r:str, r:str) -> int wide;
+wcsxfrm (w:count(a2):null-if-zero(a2), r:str, int) -> int wide;
+wcschr (r:str, int) -> interior(0):null-ok wide;
+wcsrchr (r:str, int) -> interior(0):null-ok wide;
+wcsstr (r:str, r:str) -> interior(0):null-ok wide;
+wcspbrk (r:str, r:str) -> interior(0):null-ok wide;
+wcsspn (r:str, r:str) -> int wide;
+wcscspn (r:str, r:str) -> int wide;
 wcstok (rw:str:null-ok, r:str, rw:out(interior(0):null-ok)) -> \
-    interior(0):null-ok;
-wcswidth (r:count(min(a1,strlen(a0)+1)):null-if-zero(a1), int) -> int;
-wcwidth (int) -> int;
+    interior(0):null-ok wide;
+wcswidth (r:count(min(a1,strlen(a0)+1)):null-if-zero(a1), int) -> int wide;
+wcwidth (int) -> int wide;
 wmemcpy (w:count(a2):null-if-zero(a2), r:count(a2):null-if-zero(a2), int) \
-    -> arg(0) chk(__wmemcpy_chk: 0,1,2,-1);
+    -> arg(0) chk(__wmemcpy_chk: 0,1,2,-1) wide;
 wmemmove (w:count(a2):null-if-zero(a2), r:count(a2):null-if-zero(a2), int) \
-    -> arg(0) chk(__wmemmove_chk: 0,1,2,-1);
+    -> arg(0) chk(__wmemmove_chk: 0,1,2,-1) wide;
 wmemset (w:count(a2):null-if-zero(a2), int, int) -> arg(0) \
-    chk(__wmemset_chk: 0,1,2,-1);
+    chk(__wmemset_chk: 0,1,2,-1) wide;
 wmemcmp (r:count(a2):null-if-zero(a2), r:count(a2):null-if-zero(a2), int) \
-    -> int;
+    -> int wide;
 wmemchr (r:count(min(a2,strlen(a0)+1)):null-if-zero(a2), int, int) -> \
-    interior(0):null-ok;
+    interior(0):null-ok wide;
 wmempcpy (w:count(a2):null-if-zero(a2), r:count(a2):null-if-zero(a2), int) \
     -> interior(0):nonnull \
-    chk(__wmempcpy_chk: 0,1,2,-1);
+    chk(__wmempcpy_chk: 0,1,2,-1) wide;
 wcstol (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
-    chk(__isoc23_wcstol: 0,1,2);
+    chk(__isoc23_wcstol: 0,1,2) wide;
 wcstoll (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
-    chk(__isoc23_wcstoll: 0,1,2);
+    chk(__isoc23_wcstoll: 0,1,2) wide;
 wcstoul (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
-    chk(__isoc23_wcstoul: 0,1,2);
+    chk(__isoc23_wcstoul: 0,1,2) wide;
 wcstoull (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
-    chk(__isoc23_wcstoull: 0,1,2);
-wcstod (r:str, w:null-ok:out(interior(0):nonnull)) -> int;
-wcstof (r:str, w:null-ok:out(interior(0):nonnull)) -> int;
-wcstold (r:str, w:null-ok:out(interior(0):nonnull)) -> int;
-btowc (int) -> int;
-wctob (int) -> int;
-mbsinit (r:null-ok) -> int;
-mbrlen (r:bytes(min(a1,strlen(a0)+1)):null-ok, int, rw:null-ok) -> int;
+    chk(__isoc23_wcstoull: 0,1,2) wide;
+wcstod (r:str, w:null-ok:out(interior(0):nonnull)) -> int wide;
+wcstof (r:str, w:null-ok:out(interior(0):nonnull)) -> int wide;
+wcstold (r:str, w:null-ok:out(interior(0):nonnull)) -> int wide;
+btowc (int) -> int wide;
+wctob (int) -> int wide;
+mbsinit (r:null-ok) -> int wide;
+mbrlen (r:bytes(min(a1,strlen(a0)+1)):null-ok, int, rw:null-ok) -> int wide;
 mbrtowc (w:null-ok, r:bytes(min(a2,strlen(a1)+1)):null-ok, int, rw:null-ok) \
-    -> int;
+    -> int wide;
 wcrtomb (w:bytes(MB_CUR_MAX):null-ok, int, rw:null-ok) -> int \
-    chk(__wcrtomb_chk: 0,1,2,-1);
+    chk(__wcrtomb_chk: 0,1,2,-1) wide;
 mbsrtowcs (w:count(a2):null-ok, rw, int, rw:null-ok) -> int \
-    chk(__mbsrtowcs_chk: 0,1,2,3,-1);
+    chk(__mbsrtowcs_chk: 0,1,2,3,-1) wide;
 wcsrtombs (w:bytes(a2):null-ok, rw, int, rw:null-ok) -> int \
-    chk(__wcsrtombs_chk: 0,1,2,3,-1);
+    chk(__wcsrtombs_chk: 0,1,2,3,-1) wide;
 mbsnrtowcs (w:count(a3):null-ok, rw, int, int, rw:null-ok) -> int \
-    chk(__mbsnrtowcs_chk: 0,1,2,3,4,-1);
+    chk(__mbsnrtowcs_chk: 0,1,2,3,4,-1) wide;
 wcsnrtombs (w:bytes(a3):null-ok, rw, int, int, rw:null-ok) -> int \
-    chk(__wcsnrtombs_chk: 0,1,2,3,4,-1);
-fgetwc (rw) -> int;
-getwc (rw) -> int;
-getwchar () -> int;
-fputwc (int, rw) -> int;
-putwc (int, rw) -> int;
-putwchar (int) -> int;
-ungetwc (int, rw) -> int;
+    chk(__wcsnrtombs_chk: 0,1,2,3,4,-1) wide;
+fgetwc (rw) -> int wide;
+getwc (rw) -> int wide;
+getwchar () -> int wide;
+fputwc (int, rw) -> int wide;
+putwc (int, rw) -> int wide;
+putwchar (int) -> int wide;
+ungetwc (int, rw) -> int wide;
 fgetws (w:count(a1):null-if-zero(a1), int, rw) -> arg(0):null-ok \
-    chk(__fgetws_chk: 0,-1,1,2);
-fputws (r:str, rw) -> int;
-fwide (rw, int) -> int;
-wprintf (r:str, ...) -> int printf(0,1) chk(__wprintf_chk: -1,0,1);
+    chk(__fgetws_chk: 0,-1,1,2) wide;
+fputws (r:str, rw) -> int wide;
+fwide (rw, int) -> int wide;
+wprintf (r:str, ...) -> int printf(0,1) chk(__wprintf_chk: -1,0,1) wide;
 fwprintf (rw, r:str, ...) -> int printf(1,2) \
-    chk(__fwprintf_chk: 0,-1,1,2);
+    chk(__fwprintf_chk: 0,-1,1,2) wide;
 swprintf (w:count(a1):null-if-zero(a1), int, r:str, ...) -> int printf(2,3) \
-    chk(__swprintf_chk: 0,1,-1,-1,2,3);
-vwprintf (r:str, other) -> int printf(0,1) chk(__vwprintf_chk: -1,0,1);
+    chk(__swprintf_chk: 0,1,-1,-1,2,3) wide;
+vwprintf (r:str, other) -> int printf(0,1) chk(__vwprintf_chk: -1,0,1) wide;
 vfwprintf (rw, r:str, other) -> int printf(1,2) \
-    chk(__vfwprintf_chk: 0,-1,1,2);
+    chk(__vfwprintf_chk: 0,-1,1,2) wide;
 vswprintf (w:count(a1):null-if-zero(a1), int, r:str, other) \
-    -> int printf(2,3) chk(__vswprintf_chk: 0,1,-1,-1,2,3);
+    -> int printf(2,3) chk(__vswprintf_chk: 0,1,-1,-1,2,3) wide;
 wscanf (r:str, ...) -> int scanf(0,1) \
-    chk(__isoc99_wscanf: 0,1) chk(__isoc23_wscanf: 0,1);
+    chk(__isoc99_wscanf: 0,1) chk(__isoc23_wscanf: 0,1) wide;
 fwscanf (rw, r:str, ...) -> int scanf(1,2) \
-    chk(__isoc99_fwscanf: 0,1,2) chk(__isoc23_fwscanf: 0,1,2);
+    chk(__isoc99_fwscanf: 0,1,2) chk(__isoc23_fwscanf: 0,1,2) wide;
 swscanf (r:str, r:str, ...) -> int scanf(1,2) \
-    chk(__isoc99_swscanf: 0,1,2) chk(__isoc23_swscanf: 0,1,2);
+    chk(__isoc99_swscanf: 0,1,2) chk(__isoc23_swscanf: 0,1,2) wide;
 vwscanf (r:str, other) -> int scanf(0,1) \
-    chk(__isoc99_vwscanf: 0,1) chk(__isoc23_vwscanf: 0,1);
+    chk(__isoc99_vwscanf: 0,1) chk(__isoc23_vwscanf: 0,1) wide;
 vfwscanf (rw, r:str, other) -> int scanf(1,2) \
-    chk(__isoc99_vfwscanf: 0,1,2) chk(__isoc23_vfwscanf: 0,1,2);
+    chk(__isoc99_vfwscanf: 0,1,2) chk(__isoc23_vfwscanf: 0,1,2) wide;
 vswscanf (r:str, r:str, other) -> int scanf(1,2) \
-    chk(__isoc99_vswscanf: 0,1,2) chk(__isoc23_vswscanf: 0,1,2);
-wcsftime (w:count(a1):null-if-zero(a1), int, r:str, r) -> int reads(environ);
+    chk(__isoc99_vswscanf: 0,1,2) chk(__isoc23_vswscanf: 0,1,2) wide;
+wcsftime (w:count(a1):null-if-zero(a1), int, r:str, r) -> int reads(environ) \
+    wide;
 open_wmemstream ( \
     w:null-ok:escape:out(fresh(free):null-on-failure:no-zero-init), \
-    w:null-ok:escape) -> fresh(fclose):null-on-failure;
+    w:null-ok:escape) -> fresh(fclose):null-on-failure wide;
 
 header wctype.h;
 wctype (r:str) -> int;

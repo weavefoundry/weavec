@@ -1041,7 +1041,7 @@ bool FunctionRun::isBypassed(const Expr &operand) const {
 
 core::Sym Transfer::launder(core::Sym value, const AnnotationSet &declared,
                             const std::string &target, const Expr &source) {
-  if (!declared.safeKind())
+  if (!declared.safeOwnership())
     return value;
   const core::SymInfo info = heap.info(state, value);
   if (info.type != core::SymInfo::Type::Pointer || !info.raw)
@@ -1279,7 +1279,8 @@ bool Transfer::assumption(const CallExpr &call) {
     core::HeapState fails = state;
     bool canFail = assume(run, fails, condition, false, 0);
     if (id && run.ledger().applies(*id, core::Facet::Assertion)) {
-      core::FacetDecision decision = core::FacetDecision::checked();
+      core::FacetDecision decision =
+          core::FacetDecision::unresolvedFor(core::UnresolvedReason::Undecided);
       if (!canHold)
         decision = core::FacetDecision::violation();
       else if (!canFail)

@@ -24,10 +24,37 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace weavec::test {
+
+/// A decision as `<outcome>[/<reason>]`.
+inline std::string compactOf(const core::FacetDecision &decision) {
+  std::string text(core::toString(decision.outcome));
+  if (const std::string_view reason = decision.reasonText(); !reason.empty())
+    text.append("/").append(reason);
+  return text;
+}
+
+/// A severity as the diagnostics print it.
+inline std::string severityText(core::Severity severity) {
+  switch (severity) {
+  case core::Severity::Note:
+    return "note";
+  case core::Severity::Warning:
+    return "warning";
+  case core::Severity::Error:
+    return "error";
+  }
+  return "?";
+}
+
+/// A Call site's boundary: `call` or `exit`.
+inline std::string boundaryText(core::Boundary boundary) {
+  return boundary == core::Boundary::Call ? "call" : "exit";
+}
 
 /// The declarations the site tests call, spelled as the C library does; the
 /// `LibrarySpec` matches them by name and signature. `sys.h` is a system
@@ -129,7 +156,7 @@ inline std::vector<std::string> describe(const CollectedUnit &unit,
   for (const core::Site &site : row->sites) {
     std::string text(core::toString(site.kind));
     if (site.boundary)
-      text += "/" + std::string(core::toString(*site.boundary));
+      text += "/" + boundaryText(*site.boundary);
     text += " " + site.text + " ";
     std::string facets;
     for (const core::Facet facet : core::AllFacets)

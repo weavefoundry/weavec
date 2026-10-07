@@ -13,7 +13,7 @@
 // The object engine does not yet infer RFC 0010 reference-count functions
 // (`++c->rc` / `if (--c->rc == 0) free(c)`): `counted_unref`'s summary
 // possibly releases its argument, `counted_ref` returns it, and no count
-// field is exported (RFC 0031 §5.5, §6.1; test/cases/KNOWN-DIFFERENCES.md,
+// field is exported (RFC 0031 §5.5, §6.1; the retired golden comparison of RFC 0030,
 // *Lit tests*). A call whose count is known asks `counted.c` for its
 // context (RFC 0031 §7 *Amendment (cross-unit contexts)*): there the count
 // decides the release.
@@ -56,7 +56,7 @@ int twice(void) {
 // With the count known from the other unit, a lost share is a leak here
 // (RFC 0010). Without the count (above), `counted_ref` only returns its
 // argument and the leak is not reported (a lost finding, listed in
-// test/cases/KNOWN-DIFFERENCES.md, *Lit tests*).
+// the retired golden comparison of RFC 0030, *Lit tests*).
 struct list {
   struct counted *head;
 };

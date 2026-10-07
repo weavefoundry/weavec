@@ -25,20 +25,42 @@
 #include "weavec_rt.h"
 
 #include <errno.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #define WEAVEC_RT_WEAK WEAVEC_RT_API __attribute__((weak))
+
+/* The functions beyond the standard ones are defined only where the C
+ * library exports them too: a definition the platform lacks would make a
+ * configure probe find a function the reference compiler does not
+ * (autoconf's link test of `reallocarray` on Darwin, whose libSystem has
+ * only a variant symbol). On Darwin the C library's own versions reach the
+ * arena through its malloc zone anyway. */
+#if defined(__APPLE__)
+#define WEAVEC_RT_REALLOCARRAY 0
+#define WEAVEC_RT_FREE_SIZED 0
+#elif defined(__GLIBC__)
+#define WEAVEC_RT_REALLOCARRAY __GLIBC_PREREQ(2, 26)
+#define WEAVEC_RT_FREE_SIZED __GLIBC_PREREQ(2, 41)
+#else
+#define WEAVEC_RT_REALLOCARRAY 1
+#define WEAVEC_RT_FREE_SIZED 0
+#endif
 
 WEAVEC_RT_API void *malloc(size_t size);
 WEAVEC_RT_API void *calloc(size_t count, size_t size);
 WEAVEC_RT_API void *realloc(void *p, size_t size);
 WEAVEC_RT_API void free(void *p);
+#if WEAVEC_RT_REALLOCARRAY
 WEAVEC_RT_WEAK void *reallocarray(void *p, size_t count, size_t size);
+#endif
 WEAVEC_RT_WEAK void *aligned_alloc(size_t alignment, size_t size);
 WEAVEC_RT_WEAK int posix_memalign(void **slot, size_t alignment, size_t size);
 WEAVEC_RT_WEAK void *valloc(size_t size);
+#if WEAVEC_RT_FREE_SIZED
 WEAVEC_RT_WEAK void free_sized(void *p, size_t size);
 WEAVEC_RT_WEAK void free_aligned_sized(void *p, size_t alignment, size_t size);
+#endif
 
 void *malloc(size_t size) { return __weavec_rt_alloc(size, 0); }
 
@@ -54,6 +76,7 @@ void *calloc(size_t count, size_t size) {
 
 void *realloc(void *p, size_t size) { return __weavec_rt_realloc(p, size); }
 
+#if WEAVEC_RT_REALLOCARRAY
 void *reallocarray(void *p, size_t count, size_t size) {
   size_t bytes;
   if (__builtin_mul_overflow(count, size, &bytes)) {
@@ -62,9 +85,11 @@ void *reallocarray(void *p, size_t count, size_t size) {
   }
   return __weavec_rt_realloc(p, bytes);
 }
+#endif
 
 void free(void *p) { __weavec_rt_free(p); }
 
+#if WEAVEC_RT_FREE_SIZED
 void free_sized(void *p, size_t size) {
   (void)size;
   __weavec_rt_free(p);
@@ -75,6 +100,7 @@ void free_aligned_sized(void *p, size_t alignment, size_t size) {
   (void)size;
   __weavec_rt_free(p);
 }
+#endif
 
 static int isPowerOfTwo(size_t value) {
   return value != 0 && (value & (value - 1)) == 0;

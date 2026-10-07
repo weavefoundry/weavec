@@ -3,7 +3,7 @@
 #include <stdlib.h>
 struct small { int x; };
 struct big { int x; int y[16]; };
-static int read_big(void *v) { struct big *b = v; return b->y[10]; }
+static int read_big(void *v) { struct big *b = v; return b->y[10]; } // TRAP
 int main(void) {
   struct small *s = malloc(sizeof *s);
   if (!s) return 1;

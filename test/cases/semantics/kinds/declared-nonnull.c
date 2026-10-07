@@ -8,10 +8,10 @@
 #include <stddef.h>
 #include <weavec.h>
 
-int get(const int *WEAVEC_NONNULL p) { return *p; }
+int get(const int *WEAVEC_NONNULL p) { return *p; } // TRAP
 
 int main(int argc, char **argv) {
   static const int x = 7;
   (void)argv;
-  return get(argc > 1 ? &x : NULL); // BUG: null-dereference // TRAP: nonnull
+  return get(argc > 1 ? &x : NULL); // BUG: null-dereference // MISS: the analysis does not report a call's argument against the callee's requirement (RFC 0035 §8); the guard stops in the callee
 }

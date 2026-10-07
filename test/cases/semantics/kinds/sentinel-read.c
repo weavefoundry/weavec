@@ -12,7 +12,7 @@
 int last_is_end(const int *p, size_t n) {
   int s = 0;
   for (size_t i = 0; i < n; i++) s += p[i];
-  return p[n] == -1 && s > 0; // TRUSTED: spatial:caller-contract
+  return p[n] == -1 && s > 0;
 }
 
 int main(void) {

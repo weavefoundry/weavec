@@ -1,13 +1,12 @@
-# RFC 0030, gate G7: candidate unit list for scripts/codegen-identity.py
-# (to become test/corpus/identity.txt). One unit per line:
-# <project>/<path> [args...], compiled in <root>/<project>; {support} is
-# <support>/<project>. Every unit here compiles with the reference clang;
-# lua/onelua.c (the amalgamation of the lua units below) is left out because
-# its WeaveC analysis takes more than ten minutes.
+# The units scripts/codegen-identity.py compiles with weavec-cc
+# -fweavec-checks=none and the reference clang, whose objects must be
+# identical (RFC 0035, section 1; first RFC 0030's gate G7). One unit per
+# line: <project>/<path> [args...], compiled in <root>/<project>; {support}
+# is <support>/<project>. Every unit here compiles with the reference clang;
+# lua/onelua.c, the amalgamation of the lua units below, adds nothing.
 #
-#   scripts/codegen-identity.py --weavec-cc build/w3/bin/weavec-cc \
-#       --root <main tree>/build/corpus --list scripts/identity-candidates.txt \
-#       --min 100
+#   scripts/codegen-identity.py --weavec-cc build/release/bin/weavec-cc \
+#       --root build/corpus --list test/corpus/identity.txt --min 100
 #
 # cJSON 29, jansson 36, jsmn 3, linenoise 3, log.c 1, lua 39, printf 1, sds 1, zlib 40 (153 units)
 sds/sds.c -std=c99 -I.

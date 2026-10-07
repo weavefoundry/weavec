@@ -3,12 +3,10 @@ weavec_add_unittest(
   SOURCES DiagnosticTest.cpp
           IntegerTest.cpp
           LibrarySpecTest.cpp
-          OwnershipTest.cpp
           # RFC 0030.
-          CheckPlanTest.cpp
           FnSlotsTest.cpp
           # RFC 0031.
-          EffectsIOTest.cpp
+          EffectsTest.cpp
           HeapTest.cpp
           LedgerTest.cpp
           PointerKindTest.cpp

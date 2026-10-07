@@ -69,7 +69,7 @@ static int table_set_new(struct table *t, struct obj *value) {
 // of the callee resolves to `value` and its count update, release and escape
 // compose. The object engine does not infer RFC 0010 count functions yet, so
 // the share release is a possible release of `value` (RFC 0031 §5.5;
-// test/cases/KNOWN-DIFFERENCES.md).
+// the retired golden comparison of RFC 0030).
 // DUMP-LABEL: function 'table_set_shared':
 // DUMP: release *param1 free may when result negative
 // DUMP: store param1->rc := int

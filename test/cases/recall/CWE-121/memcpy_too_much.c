@@ -5,7 +5,7 @@ void bad(void) {
   char src[100];
   char dst[50];
   memset(src, 'A', 100);
-  memcpy(dst, src, 100); // BUG: out-of-bounds // TRAP: len
+  memcpy(dst, src, 100); // BUG: out-of-bounds // TRAP
   print_bytes(dst, 50);
 }
 

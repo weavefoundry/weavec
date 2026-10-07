@@ -11,14 +11,45 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace weavec::core {
 
 using Targets = std::set<std::string>;
 using Arguments = std::vector<std::optional<SlotKey>>;
+
+/// A direct call to `callee`: argument-to-parameter and result-to-receiver
+/// copies, as `SlotCollector` records them.
+static void addDirectCall(FnSlots &slots, std::string_view callee,
+                          const Arguments &arguments,
+                          const std::optional<SlotKey> &receiver) {
+  for (std::size_t i = 0; i < arguments.size(); ++i)
+    if (arguments[i])
+      slots.addSubset(
+          *arguments[i],
+          SlotKey::param(std::string(callee), static_cast<std::uint32_t>(i)));
+  if (receiver)
+    slots.addSubset(SlotKey::result(std::string(callee)), *receiver);
+}
+
+/// An indirect call through `callee`: argument `n` flows into its
+/// call-param slot, and its call-result slot flows to the receiver.
+static void addIndirectCall(FnSlots &slots, const SlotKey &callee,
+                            const Arguments &arguments,
+                            const std::optional<SlotKey> &receiver) {
+  for (std::size_t i = 0; i < arguments.size(); ++i)
+    if (arguments[i])
+      slots.addSubset(
+          *arguments[i],
+          SlotKey::callParam(callee, static_cast<std::uint32_t>(i)));
+  if (receiver)
+    slots.addSubset(SlotKey::callResult(callee), *receiver);
+}
 
 TEST(FnSlots, KeysSpellAndParse) {
   const std::vector<std::pair<SlotKey, std::string>> keys{
@@ -71,9 +102,9 @@ TEST(FnSlots, CopiesThroughParametersAndResults) {
   slots.addMember("a", SlotKey::result("pick"));
   slots.addMember("b", SlotKey::result("pick"));
   const SlotKey fp = SlotKey::local("use", "fp");
-  slots.addDirectCall("pick", {}, fp);
+  addDirectCall(slots, "pick", {}, fp);
   const Arguments runArguments{fp};
-  slots.addDirectCall("run", runArguments, std::nullopt);
+  addDirectCall(slots, "run", runArguments, std::nullopt);
   const SlotRules rules{.scope = SlotScope::Unit,
                         .defined = {"a", "b", "pick", "run", "use"},
                         .exported = {"use"}};
@@ -81,7 +112,7 @@ TEST(FnSlots, CopiesThroughParametersAndResults) {
   const SlotKey cb = SlotKey::param("run", 0);
   EXPECT_EQ(solution.targets(fp), (Targets{"a", "b"}));
   EXPECT_EQ(solution.targets(cb), (Targets{"a", "b"}));
-  EXPECT_TRUE(solution.isClosed(cb));
+  EXPECT_FALSE(solution.isOpen(cb));
   const CallResolution call = solution.resolveCall(cb);
   EXPECT_EQ(call.kind, IndirectCallKind::ClosedJoin);
   EXPECT_EQ(call.targets, (std::vector<std::string>{"a", "b"}));
@@ -115,7 +146,7 @@ TEST(FnSlots, DynamicCallsFlowIntoTheTargets) {
   slots.addSubset(SlotKey::param("registrar", 0), hook);
   slots.addMember("cb2", SlotKey::result("getter"));
   slots.addMember("cb", SlotKey::callParam(reg, 0));
-  slots.addIndirectCall(get, {}, h);
+  addIndirectCall(slots, get, {}, h);
   SlotRules rules{.scope = SlotScope::Unit,
                   .defined = {"registrar", "getter", "cb", "cb2", "setup"},
                   .exported = {"setup"},
@@ -124,7 +155,7 @@ TEST(FnSlots, DynamicCallsFlowIntoTheTargets) {
   EXPECT_EQ(solution.targets(hook), (Targets{"cb"}));
   EXPECT_EQ(solution.resolveCall(hook).kind, IndirectCallKind::ClosedSingle);
   EXPECT_EQ(solution.targets(h), (Targets{"cb2"}));
-  EXPECT_TRUE(solution.isClosed(h));
+  EXPECT_FALSE(solution.isOpen(h));
   EXPECT_GT(solution.steps(), 0U);
 
   // The same struct declared in a header: its fields are open, so the
@@ -160,8 +191,8 @@ TEST(FnSlots, OpenSourcesPropagate) {
                            TrustReason::ExternContract,
                            "values stored by 'set_hook' parameter 0"));
 
-  // At a closed-world link the exported parameter is closed.
-  rules.scope = SlotScope::Link;
+  // In a closed-world program the exported parameter is closed.
+  rules.scope = SlotScope::Program;
   EXPECT_EQ(slots.solve(rules).resolveCall(hook).kind,
             IndirectCallKind::ClosedSingle);
 }
@@ -175,12 +206,12 @@ TEST(FnSlots, OutsideValuesMakeCallsUnknown) {
   slots.addOpen(fp, "integer conversion");
   slots.addSubset(fp, SlotKey::global("g_cb"));
   slots.addMember("cb", SlotKey::callParam(fp, 0));
-  slots.addIndirectCall(fp, {}, r);
+  addIndirectCall(slots, fp, {}, r);
   slots.addSubset(r, keep);
   // `cb` stores its parameter somewhere, so its parameter slot exists.
   slots.addSubset(SlotKey::param("cb", 0), SlotKey::local("cb", "x"));
   const SlotRules rules{
-      .scope = SlotScope::Link, .defined = {"f", "cb"}, .exported = {"f"}};
+      .scope = SlotScope::Program, .defined = {"f", "cb"}, .exported = {"f"}};
   const SlotSolution solution = slots.solve(rules);
   const CallResolution call = solution.resolveCall(fp);
   EXPECT_EQ(call.kind, IndirectCallKind::OpenUnknown);
@@ -225,7 +256,7 @@ TEST(FnSlots, RulesDecideSlotsNoConstraintMentions) {
             IndirectCallKind::OpenUnknown);
 
   SlotRules link = unit;
-  link.scope = SlotScope::Link;
+  link.scope = SlotScope::Program;
   EXPECT_TRUE(link.closedWorld());
   const SlotSolution closed = FnSlots{}.solve(link);
   EXPECT_FALSE(closed.isOpen(SlotKey::field("struct hdr", "cb")));
@@ -236,12 +267,6 @@ TEST(FnSlots, RulesDecideSlotsNoConstraintMentions) {
   SlotRules shared = link;
   shared.executable = false;
   EXPECT_FALSE(shared.closedWorld());
-  SlotRules dynamic = link;
-  dynamic.exportDynamic = true;
-  EXPECT_FALSE(dynamic.closedWorld());
-  SlotRules unrecorded = link;
-  unrecorded.unanalyzedInputs = true;
-  EXPECT_FALSE(unrecorded.closedWorld());
   EXPECT_FALSE(unit.closedWorld());
 }
 
@@ -260,12 +285,12 @@ static FnSlots withLocals() {
   slots.addSubset(cb, q);
   slots.addSubset(q, SlotKey::global("g1"));
   const Arguments arguments{p};
-  slots.addIndirectCall(q, arguments, r);
+  addIndirectCall(slots, q, arguments, r);
   slots.addSubset(r, SlotKey::staticGlobal("x.c", "keep"));
   slots.addOpen(z, "load through an unknown pointer");
   slots.addSubset(z, cb);
   slots.addMember("b", SlotKey::callParam(z, 0));
-  slots.addIndirectCall(z, {}, SlotKey::staticGlobal("x.c", "out"));
+  addIndirectCall(slots, z, {}, SlotKey::staticGlobal("x.c", "out"));
   slots.addMember("c", cb);
   slots.addMember("d", SlotKey::result("a"));
   slots.addMember("e", SlotKey::result("c"));
@@ -348,19 +373,13 @@ TEST(FnSlots, LuaAllocatorIsClosedAtLinkAndOpenPerUnit) {
   EXPECT_TRUE(auxUnit.escapes(lAlloc));
   EXPECT_EQ(auxUnit.targets(allocParam), (Targets{lAlloc}));
 
-  // Each unit record carries its constraints without locals, as rows; the
-  // link step reads them back and solves them together.
+  // Each unit's constraints without locals, as rows, read back and solved
+  // together.
   FnSlots program;
-  for (const FnSlots *unit : {&lstate, &lauxlib}) {
-    const std::string text =
-        FnSlots::fromRows(unit->withoutLocals().rows()).print();
-    std::string error;
-    const auto parsed = FnSlots::parse(text, &error);
-    ASSERT_TRUE(parsed) << error;
-    program.merge(*parsed);
-  }
+  for (const FnSlots *unit : {&lstate, &lauxlib})
+    program.merge(FnSlots::fromRows(unit->withoutLocals().rows()));
   SlotRules link{
-      .scope = SlotScope::Link,
+      .scope = SlotScope::Program,
       .defined = {"lua_newstate", "luaL_newstate", lAlloc, "luaM_realloc_"},
       .exported = {"lua_newstate", "luaL_newstate", "luaM_realloc_"}};
   const SlotSolution whole = program.solve(link);
@@ -370,20 +389,16 @@ TEST(FnSlots, LuaAllocatorIsClosedAtLinkAndOpenPerUnit) {
   EXPECT_FALSE(openCallTemporalDecision(linked));
   EXPECT_FALSE(whole.escapes(lAlloc));
 
-  // A shared library, a dynamic export or an input without a record keeps
-  // the slot open, with its known target.
-  for (int variant = 0; variant < 3; ++variant) {
-    SlotRules openLink = link;
-    openLink.executable = variant != 0;
-    openLink.exportDynamic = variant == 1;
-    openLink.unanalyzedInputs = variant == 2;
-    const CallResolution call = program.solve(openLink).resolveCall(frealloc);
-    EXPECT_EQ(call.kind, IndirectCallKind::OpenKnown) << variant;
-    EXPECT_EQ(call.targets, std::vector<std::string>{lAlloc});
-    const auto decision = openCallTemporalDecision(call);
-    ASSERT_TRUE(decision);
-    EXPECT_EQ(decision->trusted, TrustReason::ExternContract);
-  }
+  // A program that is not an executable keeps the slot open, with its
+  // known target.
+  SlotRules openLink = link;
+  openLink.executable = false;
+  const CallResolution call = program.solve(openLink).resolveCall(frealloc);
+  EXPECT_EQ(call.kind, IndirectCallKind::OpenKnown);
+  EXPECT_EQ(call.targets, std::vector<std::string>{lAlloc});
+  const auto decision = openCallTemporalDecision(call);
+  ASSERT_TRUE(decision);
+  EXPECT_EQ(decision->trusted, TrustReason::ExternContract);
 }
 
 TEST(FnSlots, RowsRoundTrip) {
@@ -398,60 +413,6 @@ TEST(FnSlots, RowsRoundTrip) {
   ASSERT_NE(out, rows.end());
   EXPECT_EQ(out->targets, std::vector<std::string>{"c"});
   EXPECT_EQ(out->open, "load through an unknown pointer");
-}
-
-TEST(FnSlots, TextRoundTripsAndEscapes) {
-  FnSlots slots = withLocals();
-  slots.addOpen(SlotKey::global("g"), "tab\there, back\\slash\nnewline");
-  const std::string text = slots.print();
-  EXPECT_NE(text.find("open\tglobal g\ttab\\there, back\\\\slash\\nnewline\n"),
-            std::string::npos);
-  std::string error;
-  const auto parsed = FnSlots::parse(text, &error);
-  ASSERT_TRUE(parsed) << error;
-  EXPECT_EQ(*parsed, slots);
-  EXPECT_EQ(FnSlots::parse("\n\nmember\tf\tglobal g\n")->constraints().size(),
-            1U);
-}
-
-TEST(FnSlots, TextErrorsNameTheLine) {
-  const std::vector<std::pair<std::string, std::string>> cases{
-      {"member\tf", "line 1: expected three fields"},
-      {"\nsubset\tbogus\tglobal g", "line 2: malformed subset constraint"},
-      {"frob\ta\tb", "line 1: unknown constraint 'frob'"},
-      {"open\tglobal g\tbad\\q", "line 1: malformed escape"},
-      {"member\t\tglobal g", "line 1: malformed member constraint"},
-      {"open\tlocal f\tx", "line 1: malformed open constraint"},
-  };
-  for (const auto &[text, message] : cases) {
-    std::string error;
-    EXPECT_FALSE(FnSlots::parse(text, &error)) << text;
-    EXPECT_EQ(error, message) << text;
-  }
-}
-
-TEST(FnSlots, JoinOverTargets) {
-  using enum TargetConsume;
-  EXPECT_EQ(joinTargetConsume(Unconditional, Unconditional), Unconditional);
-  EXPECT_EQ(joinTargetConsume(Unconditional, None), May);
-  EXPECT_EQ(joinTargetConsume(None, None), None);
-  EXPECT_EQ(joinTargetConsume(May, Unconditional), May);
-  EXPECT_EQ(joinTargetConsume(None, May), May);
-
-  const std::map<std::string, int> summaries{{"a", 1}, {"b", 3}};
-  const auto lookup = [&](const std::string &target) -> std::optional<int> {
-    const auto found = summaries.find(target);
-    if (found == summaries.end())
-      return std::nullopt;
-    return found->second;
-  };
-  const auto larger = [](int x, int y) { return std::max(x, y); };
-  const std::vector<std::string> both{"a", "b"};
-  EXPECT_EQ(joinOverTargets<int>(both, lookup, larger), 3);
-  const std::vector<std::string> missing{"a", "c"};
-  EXPECT_FALSE(joinOverTargets<int>(missing, lookup, larger));
-  EXPECT_FALSE(
-      joinOverTargets<int>(std::span<const std::string>{}, lookup, larger));
 }
 
 TEST(FnSlots, MergeIsAUnion) {

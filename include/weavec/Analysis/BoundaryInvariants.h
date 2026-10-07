@@ -23,8 +23,8 @@
 // class* it concerns — a global `g`, or a field path `<struct>.<field>` —
 // and every temporal facet the unit *proved* for a place of that class
 // takes the boundary's reason instead. `LedgerAdapter::finish` applies both
-// the rows and the propagation; the link step (§13.2 step 5) supplies the
-// other units' rows, so the propagation is program-wide there.
+// the rows and the propagation; `weavec --whole-program` (§13.2 step 5)
+// supplies the other units' rows, so the propagation is program-wide there.
 //
 // This component runs after the engine and never includes `Engine.h`
 // (gate H2).
@@ -54,7 +54,7 @@ struct BoundaryVerdicts {
   /// follows from them (`BoundaryDecision::propagated`).
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<BoundaryDecision> decisions = {};
-  /// The rows the unit record carries for the program-wide propagation
+  /// The rows `UnitExports` carries for the program-wide propagation
   /// (§13.1 `boundaries`, §13.2 step 5).
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<BoundaryRow> exported = {};

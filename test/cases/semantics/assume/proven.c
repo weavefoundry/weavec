@@ -3,8 +3,6 @@
 // After the early return 'n > 0' holds at the Assume site, so its assertion facet is proven
 // and the call stays the no-op weavec_assume_, which the optimiser removes.
 // CLEAN
-// EXPECT-LEDGER: /summary/facets/assertion/proven == 1
-// EXPECT-LEDGER: /summary/facets/assertion/checked == 0
 #include <weavec.h>
 
 int positive(int n) {

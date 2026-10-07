@@ -12,7 +12,7 @@ void consume(char *p);
 void f(void) {
   char *p = malloc(8);
   if (!p) return;
-  consume(p); // UNRESOLVED: temporal:unknown-callee
-  free(p); // UNRESOLVED: temporal:unknown-callee
+  consume(p);
+  free(p);
   p[0] = 1; // BUG: use-after-free definite
 }

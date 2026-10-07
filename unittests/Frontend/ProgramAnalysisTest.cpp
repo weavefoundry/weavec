@@ -159,9 +159,9 @@ int main(void) {
       program.recorder.lines,
       (std::vector<std::string>{"/src/main.c:6: error: 'n' is freed twice"}));
   const analysis::ProgramDatabase &db = program.analysis->database();
-  EXPECT_TRUE(db.defines("node_free"));
-  EXPECT_TRUE(db.defines("node_new"));
-  EXPECT_FALSE(db.defines("main"));
+  EXPECT_NE(db.findEffects("node_free"), nullptr);
+  EXPECT_NE(db.findEffects("node_new"), nullptr);
+  EXPECT_EQ(db.findEffects("main"), nullptr);
 }
 
 TEST(ProgramAnalysis, NoWarningForUnknownCallees) {
@@ -272,20 +272,18 @@ int main(void) {
 )c");
   const auto result = program.run();
   EXPECT_TRUE(result.failed.empty());
-  const auto &facts = program.analysis->facts();
+  const auto &facts = program.analysis->database().programFacts;
   ASSERT_TRUE(facts);
   const core::SlotKey field = core::SlotKey::field("struct ops", "release");
   EXPECT_EQ(facts->slots.targets(field),
             std::set<std::string>{"/src/main.c:drop"});
-  EXPECT_TRUE(facts->slots.isClosed(field));
+  EXPECT_FALSE(facts->slots.isOpen(field));
   ASSERT_EQ(program.analysis->unitCount(), 2U);
   for (std::size_t unit = 0; unit < 2; ++unit) {
     EXPECT_NE(program.analysis->ledgerOf(unit), nullptr) << unit;
     EXPECT_NE(program.analysis->interfaceOf(unit), nullptr) << unit;
     EXPECT_NE(program.analysis->exportsOf(unit), nullptr) << unit;
   }
-  // The database every run saw carries them.
-  EXPECT_EQ(program.analysis->database().programFacts, facts);
 }
 
 TEST(ProgramAnalysis, UnparsableUnitsAreReportedNotFatal) {
@@ -323,65 +321,6 @@ void b(void) { a_free(malloc(1)); }
   EXPECT_LT(dump.find("unit '/src/a.c'"), dump.find("unit '/src/b.c'"));
 }
 
-TEST(ProgramAnalysis, KnownExportsSkipDiscoveryAndFixedUnitsAreNotRerun) {
-  Program program;
-  program.add("main.c", R"c(
-void node_free(void *n);
-int main(void) {
-  char *n = malloc(1);
-  node_free(n);
-  node_free(n);
-  return 0;
-}
-)c");
-  // node.c stands as compiled: only its exports take part.
-  analysis::UnitExports node;
-  node.source = "node.c";
-  core::FunctionEffects freeSummary;
-  freeSummary.effects.push_back(
-      core::PathEffect{.kind = core::PathEffect::Kind::Release,
-                       .path = core::SummaryPath::param(0).deref(),
-                       .family = "free"});
-  node.functions["node_free"] =
-      analysis::ExportedFunction{.effects = std::move(freeSummary),
-                                 .typeKey = "void (void *)",
-                                 .external = true,
-                                 .addressTaken = false};
-
-  ProgramAnalysis analysis(program.options);
-  analysis.addExports(node);
-  for (const std::string &file : program.files) {
-    analysis.addUnit(
-        std::make_unique<InMemoryUnit>(file, program.fs, program.recorder));
-  }
-  const ProgramAnalysis::Result result = analysis.run();
-  EXPECT_EQ(result.errors, 1U);
-  EXPECT_EQ(
-      program.recorder.lines,
-      (std::vector<std::string>{"/src/main.c:6: error: 'n' is freed twice"}));
-}
-
-TEST(ProgramAnalysis, AlreadyReportedDiagnosticsAreNotRepeated) {
-  Program program;
-  program.add("main.c", R"c(
-int main(void) {
-  char *n = malloc(1);
-  free(n);
-  free(n);
-  return 0;
-}
-)c");
-  ProgramAnalysis analysis(program.options);
-  std::set<ReportedDiagnostic> earlier{ReportedDiagnostic{
-      .id = "double-free", .file = "/src/main.c", .line = 5, .column = 3}};
-  analysis.addUnit(std::make_unique<InMemoryUnit>(program.files[0], program.fs,
-                                                  program.recorder),
-                   std::nullopt, earlier);
-  const ProgramAnalysis::Result result = analysis.run();
-  EXPECT_EQ(result.errors, 0U);
-  EXPECT_TRUE(program.recorder.lines.empty());
-}
-
 // RFC 0011, *Whole-program widening*: the step joins a member's new exports
 // with its previous ones, keeping only what both rounds agreed on.
 TEST(ProgramAnalysis, WideningJoinsWithThePreviousRound) {
@@ -397,14 +336,12 @@ TEST(ProgramAnalysis, WideningJoinsWithThePreviousRound) {
   core::FunctionEffects terminating;
   terminating.returns = core::FunctionEffects::Returns::Never;
   previous.functions["g"].effects = terminating;
-  previous.countFields = {"struct a.rc"};
 
   analysis::UnitExports current;
   core::FunctionEffects after;
   after.effects.push_back(release);
   current.functions["f"].effects = after;
   current.functions["h"].effects = terminating;
-  current.countFields = {"struct b.rc"};
 
   ProgramAnalysis::widen(current, previous);
   // What only one round had is weakened; the shared release stays.
@@ -416,8 +353,6 @@ TEST(ProgramAnalysis, WideningJoinsWithThePreviousRound) {
   EXPECT_EQ(current.functions.at("h").effects.returns,
             core::FunctionEffects::Returns::Never);
   EXPECT_FALSE(current.functions.contains("g"));
-  EXPECT_EQ(current.countFields,
-            (std::set<std::string>{"struct a.rc", "struct b.rc"}));
   // Widening is idempotent: joining again changes nothing.
   const analysis::UnitExports widened = current;
   ProgramAnalysis::widen(current, previous);

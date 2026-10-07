@@ -7,10 +7,10 @@
 struct box { char *s; long n; };
 static int last(struct box *b) { char *e = &b->s[b->n]; return e[-1]; }
 static int back(struct box *b, long k) {
-  return *(b->s - k); // BUG: out-of-bounds // TRAP: span
+  return *(b->s - k); // BUG: out-of-bounds // TRAP
 }
 static int before(struct box *b, long i) {
-  return *(b->s + i - 1); // BUG: out-of-bounds // TRAP: span
+  return *(b->s + i - 1); // BUG: out-of-bounds // TRAP
 }
 int main(int argc, char **argv) {
   struct box b;

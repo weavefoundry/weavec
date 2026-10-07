@@ -8,7 +8,7 @@ void bad(void) {
   int *data = malloc(10);
   if (!data)
     return;
-  data[9] = 0; // BUG: out-of-bounds // TRAP: index
+  data[9] = 0; // BUG: out-of-bounds // TRAP
   free(data);
 }
 
@@ -17,7 +17,7 @@ void bad_loop(void) {
   if (!data)
     return;
   for (int i = 0; i < 10; i++)
-    data[i] = i; // BUG: out-of-bounds // TRAP: index
+    data[i] = i; // BUG: out-of-bounds // TRAP
   free(data);
 }
 

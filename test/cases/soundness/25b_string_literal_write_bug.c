@@ -1,5 +1,4 @@
 // Write into a string literal via strtok.
-// ASAN
 #include <string.h>
 int main(void) {
   char *s = "a,b";

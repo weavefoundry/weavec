@@ -13,5 +13,5 @@ int main(int argc, char **argv) {
   val v = {5, argc > 5 ? "x" : NULL};
   const char *s = "valid";
   take(&v, &s);
-  return (int)strlen(s); // BUG: null-dereference possible // TRAP: nonnull
+  return (int)strlen(s); // BUG: null-dereference possible // TRAP
 }

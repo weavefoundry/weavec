@@ -4,7 +4,7 @@ void run(size_t n) {
   size_t original = n;
   char *p = malloc(n); if (!p) return;
   n = 1;
-  p[original] = 0; // BUG: out-of-bounds // TRAP: index
+  p[original] = 0; // BUG: out-of-bounds // TRAP
   free(p);
 }
 // Driver (RFC 0030 section 17.2): executes the defect so the runtime oracle can observe the check.

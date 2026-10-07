@@ -5,7 +5,7 @@
 // RUN-INPUT:
 #include <weavec.h>
 
-int a(char *b, int n) { WEAVEC_ASSUME(n > 0); return b[n - 1]; } // TRAP: assert
+int a(char *b, int n) { WEAVEC_ASSUME(n > 0); return b[n - 1]; } // TRAP
 
 int main(int argc, char **argv) {
   char buf[4] = {0};

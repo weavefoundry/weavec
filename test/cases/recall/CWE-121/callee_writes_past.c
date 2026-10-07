@@ -6,23 +6,23 @@
 
 static void fill_eight(char *buf) {
   for (int i = 0; i < 8; i++)
-    buf[i] = 'A';
+    buf[i] = 'A'; // TRAP
 }
 
 static void fill_n(int *buf, int n) {
   for (int i = 0; i < n; i++)
-    buf[i] = i;
+    buf[i] = i; // TRAP
 }
 
 void bad(void) {
   char small[4];
-  fill_eight(small); // BUG: out-of-bounds // TRAP: len
+  fill_eight(small); // BUG: out-of-bounds
   print_bytes(small, 4);
 }
 
 void bad_symbolic(void) {
   int ints[8];
-  fill_n(ints, 16); // BUG: out-of-bounds // TRAP: len
+  fill_n(ints, 16); // BUG: out-of-bounds
   print_int(ints[0]);
 }
 

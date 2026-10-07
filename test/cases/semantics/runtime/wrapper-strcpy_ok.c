@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 static void put(char *dst, char **words, int i) {
-  strcpy(dst, words[i]); // GUARDED: spatial
+  strcpy(dst, words[i]);
 }
 
 int main(int argc, char **argv) {

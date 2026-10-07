@@ -1,6 +1,6 @@
 // ASAN
 #include <stdlib.h>
-static int peek(char *p) { return p[0]; }
+static int peek(char *p) { return p[0]; } // TRAP
 int main(void) {
   char *p = malloc(8);
   if (!p) return 1;

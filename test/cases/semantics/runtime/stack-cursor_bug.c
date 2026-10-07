@@ -7,7 +7,7 @@
 #include <stdio.h>
 static void fill(char *dst, const char *src) {
   while (*src)
-    *dst++ = *src++; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+    *dst++ = *src++; // BUG: out-of-bounds // TRAP
   *dst = 0;
 }
 int main(int argc, char **argv) {

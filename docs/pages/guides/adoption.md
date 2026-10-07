@@ -1,70 +1,61 @@
 ---
 title: Adopt WeaveC incrementally
-description: Introduce WeaveC to an existing C project, fix its errors, read the ledger, roll out runtime checks and guards, and tighten components with require levels.
+description: Introduce WeaveC to an existing C project, run its tests under the guarded build, fix what traps, measure the cost, and add the advisory analysis to review and CI.
 ---
 
-Start with a component you understand: one with identifiable allocation and cleanup paths and a manageable boundary to external code.
+Start with a component you understand: one with identifiable allocation and cleanup paths and a test suite that exercises them.
 
-## 1. Reproduce the real build context
+## 1. Build and test with weavec-cc
 
-Generate a compilation database or pass the same language standard, include paths and defines as the normal compiler. A parser error caused by missing configuration does not tell you anything about ownership.
+Point the build at `weavec-cc` and run the tests you already have:
+
+```sh
+cmake -S . -B build-weavec -G Ninja -DCMAKE_C_COMPILER=weavec-cc
+cmake --build build-weavec
+ctest --test-dir build-weavec
+```
+
+A correct program builds and passes as it does with Clang. Every memory access is guarded, so a test that trapped found a memory error at the access that made it. See [build integration](/guides/build-integration/) for Make and other build systems.
+
+## 2. Read what traps
+
+Each trap prints the kind of failure, the source location of the access and its address; for the heap, a second line places the address in its block:
+
+```text
+weavec: heap-use-after-free at buffer.c:88:12: read of 8 bytes at 0x...
+weavec: 0x... is inside a released heap block at 0x...
+```
+
+To collect every failure in one run, build the tests with `-fweavec-checks=report`: each failing site prints once and the program goes on. If the test harness captures standard error, set `WEAVEC_RT_REPORT_LOG=<path>` and the reports go to that file instead. The [command-line reference](/reference/cli/#check-modes) lists the report kinds.
+
+A trap is either a real bug or code that relies on undefined behaviour that happens to work: reading one element past an array, reading a word at a time past the end of a string's allocation, using the slack the system allocator leaves after a block (`malloc_usable_size` now returns the requested size), or indexing a two-dimensional array through its first row. Fix the code. If the over-read is intentional and harmless, put it in a small `WEAVEC_UNSAFE` region, or keep it in a function the project already excludes from AddressSanitizer with `no_sanitize("address")`: neither is guarded. See [unsafe boundaries](/guides/unsafe/).
+
+Locals are zero-initialised in the enforcing modes and the runtime's heap is zero-filled, so code that read uninitialised memory now reads zeros.
+
+## 3. Run the analysis
+
+The ownership analysis reports bugs the tests do not reach: a use after free on an error path, a double free, a dangling pointer returned from a function, a leak. Run it on the same sources, with the build's flags:
 
 ```sh
 cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 weavec -p build src/buffer.c
+weavec --whole-program -p build
 ```
 
-See [build integration](/guides/build-integration/) for CMake, Make and compiler-driver workflows.
+Errors are definite: the bug happens on every execution that reaches the line, and the analysis has found a feasible path that reaches it. Follow the reported allocation, alias, release or escape and fix the code. Warnings with "may" wording are temporal bugs on some paths only. Check a helper's inferred behaviour with `--dump-analysis` when its effect is surprising, and add [annotations](/reference/annotations/) where inference needs help, typically at public interfaces.
 
-## 2. Fix the errors, then read the warnings
+The analysis is advisory: it does not change what `weavec-cc` compiles, and a false finding does not stop a build. To see its findings during a build, add `-fweavec-diagnose`, which prints them as warnings.
 
-Errors are definite: the bug happens on every execution that reaches the line, and the analysis has found a feasible path that reaches it. Follow the reported allocation, alias, release or escape and fix the code. A finding the analysis could not confirm on a feasible path is a warning with the same id and the note `not confirmed on a feasible path`; its site is checked or guarded like any possible finding. Warnings with "may" wording are temporal bugs on some paths only. `weavec` prints all of them. A `weavec-cc` build with the runtime prints only those it cannot guard, such as a finding at a call boundary; the others trap at run time if they happen, and `-Wweavec-possible` prints them at compile time as well. A `weavec-cc` build prints no `leak` warnings unless `-Wweavec-leak` (or `-Wweavec`) asks for them; `weavec` prints them. Read the ones you see: a guard catches a use of a freed block only while the block is in the quarantine. Check inferred behavior with `--dump-analysis` when a helper's effect is surprising.
+## 4. Measure the cost
 
-During migration, you can lower a particular error to a warning:
+The program now runs on WeaveC's allocator, which holds freed blocks in a quarantine (16 MiB by default; `WEAVEC_RT_QUARANTINE=<bytes>` changes it), and every access the local rules cannot prove runs a guard. Measure on your own workload before you ship a guarded build: interpreters and tight loops over pointers pay the most. `WEAVEC_RT_STATS=1` in the environment prints the runtime's counters when the program exits, and `-fweavec-ledger=<dir>/` with `-fweavec-summary` shows how many accesses kept their guard:
 
-```sh
-weavec-cc -Wno-error=weavec-use-after-free -c src/buffer.c
+```text
+weavec: buffer.c: 812 accesses: 431 proven, 381 guarded, 0 unguarded
 ```
 
-This changes only the reporting, and the ledger keeps the site as a violation. A lowered temporal violation, or a lowered violation of a callee's or library function's requirement, is guarded against the runtime: it traps only if the bug happens, so a false error lowered this way does not stop a correct program. A spatial or null violation decided from an exact extent keeps its check. Nothing traps unconditionally: a lowered violation the build can neither check nor guard (a temporal one without the runtime) is left `unresolved(lowered)` in the ledger. Remove temporary overrides as the component improves.
+A hot loop over an array whose trip count is known runs without guards when its whole range is addressable. A component that cannot afford the guards can build with `-fweavec-checks=none`, which compiles it as Clang does and gives up its protection; units built with and without guards link together.
 
-## 3. Read the ledger
+## 5. Keep the result reproducible
 
-The ledger lists every operation with its outcome: proven, checked, guarded, violation, unresolved or trusted. Write it for a whole build and look at the summary lines first:
-
-```sh
-weavec --whole-program -p build --ledger=build/ledger/
-```
-
-`summary.unresolvedReasons` in each ledger counts why operations were left unresolved, and `summary.guardedReasons` counts the same reasons for the operations a guard covers. A guarded operation is enforced at run time, within the limits of a guard; resolving its reason turns it into a proof or a check and removes the guard and its cost. The common reasons point at their fixes:
-
-| Reason           | Typical cause                                                      | What helps                                                                                                                                                                                               |
-| ---------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `unknown-callee` | A call into code WeaveC cannot see may free or keep a pointer.     | Analyse the definition with the caller ([whole-program analysis](/guides/whole-program/)) or declare the callee's ownership (`WEAVEC_BORROWED`, `WEAVEC_OWNED`). The row carries a suggested annotation. |
-| `unknown-extent` | The size of the object behind a pointer is unknown.                | Pass the length and declare it: `WEAVEC_COUNTED_BY(n)`, `WEAVEC_ENDED_BY(end)`, `WEAVEC_STRING`.                                                                                                         |
-| `raw-cast`       | The pointer was made from a non-pointer value, such as an integer. | Such accesses are guarded; keep code that forges pointers in a narrow, reviewed [unsafe region](/guides/unsafe/).                                                                                        |
-| `budget`         | A function exceeded the analysis budget.                           | Split the function, or raise `-fweavec-budget`.                                                                                                                                                          |
-
-Trusted rows are the assumptions the result rests on, such as platform library calls (`system-api`) and unsafe regions (`unsafe`). Review them rather than eliminate them.
-
-## 4. Roll out the runtime checks and guards
-
-Build and run your test suite with `weavec-cc`. Unproven null and bounds obligations are checked by default, the facets the analysis left unresolved are guarded where they have a pointer to look up, and a failing check or guard stops the program at the bad access. To collect every failure in one run, build the tests with `-fweavec-checks=report`, which prints `weavec: runtime check failed: <template> at <file>:<line>:<column>` and continues.
-
-A check or guard that fails is either a real bug or code that relies on undefined behavior that happens to work: reading one element past an array, reading a word at a time past the end of a string's allocation, or using the slack the system allocator leaves after a block (`malloc_usable_size` now returns the requested size). Fix the code; if it is intentional, isolate it in a small `WEAVEC_UNSAFE` region, where spatial and null facets are trusted and get neither checks nor guards. Locals and standard allocations are zero-initialised in the checking modes, so code that read uninitialised memory now reads zeros.
-
-The program now runs on WeaveC's allocator, which holds freed blocks in a quarantine (16 MiB by default; `WEAVEC_RT_QUARANTINE=<bytes>` in the environment changes it) so that a stale pointer finds a dead block. Measure the cost on your own workload before you ship the default mode. On the project's benchmarks it is 1.66 times the CPU time of a plain Clang build for cJSON, 1.85 for zlib and 5.94 for the Lua interpreter; interpreters and tight loops over pointers pay the most. `WEAVEC_RT_STATS=1` in the environment prints the runtime's counters when the program exits. A component that cannot pay builds with `-fno-weavec-runtime` (1.15, 1.00 and 1.09 times on the same benchmarks): its checks stay, its guardable facets are `unresolved` again, and its uses of freed objects are not caught at run time. Units built with and without the runtime link together.
-
-## 5. Tighten a component
-
-Once a component's unresolved rows are understood, make them errors so they cannot come back:
-
-```sh
-weavec-cc -fweavec-require=guarded -c src/buffer.c
-```
-
-Every operation must then be proven, checked or guarded; the rest are `unresolved-operation` errors. `-fweavec-require=checked` goes further and rejects guarded operations too, with the message `<operation> is guarded at run time only: …`, so every operation is proven or checked against a bound the code states. Trusted operations stay allowed at every level. `WEAVEC_REQUIRE_SAFE` before a function definition applies the same rule to that function alone, whatever the command line says. `-fweavec-require=proven` also rejects operations that rely on a runtime check, for code that must not trap.
-
-## 6. Keep the result reproducible
-
-Run the same build in CI, with `-fweavec-link=analyze` at the link or a `weavec --whole-program` step to report the bugs that span files (a default link does not), keep the ledger as a build artifact (`-fweavec-ledger-format=sarif` for code-scanning tools), and watch the summary counts. Each ledger row has a fingerprint that survives edits elsewhere in the file, so rows can be compared between runs.
+Run the guarded build and its tests in CI, and let a trap fail the job. Add a `weavec --whole-program -p build` step, or build with `-fweavec-diagnose -Werror=weavec`, to fail the job on what the analysis reports; the second turns a false error into a failed build, so start with the first and review its findings. Keep the enforcement ledgers as build artifacts if you track how much of the code runs guarded.

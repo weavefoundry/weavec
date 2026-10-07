@@ -30,7 +30,7 @@
 // the release is possible at each call (RFC 0031 *Pending cases and exit
 // splitting*: an effect keyed by a parameter's zero test the argument does
 // not decide is possible): a possible double free, where the old engine gave
-// a definite one (test/cases/KNOWN-DIFFERENCES.md, *Lit tests*).
+// a definite one (the retired golden comparison of RFC 0030, *Lit tests*).
 int double_release(void) {
   struct node *n = node_new();
   node_free(n);

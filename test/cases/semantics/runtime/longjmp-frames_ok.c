@@ -7,7 +7,7 @@
 #include <setjmp.h>
 #include <string.h>
 static jmp_buf env;
-static int peek(const char *p, int i) { return p[i]; } // GUARDED: spatial
+static int peek(const char *p, int i) { return p[i]; }
 static void thrower(int depth) {
   char scratch[24];
   memset(scratch, depth, sizeof scratch);

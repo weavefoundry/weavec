@@ -6,7 +6,7 @@ struct tree { struct tree *left, *right; };
 static void odd(struct tree *p);
 static void even(struct tree *p) {
   if(!p) return;
-  odd(p->left); odd(p->right); free(p); // NOT-PROVEN: spatial // BUG: invalid-release definite
+  odd(p->left); odd(p->right); free(p); // BUG: invalid-release definite
 }
 static void odd(struct tree *p) { even(p+1); } // BUG: invalid-release definite
 int main(void) {

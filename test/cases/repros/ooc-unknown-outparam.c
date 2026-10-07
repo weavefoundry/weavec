@@ -10,7 +10,6 @@
 // UNITS: Inputs/ooc-unknown-outparam-impl.c
 // CLEAN
 // The formatters' unit has no record, which the link step says (RFC 0030 §13.2).
-// ALLOW: unanalyzed-input
 // ASAN
 #include <stdlib.h>
 #include <string.h>

@@ -22,7 +22,7 @@ int main(int argc, char **argv) {
   append(&b, "hello");
   char *first = b.p;
   for (int i = 1; i < argc; i++) append(&b, argv[i]);
-  int r = first[0] != 'h'; // BUG: use-after-move possible // TRAP: object // GUARDED: temporal
+  int r = first[0] != 'h'; // BUG: use-after-move possible // TRAP
   free(b.p);
   return r;
 }

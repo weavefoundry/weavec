@@ -11,7 +11,7 @@ unsigned consume(struct cursor *c) {
     // The salvaged false proof is the subscript, as in reader-short. A
     // not-proven marker cannot pin it, since it holds for the whole line and
     // the loads of c->data and c->position on this line are proven (§7.3).
-    sum += c->data[c->position]; // NEUTRALISED: zero-init // UNRESOLVED: spatial:unknown-extent
+    sum += c->data[c->position]; // NEUTRALISED: zero-init
     c->position++;
   }
   return sum;

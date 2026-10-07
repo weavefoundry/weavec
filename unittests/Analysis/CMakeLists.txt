@@ -20,7 +20,6 @@ weavec_add_unittest(
           KindInferenceTest.cpp
           SlotCollectorTest.cpp
           SiteCollectorTest.cpp
-          CheckPlannerTest.cpp
           LedgerAdapterTest.cpp
           EngineDecisionsTest.cpp
           SoundDefaultsTest.cpp

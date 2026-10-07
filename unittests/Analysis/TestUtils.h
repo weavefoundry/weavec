@@ -72,7 +72,6 @@ struct UnitLedgerHarness {
   std::shared_ptr<const analysis::UnitKinds> kinds;
   analysis::SiteIndex sites;
   std::unique_ptr<analysis::LedgerAdapter> ledger;
-  std::vector<analysis::FieldCandidate> noAssumptions;
 
   explicit UnitLedgerHarness(clang::ASTContext &context) {
     const core::LibrarySpec &library = core::LibrarySpec::shipped();
@@ -98,7 +97,6 @@ struct UnitLedgerHarness {
         .library = core::LibrarySpec::shipped(),
         .slots = kinds->slots.constraints(),
         .database = database,
-        .fieldAssumptions = noAssumptions,
         .inferred = &kinds->inferred,
         .slotCollection = &kinds->slots,
         .slotSolution = &kinds->solution,
@@ -108,11 +106,11 @@ struct UnitLedgerHarness {
 
   /// Completes the ledger (which checks it is complete) and copies the
   /// diagnostics, in publication order, into `collector`.
-  analysis::PlannedLedger finish(core::DiagnosticCollector &collector) const {
-    analysis::PlannedLedger planned = ledger->finish();
+  core::Ledger finish(core::DiagnosticCollector &collector) const {
+    core::Ledger completed = ledger->finish();
     for (const core::Diagnostic &diagnostic : ledger->diagnostics())
       collector.report(diagnostic);
-    return planned;
+    return completed;
   }
 };
 
@@ -127,8 +125,8 @@ struct AnalysisResult {
   std::unique_ptr<analysis::ObjectEngine> engine;
   /// The unit's exports (RFC 0031 §7).
   analysis::UnitExports exports;
-  /// The completed unit ledger (RFC 0030 §12).
-  analysis::PlannedLedger planned;
+  /// The completed unit ledger.
+  core::Ledger ledger;
 
   /// The function definition named `name`, or null.
   [[nodiscard]] const clang::FunctionDecl *
@@ -178,7 +176,7 @@ analyzeInProgram(const std::string &code,
   result.engine->analyzeUnit(result.harness->input(context, database, options),
                              *result.harness->ledger);
   result.exports = result.engine->exports();
-  result.planned = result.harness->finish(result.diagnostics);
+  result.ledger = result.harness->finish(result.diagnostics);
   return result;
 }
 
@@ -232,7 +230,7 @@ inline AnalysisResult analyzeAtLink(const std::string &callees,
 /// each was an `analysis-incomplete` warning.)
 inline std::vector<std::string> incomplete(const AnalysisResult &result) {
   std::vector<std::string> out;
-  for (const core::UnitLedger &unit : result.planned.ledger.units)
+  for (const core::UnitLedger &unit : result.ledger.units)
     for (const core::FunctionLedger &function : unit.functions)
       for (const core::Site &site : function.sites)
         for (const core::Facet facet : core::AllFacets) {
@@ -257,7 +255,7 @@ inline std::vector<std::string> incomplete(const AnalysisResult &result) {
 /// was an `annotation-required` warning, once per callee.)
 inline std::vector<std::string> unknownCalls(const AnalysisResult &result) {
   std::vector<std::string> out;
-  for (const core::UnitLedger &unit : result.planned.ledger.units)
+  for (const core::UnitLedger &unit : result.ledger.units)
     for (const core::FunctionLedger &function : unit.functions)
       for (const core::Site &site : function.sites) {
         const core::FacetRecord *record = site.facet(core::Facet::Temporal);
@@ -298,14 +296,15 @@ inline std::size_t elementStores(const core::FunctionEffects &effects) {
 
 /// The ledger's counts for `facet` over the unit, as `"<facet>: proven=P
 /// violation=V unresolved=U"`, where `violation` counts the facets that
-/// need a check (checked, or a definite violation) and `unresolved` the
-/// rest: the spelling of the analysis dump before RFC 0031.
+/// RFC 0030 needed a check for (definite violations, and the undecided
+/// facets it called checked) and `unresolved` the rest: the spelling of the
+/// analysis dump before RFC 0031.
 inline std::string facetCounts(const AnalysisResult &result,
                                core::Facet facet) {
   unsigned proven = 0;
   unsigned violation = 0;
   unsigned unresolved = 0;
-  for (const core::UnitLedger &unit : result.planned.ledger.units)
+  for (const core::UnitLedger &unit : result.ledger.units)
     for (const core::FunctionLedger &function : unit.functions)
       for (const core::Site &site : function.sites) {
         // The dump counted the accesses' spatial facets only.
@@ -319,11 +318,14 @@ inline std::string facetCounts(const AnalysisResult &result,
             ++proven;
             break;
           case core::SiteOutcome::Violation:
-          case core::SiteOutcome::Checked:
             ++violation;
             break;
           default:
-            ++unresolved;
+            if (record->decision.unresolved ==
+                core::UnresolvedReason::Undecided)
+              ++violation;
+            else
+              ++unresolved;
             break;
           }
         }

@@ -69,8 +69,8 @@ void fine(struct node *(*make)(void), void (*drop)(struct node *)) {
   node_free(node_new());
   // RFC 0030 §9.3: an indirect call through a slot with no known target is
   // the §5.1 default under the reason `callback`.
-  struct node *n = make(); // UNRESOLVED: temporal:callback
-  drop(n); // UNRESOLVED: temporal:callback
+  struct node *n = make();
+  drop(n);
   use(n);
 }
 

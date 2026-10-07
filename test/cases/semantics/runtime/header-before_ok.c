@@ -17,7 +17,7 @@ static char *str_new(const char *init) {
   return (char *)(h + 1);
 }
 static size_t str_len(const char *s) {
-  return ((const struct hdr *)s)[-1].len; // GUARDED: spatial
+  return ((const struct hdr *)s)[-1].len;
 }
 static void str_free(char *s) {
   free((struct hdr *)s - 1);

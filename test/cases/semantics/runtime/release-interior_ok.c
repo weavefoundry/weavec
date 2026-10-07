@@ -6,7 +6,7 @@
 // ASAN
 #include <stdlib.h>
 static void drop(char *p, int skip) {
-  free(p + skip); // GUARDED: spatial
+  free(p + skip);
 }
 int main(int argc, char **argv) {
   char *p = malloc(32);

@@ -18,8 +18,9 @@
 
 #include "weavec/Analysis/ProgramDatabase.h"
 #include "weavec/Analysis/SafetyEngine.h"
+#include "weavec/Core/Ledger.h"
 #include "weavec/Frontend/DiagnosticControl.h"
-#include "weavec/Frontend/LedgerOutput.h"
+#include "weavec/Frontend/InterfaceFacts.h"
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/Frontend/ASTUnit.h"
@@ -33,16 +34,7 @@
 #include <set>
 #include <string>
 
-namespace weavec::analysis {
-struct PlannedLedger;
-} // namespace weavec::analysis
-
 namespace weavec::frontend {
-
-struct ZeroInitPlan;
-namespace record {
-struct InterfaceFacts;
-} // namespace record
 
 /// What one run of the consumer over a unit produced (RFC 0005).
 struct UnitResult {
@@ -54,19 +46,14 @@ struct UnitResult {
   /// Nothing was reported: the run asked a context `FrontendOptions::holdFor`
   /// holds for.
   bool held = false;
-  /// RFC 0030: the unit's ledger and check plan (§14); null for a silent or
-  /// discovery run.
+  /// The unit's sites and their outcomes (RFC 0035 §8); null for a silent
+  /// or discovery run.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::shared_ptr<analysis::PlannedLedger> ledger = {};
-  /// RFC 0030 §11: the unit's zero-initialisation plan, whose A5 counts the
-  /// ledger holds; null when there is no ledger.
+  std::shared_ptr<core::Ledger> ledger = {};
+  /// The unit's interface facts, under `FrontendOptions::collectInterface`;
+  /// after a discovery run only the function-pointer slots.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::shared_ptr<ZeroInitPlan> zeroInit = {};
-  /// RFC 0030 §13.1: the unit's interface facts, under
-  /// `FrontendOptions::collectInterface`; after a discovery run only the
-  /// function-pointer slots.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::shared_ptr<const record::InterfaceFacts> interface = {};
+  std::shared_ptr<const InterfaceFacts> interface = {};
 };
 
 struct FrontendOptions;
@@ -86,34 +73,17 @@ struct FrontendOptions {
   std::string analysisStatsPath = {};
   /// `-W` overrides applied before a diagnostic reaches Clang.
   DiagnosticControl control;
-  // RFC 0030 (S3-C, begin): the configuration the ledger records and the
-  // analysis plans with (`-fweavec-checks`, `-f[no-]weavec-zero-init`,
-  // `-fweavec-require`, `-fweavec-budget`; `--require`, `--budget` and
-  // `--no-zero-init` in `weavec`), and where the unit ledger and the
-  // summary line go (`emitUnitLedger` in LedgerOutput.h).
-  core::LedgerConfig config;
-  LedgerOutputOptions ledgerOutput;
-  // RFC 0030 (S3-C, end).
-  /// RFC 0032 §9: the build enforces its guards, so a possible finding on a
-  /// guarded facet is not reported (`weavec-cc` with checks and the runtime
-  /// on, without `-Wweavec-possible`).
-  bool dropGuardedPossible = false;
-  /// RFC 0032 §4, §5: register the unit's escaping locals and its globals
-  /// (`-f[no-]weavec-stack-objects`, `-f[no-]weavec-global-objects`).
-  bool stackObjects = true;
-  bool globalObjects = true;
+  /// Print the unit's summary line (`AnalysisSummary.h`) on stderr after a
+  /// reporting run: always in `weavec`, never under `-fweavec-diagnose`.
+  bool summary = false;
 
   // RFC 0005, whole-program analysis. Every pointer must outlive the run.
 
   /// Exports of the other units of the program; null when the unit is the
   /// whole program.
   const analysis::ProgramDatabase *database = nullptr;
-  /// Diagnostics not to show again (already printed by an earlier step).
+  /// Diagnostics not to show again (already shown by an earlier run).
   const std::set<ReportedDiagnostic> *alreadyReported = nullptr;
-  /// When set, only diagnostics with these ids are shown (RFC 0012: the
-  /// pass that re-analyses a unit for a sized field the program confirmed
-  /// shows only what the field's extent can change).
-  const std::set<std::string_view> *onlyIds = nullptr;
   /// Analyse but report nothing (a fixpoint round).
   bool silent = false;
   /// RFC 0031 §7 *Amendment (cross-unit contexts)*: when set, a run that
@@ -124,7 +94,7 @@ struct FrontendOptions {
   /// Collect the unit's definitions, imports and indirect types without
   /// analysing anything; `onResult` receives exports with empty summaries.
   bool discoverOnly = false;
-  /// RFC 0030 §13.1: also collect the unit's interface facts for its record
+  /// Also collect the unit's interface facts for `weavec --whole-program`
   /// (`UnitResult::interface`).
   bool collectInterface = false;
   /// Receives the unit's exports and reporting statistics.

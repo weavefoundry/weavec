@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""Gate G7 of RFC 0030: deferred CodeGen leaves every object unchanged.
+"""`weavec-cc -fweavec-checks=none` compiles as Clang does.
 
-For each translation unit of a list and each configuration (`-O2`,
-`-O0 -g` and `-O2 -flto=thin` by default), the object `weavec-cc -c`
-writes must be byte-identical (`cmp`) to the one the reference Clang writes
-with `-D__WEAVEC__=1 -isystem resources/include`, the two flags `weavec-cc`
-adds itself. `DeferredCodeGenConsumer` (RFC 0030, section 10.5) holds every
-CodeGen callback until the WeaveC analysis has run; with no checks emitted
-it must change nothing.
+RFC 0035, section 1: a unit compiled with `-fweavec-checks=none` gets no
+guards, no zero-initialisation, no array-bounds checks and no location
+tracking: it is compiled as Clang compiles it. (RFC 0030 introduced this
+check as gate G7, for deferred CodeGen, which RFC 0035 deleted.) For each
+translation unit of a list and each configuration (`-O2`, `-O0 -g` and
+`-O2 -flto=thin` by default), the object `weavec-cc -c` writes must be
+byte-identical (`cmp`) to the one the reference Clang writes with
+`-D__WEAVEC__=1 -isystem resources/include`, the two flags `weavec-cc` adds
+itself.
 
 Both compilers get the same `-isysroot` (on macOS, `xcrun --show-sdk-path`
 unless `--sysroot` says otherwise): Homebrew's clang reads a configuration
 file that may name a different SDK than the one `weavec-cc` finds, and
-`-g` records the SDK. `weavec-cc` gets `-fweavec-checks=none`, the
-configuration gate G7 is about (the default trap build inserts checks and
-zero-initialises), and `-Wno-error=weavec` (see `--weavec-flag`), so that units
-with WeaveC errors still produce objects.
+`-g` records the SDK. `weavec-cc` gets `-fweavec-checks=none` (see
+`--weavec-flag`); the default trap build guards accesses and
+zero-initialises, so its objects differ by design.
 
 List format (`--list`): one unit per line, `<project>/<path> [args...]`,
 shell-quoted; `#` starts a comment. Each unit compiles in
@@ -27,7 +28,7 @@ Examples:
 
   scripts/codegen-identity.py --weavec-cc build/release/bin/weavec-cc \\
       --list test/corpus/identity.txt --min 100
-  scripts/codegen-identity.py --weavec-cc build/w3/bin/weavec-cc \\
+  scripts/codegen-identity.py --weavec-cc build/release/bin/weavec-cc \\
       --root build/corpus --list test/corpus/identity.txt \\
       --config='-O1' -- -DNDEBUG
 
@@ -54,7 +55,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIGS = ["-O2", "-O0 -g", "-O2 -flto=thin"]
-DEFAULT_WEAVEC_FLAGS = ["-fweavec-checks=none", "-Wno-error=weavec"]
+DEFAULT_WEAVEC_FLAGS = ["-fweavec-checks=none"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -116,13 +117,6 @@ def default_sysroot() -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def default_support() -> Path:
-    for candidate in (ROOT / "test" / "corpus" / "support",
-                      ROOT / "scripts" / "corpus" / "support"):
-        if candidate.is_dir():
-            return candidate
-    return ROOT / "test" / "corpus" / "support"
-
 
 def run_compiler(command: list[str], cwd: Path, out: Path, timeout: int) -> str:
     """Compiles to `out`; returns an empty string or why it failed."""
@@ -154,7 +148,7 @@ def compare(unit: Unit, config: str, options: argparse.Namespace) -> Outcome:
     )
     reference = [options.clang] + common + options.reference_only
     weavec = [options.weavec_cc] + common + options.weavec_only
-    with tempfile.TemporaryDirectory(prefix="weavec-g7-", dir=options.tmp) as tmp:
+    with tempfile.TemporaryDirectory(prefix="weavec-identity-", dir=options.tmp) as tmp:
         work = Path(tmp)
         out = work / "unit.o"
         why = run_compiler(reference, cwd, out, options.timeout)
@@ -222,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     if os.sep in options.clang:
         options.clang = str(Path(options.clang).resolve())
     options.root = options.root.resolve()
-    options.support = (options.support or default_support()).resolve()
+    options.support = (options.support or ROOT / "test" / "corpus" / "support").resolve()
     options.resource_include = options.resource_include.resolve()
     options.keep = options.keep.resolve() if options.keep else None
     sysroot = default_sysroot() if options.sysroot == "auto" else (

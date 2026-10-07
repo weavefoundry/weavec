@@ -17,6 +17,6 @@ static int cmp(const void *a, const void *b) {
 int main(int argc, char **argv) {
   int xs[4] = {4, 3, 2, 1};
   size_t n = argc > 1 ? (size_t)strtoull(argv[1], NULL, 10) : 4;
-  qsort(xs, n, sizeof xs[0], cmp); // BUG: out-of-bounds // TRAP: len
+  qsort(xs, n, sizeof xs[0], cmp); // BUG: out-of-bounds // TRAP
   return xs[0];
 }

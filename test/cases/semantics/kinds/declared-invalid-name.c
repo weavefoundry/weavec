@@ -11,5 +11,5 @@
 int at(const int *WEAVEC_COUNTED_BY(count) p, // BUG: invalid-annotation possible
        size_t n, size_t i) {
   (void)n;
-  return p[i]; // TRUSTED: spatial:caller-contract
+  return p[i];
 }

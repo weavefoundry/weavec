@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 static void put(char *dst, char **words, int i) {
-  char *end = stpcpy(dst, words[i]); // TRAP: object // GUARDED: spatial
+  char *end = stpcpy(dst, words[i]); // TRAP
   end[0] = 0;
 }
 

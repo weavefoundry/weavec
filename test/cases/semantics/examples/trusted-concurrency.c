@@ -13,7 +13,7 @@ static char *shared;
 
 static void *worker(void *arg) {
   (void)arg;
-  shared[0] = 2; // TRUSTED: temporal:concurrency
+  shared[0] = 2;
   free(shared);
   return NULL;
 }
@@ -22,9 +22,9 @@ int main(void) {
   pthread_t t;
   shared = malloc(8);
   if (!shared) return 1;
-  shared[0] = 1; // TRUSTED: temporal:concurrency
+  shared[0] = 1;
   if (pthread_create(&t, NULL, worker, NULL) != 0) return 1;
   pthread_join(t, NULL);
-  if (shared) return shared[0]; // BUG: use-after-free // TRUSTED: temporal:concurrency // NOT-PROVEN: null
+  if (shared) return shared[0]; // BUG: use-after-free
   return 0;
 }

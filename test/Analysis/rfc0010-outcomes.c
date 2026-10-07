@@ -55,7 +55,7 @@ int put_and_forget(struct bag *b) {
   // The old engine reported `'s' is leaked` on the failure edge below. The
   // object engine's summary of `bag_put` stores `s` into the bag possibly on
   // every class (above), so on that edge `s` may have escaped and no leak is
-  // reported: a lost warning, never a proof (test/cases/KNOWN-DIFFERENCES.md,
+  // reported: a lost warning, never a proof (the retired golden comparison of RFC 0030,
   // *Lit tests*).
   if (bag_put(b, s) < 0)
     return -1;
@@ -80,7 +80,7 @@ static int dec_and_test(int *r) { return --*r == 0; }
 
 // Through the helper, the unref releases `o` when the count reaches zero.
 // The object engine does not infer RFC 0010 count functions yet, so it is a
-// possible release (RFC 0031 §5.5; test/cases/KNOWN-DIFFERENCES.md).
+// possible release (RFC 0031 §5.5; the retired golden comparison of RFC 0030).
 // DUMP-LABEL: function 'obj_unref':
 // DUMP: release *param0 free may when always
 // DUMP: store param0->rc := int

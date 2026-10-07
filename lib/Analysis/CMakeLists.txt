@@ -15,7 +15,7 @@ weavec_add_library(
           SlotCollector.cpp
           Concurrency.cpp
           SiteCollector.cpp
-          CheckPlanner.cpp
+          SourceTerm.cpp
           BoundaryInvariants.cpp
           LedgerAdapter.cpp
           SafetyEngine.cpp

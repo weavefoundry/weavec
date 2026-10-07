@@ -10,5 +10,5 @@ int main(int argc, char **argv) {
   int *p;
   (void)argv;
   if (argc > 1) p = &x;
-  return *p; // TRAP: nonnull
+  return *p; // TRAP
 }

@@ -6,8 +6,8 @@
 #include <stdlib.h>
 struct s { char *buf; };
 static void drop(struct s *o) { free(o->buf); }
-static int peek(struct s *o) { char *b = o->buf; return b[0]; } // BUG: use-after-free // UNRESOLVED: temporal:dangling-escape // TRAP: live
-static int peek_past(struct s *o) { char *b = o->buf + 1; return b[-1]; } // UNRESOLVED: temporal:dangling-escape
+static int peek(struct s *o) { char *b = o->buf; return b[0]; } // BUG: use-after-free // TRAP
+static int peek_past(struct s *o) { char *b = o->buf + 1; return b[-1]; }
 int main(void) {
   struct s o;
   o.buf = malloc(8);

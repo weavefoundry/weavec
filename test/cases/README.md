@@ -1,67 +1,78 @@
 # Test cases
 
-`test/cases` is the one tree of executable C test cases (RFC 0030, section 17).
-Each case is a C file whose expectations are line-comment *markers*;
-`scripts/run-cases.py` builds it with `weavec-cc`, checks its diagnostics and
-ledger, runs it, and optionally runs it under ASan. The lit suites
-(`test/Analysis`, `test/Driver`, ...) pin exact messages; these cases pin what
-must be reported, checked or left unproven.
+`test/cases` is the tree of executable C test cases (RFC 0035 §11). Each
+case is a C file whose expectations are line-comment *markers*.
+`scripts/run-cases.py` checks the advisory analysis (the `weavec` tool)
+against the `BUG` and `CLEAN` markers, builds the case as a default
+`weavec-cc` build does, checks its enforcement ledger, runs it and attributes
+every stop to a line and a report kind, and optionally runs it under ASan.
+The lit suites (`test/Guards`, `test/Driver`, ...) pin exact IR and
+messages; these cases pin what must be reported and what must stop.
 
 | Directory | Contents |
 | --- | --- |
-| `evaluation/` | the 44 bug and 32 clean programs of the fixed evaluation (RFC 0013) |
-| `pairs/` | the 24 RFC 0017 cases (12 bug/clean pairs) |
-| `recall/<CWE>/` | the recall pins (67, as the retired `scripts/recall.py` counted them) |
-| `engine/` | ordinary-era lit engine pins, reduced to (line, id) from the golden run |
-| `soundness/` | the 113 soundness probes (85 bug, 28 correct) and their extra units, and 28 alias probes (`alias-*`: 14 bug, 14 correct): RFC 0031's 22 and RFC 0032's 6 (`alias-global-element-*`, `alias-record-element_*`); see its README |
-| `repros/` | the 12 root-cause false-positive repros, with their intended RFC 0030 expectations, and RFC 0031's 8 held-out repros (`ooc-*`) |
-| `proofs/` | salvaged cases that once caught a false proof (`SOURCES.md` gives their origin) |
-| `semantics/<feature>/` | new cases per RFC 0030 feature; `semantics/objects/` is RFC 0031's object domain (§11.1); `semantics/runtime/` is RFC 0032's runtime enforcement (43 cases: 19 bugs that must trap or stay unenforced without the runtime, 24 correct programs that must not trap); `semantics/confirm/` is RFC 0034's false stops and silent misses (§9), `semantics/detect-probes/` the three probes written after its detection set |
-| `detection/` | RFC 0034's detection set (gate F4): the 61 blind bug programs of its milestone, each with its fixed twin, one directory per program ([Detection cases](#detection-cases)) |
+| `evaluation/` | the bug and clean programs of the fixed evaluation (RFC 0013) |
+| `pairs/` | RFC 0017's bug/clean pairs |
+| `recall/<CWE>/` | recall pins, by CWE |
+| `engine/` | analysis pins reduced from the lit engine tests |
+| `soundness/` | soundness probes, each bug with a correct twin, and the alias probes (`alias-*`) |
+| `repros/` | root-cause false-positive repros and RFC 0031's held-out repros (`ooc-*`) |
+| `proofs/` | cases that once caught a false proof (`SOURCES.md` gives their origin) |
+| `semantics/<feature>/` | cases per feature: `objects/` the analysis's object domain, `runtime/` the runtime's guards and releases, `dropin/` untuned code, `confirm/` false stops and silent misses, `detect-probes/` detection probes, ... |
+| `detection/` | RFC 0034's detection set: one program per directory, each with a fixed twin ([Detection cases](#detection-cases)) |
+| `detection-blind/` | 48 blind single-file bug programs with `-DFIX` twins (its `README.md`) |
 
-`GOLDEN.md` describes the golden v0.10.0 binaries and `KNOWN-DIFFERENCES.md`
-lists the engine pins the RFC 0030 build no longer reproduces.
+A file under an `Inputs/` directory is never a case: it holds units,
+headers and input files that cases share.
 
 ## Running
 
 ```sh
-scripts/run-cases.py                                  # every case, trap mode
-scripts/run-cases.py --filter 'soundness/**' --asan   # gate G4
-scripts/run-cases.py --asan                           # RFC 0032 gate R1: every suite
-scripts/run-cases.py --checks verify                  # gate G6, and R1 (temporal proofs too)
-scripts/run-cases.py --require checked --filter 'soundness/*_ok.c' --filter 'soundness/*_fp.c'  # gate G5 (the 28 twins)
-scripts/run-cases.py --require guarded                # unresolved facets are errors, guarded ones are not
-scripts/run-cases.py --no-emission                    # before checks are emitted (S3, S4)
-scripts/run-cases.py --no-run                         # build, diagnostics and ledger only
-WEAVEC_GOLDEN_DIR=<dir> scripts/run-cases.py --legacy               # S0: v0.10.0 semantics
-WEAVEC_GOLDEN_DIR=<dir> scripts/run-cases.py --compare-golden       # S1: same diagnostics
+scripts/run-cases.py                                # every case, trap mode
+scripts/run-cases.py --filter 'soundness/**' -j 8   # one suite
+scripts/run-cases.py --checks verify                # removed guards become monitors
+scripts/run-cases.py --asan                         # the ASan oracle for every case
+scripts/run-cases.py --filter 'detection/**' --min-stops 58
+scripts/run-cases.py --filter pairs/min-bound-bug.c -v --keep
 ```
 
-- The binaries default to `build/release/bin`, or `build/dev/bin` when there is
-  no release build; `--build-dir`, `--weavec` and `--weavec-cc` override them.
-  `--legacy` uses `$WEAVEC_GOLDEN_DIR/weavec` (or `--golden-dir`) unless
-  `--weavec` is given.
+- The binaries default to `build/release/bin`, or `build/dev/bin` when there
+  is no release build; `--build-dir`, `--weavec` and `--weavec-cc` override
+  them. The ASan oracle uses `$WEAVEC_LLVM_PREFIX/bin/clang`, else `clang`
+  on the `PATH`, or `--clang`.
 - `--filter GLOB` selects cases by their path under `test/cases`
   (`'soundness/**'`, `'pairs/*-bug.c'`); a pattern without wildcards selects
   a file or a directory. It is repeatable.
-- `--jobs N` runs N cases at once (default: the CPU count). `--json OUT` writes
-  every result, the per-suite tallies and the failures. `--keep` keeps each
-  case's build directory; `--verbose` prints notes and passing cases.
-- The exit status is non-zero when any selected case fails or has a marker
-  error.
+- `--checks verify` builds with `-fweavec-checks=verify`: every guard the
+  pass removed as proven is emitted as a monitor, and a monitor that fires
+  (a `weavec.proven:` report) fails the case whatever its markers.
+- `--asan` runs the ASan oracle for every case that has a `main` (the `ASAN`
+  marker does so for one case, and also requires a report).
+- `--no-run` analyses and builds only. `--jobs N` runs N cases at once
+  (default: the CPU count). `--timeout` bounds each compile and link (120 s),
+  `--run-timeout` each run (30 s).
+- `--json OUT` writes `{"summary", "results"}`: per-suite tallies and, per
+  case, its status, failures, notes, diagnostics, runs, ASan result and the
+  commands it ran. `--verbose` prints passing cases too; `--keep` keeps the
+  build directories (under `$TMPDIR/weavec-cases.*`).
+- A case's status is `PASS`, `FAIL`, `ERROR` (a marker error), `XFAIL` or
+  `XPASS`. The exit status is 1 when any selected case fails or has a marker
+  error, or when `--min-stops` is not met, and 2 when a binary is missing or
+  no case is selected.
 
-CTest runs one test per top-level directory, `cases-<suite>`, against the build
-tree's binaries (`ctest -L cases`, or `ctest -R cases-soundness`), plus the
-runner's own tests (`cases-runner-harness`). The cache variable
-`WEAVEC_CASES_ARGS` adds runner options to every suite, such as `--no-run` for
-the ASan CI job.
+CTest runs one test per top-level directory, `cases-<suite>`, against the
+build tree's binaries (`ctest -L cases`, or `ctest -R cases-soundness`), each
+with `WEAVEC_CASES_JOBS` workers (default 2) and its JSON in the build tree,
+plus the runner's own unit tests, `cases-runner-harness`
+(`python3 scripts/test_run_cases.py`, no compiler needed). The cache variable
+`WEAVEC_CASES_ARGS` adds runner options to every suite.
 
 ## Markers
 
-Markers are `//` comments. A *file marker* is on a comment line before the
-first declaration (preprocessor lines may come first); a *line marker* is at
-the end of the code line it applies to. One comment can hold several markers
-separated by `//`:
+Markers are `//` comments. A *file marker* is on a comment-only line before
+the first declaration (preprocessor lines may come first); a *line marker*
+is at the end of the code line it applies to. One comment can hold several
+markers separated by `//`:
 
 ```c
 // RFC 0017: added regression pair.      <- prose: not a marker
@@ -69,303 +80,163 @@ separated by `//`:
 // RUN-INPUT: 1
 #include <stdlib.h>
 ...
-  p[n] = 0; // BUG: out-of-bounds // TRAP: index
+  p[n] = 0; // BUG: out-of-bounds // TRAP: heap-buffer-overflow
 ```
 
 | Marker | Kind | Meaning |
 | --- | --- | --- |
-| `CLEAN` | file | no errors, no warnings (except `ALLOW`), no traps, and no death by any other signal |
-| `ALLOW: <id> [<id> ...]` | file | warnings with these ids do not fail `CLEAN`; justify each in a comment |
-| `BUG: <id> [definite\|possible]` | line | a diagnostic with `<id>` on this line; `definite` = error, `possible` = warning, omitted = either |
-| `TRAP: <template>` | line | the program traps here with `nonnull`, `index`, `span`, `len`, `disjoint`, `assert` or `violation`, or with one of the runtime's guards, `object`, `live` or `release` (RFC 0032 §3) |
+| `BUG: <id> [definite\|possible]` | line | the analysis reports `<id>` on this line (`definite`: an error, `possible`: a warning, omitted: either); for an id a guard can catch, a stop on this line also satisfies it ([below](#how-a-case-is-judged)) |
+| `TRAP[: <kind>]` | line | some run stops on this line, with that report kind if one is given |
+| `MISS: <reason>` | line | a known miss: with `BUG` on the same line, the analysis is known not to report it; in a `DETECT` case, on a `STOP` line, the bug is known not to stop |
+| `NEUTRALISED: zero-init` | line | with `BUG` on the same line: zero-initialisation defines the bug away, so the analysis need not report it |
+| `GUARDED[: <reason>]` | line | the enforcement ledger has a `guarded` row on this line (reasons: `access`, `range`, `string`, `checked-call`, `loop-range`) |
+| `PROVEN[: <reason>]` | line | likewise `proven` (`in-bounds`, `dominated`, `merged`, `optimized`) |
+| `UNGUARDED[: <reason>]` | line | likewise `unguarded` (`unsafe`) |
+| `STOP` | line | in a `DETECT` case, a line the bug must stop on |
+| `CLEAN` | file | no diagnostic (but `ALLOW`ed warnings), no stop, no death by a signal, no ASan report |
+| `ALLOW: <id> [<id> ...]` | file | in a `CLEAN` case, warnings with these ids are accepted; justify each in a comment |
 | `RUN-INPUT: <argv...> [< <file>]` | file | run the program with these arguments (shell quoting; the input file is relative to the case); repeatable, each run independent; an empty `RUN-INPUT:` is a run without arguments |
-| `UNRESOLVED: <facet>:<reason>` | line | a ledger row here has that facet unresolved, or guarded, with that reason (§2.3): the marker pins why the facet is not proven, and a guarded facet keeps its reason |
-| `GUARDED: <facet>` | line | a ledger row here has that facet guarded (RFC 0032 §1) |
-| `TRUSTED: <facet>:<reason>` | line | likewise, trusted (§2.4) |
-| `NOT-PROVEN: <facet>` | line | a ledger row here has that facet, and none has it proven |
-| `NEUTRALISED: zero-init` | line | the defect is defined away by zero-initialisation (§11) |
-| `MISS: <reason text>` | line | a known miss: counted in the denominator, expected silent |
-| `EXPECT-LEDGER: <json-pointer> <op> <value>` | file | e.g. `/summary/unresolved <= 3`; `op` is `==` `!=` `<=` `>=` `<` `>`; the value is JSON, or a bare string |
-| `FLAGS: <weavec-cc flags>` | file | extra flags for every compile and link (repeatable) |
+| `TRAP-AT: <file>:<line>` | file | as a `TRAP` on that line of another file (relative to the case), such as a shared `Inputs/` unit or header that only some of its cases expect to stop in |
+| `EXPECT-LEDGER: <json-pointer> <op> <value>` | file | a value of the main unit's ledger entry (`units[0]`), e.g. `/summary/unguarded == 0`; `op` is `==` `!=` `<=` `>=` `<` `>`; the value is JSON, or a bare string |
+| `FLAGS: <flags>` | file | extra `weavec-cc` flags for every compile and link (repeatable; translated for the tool, [below](#how-a-case-is-judged)) |
 | `UNITS: <file.c> [<file.c> ...]` | file | further translation units linked with this one, relative to the case |
 | `ASAN` | file | also run the ASan oracle, and require it to report the bug |
-| `TOOL` | file | analyse with `weavec --ledger` (no build, no run) |
-| `DETECT: <flags>` | file | a detection case (below): `<flags>` (e.g. `-DFIX`) select the fixed twin |
-| `STOP` | line | in a `DETECT` case, a line the bug must stop at or before; `STOP // MISS: <reason>` is a known miss |
+| `TOOL` | file | analyse only: no build, no run |
+| `DETECT: <flags>` | file | a detection case ([below](#detection-cases)): `<flags>` (e.g. `-DFIX`) select the fixed twin |
 | `XFAIL: <reason>` | file | the case is expected to fail today: a failure is `XFAIL`, a pass is `XPASS` (remove the marker); neither fails the run |
 
-Facets are `spatial`, `null`, `temporal` and `assertion`; reasons are the
-spellings of RFC 0030 §2.3–2.4. `UNRESOLVED` does not tell an unresolved
-facet from a guarded one: where the difference matters, add `GUARDED`, or
-pin the count with `EXPECT-LEDGER` (`/summary/guarded == 0`), or build
-without the runtime (`FLAGS: -fno-weavec-runtime`), where nothing is
-guarded. Ids are those of v0.10.0 and RFC 0030, so a pin
-converted from the golden run may name a removed id.
+Report kinds are those of the runtime (`runtime/weavec_report.c`, RFC 0035
+§5.3): `heap-buffer-overflow`, `heap-use-after-free`,
+`stack-buffer-overflow`, `stack-use-after-scope`,
+`dynamic-stack-buffer-overflow`, `global-buffer-overflow`,
+`buffer-overflow`, `null-dereference`, `unterminated-string`,
+`index-out-of-bounds`, `invalid-release`, `invalid-access` and
+`overlapping-copy`. Ids are those of `weavec::core::diag`
+(`include/weavec/Core/Diagnostic.h`).
 
 Rules the grammar leaves implicit, as the runner enforces them:
 
 - The marker keywords are reserved at the start of a comment segment. A
   keyword used wrongly (`// CLEAN please`, `// BUG leak`), an unknown id,
-  template, facet or reason, and a near-miss keyword (`BUGS:`, `UNIT:`) are
-  *marker errors*: the case is reported as `ERROR` and fails the run. Other
-  uppercase prefixes (`NOTE:`, `RFC 0017:`) are prose.
+  kind or reason, and a near-miss keyword (`BUGS:`, `UNIT:`) are *marker
+  errors*: the case is reported as `ERROR` and fails the run. Other
+  uppercase prefixes (`NOTE:`, `RFC 0017:`, `STAGE:`) are prose.
 - A line marker on a comment-only line, or a file marker on a code line or
   after the first declaration, is a marker error.
-- A unit named by `UNITS` is not a case of its own, and neither is any file
-  under an `Inputs/` directory. A unit's own line markers apply to its lines,
-  and its own `FLAGS` apply to its compile only; any other file marker in a
-  unit is a marker error. A unit whose `FLAGS` contain `-fno-weavec` is
-  compiled as plain Clang: the link sees an input without a WeaveC record, and
-  the analysis (and `--legacy`) does not see its code. Markers are read from
-  the case file and its units only, never from headers.
-- A case needs at least one expectation (`CLEAN`, `EXPECT-LEDGER` or a line
-  marker). `CLEAN` excludes `BUG`, `MISS`, `NEUTRALISED` and `TRAP`; `ALLOW`
-  needs `CLEAN`; `ASAN` and `RUN-INPUT` need a unit that defines `main`;
-  `TOOL` excludes both.
-
-## Detection cases
-
-A `DETECT` case (RFC 0034 §9, gate F4) is judged by whether its bug
-*stops*, not by what is reported where. It has `STOP` lines (the faulty
-operation; there may be several) and none of `CLEAN`, `ALLOW`, `TOOL`,
-`BUG`, `TRAP`, `NEUTRALISED`, `EXPECT-LEDGER` or the ledger markers; a
-unit must define `main`. The runner builds it twice as the default build
-does (trap mode, the runtime on, its `FLAGS`, the link reading records
-rather than analysing again), once as is (the bug) and once with the
-`DETECT` flags added to every compile and link (the twin), runs each
-build once per `RUN-INPUT`, and rebuilds each in report mode with
-`-D_FORTIFY_SOURCE=0` (so that the first failure reported is WeaveC's,
-not the C library's) to name each failed check.
-
-- **The bug stops** when its build stops at a WeaveC error (anywhere;
-  one on no `STOP` line is noted), or when a run traps (`SIGTRAP` or
-  `SIGILL`) and the first failed check of the same input's report-mode run
-  is on a `STOP` line. A trap whose report-mode run names no check (the C
-  library's own) or names one on another line (a later read) is not a
-  stop. A bug that does not stop fails the case, unless its `STOP` line
-  carries `MISS: <reason>`: a known miss passes silently, and when it
-  stops it is printed as `now stops (remove its MISS marker)`.
-- **The twin must not stop**: no error, no clang error, no run that dies
-  by a signal or times out, and no failed check in its report-mode run.
-  This holds for known misses too.
-- **`--checks verify`** builds both in verify mode: a verify-mode trap of
-  the bug where the report-mode run names no failed check is a
-  `weavec.proven` trap (a bug ran past a proven facet), and fails the case
-  whatever its markers, as F4 asks.
-- **`--asan`** also builds the bug with ASan and counts its reports (gate
-  F6 compares the stops with them).
-- Detection cases are skipped under `--legacy`, `--no-run`,
-  `--no-emission` and `--require`, which do not build or run the default
-  build.
-
-Each suite's summary has a `detection:` line, `54/61 bugs stop (7 at
-compile time, 47 at run time); 7 known misses, 0 of them stopping now;
-61/61 fixed twins clean`, and `--min-stops N` fails the run unless at
-least N of the selected detection cases stop:
-
-```sh
-scripts/run-cases.py --filter 'detection/**' --min-stops 54   # gate F4
-scripts/run-cases.py --filter 'detection/**' --checks verify  # F4: no bug past a proven facet
-```
-
-`detection/NN_<class>_<name>/` holds one program (its `prog.c` or
-`main.c`, any further units named by `UNITS`, its headers and its
-`stdin.txt`) converted from the milestone's `detect/cases/<name>/`: its
-`/* BUG */` comments became `STOP` markers, `args` and `stdin` became
-`RUN-INPUT`, and each case is built with `FLAGS: -O2`, as the milestone
-measured. Five are known misses today (11, 24, 36, 38 and 57, each with
-its reason); `semantics/detect-probes/` holds the three probes (62 is a
-known miss).
-
-`XFAIL` marks a case written for behaviour a later stage brings (RFC 0034's
-`semantics/confirm/` cases, against a tree before §5 and §6): it runs as
-usual, and its result is reported as `XFAIL` while it fails and as `XPASS`
-once it passes, when the marker should go. A marker error is still an
-error.
+- A unit named by `UNITS` is not a case of its own. Its line markers apply
+  to its lines, and its own `FLAGS` to its compile only; any other file
+  marker in a unit is a marker error. A unit whose `FLAGS` contain
+  `-fno-weavec` is compiled as plain Clang and the analysis does not see
+  it; the case's main file cannot have `-fno-weavec`. Markers are read from
+  the case and its units only, never from headers (use `TRAP-AT`).
+- A case needs an expectation (`CLEAN`, `EXPECT-LEDGER` or a line marker).
+  `CLEAN` excludes `BUG`, `MISS`, `NEUTRALISED` and `TRAP`; `ALLOW` needs
+  `CLEAN`; `ASAN` and `RUN-INPUT` need a unit that defines `main`; `TOOL`
+  excludes both. `STOP` needs `DETECT`.
 
 ## How a case is judged
 
-1. **Build.** Each unit is compiled with
-   `weavec-cc -c -Wweavec-possible -fweavec-checks=trap|verify [-fweavec-require=...] <FLAGS> -fweavec-ledger=<tmp>/`
-   and the units are linked into `a.out` when one defines `main` (the same flags
-   at link). The runtime is on, as in any default build, so unresolved facets
-   with a guard are `guarded` and the binary carries the guards.
-   `-Wweavec-possible` keeps the possible temporal findings that such a
-   build does not report on guarded facets (RFC 0032 §9), so `BUG: …
-   possible` pins keep testing the analysis; a unit compiled with
-   `-fno-weavec` gets none of these flags. Without `main`, several analysed units are also given to
-   `weavec --whole-program --ledger=...`. `TOOL` cases run
-   `weavec --ledger=... [--whole-program] <units> -- <compiler flags>`, with the
-   weavec-cc flags translated (`-fweavec-require=` to `--require=`, `-W...weavec...`
-   before the sources, other flags after `--`). Compiles and links time out
-   after 120 s. A compiler crash, a timeout, a link error, a Clang error or an
-   error exit without a diagnostic fails the case.
-2. **Diagnostics.** `file:line:col: error|warning: ... [weavec::<id>]` lines,
-   from every compile and link, deduplicated. Every `BUG` must be *satisfied*
-   (below). A `CLEAN` case fails on any error and on any warning whose id is not
-   in `ALLOW`. Any case fails on an error on a line that has no `BUG`, `MISS` or
-   `NEUTRALISED` marker, including an error without a location.
-3. **Ledger.** `UNRESOLVED`, `TRUSTED`, `NOT-PROVEN` and `GUARDED` are checked
-   against the rows at their line: the merged facet or any of its
-   `requirements` records for `UNRESOLVED`, `TRUSTED` and `GUARDED`. An
-   `UNRESOLVED` marker matches a record whose outcome is `unresolved` or
-   `guarded` and whose reason is the marker's; a `GUARDED` marker matches a
-   record whose outcome is `guarded`, whatever its reason. The program
-   ledger is used when the link wrote one, otherwise the unit ledgers.
-   `EXPECT-LEDGER` reads the program ledger, else the main unit's. A case
-   with ledger markers fails when no ledger was written. A ledger must be a
-   `weavec-ledger` document of version 2.
-4. **Run**, when the build produced `a.out` (not with `--no-run` or
-   `--no-emission`). The trap-mode binary runs once per `RUN-INPUT` (stdin is
-   `/dev/null` unless redirected), with a 10 s timeout. Every run must end by
-   `SIGTRAP` or `SIGILL` if and only if the case has a `TRAP` marker. The units
-   are then rebuilt with `-fweavec-checks=report`, the runs repeated, and every
-   `weavec: runtime check failed: <template> at <file>:<line>:<col>` line
-   collected: each `TRAP` must be matched by line and template, and a failure on
-   any other line fails the case, unless an expected failure came before it
-   in the same run: in report mode the program goes on past a failed check,
-   so what fails afterwards is its consequence, and is only noted. When no
-   run is possible (`TOOL`,
-   `--no-run`, `--no-emission`, no `main`), a `TRAP` is matched instead by a
-   facet at its line carrying a check whose `check.template` is the template —
-   `checked`, `guarded`, or `violation` for a lowered definite violation (§3.4); when the
-   build stopped at an error, a `TRAP` on the line of a `BUG` satisfied by that
-   error is not required.
-5. **ASan oracle** (`--asan` or `ASAN`). All units are built with
-   `weavec-cc -fno-weavec -fsanitize=address -fsanitize=array-bounds -g -O0`
-   (plain Clang with `weavec.h`; `array-bounds` catches the static-array
-   indices whose neighbours ASan cannot see) and run with
-   `detect_stack_use_after_return=1`. A `CLEAN` case fails on any report. A bug
-   case with `ASAN` fails without one; with `--asan` alone a missing report is
-   only a note. The report's first frame in a case file is the bug site: if
-   the ledger has the matching facet (below) *proven* there, the case fails
-   (gate G4), unless an enclosing in-case frame's line has it non-proven,
-   because a static callee's accesses are proven by the check or violation at
-   its call (§7.5).
-6. **Verify** (`--checks verify`). The build uses `-fweavec-checks=verify`
-   (with `-g`). A run that traps in verify mode while its report-mode run
-   reports no failed check is a `weavec.proven` trap and fails the case,
-   whatever its markers — but only when a `__weavec_prv_*` check could have
-   fired. Programs trap on their own too: macOS's libmalloc traps on a real
-   double free and `_FORTIFY_SOURCE` on an overflow, both with `SIGTRAP`. Two
-   facts rule that in: the ledger's `summary.verifyChecks`, which is 0 when
-   the build planned no check of a proven facet, and whether the report-mode
-   run, which has no such check, trapped the same way. Either one makes it the
-   program's own trap, which step 4 already reports as a note. When the
-   report-mode run does report a failed check, `--lldb` asks `lldb` for the
-   trap's category (`weavec.proven` or `weavec`); without it such a trap is
-   taken as the unproven check's. Verify mode also guards proven temporal
-   facets, and proven spatial facets that have no static check, against the
-   runtime (RFC 0032 §6). One exception follows from that (RFC 0032
-   *Implementation amendments*, 4): a proof may rest on an assumption about
-   the function's entry state that a case's own `main` breaks on purpose.
-   When a ledger marker (`UNRESOLVED`, `TRUSTED`, `NOT-PROVEN` or `GUARDED`)
-   on one of the case's `BUG` lines matched, so that the case accepts a
-   ledger row as the report of its bug, the case's `weavec.proven` traps are
-   noted as the consequence of that row instead of failing. In every other
-   case a `weavec.proven` trap fails the run.
+1. **Analysis**, when the case has a `BUG`, is `CLEAN` or is a `TOOL` case:
+   `weavec [<own options>] [--whole-program] <units> -- -I<resources/include> <compiler flags>`,
+   with `--whole-program` when it has several analysed units. `FLAGS` are
+   split: `-fno-weavec-zero-init` becomes `--no-zero-init`,
+   `-fweavec-budget=N` becomes `--budget=N`, the `-W…weavec…` flags are the
+   tool's own, other `-fweavec`/`-fno-weavec` flags are dropped, and the
+   rest go after `--`. A crash (an exit other than 0 or 1) or a timeout
+   fails the case.
+2. **Build** (not for `TOOL`): each unit with
+   `weavec-cc [-fweavec-checks=verify] -I<resources/include> <FLAGS> <unit FLAGS> -c`,
+   adding `-fweavec-ledger=<dir>/` when a ledger marker or `EXPECT-LEDGER`
+   reads the ledger, then a link with the case's `FLAGS` when a unit defines
+   `main`. A failed compile or link fails the case.
+3. **Ledger.** The main unit's `<object>.ledger.json` must be a
+   `weavec-ledger` of version 3. `GUARDED`, `PROVEN` and `UNGUARDED` each
+   need a row at their file and line with that outcome (and that reason, if
+   given); `EXPECT-LEDGER` compares the value its pointer names.
+4. **Runs**, when the build produced an executable (not with `--no-run`):
+   once per `RUN-INPUT`, or once without arguments; stdin is `/dev/null`
+   unless redirected. A run's *stop* is its first `weavec: <kind> at
+   <file>:<line>:<col>: ...` report when it died by `SIGTRAP` or `SIGILL`
+   (a report `at <unknown>` has no location); the allocator's
+   `weavec: invalid release of ...` (an `invalid-release` with no location);
+   or `SIGSEGV`/`SIGBUS` (a `null-dereference` with no location, the null
+   page). Every stop must match a `TRAP` (its kind, if it names one, and its
+   line, unless the stop has no location) or be on a `BUG` line (a stop with
+   no location is accepted in any case with a `BUG`); every `TRAP` must be
+   matched by some run. A timeout, a death by another signal or a trap with
+   no report, and a report that did not stop the run fail the case; in a
+   `CLEAN` case so does any report or signal. A `weavec.proven:` report
+   (verify mode) fails the case.
+5. **Diagnostics.** Each `BUG` is satisfied by a diagnostic with its id on
+   its line and of its severity. For an id a guard can catch
+   (`out-of-bounds`, `null-dereference`, `use-after-free`, `double-free`,
+   `invalid-release`, `use-of-uninitialized`, `mismatched-release`,
+   `lifetime-too-short`, `use-after-move`, `allocation-failure`,
+   `contradicted-assumption`, `unsafe-operation`), a stop located on its
+   line, or a stop with no location whose kind is the id, satisfies it too,
+   and so does the absence of any run (`TOOL`, no `main`, `--no-run`). A
+   `MISS` or `NEUTRALISED` on the line excuses it. Beyond the `BUG`, `MISS`
+   and `NEUTRALISED` lines, a `CLEAN` case fails on any diagnostic but an
+   `ALLOW`ed warning, and any other case on an error.
+6. **ASan oracle** (`--asan` or `ASAN`), for a case with `main`:
+   `clang -fsanitize=address,array-bounds -fno-sanitize-recover=array-bounds -g -O0 -I<resources/include>`
+   over all units with their flags minus WeaveC's own, run with
+   `detect_leaks=0:detect_stack_use_after_return=1`. A case without a bug
+   line (`BUG`, `MISS`, `NEUTRALISED`, `TRAP`) fails on any report; a case
+   with `ASAN` and a bug line fails without one.
 
-A `BUG` marker is satisfied by, in order:
+An `XFAIL` case is judged as usual; its failure is reported as `XFAIL` and
+its pass as `XPASS`. A marker error is still `ERROR`.
 
-- a diagnostic with its id on its line and the right severity class;
-- a matched `TRAP` on the same line whose template enforces the id's facet
-  (null: `nonnull`; spatial: `index`, `span`, `len`, `disjoint`, `object`,
-  `release`; temporal: `live`, `object`, `release`, since every guard fails
-  on a dead object; assertion: `assert`) or is `violation` (a lowered
-  violation, any facet);
-- with `--no-emission`, `TOOL` or `--no-run`, a matching facet on the line that
-  carries a check (gate G3's rule): `checked` for null and spatial ids,
-  `guarded` for spatial and temporal ids, or
-  `violation` for a definite violation §3.4 lowered and still guarded;
-- a matched `UNRESOLVED`, `TRUSTED` or `NOT-PROVEN` marker on the same line:
-  the author accepts a ledger row as the report of this bug;
-- a `NEUTRALISED` marker on the line, when zero-initialisation is in effect
-  (not with `--no-emission`, `--legacy`, `-fno-weavec-zero-init` or
-  `-fweavec-checks=none`); otherwise it counts as `MISS`;
-- a `MISS` marker on the line (expected silent; a report is noted as an
-  improvement, not a failure).
+## Detection cases
 
-The *matching facet* of an id (§17.3): temporal for `use-after-free`,
-`double-free`, `use-after-move`, `conflicting-borrow`, `lifetime-too-short`,
-`mismatched-release` and `annotation-mismatch`; null for `null-dereference` and
-`use-of-uninitialized`; spatial for `out-of-bounds` and `invalid-release`;
-assertion for `contradicted-assumption`.
+A `DETECT` case is judged by whether its bug *stops*, not by what is
+reported where, and is not analysed. It has one or more `STOP` lines (the
+faulty operation) and none of `CLEAN`, `ALLOW`, `TOOL`, `BUG`, `TRAP`,
+`TRAP-AT`, `GUARDED`, `PROVEN`, `UNGUARDED`, `NEUTRALISED` or
+`EXPECT-LEDGER`; a unit must define `main`. The runner builds it twice, as
+is (the bug) and with the `DETECT` flags added to every compile and link
+(the twin), and runs each build once per `RUN-INPUT`.
 
-### Classes and tallies
+- **The bug stops** when some run's stop (as in step 4) is on a `STOP` line
+  or has no location. A first stop on another line is not a stop. A bug
+  that does not stop fails the case, unless its `STOP` line carries
+  `MISS: <reason>`: a known miss passes with a note, and when it stops the
+  note says to remove the marker.
+- **The twin must not stop**: no timeout, no signal, no report.
+- A `weavec.proven:` report of the bug fails the case. `--asan` also runs
+  the bug under ASan and counts its reports.
 
-Every bug case (a case with `BUG`, `MISS` or `NEUTRALISED` markers) gets the
-strongest class observed at any of its bug lines: `error` or `warning` (a
-diagnostic with the id, whatever the marker's severity), `trap` (a failed check
-at the line whose template enforces the id's facet, from the report-mode run),
-`row` (the matching facet is not proven there, or a ledger marker matched),
-`neutralised`, `miss`, or `silent`. Gate G4 counts these. For each suite the
-runner prints and writes the cases passed, the bug cases passed, the pins (`BUG`
-markers) satisfied and those reported at any severity (a diagnostic with the id,
-a matched trap, or under `--no-emission` a checked facet: gate G3's count), the
-class tallies, the clean cases passed and, for gate G5, the clean cases that
-built without an error.
+The summary has a line `detection: N of M bugs stopped (ASan: K)`, and
+`--min-stops N` fails the run unless at least N of the selected detection
+cases stop.
 
-## Legacy mode and the golden comparison
-
-`--legacy` applies the markers with v0.10.0 semantics, using the golden `weavec`
-tool as the retired `scripts/evaluate.py` ran it:
-
-```sh
-weavec [--whole-program] <main> [<units>] -- -ferror-limit=0 -fno-color-diagnostics <flags>
-```
-
-`--whole-program` is used when the case has several analysed units (units with
-`-fno-weavec` are left out). `FLAGS` are translated for the tool:
-`-fweavec-strict`, `-fweavec-exclusive-borrows`, `-fweavec-report-unannotated`,
-`-fweavec-analyze-headers`, `-fweavec-dump-analysis`, `-fweavec-checked*` and
-`-fweavec-analysis-*` become the tool's options, `-W...weavec...` flags go before
-the sources, flags that v0.10.0 does not have (`-fweavec-checks=`,
-`-fweavec-require=`, `-fweavec-ledger=`, zero-init, budget, summary) are dropped
-with a note, and the rest go after `--`. There is no ledger, no run and no ASan:
-`TRAP` and the ledger markers are ignored, `NEUTRALISED` counts as `MISS`, and a
-null or spatial `BUG` needs a diagnostic. No `-I` is added for `weavec.h`:
-each binary reads the header it was built with (`WEAVEC_RESOURCE_DIR`, or the
-checkout it was built from), so golden binaries built as `GOLDEN.md` describes
-keep reading v0.10.0's header while this branch changes its own.
-
-Legacy mode also classifies every bug case as v0.10.0 was measured, from the
-diagnostics located in the case's own units:
-
-| Class | Rule, applied in this order |
-| --- | --- |
-| `CAUGHT` | some `BUG` marker's id is reported on its line (any severity) |
-| `MISLABEL` | some other diagnostic has an id other than `leak`, `analysis-incomplete`, `annotation-required`, `checking-incomplete` and `checking-failed` (including the matching id on another line) |
-| `SIGNAL` | some diagnostic is `analysis-incomplete`, `annotation-required`, `checking-incomplete` or `checking-failed` |
-| `LEAK-ONLY` | the only diagnostics are `leak` |
-| `SILENT` | no diagnostic |
-
-On `soundness/` this reproduces the measured 36 CAUGHT, 42 SILENT, 4 SIGNAL,
-2 MISLABEL and 1 LEAK-ONLY, probe by probe, and 24 of the 28 twins clean.
-Legacy runs of `soundness/` and `repros/` fail by design: they pin what v0.10.0
-misses or gets wrong.
-
-`--compare-golden` (the S1 gate) runs the binary under test and the golden
-`weavec` in that legacy mode on every selected case and fails on any difference
-between their sorted `(file, line, column, severity, id, message)` diagnostic
-lists, printing the first differences (`- golden:` and `+ tested:` lines).
-Marker results are computed and tallied but do not decide the exit status. A
-case whose flags translate to a tool option that the binary under test rejects
-(a flag RFC 0030 removed) is skipped and reported as excluded; such cases belong
-in the *Excluded* section of `KNOWN-DIFFERENCES.md`.
+`detection/NN_<class>_<name>/` holds one program (its `prog.c` or `main.c`,
+any further units named by `UNITS`, its headers and its inputs), built with
+`FLAGS: -O2`. `detection-blind/` holds single-file programs.
 
 ## Adding a case
 
 1. Put it in the directory of its feature (`semantics/<feature>/` for new
-   behaviour), named for what it tests; there is no manifest to update.
-2. Start with a comment saying what the case is about and where it comes from,
-   then the file markers, then the code.
-3. Pin every expected finding with `BUG` on the line that must be reported, and
-   every expected trap with `TRAP`; mark a correct program `CLEAN`. Where a
-   guard is the expected enforcement, pin `GUARDED: <facet>` on the line in
-   the bug case and in its correct twin, so the twin shows that the guard
-   is there and passes. Give a
-   null or spatial bug that becomes a check a `main` that reaches it (with
-   `RUN-INPUT` if it needs arguments), so the executable oracle observes the
-   trap, and add `ASAN` when ASan can confirm the bug.
-4. Run `scripts/run-cases.py --filter '<path>' --asan -v` and, for a change of
-   behaviour since v0.10.0, `--legacy` to see what the golden build said.
+   behaviour), named for what it tests (`*_bug.c` and `*_ok.c` for a pair);
+   there is no manifest to update.
+2. Start with a comment saying what the case is about and where it comes
+   from, then the file markers, then the code.
+3. Mark a correct program `CLEAN`. In a bug program, pin what the analysis
+   should report with `BUG` on that line (with `MISS: <reason>` when it does
+   not, today), and where the program must stop with `TRAP: <kind>`. Give it
+   a `main` that reaches the bug (with `RUN-INPUT` if it needs arguments),
+   and add `ASAN` when ASan can confirm the bug. Pin enforcement itself with
+   `GUARDED`, `UNGUARDED` or `EXPECT-LEDGER` where that is the point.
+4. Run `scripts/run-cases.py --filter '<path>' -v`, then again with
+   `--checks verify` and `--asan`.
+
+## History
+
+The tree began as RFC 0030's case suite (§17), when cases also pinned
+analysis-ledger facets (`UNRESOLVED`, `TRUSTED`, `NOT-PROVEN`), check
+templates in `TRAP`, require levels and a comparison against the v0.10.0
+golden binaries (`GOLDEN.md`, `KNOWN-DIFFERENCES.md`). RFC 0035 deleted the
+analysis ledger, the checks and the require levels; the cases were
+converted to the grammar above, and the comments of older cases may still
+cite the RFC they were written for.

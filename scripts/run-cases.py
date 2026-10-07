@@ -1,39 +1,35 @@
 #!/usr/bin/env python3
-"""Run the test/cases suites (RFC 0030 section 17).
+"""Run the test/cases suites (RFC 0035 section 11).
 
 Each case is a C file under test/cases/<suite>/ whose expectations are
 written as line-comment markers (test/cases/README.md has the grammar). For
 every selected case the runner
 
-1. builds it with `weavec-cc -c ... -fweavec-ledger=<tmp>/` and links the
-   units when one of them defines `main` (TOOL cases use `weavec --ledger`);
-2. checks the WeaveC diagnostics against the BUG, CLEAN and ALLOW markers;
-3. checks the unit and program ledgers against the UNRESOLVED, TRUSTED,
-   NOT-PROVEN and EXPECT-LEDGER markers;
-4. runs the trap-mode executable once per RUN-INPUT, rebuilds it with
-   `-fweavec-checks=report` and attributes every failed check to a line and
-   template, which the TRAP markers must match;
-5. runs the ASan oracle (`--asan` or an ASAN marker);
-6. with `--checks verify`, fails any case that hits a `weavec.proven` trap.
+1. analyses it with the `weavec` tool (`--whole-program` when it has
+   several units) and checks the diagnostics against the BUG, CLEAN and
+   ALLOW markers;
+2. builds it with `weavec-cc` and its FLAGS (trap mode, or verify mode under
+   `--checks verify`), writing the enforcement ledger when a marker reads
+   it, and checks the ledger against the GUARDED, PROVEN, UNGUARDED and
+   EXPECT-LEDGER markers;
+3. runs the executable once per RUN-INPUT and attributes every stop to a
+   line and a kind: a `weavec: <kind> at <file>:<line>:<col>` report, an
+   invalid release the allocator stopped (no location), or a fault (no
+   location, a null dereference). Every stop must be one a TRAP marker
+   expects, and every TRAP marker must be hit by some run;
+4. runs the ASan oracle (`--asan` or an ASAN marker);
+5. with `--checks verify`, fails any case that reports `weavec.proven`.
 
-A DETECT case (RFC 0034 section 9, gate F4) is judged instead by whether its
-bug stops at or before a STOP line, at compile time or by a trap, and whether
-its fixed twin builds and runs clean; `--min-stops N` gates the count. An
-XFAIL case is expected to fail today (XFAIL), and is reported when it passes
-(XPASS); neither fails the run.
-
-`--legacy` applies the same markers with v0.10.0 semantics: diagnostics
-only, from the `weavec` tool of WEAVEC_GOLDEN_DIR, and additionally
-classifies every bug case as CAUGHT, SILENT, SIGNAL, MISLABEL or LEAK-ONLY.
-`--compare-golden` runs the binaries under test and the golden binaries in
-that legacy mode and fails on any difference in their sorted diagnostics
-(the S1 gate).
+A DETECT case is judged instead by whether its bug stops (its first report
+is on a STOP line, or it faults) and whether its fixed twin runs clean;
+`--min-stops N` gates the count. An XFAIL case is expected to fail today
+(XFAIL), and is reported when it passes (XPASS); neither fails the run.
 
 Examples:
 
   scripts/run-cases.py --filter 'soundness/**' --asan
-  WEAVEC_GOLDEN_DIR=/opt/weavec-0.10.0 scripts/run-cases.py --legacy
-  scripts/run-cases.py --compare-golden --weavec build/dev/bin/weavec
+  scripts/run-cases.py --checks verify
+  scripts/run-cases.py --filter detection --min-stops 58
 """
 
 from __future__ import annotations
@@ -62,88 +58,57 @@ DEFAULT_CASES = ROOT / "test" / "cases"
 RESOURCE_INCLUDE = ROOT / "resources" / "include"
 
 # ---------------------------------------------------------------------------
-# Vocabulary (RFC 0030 sections 2, 10.2, 17.3 and the Diagnostics section)
+# Vocabulary (RFC 0035 sections 5.3 and 9, and the Diagnostics section)
 # ---------------------------------------------------------------------------
 
-# The `version` of the ledger JSON this runner reads (2 since RFC 0032).
-LEDGER_VERSION = 2
-FACETS = ("spatial", "null", "temporal", "assertion")
-TEMPLATES = ("nonnull", "index", "span", "len", "disjoint", "assert", "violation",
-             # RFC 0032 section 3: the guards.
-             "object", "live", "release")
-UNRESOLVED_REASONS = (
-    "unknown-extent", "unknown-index", "inexpressible", "may-released", "may-moved",
-    "may-alias-released", "may-invalid-release", "may-mismatched-release", "may-dangle",
-    "may-conflict", "unknown-callee", "callback", "setjmp", "budget", "unanalysed",
-    "raw-cast", "dangling-escape", "second-owner", "no-zero-init", "unconfirmed", "lowered",
+# The `version` of the enforcement ledger this runner reads.
+LEDGER_VERSION = 3
+# Run-time report kinds (runtime/weavec_report.c, section 5.3).
+KINDS = (
+    "heap-buffer-overflow", "heap-use-after-free", "stack-buffer-overflow",
+    "stack-use-after-scope", "dynamic-stack-buffer-overflow", "global-buffer-overflow",
+    "buffer-overflow", "null-dereference", "unterminated-string", "index-out-of-bounds",
+    "invalid-release", "invalid-access", "overlapping-copy",
 )
-TRUST_REASONS = (
-    "unsafe", "system-api", "library-spec", "extern-contract", "caller-contract",
-    "external-unit", "concurrency",
-)
-OUTCOMES = ("proven", "checked", "guarded", "violation", "unresolved", "trusted")
-# The ids of v0.10.0 and of RFC 0030; a pin converted from the golden run may
-# name an id that RFC 0030 removes.
+# The diagnostic ids of the analysis (include/weavec/Core/Diagnostic.h).
 IDS = frozenset((
     "use-after-free", "double-free", "use-after-move", "conflicting-borrow",
     "lifetime-too-short", "unsafe-operation", "annotation-mismatch", "invalid-annotation",
     "leak", "mismatched-release", "null-dereference", "use-of-uninitialized",
     "invalid-release", "out-of-bounds", "invalid-integer-operation",
-    "contradicted-assumption", "allocation-failure", "unresolved-operation",
-    "unchecked-operation", "unanalyzed-input",
-    "analysis-incomplete", "annotation-required", "checking-incomplete", "checking-failed",
+    "contradicted-assumption", "allocation-failure",
 ))
-# Section 17.3: the facet a BUG id is matched against (gate G4).
-FACET_OF_ID = {
-    "use-after-free": "temporal", "double-free": "temporal", "use-after-move": "temporal",
-    "conflicting-borrow": "temporal", "lifetime-too-short": "temporal",
-    "mismatched-release": "temporal", "annotation-mismatch": "temporal",
-    "null-dereference": "null", "use-of-uninitialized": "null",
-    "out-of-bounds": "spatial", "invalid-release": "spatial",
-    "contradicted-assumption": "assertion",
+LEDGER_REASONS = {
+    "GUARDED": ("access", "range", "string", "checked-call", "loop-range"),
+    "PROVEN": ("in-bounds", "dominated", "merged", "optimized"),
+    "UNGUARDED": ("unsafe",),
 }
-# The trap templates that enforce each facet. `violation` is the lowered
-# violation of any facet (section 3.4).
-TEMPLATES_OF_FACET = {
-    "null": frozenset(("nonnull", "violation")),
-    # RFC 0032: `object` and `release` guard the spatial facet; all three
-    # guards fail on a dead object, so they enforce the temporal facet too.
-    "spatial": frozenset(("index", "span", "len", "disjoint", "violation", "object", "release")),
-    "assertion": frozenset(("assert", "violation")),
-    "temporal": frozenset(("violation", "live", "object", "release")),
-}
-# Facets whose BUG markers a TRAP on the same line satisfies (section 17.3
-# names null and spatial; assertion is added because WEAVEC_ASSUME checks
-# trap with `assert`; temporal since RFC 0032's guards).
-TRAPPABLE_FACETS = frozenset(("null", "spatial", "assertion", "temporal"))
-CLASSES = ("error", "warning", "trap", "row", "neutralised", "miss", "silent")
-LEGACY_CLASSES = ("CAUGHT", "SILENT", "SIGNAL", "MISLABEL", "LEAK-ONLY")
-LEGACY_SIGNAL_IDS = frozenset(("analysis-incomplete", "annotation-required",
-                               "checking-incomplete", "checking-failed"))
 
 FILE_MARKERS = frozenset(("CLEAN", "ALLOW", "RUN-INPUT", "EXPECT-LEDGER", "FLAGS", "UNITS",
-                          "ASAN", "TOOL",
-                          # RFC 0034 section 9: detection cases, and expected failures.
-                          "DETECT", "XFAIL"))
-LINE_MARKERS = frozenset(("BUG", "TRAP", "UNRESOLVED", "TRUSTED", "NOT-PROVEN", "GUARDED",
-                          "NEUTRALISED", "MISS", "STOP"))
+                          "ASAN", "TOOL", "DETECT", "XFAIL", "TRAP-AT"))
+LINE_MARKERS = frozenset(("BUG", "TRAP", "GUARDED", "PROVEN", "UNGUARDED", "NEUTRALISED",
+                          "MISS", "STOP"))
 MARKERS = FILE_MARKERS | LINE_MARKERS
 NO_ARGUMENT_MARKERS = frozenset(("CLEAN", "ASAN", "TOOL", "STOP"))
+# A TRAP and the ledger markers may name a kind or a reason, or not.
+OPTIONAL_ARGUMENT_MARKERS = frozenset(("TRAP", "GUARDED", "PROVEN", "UNGUARDED"))
 # Markers a detection case (DETECT) cannot have: it is judged by whether its
 # bug stops, not by what is reported where.
-NOT_IN_DETECTION = frozenset(("CLEAN", "ALLOW", "TOOL", "BUG", "TRAP", "UNRESOLVED", "TRUSTED",
-                              "NOT-PROVEN", "GUARDED", "NEUTRALISED", "EXPECT-LEDGER"))
+NOT_IN_DETECTION = frozenset(("CLEAN", "ALLOW", "TOOL", "BUG", "TRAP", "GUARDED", "PROVEN",
+                              "UNGUARDED", "NEUTRALISED", "EXPECT-LEDGER"))
+LEDGER_MARKERS = frozenset(("GUARDED", "PROVEN", "UNGUARDED"))
 EXPECTATION_MARKERS = frozenset(("CLEAN", "EXPECT-LEDGER")) | LINE_MARKERS
 COMPARISONS = ("==", "!=", "<=", ">=", "<", ">")
 
 COMPILE_TIMEOUT = 120.0
 # A case's program does its work in milliseconds; this bounds a hang, and is
-# generous because CI shares a small runner between suites, where a process can
-# wait a long time to be scheduled before it runs at all.
+# generous because CI shares a small runner between suites.
 RUN_TIMEOUT = 30.0
 ASAN_TIMEOUT = 60.0
 TRAP_SIGNALS = frozenset(s for s in (getattr(signal, "SIGTRAP", None),
                                      getattr(signal, "SIGILL", None)) if s is not None)
+FAULT_SIGNALS = frozenset(s for s in (getattr(signal, "SIGSEGV", None),
+                                      getattr(signal, "SIGBUS", None)) if s is not None)
 
 # ---------------------------------------------------------------------------
 # Marker parsing
@@ -249,6 +214,8 @@ def parse_segment(segment: str) -> tuple[str, str] | None:
         if rest.strip():
             raise ValueError(f"marker '{keyword}' takes no argument")
         return keyword, ""
+    if keyword in OPTIONAL_ARGUMENT_MARKERS and not rest.strip():
+        return keyword, ""
     if not rest.startswith(":"):
         raise ValueError(f"marker '{keyword}' needs ':' and an argument")
     argument = rest[1:].strip()
@@ -289,22 +256,13 @@ def parse_argument(kind: str, argument: str, directory: Path) -> Any:
             raise ValueError(f"unknown diagnostic id '{parts[0]}'")
         return (parts[0], parts[1] if len(parts) == 2 else None)
     if kind == "TRAP":
-        if argument not in TEMPLATES:
-            raise ValueError(f"unknown trap template '{argument}' (one of {', '.join(TEMPLATES)})")
-        return argument
-    if kind in ("UNRESOLVED", "TRUSTED"):
-        facet, _, reason = argument.partition(":")
-        facet, reason = facet.strip(), reason.strip()
-        if facet not in FACETS:
-            raise ValueError(f"unknown facet '{facet}'")
-        reasons = UNRESOLVED_REASONS if kind == "UNRESOLVED" else TRUST_REASONS
-        if reason not in reasons:
-            raise ValueError(f"unknown {kind.lower()} reason '{reason}'")
-        return (facet, reason)
-    if kind in ("NOT-PROVEN", "GUARDED"):
-        if argument not in FACETS:
-            raise ValueError(f"unknown facet '{argument}'")
-        return argument
+        if argument and argument not in KINDS:
+            raise ValueError(f"unknown report kind '{argument}' (one of {', '.join(KINDS)})")
+        return argument or None
+    if kind in LEDGER_MARKERS:
+        if argument and argument not in LEDGER_REASONS[kind]:
+            raise ValueError(f"unknown {kind.lower()} reason '{argument}'")
+        return argument or None
     if kind == "NEUTRALISED":
         if argument != "zero-init":
             raise ValueError("NEUTRALISED takes 'zero-init'")
@@ -348,6 +306,11 @@ def parse_argument(kind: str, argument: str, directory: Path) -> Any:
             raise ValueError(f"FLAGS: {error}") from None
     if kind == "UNITS":
         return tuple(argument.split())
+    if kind == "TRAP-AT":
+        unit, _, line = argument.rpartition(":")
+        if not unit or not line.isdigit():
+            raise ValueError("TRAP-AT takes '<unit>:<line>'")
+        return (unit, int(line))
     if kind == "DETECT":
         try:
             flags = tuple(shlex.split(argument))
@@ -445,7 +408,7 @@ class Case:
         return self.line_markers("TRAP")
 
     def bug_lines(self) -> set[tuple[Path, int]]:
-        return {(m.file, m.line) for m in self.markers if m.kind in ("BUG", "MISS", "NEUTRALISED")}
+        return {(m.file, m.line) for m in self.markers if m.kind in ("BUG", "MISS", "NEUTRALISED", "TRAP")}
 
     @property
     def is_bug_case(self) -> bool:
@@ -484,6 +447,14 @@ def load_case(path: Path, cases_root: Path, parsed: dict[Path, SourceMarkers] | 
     units = [path]
     unit_flags: dict[Path, tuple[str, ...]] = {}
     markers = list(main.line_markers)
+    # TRAP-AT: a stop at a line of another unit (a helper several cases
+    # share), as a TRAP marker on that line would be for this case alone.
+    for marker in file_markers["TRAP-AT"]:
+        unit = (path.parent / marker.value[0]).resolve()
+        if not unit.is_file():
+            errors.append(f"{path.name}:{marker.line}: TRAP-AT file '{marker.value[0]}' does not exist")
+        else:
+            markers.append(Marker("TRAP", unit, marker.value[1], None))
     for marker in file_markers["UNITS"]:
         for name in marker.value:
             unit = (path.parent / name).resolve()
@@ -588,100 +559,51 @@ def select(cases: list[Case], filters: list[str]) -> list[Case]:
 # ---------------------------------------------------------------------------
 
 _W_FLAG = re.compile(r"^-W(?:no-)?(?:error=)?weavec(?:-[a-z0-9-]+)?$")
-_LEGACY_TOOL_SWITCHES = {
-    "-fweavec-strict": "--strict-externs",
-    "-fweavec-exclusive-borrows": "--exclusive-borrows",
-    "-fweavec-report-unannotated": "--report-unannotated",
-    "-fweavec-analyze-headers": "--analyze-headers",
-    "-fweavec-dump-analysis": "--dump-analysis",
-    "-fweavec-checked": "--checked",
-}
-_LEGACY_TOOL_VALUES = {
-    "-fweavec-checked-function=": "--checked-function=",
-    "-fweavec-checked-report-format=": "--checked-report-format=",
-    "-fweavec-checked-report=": "--checked-report=",
-    "-fweavec-analysis-cache=": "--analysis-cache=",
-    "-fweavec-analysis-stats=": "--analysis-stats=",
-}
-# RFC 0030 flags that v0.10.0 does not have (section 16).
-_RFC0030_ONLY = ("-fweavec-checks=", "-fweavec-require=", "-fweavec-ledger=",
-                 "-fweavec-ledger-format=", "-fweavec-budget=")
-_RFC0030_SWITCHES = ("-fweavec-zero-init", "-fno-weavec-zero-init", "-fweavec-summary",
-                     "-fno-weavec-summary", "-fweavec-print-prelude")
 
 
-@dataclasses.dataclass
-class ToolArguments:
-    options: list[str]      # before the sources
-    compiler: list[str]     # after `--`
-    dropped: list[str]
-
-
-def tool_arguments(flags: tuple[str, ...] | list[str], legacy: bool) -> ToolArguments:
-    """Translate weavec-cc FLAGS for the `weavec` tool (section 16)."""
-    result = ToolArguments([], [], [])
+def tool_flags(flags: tuple[str, ...] | list[str]) -> tuple[list[str], list[str]]:
+    """Split a case's FLAGS into the `weavec` tool's own options and the compiler flags."""
+    own: list[str] = []
+    compiler: list[str] = []
     for flag in flags:
-        if _W_FLAG.match(flag):
-            result.options.append(flag)
-        elif flag in _LEGACY_TOOL_SWITCHES:
-            result.options.append(_LEGACY_TOOL_SWITCHES[flag])
-        elif any(flag.startswith(p) for p in _LEGACY_TOOL_VALUES):
-            prefix = next(p for p in _LEGACY_TOOL_VALUES if flag.startswith(p))
-            result.options.append(_LEGACY_TOOL_VALUES[prefix] + flag[len(prefix):])
-        elif not legacy and flag.startswith("-fweavec-require="):
-            result.options.append("--require=" + flag.split("=", 1)[1])
-        elif not legacy and flag.startswith("-fweavec-budget="):
-            result.options.append("--budget=" + flag.split("=", 1)[1])
-        elif not legacy and flag == "-fno-weavec-zero-init":
-            result.options.append("--no-zero-init")
-        elif flag.startswith(_RFC0030_ONLY) or flag in _RFC0030_SWITCHES:
-            result.dropped.append(flag)
-        elif flag.startswith(("-fweavec", "-fno-weavec")):
-            # -fweavec, -f[no-]weavec-link and the negative forms of the
-            # switches above are defaults or meaningless for the tool.
-            result.dropped.append(flag)
+        if flag.startswith("-fweavec-budget="):
+            own.append("--budget=" + flag.split("=", 1)[1])
+        elif flag == "-fno-weavec-zero-init":
+            own.append("--no-zero-init")
+        elif _W_FLAG.match(flag):
+            own.append(flag)
+        elif flag.startswith("-fweavec") or flag.startswith("-fno-weavec"):
+            continue
         else:
-            result.compiler.append(flag)
-    return result
+            compiler.append(flag)
+    return own, compiler
 
 
 def plain_flags(flags: tuple[str, ...] | list[str]) -> list[str]:
-    """FLAGS without WeaveC options, for the plain-Clang ASan build."""
-    return [f for f in flags if not f.startswith(("-fweavec", "-fno-weavec")) and not _W_FLAG.match(f)]
+    """The flags another compiler accepts: WeaveC's own dropped."""
+    return [f for f in flags if not (f.startswith("-fweavec") or f.startswith("-fno-weavec")
+                                     or _W_FLAG.match(f))]
 
 
 # ---------------------------------------------------------------------------
-# Output parsing
+# Evidence
 # ---------------------------------------------------------------------------
 
-_DIAGNOSTIC = re.compile(
-    r"^(?P<file>.*?):(?P<line>\d+):(?P<column>\d+): (?P<severity>error|warning): "
-    r"(?P<message>.*) \[weavec::(?P<id>[a-z0-9-]+)\]$")
-_LOCATIONLESS = re.compile(
-    r"^(?:(?P<file>[^:]*): )?(?P<severity>error|warning): (?P<message>.*) \[weavec::(?P<id>[a-z0-9-]+)\]$")
-_CLANG_ERROR = re.compile(r"(?:^|: )(?:fatal )?error: ")
-_LINK_ERROR = re.compile(r"Undefined symbols|undefined reference to|linker command failed|"
-                         r"^(?:ld|ld\.lld|/usr/bin/ld|collect2): (?:fatal )?error")
-_REPORT = re.compile(r"^weavec: runtime check failed: (?P<template>[a-z]+) at "
-                     r"(?P<file>.*):(?P<line>\d+):(?P<column>\d+)\s*$")
 
-
-@dataclasses.dataclass(frozen=True, order=True)
+@dataclasses.dataclass(frozen=True)
 class Diagnostic:
-    file: str        # resolved path, or "" when the diagnostic has no location
+    file: str
     line: int
     column: int
-    severity: str
+    severity: str  # "error" or "warning"
     id: str
     message: str
 
-    def key(self) -> tuple:
-        return (relative(self.file) if self.file else "", self.line, self.column, self.severity,
-                self.id, self.message)
-
     def text(self) -> str:
-        where = f"{relative(self.file)}:{self.line}:{self.column}" if self.file else "<no location>"
-        return f"{where}: {self.severity}: {self.message} [weavec::{self.id}]"
+        return f"{relative(self.file)}:{self.line}:{self.column}: {self.severity}: {self.message} [weavec::{self.id}]"
+
+
+_DIAGNOSTIC = re.compile(r"^(.+?):(\d+):(\d+): (error|warning): (.*) \[weavec::([a-z0-9-]+)\]$")
 
 
 def resolve(file: str, cwd: Path | None) -> str:
@@ -694,228 +616,105 @@ def resolve(file: str, cwd: Path | None) -> str:
         return str(path)
 
 
-def parse_diagnostics(output: str, cwd: Path | None = None) -> tuple[list[Diagnostic], list[str], list[str]]:
-    """Return (weavec diagnostics, Clang errors, linker errors) found in tool output."""
-    diagnostics: list[Diagnostic] = []
-    clang_errors: list[str] = []
-    link_errors: list[str] = []
-    for raw in output.splitlines():
-        line = raw.rstrip("\r")
-        if match := _DIAGNOSTIC.match(line):
-            diagnostics.append(Diagnostic(resolve(match["file"], cwd), int(match["line"]),
-                                          int(match["column"]), match["severity"], match["id"],
-                                          match["message"]))
-        elif match := _LOCATIONLESS.match(line):
-            diagnostics.append(Diagnostic("", 0, 0, match["severity"], match["id"], match["message"]))
-        elif _LINK_ERROR.search(line):
-            link_errors.append(line)
-        elif _CLANG_ERROR.search(line):
-            clang_errors.append(line)
-    return diagnostics, clang_errors, link_errors
-
-
-@dataclasses.dataclass(frozen=True)
-class CheckReport:
-    template: str
-    file: str
-    line: int
-    column: int
-
-
-def parse_reports(output: str, cwd: Path | None = None) -> list[CheckReport]:
-    reports = []
+def parse_diagnostics(output: str, cwd: Path | None = None) -> list[Diagnostic]:
+    result: list[Diagnostic] = []
     for line in output.splitlines():
-        if match := _REPORT.match(line.rstrip("\r")):
-            reports.append(CheckReport(match["template"], resolve(match["file"], cwd),
-                                       int(match["line"]), int(match["column"])))
-    return reports
-
-
-_SANITIZER_ERROR = re.compile(r"ERROR: AddressSanitizer: (?P<kind>[^:]+?)(?= on | at |:|$)|"
-                              r"(?P<file>[^\s:]+):(?P<line>\d+):(?P<column>\d+): runtime error: (?P<what>.*)")
-_FRAME = re.compile(r"#\d+ 0x[0-9a-fA-F]+ in (?P<function>\S+) (?:\()?(?P<file>[^\s():]+):(?P<line>\d+)")
+        match = _DIAGNOSTIC.match(line.strip())
+        if match:
+            file, number, column, severity, message, ident = match.groups()
+            result.append(Diagnostic(resolve(file, cwd), int(number), int(column), severity,
+                                     ident, message))
+    return result
 
 
 @dataclasses.dataclass(frozen=True)
-class SanitizerReport:
+class Report:
+    """A run-time stop: a report with a location, or one without."""
     kind: str
-    frames: tuple[tuple[str, int, str], ...]  # (file, line, function), innermost first
-
-    def in_case(self, files: list[Path]) -> list[tuple[str, int, str]]:
-        """Frames inside the case's units, matched by path or, as symbolizers print, by basename."""
-        resolved = {str(f.resolve()) for f in files}
-        names = {f.name for f in files}
-        return [frame for frame in self.frames
-                if frame[0] in resolved or Path(frame[0]).name in names]
-
-
-def parse_sanitizer(output: str) -> SanitizerReport | None:
-    """The first ASan or UBSan report in a run's stderr, with its stack."""
-    lines = output.splitlines()
-    for index, line in enumerate(lines):
-        match = _SANITIZER_ERROR.search(line)
-        if not match:
-            continue
-        frames = []
-        if match["file"]:
-            kind = "runtime error: " + match["what"]
-            frames.append((match["file"], int(match["line"]), ""))
-        else:
-            kind = match["kind"]
-        for follow in lines[index + 1:]:
-            if _SANITIZER_ERROR.search(follow) or follow.startswith("SUMMARY:"):
-                break
-            if frame := _FRAME.search(follow):
-                frames.append((frame["file"], int(frame["line"]), frame["function"]))
-        return SanitizerReport(kind, tuple(frames))
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Ledgers (section 12.1)
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass(frozen=True)
-class Row:
-    file: str
+    file: str | None
     line: int
     column: int
-    kind: str
-    text: str
-    facets: dict  # facet -> the JSON object of section 12.1
-    boundary: str = ""  # "call" or "exit" for Call sites
+    proven: bool = False
+
+    def text(self) -> str:
+        where = f"{relative(self.file)}:{self.line}:{self.column}" if self.file else "<no location>"
+        return f"{'weavec.proven: ' if self.proven else ''}{self.kind} at {where}"
 
 
-def ledger_rows(ledger: dict) -> list[Row]:
-    root = Path(ledger.get("root") or "/")
-    rows = []
-
-    def where(name: str | None) -> str:
-        if not name:
-            return ""
-        path = Path(name)
-        return resolve(str(path if path.is_absolute() else root / path), None)
-
-    for unit in ledger.get("units") or []:
-        unit_file = where(unit.get("source"))
-        for function in unit.get("functions") or []:
-            function_file = where(function.get("file")) or unit_file
-            for site in function.get("sites") or []:
-                rows.append(Row(where(site.get("file")) or function_file, int(site.get("line", 0)),
-                                int(site.get("column", 0)), str(site.get("kind", "")),
-                                str(site.get("text", "")), dict(site.get("facets") or {}),
-                                str(site.get("boundary") or "")))
-    return rows
+# A site without a location reports `at <unknown>: ` (runtime/weavec_report.c).
+_REPORT = re.compile(r"^weavec: (weavec\.proven: )?([a-z-]+) at (?:(.+?):(\d+):(\d+)|<unknown>): ")
+_FATAL = re.compile(r"^weavec: (invalid release) of 0x[0-9a-f]+: (.*)$")
 
 
-def facet_records(row: Row, facet: str) -> list[dict]:
-    """The merged facet and each of its requirement records."""
-    entry = row.facets.get(facet)
-    if not isinstance(entry, dict):
-        return []
-    return [entry] + [r for r in entry.get("requirements") or [] if isinstance(r, dict)]
-
-
-def json_pointer(document: Any, pointer: str) -> Any:
-    """RFC 6901; raises KeyError when the pointer does not resolve."""
-    if pointer == "":
-        return document
-    value = document
-    for token in pointer.split("/")[1:]:
-        token = token.replace("~1", "/").replace("~0", "~")
-        if isinstance(value, dict) and token in value:
-            value = value[token]
-        elif isinstance(value, list) and token.isdigit() and int(token) < len(value):
-            value = value[int(token)]
-        else:
-            raise KeyError(pointer)
-    return value
-
-
-def compare(actual: Any, op: str, expected: Any) -> bool:
-    if op in ("==", "!="):
-        return (actual == expected) == (op == "==")
-    if isinstance(actual, bool) or isinstance(expected, bool) or \
-            not isinstance(actual, (int, float)) or not isinstance(expected, (int, float)):
-        raise TypeError(f"'{op}' compares numbers, got {json.dumps(actual)} and {json.dumps(expected)}")
-    return {"<=": actual <= expected, ">=": actual >= expected, "<": actual < expected,
-            ">": actual > expected}[op]
-
-
-# ---------------------------------------------------------------------------
-# Evidence and evaluation
-# ---------------------------------------------------------------------------
+def parse_reports(output: str, cwd: Path | None = None) -> list[Report]:
+    reports: list[Report] = []
+    for line in output.splitlines():
+        match = _REPORT.match(line)
+        if match:
+            proven, kind, file, number, column = match.groups()
+            if file is None:
+                reports.append(Report(kind, None, 0, 0, bool(proven)))
+            else:
+                reports.append(Report(kind, resolve(file, cwd), int(number), int(column),
+                                      bool(proven)))
+            continue
+        if _FATAL.match(line):
+            reports.append(Report("invalid-release", None, 0, 0))
+    return reports
 
 
 @dataclasses.dataclass
 class Run:
     args: tuple[str, ...]
-    returncode: int | None
-    timed_out: bool = False
-    stderr: str = ""
+    code: int | None
+    timed_out: bool
+    reports: list[Report]
 
     @property
     def signal(self) -> int | None:
-        return -self.returncode if self.returncode is not None and self.returncode < 0 else None
+        return -self.code if self.code is not None and self.code < 0 else None
 
     @property
     def trapped(self) -> bool:
         return self.signal in TRAP_SIGNALS
+
+    @property
+    def faulted(self) -> bool:
+        return self.signal in FAULT_SIGNALS
 
     def describe(self) -> str:
         if self.timed_out:
             return "timed out"
         if self.signal is not None:
             try:
-                return f"killed by {signal.Signals(self.signal).name}"
+                name = signal.Signals(self.signal).name
             except ValueError:
-                return f"killed by signal {self.signal}"
-        return f"exit {self.returncode}"
+                name = f"signal {self.signal}"
+            return f"killed by {name}"
+        return f"exit {self.code}"
+
+    @property
+    def stop(self) -> Report | None:
+        """What stopped the run: its first report, or a fault."""
+        if self.reports and (self.trapped or self.reports[0].kind == "invalid-release"):
+            return self.reports[0]
+        if self.faulted:
+            return Report("null-dereference", None, 0, 0)
+        return None
 
 
 @dataclasses.dataclass
 class Evidence:
-    mode: str  # "legacy", "trap", "verify"
-    diagnostics: list[Diagnostic] = dataclasses.field(default_factory=list)
-    raw_diagnostics: list[Diagnostic] = dataclasses.field(default_factory=list)  # as printed
-    clang_errors: list[str] = dataclasses.field(default_factory=list)
-    tool_failures: list[str] = dataclasses.field(default_factory=list)
-    ledgers: list[dict] = dataclasses.field(default_factory=list)
-    ledger_expected: bool = False
-    built: bool = False  # an executable was produced
-    ran: bool = False
-    runs: list[Run] = dataclasses.field(default_factory=list)
-    reports: list[CheckReport] = dataclasses.field(default_factory=list)
-    # The reports of each report-mode run, in the order they were printed.
-    report_runs: list[list[CheckReport]] = dataclasses.field(default_factory=list)
-    proven_traps: list[str] = dataclasses.field(default_factory=list)
-    asan_ran: bool = False
-    asan: SanitizerReport | None = None
-    asan_runs: list[Run] = dataclasses.field(default_factory=list)
-    ledger_proxy: bool = False  # TRAP markers are judged from the ledger (no runs possible)
-    no_emission: bool = False
-    # Section 3.4: the executable was rebuilt with -Wno-error=weavec because only the
-    # case's own definite errors stopped the build; a lowered violation must still trap.
-    lowered_ran: bool = False
-    # Per run: whether the report-mode run of the same input reported a failed
-    # WeaveC check. A trap without one is the program's own (macOS's malloc
-    # traps on a real double free), not a WeaveC check.
-    run_reported: list[bool] = dataclasses.field(default_factory=list)
-    zero_init: bool = False     # zero-initialisation is in effect in the executable build
-    notes: list[str] = dataclasses.field(default_factory=list)
     commands: list[str] = dataclasses.field(default_factory=list)
+    failures: list[str] = dataclasses.field(default_factory=list)
+    notes: list[str] = dataclasses.field(default_factory=list)
+    diagnostics: list[Diagnostic] = dataclasses.field(default_factory=list)
+    built: bool = False
+    runs: list[Run] = dataclasses.field(default_factory=list)
+    ledger: dict | None = None
+    asan_ran: bool = False
+    asan_report: str | None = None
     seconds: float = 0.0
-
-    def program_ledger(self) -> dict | None:
-        programs = [l for l in self.ledgers if l.get("scope") == "program"]
-        return programs[-1] if programs else None
-
-    def rows(self) -> list[Row]:
-        program = self.program_ledger()
-        if program is not None:
-            return ledger_rows(program)
-        return [row for ledger in self.ledgers for row in ledger_rows(ledger)]
 
 
 def located(file: Path | str, line: int) -> tuple[str, int]:
@@ -926,401 +725,45 @@ def loc(marker: Marker) -> str:
     return f"{relative(marker.file)}:{marker.line}"
 
 
-def bug_class_and_satisfaction(case: Case, bug: Marker, ev: Evidence,
-                               index: dict) -> tuple[str, str | None, bool]:
-    """Return (class, what satisfies the marker or None, reported at any severity).
-
-    The class is the strongest observed evidence at the line: a diagnostic
-    with the id (error or warning), a runtime check failure whose template
-    enforces the id's facet (trap), a non-proven matching facet or a matched
-    UNRESOLVED/TRUSTED/NOT-PROVEN marker (row), then neutralised, miss and
-    silent. Satisfaction follows section 17.3: the diagnostic with the right
-    severity class; a matched TRAP marker on the line (null, spatial and
-    assertion ids, or any facet for `violation`); under --no-emission, TOOL
-    or --no-run, a checked matching facet (null and spatial); a matched
-    ledger marker on the line; NEUTRALISED; MISS.
-    """
-    identifier, severity = bug.value
-    facet = FACET_OF_ID.get(identifier)
-    at = located(bug.file, bug.line)
-    legacy = ev.mode == "legacy"
-    same = [d for d in index["diagnostics"].get(at, []) if d.id == identifier]
-    wanted = [d for d in same if severity is None or (d.severity == "error") == (severity == "definite")]
-    reported = bool(same)
-    satisfied = "diagnostic" if wanted else None
-    klass = "error" if any(d.severity == "error" for d in same) else "warning" if same else None
-    if not legacy:
-        if facet and any(r.template in TEMPLATES_OF_FACET[facet] for r in index["reports"].get(at, [])):
-            reported = True
-            klass = klass or "trap"
-        if satisfied is None and facet:
-            for trap in index["traps"].get(at, []):
-                enforces = trap.value == "violation" or (
-                    facet in TRAPPABLE_FACETS and trap.value in TEMPLATES_OF_FACET[facet])
-                if enforces and index["trap_ok"].get(id(trap)):
-                    satisfied, reported = "trap", True
-        rows = [r for r in index["rows"].get(at, []) if facet and facet in r.facets]
-        outcomes = {rec.get("outcome") for r in rows for rec in facet_records(r, facet)[:1]}
-        if satisfied is None and (ev.no_emission or ev.ledger_proxy) and (
-                (facet in ("null", "spatial") and "checked" in outcomes)
-                or (facet in ("spatial", "temporal") and "guarded" in outcomes)):
-            satisfied, reported = "checked", True
-        ledger_match = any(index["ledger_ok"].get(id(m)) for m in index["ledger_markers"].get(at, []))
-        if outcomes - {"proven", None} or ledger_match:
-            klass = klass or "row"
-        if satisfied is None and ledger_match:
-            satisfied = "row"
-    if index["neutralised"].get(at):
-        effective = not legacy and not ev.no_emission and ev.zero_init
-        klass = klass or ("neutralised" if effective else "miss")
-        satisfied = satisfied or ("neutralised" if effective else "miss")
-    if index["misses"].get(at):
-        klass = klass or "miss"
-        satisfied = satisfied or "miss"
-    return klass or "silent", satisfied, reported
-
-
-def legacy_class(case: Case, diagnostics: list[Diagnostic]) -> str:
-    """The v0.10.0 probe classification (scratchpad table.txt, 'ord=' column)."""
-    files = {str(u.resolve()) for u in case.units}
-    own = [d for d in diagnostics if d.file in files]
-    for bug in case.bugs:
-        at = located(bug.file, bug.line)
-        if any((d.file, d.line) == at and d.id == bug.value[0] for d in own):
-            return "CAUGHT"
-    ids = {d.id for d in own}
-    if ids - LEGACY_SIGNAL_IDS - {"leak"}:
-        return "MISLABEL"
-    if ids & LEGACY_SIGNAL_IDS:
-        return "SIGNAL"
-    if ids:
-        return "LEAK-ONLY"
-    return "SILENT"
-
-
-def evaluate(case: Case, ev: Evidence) -> dict:
-    """Judge one case's evidence against its markers (pure; see section 17.4)."""
-    failures: list[str] = []
-    notes = list(ev.notes)
-    legacy = ev.mode == "legacy"
-    failures.extend(ev.tool_failures)
-    failures.extend(f"compiler error: {e}" for e in ev.clang_errors)
-
-    index: dict[str, Any] = {k: collections.defaultdict(list) for k in
-                             ("diagnostics", "reports", "rows", "traps", "ledger_markers")}
-    index["neutralised"] = collections.defaultdict(list)
-    index["misses"] = collections.defaultdict(list)
-    index["trap_ok"] = {}
-    index["ledger_ok"] = {}
-    for d in ev.diagnostics:
-        if d.file:
-            index["diagnostics"][(d.file, d.line)].append(d)
-    for r in ev.reports:
-        index["reports"][(r.file, r.line)].append(r)
-    rows = ev.rows() if not legacy else []
-    for row in rows:
-        index["rows"][(row.file, row.line)].append(row)
-    for marker in case.markers:
-        at = located(marker.file, marker.line)
-        if marker.kind == "TRAP":
-            index["traps"][at].append(marker)
-        elif marker.kind in ("UNRESOLVED", "TRUSTED", "NOT-PROVEN", "GUARDED"):
-            index["ledger_markers"][at].append(marker)
-        elif marker.kind == "NEUTRALISED":
-            index["neutralised"][at].append(marker)
-        elif marker.kind == "MISS":
-            index["misses"][at].append(marker)
-    ledger_available = bool(ev.ledgers) and not legacy
-    if ev.ledger_expected and not ev.ledgers and not legacy:
-        needs_ledger = any(m.kind in ("UNRESOLVED", "TRUSTED", "NOT-PROVEN", "GUARDED")
-                           for m in case.markers) \
-            or case.expectations
-        (failures if needs_ledger else notes).append("the build wrote no ledger")
-
-    # Step 3: ledger markers.
-    for marker in case.markers:
-        if marker.kind not in ("UNRESOLVED", "TRUSTED", "NOT-PROVEN", "GUARDED") or legacy:
-            continue
-        at = located(marker.file, marker.line)
-        here = index["rows"].get(at, [])
-        if marker.kind == "NOT-PROVEN":
-            facet = marker.value
-            # A function exit on the line (`return p[0];`) is a boundary (section 9.4), not
-            # the operation the marker is about, unless it is the only row there.
-            accesses = [r for r in here if r.boundary != "exit" and facet_records(r, facet)]
-            outcomes = [rec.get("outcome") for r in (accesses or here) for rec in facet_records(r, facet)[:1]]
-            ok = bool(outcomes) and "proven" not in outcomes
-            if not ok and ledger_available:
-                failures.append(f"{loc(marker)}: NOT-PROVEN {facet}: " + (
-                    "the facet is proven" if outcomes else f"no ledger row with a {facet} facet here"))
-        elif marker.kind == "GUARDED":
-            # RFC 0032 section 1: the facet is guarded at run time.
-            facet = marker.value
-            found = [rec.get("outcome") for r in here for rec in facet_records(r, facet)]
-            ok = "guarded" in found
-            if not ok and ledger_available:
-                failures.append(f"{loc(marker)}: GUARDED {facet}: " + (
-                    f"the facet is {', '.join(sorted(set(map(str, found))))}" if found
-                    else f"no ledger row with a {facet} facet here"))
+def json_pointer(document: Any, pointer: str) -> Any:
+    node = document
+    for part in pointer.split("/")[1:]:
+        part = part.replace("~1", "/").replace("~0", "~")
+        if isinstance(node, list):
+            node = node[int(part)]
         else:
-            facet, reason = marker.value
-            # UNRESOLVED pins the reason a facet is not proven; with the
-            # runtime such a facet is guarded and keeps the reason (RFC 0032).
-            outcomes = ("unresolved", "guarded") if marker.kind == "UNRESOLVED" else ("trusted",)
-            ok = any(rec.get("outcome") in outcomes and rec.get("reason") == reason
-                     for r in here for rec in facet_records(r, facet))
-            if not ok and ledger_available:
-                found = sorted({f"{rec.get('outcome')}({rec.get('reason')})" if rec.get("reason")
-                                else str(rec.get("outcome")) for r in here for rec in facet_records(r, facet)})
-                failures.append(f"{loc(marker)}: {marker.kind} {facet}:{reason} not in the ledger"
-                                + (f" (found {', '.join(found)})" if found else " (no row here)"))
-        index["ledger_ok"][id(marker)] = ok
-    if not legacy and case.expectations:
-        target = ev.program_ledger()
-        if target is None:
-            main = str(case.path)
-            target = next((l for l in ev.ledgers if any(
-                resolve(str(Path(l.get("root") or "/") / (u.get("source") or "")), None) == main
-                for u in l.get("units") or [])), ev.ledgers[0] if ev.ledgers else None)
-        for expectation in case.expectations:
-            if target is None:
-                break
-            try:
-                actual = json_pointer(target, expectation.pointer)
-                if not compare(actual, expectation.op, expectation.value):
-                    failures.append(f"EXPECT-LEDGER {expectation.text}: actual {json.dumps(actual)}")
-            except KeyError:
-                failures.append(f"EXPECT-LEDGER {expectation.text}: pointer not found")
-            except TypeError as error:
-                failures.append(f"EXPECT-LEDGER {expectation.text}: {error}")
-
-    # Step 4: runs and TRAP markers.
-    trap_expected = bool(case.traps)
-    for number, run in enumerate(ev.runs):
-        what = f"run {shlex.join(run.args) or '(no arguments)'}"
-        native = run.trapped and number < len(ev.run_reported) and not ev.run_reported[number]
-        if run.timed_out:
-            failures.append(f"{what}: timed out")
-        elif native and not trap_expected:
-            ev.notes.append(f"{what}: {run.describe()} without a failed WeaveC check (the "
-                            f"program's own trap)")
-        elif run.trapped != trap_expected and not legacy:
-            failures.append(f"{what}: {run.describe()}, but the case has "
-                            + ("TRAP markers" if trap_expected else "no TRAP marker"))
-        elif case.clean and run.signal is not None and not run.trapped:
-            failures.append(f"{what}: {run.describe()}")
-    for trap in case.traps:
-        if legacy:
-            continue
-        at = located(trap.file, trap.line)
-        if ev.ran:
-            # Section 3.4: a lowered violation traps with its facet's template, or with
-            # `violation` when that check has no expression.
-            templates = (trap.value, "violation") if ev.lowered_ran else (trap.value,)
-            ok = any(r.template in templates for r in index["reports"].get(at, []))
-            if not ok:
-                failures.append(f"{loc(trap)}: TRAP {trap.value} not reported by the report-mode run"
-                                + (" of the build lowered with -Wno-error=weavec (section 3.4)"
-                                   if ev.lowered_ran else ""))
-        else:
-            # Section 3.4: a definite violation at the line is an error; lowered, it traps.
-            stopped = any(d.severity == "error" and d.id == bug.value[0] for bug in case.bugs
-                          if located(bug.file, bug.line) == at for d in index["diagnostics"].get(at, []))
-            if ev.ledger_proxy and ledger_available:
-                # A guarded site carries a check. Section 3.4 lowers a definite
-                # violation to a warning but still guards it, and its row keeps
-                # the outcome `violation`, so the check, not the outcome, is
-                # what stands in for the run here.
-                ok = stopped or any(
-                    rec.get("outcome") in ("checked", "guarded", "violation")
-                    and (rec.get("check") or {}).get("template") == trap.value
-                    for r in index["rows"].get(at, []) for facet in r.facets
-                    for rec in facet_records(r, facet))
-                if not ok:
-                    failures.append(f"{loc(trap)}: TRAP {trap.value}: no facet at that line carries "
-                                    f"a check with that template in the ledger")
-            else:
-                ok = False
-                if not stopped:
-                    failures.append(f"{loc(trap)}: TRAP {trap.value} not observed: no executable "
-                                    f"was built")
-        index["trap_ok"][id(trap)] = ok
-    if ev.ran:
-        def expected(report: CheckReport) -> bool:
-            lowered = ev.lowered_ran and report.template == "violation"
-            return any(t.value == report.template or lowered
-                       for t in index["traps"].get((report.file, report.line), []))
-        # In report mode the program goes on past a failed check, with no
-        # guarantee: what fails after an expected failure of the same run is
-        # its consequence (the trap-mode build stopped at the first), and only
-        # a failure before any expected one is unexpected.
-        unexpected: set[CheckReport] = set()
-        for reports in ev.report_runs:
-            matched = False
-            for report in reports:
-                if expected(report):
-                    matched = True
-                elif not matched:
-                    unexpected.add(report)
-        for report in ev.reports:
-            if expected(report):
-                continue
-            where = f"{report.template} at {relative(report.file)}:{report.line}:{report.column}"
-            if report in unexpected or not ev.report_runs:
-                failures.append(f"unexpected runtime check failure: {where}")
-            else:
-                notes.append(f"runtime check failure after an expected one: {where}")
-    # RFC 0032 section 6: verify mode guards proven facets too. A proof that
-    # rests on an entry assumption (A1, A3) fails when a caller breaks the
-    # assumption, and the ledger then blames the row at that caller (the blame
-    # property, case 3). A case whose bug the author accepted as such a row
-    # (a matched ledger marker on a BUG line) therefore expects the trap;
-    # anywhere else a weavec.proven trap is a false proof.
-    bug_lines = {located(bug.file, bug.line) for bug in case.bugs}
-    row_reported = any(index["ledger_ok"].get(id(marker))
-                       for at in bug_lines for marker in index["ledger_markers"].get(at, []))
-    if row_reported:
-        notes.extend(f"{trap} (the consequence of a row the case accepts)" for trap in ev.proven_traps)
-    else:
-        failures.extend(ev.proven_traps)
-
-    # Step 2: diagnostics and BUG markers (after the traps they may rely on).
-    bug_results = []
-    for bug in case.bugs:
-        klass, satisfied, reported = bug_class_and_satisfaction(case, bug, ev, index)
-        identifier, severity = bug.value
-        bug_results.append({"file": relative(bug.file), "line": bug.line, "id": identifier,
-                            "severity": severity, "class": klass, "satisfiedBy": satisfied,
-                            "reported": reported})
-        if satisfied is None:
-            here = index["diagnostics"].get(located(bug.file, bug.line), [])
-            found = ", ".join(sorted({f"{d.id} ({d.severity})" for d in here})) or "nothing"
-            failures.append(f"{loc(bug)}: BUG {identifier}{' ' + severity if severity else ''} "
-                            f"not satisfied (found {found})")
-        elif reported and index["misses"].get(located(bug.file, bug.line)):
-            notes.append(f"{loc(bug)}: known miss is now reported ({klass})")
-    for kind in ("MISS", "NEUTRALISED"):
-        for marker in case.line_markers(kind):
-            at = located(marker.file, marker.line)
-            if any(located(b.file, b.line) == at for b in case.bugs):
-                continue
-            here = index["diagnostics"].get(at, [])
-            klass = ("error" if any(d.severity == "error" for d in here) else "warning" if here else
-                     "neutralised" if kind == "NEUTRALISED" and not legacy and not ev.no_emission
-                     and ev.zero_init else "miss")
-            bug_results.append({"file": relative(marker.file), "line": marker.line, "id": None,
-                                "severity": None, "class": klass, "satisfiedBy": klass,
-                                "reported": bool(here)})
-    bug_lines = {located(file, line) for file, line in case.bug_lines()}
-    for d in ev.diagnostics:
-        if d.severity == "error" and (d.file, d.line) not in bug_lines:
-            failures.append(f"unexpected error: {d.text()}")
-        elif case.clean and d.severity == "warning" and d.id not in case.allow:
-            failures.append(f"unexpected warning: {d.text()}")
-
-    # Step 5: the ASan oracle.
-    asan = None
-    if ev.asan_ran:
-        report = ev.asan
-        asan = {"report": report.kind if report else None}
-        if report is not None:
-            frames = report.in_case(case.units)
-            asan["site"] = f"{relative(frames[0][0]) if Path(frames[0][0]).is_absolute() else frames[0][0]}:" \
-                           f"{frames[0][1]}" if frames else None
-            if case.clean:
-                failures.append(f"ASan reported {report.kind}"
-                                + (f" at {asan['site']}" if frames else "") + " in a CLEAN case")
-            elif not frames:
-                notes.append(f"ASan reported {report.kind} outside the case's files")
-            elif ledger_available and case.bugs:
-                problem = proven_bug_site(case, frames, index)
-                if problem:
-                    failures.append(problem)
-        elif case.is_bug_case and case.asan and any(b.value[0] in FACET_OF_ID for b in case.bugs):
-            failures.append("the ASan oracle did not report the bug (probe not validated)")
-        elif case.is_bug_case:
-            notes.append("the ASan oracle reported nothing")
-
-    classes = [b["class"] for b in bug_results]
-    klass = min(classes, key=CLASSES.index) if classes else None
-    result = {
-        "case": case.rel, "suite": case.suite,
-        "status": "error" if case.errors else "fail" if failures else "pass",
-        "failures": list(case.errors) + failures, "notes": notes,
-        "kind": "bug" if case.is_bug_case else "clean" if case.clean else "other",
-        "class": klass, "bugs": bug_results,
-        "diagnostics": [d.text() for d in sorted(ev.diagnostics)],
-        "runs": [{"args": list(r.args), "result": r.describe()} for r in ev.runs],
-        "reports": [f"{r.template} at {relative(r.file)}:{r.line}:{r.column}" for r in ev.reports],
-        "asan": asan, "commands": ev.commands, "seconds": round(ev.seconds, 3),
-    }
-    if legacy:
-        result["legacyClass"] = legacy_class(case, ev.diagnostics) if case.is_bug_case else None
-    if case.clean:
-        result["cleanBuild"] = not any(d.severity == "error" for d in ev.diagnostics) and not ev.clang_errors
-    return result
+            node = node[part]
+    return node
 
 
-def proven_bug_site(case: Case, frames: list[tuple[str, int, str]], index: dict) -> str | None:
-    """Gate G4: the matching facet at the ASan-reported bug site must not be proven.
-
-    A proof inside a callee can rest on a requirement checked at its call
-    (section 7.5), so a proven site passes when an enclosing in-case frame's
-    call has the matching facet non-proven.
-    """
-    def rows_at(frame: tuple[str, int, str]) -> list[Row]:
-        file, line, _ = frame
-        candidates = [f for f in case.units if str(f.resolve()) == file or f.name == Path(file).name]
-        return [r for f in candidates for r in index["rows"].get(located(f, line), [])]
-
-    def facet_for(frame: tuple[str, int, str]) -> str | None:
-        file, line, _ = frame
-        for bug in case.bugs:
-            if bug.line == line and (str(bug.file.resolve()) == file or bug.file.name == Path(file).name):
-                return FACET_OF_ID.get(bug.value[0])
-        return next((FACET_OF_ID[b.value[0]] for b in case.bugs if b.value[0] in FACET_OF_ID), None)
-
-    facet = facet_for(frames[0])
-    if facet is None:
-        return None
-    outcomes = [rec.get("outcome") for r in rows_at(frames[0]) for rec in facet_records(r, facet)[:1]]
-    if "proven" not in outcomes or any(o != "proven" for o in outcomes):
-        return None
-    for frame in frames[1:]:
-        outer = [rec.get("outcome") for r in rows_at(frame) for rec in facet_records(r, facet)[:1]]
-        if any(o not in ("proven", None) for o in outer):
-            return None
-    file, line, _ = frames[0]
-    return f"G4: the {facet} facet is proven at the ASan-reported bug site {Path(file).name}:{line}"
+def compare(actual: Any, op: str, expected: Any) -> bool:
+    try:
+        return {"==": actual == expected, "!=": actual != expected, "<=": actual <= expected,
+                ">=": actual >= expected, "<": actual < expected, ">": actual > expected}[op]
+    except TypeError:
+        return False
 
 
 # ---------------------------------------------------------------------------
-# Execution
+# Processes
 # ---------------------------------------------------------------------------
 
 
 @dataclasses.dataclass
 class Config:
-    weavec: Path | None
-    weavec_cc: Path | None
-    legacy: bool = False
-    checks: str = "trap"
-    require: str | None = None
-    asan: bool = False
-    no_emission: bool = False
-    no_run: bool = False
-    compile_timeout: float = COMPILE_TIMEOUT
-    run_timeout: float = RUN_TIMEOUT
-    keep: bool = False
-    lldb: bool = False
-    work: Path | None = None
+    weavec: Path
+    weavec_cc: Path
+    clang: str
+    checks: str
+    asan: bool
+    no_run: bool
+    keep: bool
+    compile_timeout: float
+    run_timeout: float
+    scratch: Path
 
 
 def no_core_dump() -> None:
-    """In the child: a trap is expected here, so it leaves no core dump. A
-    system that hands every crash to a reporter (apport on Ubuntu) handles
-    them one at a time, and parallel trapping runs then wait on each other
-    past their timeouts."""
     try:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except (ValueError, OSError):
@@ -1330,914 +773,527 @@ def no_core_dump() -> None:
 def run_process(command: list[str], cwd: Path, timeout: float, stdin: Path | None = None,
                 env: dict | None = None) -> tuple[int | None, str, str, bool]:
     try:
-        with open(stdin, "rb") if stdin else open(os.devnull, "rb") as handle:
-            completed = subprocess.run(command, cwd=cwd, stdin=handle, capture_output=True,
-                                       timeout=timeout, env=env, check=False,
-                                       preexec_fn=no_core_dump)
-        return (completed.returncode, completed.stdout.decode(errors="replace"),
-                completed.stderr.decode(errors="replace"), False)
+        with open(stdin, "rb") if stdin else open(os.devnull, "rb") as input_stream:
+            done = subprocess.run(command, cwd=cwd, stdin=input_stream, capture_output=True,
+                                  timeout=timeout, env=env, preexec_fn=no_core_dump)
+        return (done.returncode, done.stdout.decode(errors="replace"),
+                done.stderr.decode(errors="replace"), False)
     except subprocess.TimeoutExpired as expired:
-        out = (expired.stdout or b"").decode(errors="replace")
-        err = (expired.stderr or b"").decode(errors="replace")
+        out = expired.stdout.decode(errors="replace") if expired.stdout else ""
+        err = expired.stderr.decode(errors="replace") if expired.stderr else ""
         return None, out, err, True
-    except OSError as error:
-        return 127, "", str(error), False
 
 
 def run_environment(**extra: str) -> dict:
     env = dict(os.environ)
-    env.pop("WEAVEC_RT_ABORT", None)
+    for name in ("WEAVEC_RT_ABORT", "WEAVEC_RT_REPORT_LOG", "WEAVEC_RT_QUARANTINE"):
+        env.pop(name, None)
     env.update(extra)
     return env
-
-
-def sanitizer_symbolizer() -> dict:
-    """ASAN_SYMBOLIZER_PATH for a sanitizer run, when llvm-symbolizer is at hand.
-
-    Without it the sanitizer runtime on Darwin runs `atos` against the dying
-    process, which needs the system's permission to inspect another process
-    and waits for it when a debugger prompt is pending. The caller's own
-    setting wins.
-    """
-    if os.environ.get("ASAN_SYMBOLIZER_PATH"):
-        return {}
-    candidates = []
-    if os.environ.get("WEAVEC_LLVM_PREFIX"):
-        candidates.append(Path(os.environ["WEAVEC_LLVM_PREFIX"]) / "bin" / "llvm-symbolizer")
-    found = shutil.which("llvm-symbolizer")
-    if found:
-        candidates.append(Path(found))
-    for brew in ("/opt/homebrew/opt/llvm/bin/llvm-symbolizer", "/usr/local/opt/llvm/bin/llvm-symbolizer"):
-        candidates.append(Path(brew))
-    for candidate in candidates:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return {"ASAN_SYMBOLIZER_PATH": str(candidate)}
-    return {}
-
-
-def legacy_command(weavec: Path, case: Case) -> list[str]:
-    """v0.10.0 semantics: `weavec [--whole-program] <files> -- <flags>`, as scripts/evaluate.py ran them.
-
-    No -I for weavec.h: each binary reads the header it was built with
-    (WEAVEC_RESOURCE_DIR, or its own checkout; see test/cases/GOLDEN.md).
-    """
-    translated = tool_arguments(case.flags, legacy=True)
-    units = case.analysed_units()
-    command = [str(weavec), *translated.options]
-    if len(units) > 1:
-        command.append("--whole-program")
-    command.extend(str(u) for u in units)
-    command.extend(["--", "-ferror-limit=0", "-fno-color-diagnostics", *translated.compiler])
-    return command
-
-
-def record_tool(ev: Evidence, command: list[str], cwd: Path, timeout: float,
-                what: str) -> tuple[int | None, str]:
-    ev.commands.append(shlex.join(command))
-    code, out, err, timed_out = run_process(command, cwd, timeout)
-    output = out + ("\n" if out and not out.endswith("\n") else "") + err
-    diagnostics, clang_errors, link_errors = parse_diagnostics(output, cwd)
-    ev.diagnostics.extend(diagnostics)
-    ev.clang_errors.extend(clang_errors)
-    if timed_out:
-        ev.tool_failures.append(f"{what} timed out after {timeout:g} s")
-    elif code is None or code < 0 or code > 1:
-        ev.tool_failures.append(f"{what} failed with status {code}: {first_line(err)}")
-    elif code == 1 and not clang_errors and not link_errors and \
-            not any(d.severity == "error" for d in diagnostics):
-        ev.tool_failures.append(f"{what} failed without a diagnostic: {first_line(err)}")
-    if link_errors:
-        ev.tool_failures.append(f"{what}: {link_errors[0]}")
-    return code, output
 
 
 def first_line(text: str) -> str:
     for line in text.splitlines():
         if line.strip():
-            return line.strip()[:200]
-    return ""
+            return line.strip()[:300]
+    return "(no output)"
 
 
-def run_legacy(case: Case, weavec: Path, cfg: Config) -> Evidence:
-    ev = Evidence("legacy")
-    start = time.perf_counter()
-    dropped = tool_arguments(case.flags, legacy=True).dropped
-    if dropped:
-        ev.notes.append("legacy mode ignores " + " ".join(dropped))
-    record_tool(ev, legacy_command(weavec, case), case.path.parent, cfg.compile_timeout, "weavec")
-    ev.raw_diagnostics = list(ev.diagnostics)
-    ev.diagnostics = sorted(set(ev.diagnostics))
-    ev.seconds = time.perf_counter() - start
-    return ev
+# ---------------------------------------------------------------------------
+# The steps
+# ---------------------------------------------------------------------------
 
 
-def unit_objects(case: Case, directory: Path) -> dict[Path, Path]:
-    objects: dict[Path, Path] = {}
-    used: set[str] = set()
-    for unit in case.units:
-        name = unit.stem
-        while name + ".o" in used:
-            name += "_"
-        used.add(name + ".o")
-        objects[unit] = directory / (name + ".o")
-    return objects
-
-
-def cc_flags(case: Case, cfg: Config, checks: str | None, unit: Path | None) -> list[str]:
-    """weavec-cc flags for a compile (unit given) or the link (unit None)."""
-    own = case.unit_flags.get(unit, ()) if unit is not None else ()
-    plain = "-fno-weavec" in own
-    flags: list[str] = []
-    if not plain:
-        # RFC 0032 section 9: the cases pin the analysis's possible findings,
-        # which a build that guards the facet does not report by itself; and
-        # RFC 0033 section 8: its leaks, which a build reports only when asked.
-        flags.append("-Wweavec-possible")
-        flags.append("-Wweavec-leak")
-        if checks and not cfg.no_emission:
-            flags.append(f"-fweavec-checks={checks}")
-        if cfg.require:
-            flags.append(f"-fweavec-require={cfg.require}")
-        flags.extend(case.flags)
-    else:
-        flags.extend(plain_flags(case.flags))
-    flags.extend(own)
-    return flags
-
-
-def build(case: Case, cfg: Config, ev: Evidence, directory: Path, checks: str | None,
-          ledger: Path | None, extra: list[str], record: bool, analyze_link: bool = True) -> Path | None:
-    """Compile every unit and link them when one defines main; return the executable."""
-    directory.mkdir(parents=True, exist_ok=True)
-    objects = unit_objects(case, directory)
-    ok = True
-    for unit in case.units:
-        plain = "-fno-weavec" in case.unit_flags.get(unit, ())
-        command = [str(cfg.weavec_cc), "-c", "-fno-color-diagnostics", "-ferror-limit=0", *extra,
-                   *cc_flags(case, cfg, checks, unit)]
-        if ledger is not None and not plain:
-            command.append(f"-fweavec-ledger={ledger}{os.sep}")
-        command.extend([str(unit), "-o", str(objects[unit])])
-        if record:
-            code, _ = record_tool(ev, command, directory, cfg.compile_timeout, f"compile {unit.name}")
-        else:
-            code, _, err, timed_out = run_process(command, directory, cfg.compile_timeout)
-            if code != 0:
-                ev.tool_failures.append(f"{checks}-mode compile of {unit.name} failed: "
-                                        + ("timed out" if timed_out else first_line(err)))
-        ok = ok and code == 0 and objects[unit].exists()
-    if not ok or not case.has_main:
-        return None
-    output = directory / "a.out"
-    command = [str(cfg.weavec_cc), *extra, *cc_flags(case, cfg, checks, None)]
-    # RFC 0033 §7: the default link reads records only; the cases pin what
-    # the analysis reports across units, so their links analyse again.
-    # A detection case measures the default build, whose link reads records.
-    if analyze_link and len(case.units) > 1 and not any(f.startswith("-fweavec-link") for f in case.flags):
-        command.append("-fweavec-link=analyze")
-    if ledger is not None:
-        command.append(f"-fweavec-ledger={ledger}{os.sep}")
-    command.extend([*(str(objects[u]) for u in case.units), "-o", str(output)])
-    if record:
-        code, _ = record_tool(ev, command, directory, cfg.compile_timeout, "link")
-    else:
-        code, _, err, timed_out = run_process(command, directory, cfg.compile_timeout)
-        if code != 0:
-            ev.tool_failures.append(f"{checks}-mode link failed: "
-                                    + ("timed out" if timed_out else first_line(err)))
-    return output if code == 0 and output.exists() else None
-
-
-def load_ledgers(ev: Evidence, directory: Path) -> None:
-    for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
-        try:
-            ledger = json.loads(path.read_text())
-        except (OSError, ValueError) as error:
-            ev.tool_failures.append(f"ledger {path.name} is not valid JSON: {error}")
-            continue
-        if not isinstance(ledger, dict) or ledger.get("schema") != "weavec-ledger" or \
-                ledger.get("version") != LEDGER_VERSION:
-            ev.tool_failures.append(
-                f"ledger {path.name} is not a weavec-ledger version {LEDGER_VERSION} document")
-            continue
-        ev.ledgers.append(ledger)
-
-
-def verify_checks(ev: Evidence) -> int:
-    """Proven facets the build gave a verify check, from the ledgers (section 10.7).
-
-    Zero means no `__weavec_prv_*` check was emitted anywhere, so no trap of the
-    run can be a `weavec.proven` one. -1 when no ledger says, which rules
-    nothing out.
-    """
-    def counted(ledger: dict) -> int:
-        summary = ledger.get("summary")
-        value = summary.get("verifyChecks") if isinstance(summary, dict) else None
-        return value if isinstance(value, int) else 0
-
-    if not ev.ledgers:
-        return -1
-    units = sum(counted(l) for l in ev.ledgers if l.get("scope") != "program")
-    programs = [counted(l) for l in ev.ledgers if l.get("scope") == "program"]
-    return max([units, *programs])
-
-
-def run_tool_case(case: Case, cfg: Config, ev: Evidence, ledger_dir: Path, cwd: Path) -> None:
-    translated = tool_arguments(case.flags, legacy=False)
+def analyse(case: Case, cfg: Config, ev: Evidence, directory: Path) -> None:
+    """The `weavec` tool over the case's analysed units."""
     units = case.analysed_units()
-    command = [str(cfg.weavec), f"--ledger={ledger_dir / 'tool.ledger.json'}", *translated.options]
-    if cfg.require:
-        command.append(f"--require={cfg.require}")
+    if not units:
+        return
+    own, compiler = tool_flags(case.flags)
+    command = [str(cfg.weavec), *own]
     if len(units) > 1:
         command.append("--whole-program")
     command.extend(str(u) for u in units)
-    command.extend(["--", "-ferror-limit=0", "-fno-color-diagnostics", *translated.compiler])
-    record_tool(ev, command, cwd, cfg.compile_timeout, "weavec")
+    command.extend(["--", f"-I{RESOURCE_INCLUDE}", *compiler])
+    ev.commands.append(shlex.join(command))
+    code, out, err, timed_out = run_process(command, directory, cfg.compile_timeout)
+    if timed_out:
+        ev.failures.append("the analysis timed out")
+        return
+    ev.diagnostics = parse_diagnostics(out + "\n" + err, directory)
+    if code not in (0, 1):
+        ev.failures.append(f"the analysis crashed ({code}): {first_line(err)}")
 
 
-def zero_init_effective(case: Case, cfg: Config) -> bool:
-    flags = set(case.flags)
-    return not cfg.no_emission and "-fno-weavec-zero-init" not in flags and \
-        "-fweavec-checks=none" not in flags
-
-
-def run_executable(exe: Path, case: Case, cfg: Config, cwd: Path, env: dict,
-                   timeout: float) -> list[Run]:
-    runs = []
-    for run_input in case.run_inputs or [RunInput((), None)]:
-        code, _, err, timed_out = run_process([str(exe), *run_input.args], cwd, timeout,
-                                              run_input.stdin, env)
-        runs.append(Run(run_input.args, code, timed_out, err))
-    return runs
-
-
-def lldb_trap_reason(exe: Path, run_input: RunInput, cwd: Path) -> str | None:
-    """Best effort: LLDB names the category of a __builtin_verbose_trap in its stop reason."""
-    lldb = shutil.which("lldb")
-    if not lldb:
+def build(case: Case, cfg: Config, ev: Evidence, directory: Path, extra: list[str],
+          ledger: bool) -> Path | None:
+    """`weavec-cc` per unit, then the link."""
+    directory.mkdir(parents=True, exist_ok=True)
+    objects: list[Path] = []
+    checks = [f"-fweavec-checks={cfg.checks}"] if cfg.checks != "trap" else []
+    for index, unit in enumerate(case.units):
+        obj = directory / f"u{index}-{unit.stem}.o"
+        flags = [*case.flags, *case.unit_flags.get(unit, ())]
+        command = [str(cfg.weavec_cc), *checks, f"-I{RESOURCE_INCLUDE}", *flags, *extra]
+        if ledger and "-fno-weavec" not in flags:
+            command.append(f"-fweavec-ledger={directory}/")
+        command.extend(["-c", str(unit), "-o", str(obj)])
+        ev.commands.append(shlex.join(command))
+        code, _, err, timed_out = run_process(command, directory, cfg.compile_timeout)
+        if timed_out or code != 0:
+            ev.failures.append(f"compiling {unit.name} failed: "
+                               + ("timed out" if timed_out else first_line(err)))
+            return None
+        objects.append(obj)
+    if ledger:
+        main = directory / f"u0-{case.units[0].stem}.o.ledger.json"
+        if main.is_file():
+            try:
+                ev.ledger = json.loads(main.read_text())
+            except ValueError as error:
+                ev.failures.append(f"the ledger is not JSON: {error}")
+    if not case.has_main:
+        ev.built = True
         return None
-    command = [lldb, "--batch", "-o", "run", "-o", "thread info", "--", str(exe), *run_input.args]
-    _, out, err, _ = run_process(command, cwd, 60, run_input.stdin)
-    return out + err
+    exe = directory / "a.out"
+    command = [str(cfg.weavec_cc), *checks, *case.flags, *extra, *(str(o) for o in objects),
+               "-o", str(exe)]
+    ev.commands.append(shlex.join(command))
+    code, _, err, timed_out = run_process(command, directory, cfg.compile_timeout)
+    if timed_out or code != 0 or not exe.exists():
+        ev.failures.append("linking failed: " + ("timed out" if timed_out else first_line(err)))
+        return None
+    ev.built = True
+    return exe
 
 
-def only_expected_errors(case: Case, ev: Evidence) -> bool:
-    """Whether every error of the build is a definite BUG the case expects at its line."""
-    if ev.clang_errors:
-        return False
-    expected = {(located(b.file, b.line), b.value[0]) for b in case.bugs}
-    errors = [d for d in ev.diagnostics if d.severity == "error"]
-    return bool(errors) and all((located(d.file, d.line), d.id) in expected for d in errors)
+def run_all(case: Case, cfg: Config, ev: Evidence, exe: Path, directory: Path) -> None:
+    env = run_environment()
+    for run_input in case.run_inputs or [RunInput((), None)]:
+        code, _, err, timed_out = run_process([str(exe), *run_input.args], directory,
+                                              cfg.run_timeout, run_input.stdin, env)
+        ev.runs.append(Run(run_input.args, code, timed_out, parse_reports(err, directory)))
+
+
+def run_asan(case: Case, cfg: Config, ev: Evidence, directory: Path) -> None:
+    """The reference: Clang with AddressSanitizer and weavec.h on the path."""
+    directory.mkdir(parents=True, exist_ok=True)
+    exe = directory / "a.asan"
+    command = [cfg.clang, "-fsanitize=address,array-bounds",
+               "-fno-sanitize-recover=array-bounds", "-fno-omit-frame-pointer", "-g", "-O0",
+               f"-I{RESOURCE_INCLUDE}", *plain_flags(case.flags)]
+    for unit in case.units:
+        command.extend(plain_flags(case.unit_flags.get(unit, ())))
+    command.extend([*(str(u) for u in case.units), "-o", str(exe)])
+    code, _, err, timed_out = run_process(command, directory, cfg.compile_timeout)
+    if code != 0 or not exe.exists():
+        ev.failures.append("the ASan build failed: " + ("timed out" if timed_out else first_line(err)))
+        return
+    env = run_environment(ASAN_OPTIONS="detect_leaks=0:detect_stack_use_after_return=1")
+    ev.asan_ran = True
+    for run_input in case.run_inputs or [RunInput((), None)]:
+        _, _, err, _ = run_process([str(exe), *run_input.args], directory, ASAN_TIMEOUT,
+                                   run_input.stdin, env)
+        match = re.search(r"ERROR: AddressSanitizer: ([a-z-]+)|(SEGV on unknown address)"
+                          r"|(runtime error: index -?\d+ out of bounds)", err)
+        if match and ev.asan_report is None:
+            ev.asan_report = match.group(1) or ("SEGV" if match.group(2) else "index-out-of-bounds")
+
+
+# ---------------------------------------------------------------------------
+# Judging
+# ---------------------------------------------------------------------------
+
+
+# A BUG marker of these ids is also satisfied by a run that stops on its line:
+# the analysis is advisory, and the guards catch what it does not report.
+STOPPABLE_IDS = frozenset(("out-of-bounds", "null-dereference", "use-after-free", "double-free",
+                           "invalid-release", "use-of-uninitialized", "mismatched-release",
+                           "lifetime-too-short", "use-after-move", "allocation-failure",
+                           "contradicted-assumption", "unsafe-operation"))
+
+
+def stopped_lines(ev: Evidence) -> set[tuple[str, int]]:
+    lines = set()
+    for run in ev.runs:
+        for report in run.reports:
+            if report.file is not None:
+                lines.add((report.file, report.line))
+    return lines
+
+
+def judge_diagnostics(case: Case, ev: Evidence, failures: list[str], ran: bool) -> None:
+    stops = stopped_lines(ev)
+    by_line: dict[tuple[str, int], list[Diagnostic]] = collections.defaultdict(list)
+    for diagnostic in ev.diagnostics:
+        by_line[(diagnostic.file, diagnostic.line)].append(diagnostic)
+    expected = set()
+    # `BUG: <id> // MISS: <reason>`: the analysis is known not to report it;
+    # `// NEUTRALISED: zero-init`: zero-initialisation defines it away.
+    missed = {located(m.file, m.line) for m in case.markers
+              if m.kind in ("MISS", "NEUTRALISED")}
+    # A stop with no location (the allocator's, a fault) of the BUG's kind.
+    unlocated = {run.stop.kind for run in ev.runs
+                 if run.stop is not None and run.stop.file is None}
+    for bug in case.bugs:
+        ident, certainty = bug.value
+        key = located(bug.file, bug.line)
+        expected.add(key)
+        if key in missed:
+            continue
+        found = [d for d in by_line.get(key, []) if d.id == ident]
+        if certainty == "definite":
+            found = [d for d in found if d.severity == "error"]
+        elif certainty == "possible":
+            found = [d for d in found if d.severity == "warning"]
+        if not found and ident in STOPPABLE_IDS and (key in stops or not ran
+                                                     or ident in unlocated):
+            continue
+        if not found:
+            failures.append(f"{loc(bug)}: expected weavec::{ident}"
+                            + (f" ({certainty})" if certainty else "")
+                            + " from the analysis or a stop on its line")
+    expected |= {located(m.file, m.line) for m in case.markers if m.kind in ("MISS", "NEUTRALISED")}
+    for diagnostic in ev.diagnostics:
+        key = (diagnostic.file, diagnostic.line)
+        if key in expected:
+            continue
+        # ALLOW excuses warnings only: an error always fails a CLEAN case.
+        if case.clean and (diagnostic.id not in case.allow or diagnostic.severity == "error"):
+            failures.append(f"unexpected diagnostic in a CLEAN case: {diagnostic.text()}")
+        elif diagnostic.severity == "error" and not case.clean:
+            failures.append(f"unexpected error: {diagnostic.text()}")
+
+
+def judge_runs(case: Case, ev: Evidence, failures: list[str], notes: list[str]) -> None:
+    traps = case.traps
+    hit: set[Marker] = set()
+    for run in ev.runs:
+        label = f"run {shlex.join(run.args) or '(no arguments)'}"
+        if run.timed_out:
+            failures.append(f"{label}: timed out")
+            continue
+        stop = run.stop
+        if stop is None:
+            if run.signal is not None:
+                failures.append(f"{label}: {run.describe()} with no report")
+            elif run.reports:
+                failures.append(f"{label}: reported {run.reports[0].text()} but was not stopped")
+            continue
+        matching = [m for m in traps
+                    if (m.value is None or m.value == stop.kind)
+                    and (stop.file is None or located(m.file, m.line) == (stop.file, stop.line))]
+        on_bug_line = stop.file is None and bool(case.bugs) or any(
+            located(m.file, m.line) == (stop.file, stop.line) for m in case.bugs)
+        if not matching and not on_bug_line:
+            failures.append(f"{label}: unexpected stop: {stop.text()} ({run.describe()})")
+        hit.update(matching)
+    if ev.runs:
+        for marker in traps:
+            if marker not in hit:
+                failures.append(f"{loc(marker)}: expected a stop"
+                                + (f" ({marker.value})" if marker.value else "") + "; "
+                                + "; ".join(r.describe() for r in ev.runs))
+    for run in ev.runs:
+        for report in run.reports:
+            if report.proven:
+                failures.append(f"a proof was wrong: {report.text()}")
+
+
+def judge_ledger(case: Case, ev: Evidence, failures: list[str]) -> None:
+    wanted = [m for m in case.markers if m.kind in LEDGER_MARKERS]
+    if not wanted and not case.expectations:
+        return
+    if ev.ledger is None:
+        failures.append("no enforcement ledger was written")
+        return
+    if ev.ledger.get("version") != LEDGER_VERSION:
+        failures.append(f"ledger version {ev.ledger.get('version')}, expected {LEDGER_VERSION}")
+        return
+    unit = ev.ledger["units"][0]
+    rows = collections.defaultdict(list)
+    for row in unit.get("rows", []):
+        rows[(str(Path(row["file"]).resolve()) if row["file"] else "", row["line"])].append(row)
+    for marker in wanted:
+        outcome = marker.kind.lower()
+        found = [r for r in rows.get(located(marker.file, marker.line), [])
+                 if r["outcome"] == outcome and (marker.value is None or r["reason"] == marker.value)]
+        if not found:
+            failures.append(f"{loc(marker)}: expected a {outcome} ledger row"
+                            + (f" ({marker.value})" if marker.value else ""))
+    for expectation in case.expectations:
+        try:
+            actual = json_pointer(unit, expectation.pointer)
+        except (KeyError, IndexError, ValueError, TypeError):
+            failures.append(f"EXPECT-LEDGER {expectation.text}: no such value")
+            continue
+        if not compare(actual, expectation.op, expectation.value):
+            failures.append(f"EXPECT-LEDGER {expectation.text}: actual {json.dumps(actual)}")
 
 
 def apply_xfail(case: Case, result: dict) -> dict:
-    """XFAIL: a failing case is an expected failure; a passing one is
-    reported so that its marker is removed (neither fails the run)."""
-    if not case.xfail or result["status"] not in ("pass", "fail"):
+    if case.xfail is None:
         return result
     if result["status"] == "fail":
         result["status"] = "xfail"
-        result["notes"].insert(0, f"expected failure: {case.xfail}")
-    else:
+        result["notes"].append(f"expected to fail: {case.xfail}")
+    elif result["status"] == "pass":
         result["status"] = "xpass"
-        result["notes"].insert(0, f"XFAIL case passes now: remove its XFAIL marker ({case.xfail})")
+        result["notes"].append(f"passes now: remove XFAIL ({case.xfail})")
     return result
 
 
 def run_case(case: Case, cfg: Config) -> dict:
-    if case.errors:
-        return evaluate(case, Evidence("legacy" if cfg.legacy else cfg.checks))
-    if case.detect is not None:
-        return apply_xfail(case, run_detection_case(case, cfg))
-    return apply_xfail(case, run_case_markers(case, cfg))
+    started = time.monotonic()
+    result = run_detection(case, cfg) if case.detect is not None else run_markers(case, cfg)
+    result["seconds"] = round(time.monotonic() - started, 3)
+    return apply_xfail(case, result)
 
 
-def run_case_markers(case: Case, cfg: Config) -> dict:
-    if cfg.legacy:
-        return evaluate(case, run_legacy(case, cfg.weavec, cfg))
-    start = time.perf_counter()
-    ev = Evidence(cfg.checks)
-    ev.no_emission = cfg.no_emission
-    ev.zero_init = zero_init_effective(case, cfg)
-    temp = Path(tempfile.mkdtemp(prefix="weavec-case-", dir=cfg.work))
-    try:
-        ledger_dir = temp / "ledger"
-        ledger_dir.mkdir()
-        ev.ledger_expected = True
-        if case.tool:
-            ev.ledger_proxy = True
-            run_tool_case(case, cfg, ev, ledger_dir, temp)
-            load_ledgers(ev, ledger_dir)
-        else:
-            extra = ["-g"] if cfg.checks == "verify" else []
-            exe = build(case, cfg, ev, temp / "main", cfg.checks, ledger_dir, extra, record=True)
-            ev.built = exe is not None
-            lowered_flags: list[str] = []
-            if exe is None and case.has_main and case.traps and not cfg.no_run \
-                    and not cfg.no_emission and only_expected_errors(case, ev):
-                # Section 3.4: the case's own definite errors stopped the build. Lowered to
-                # warnings, each violation is guarded by a check that traps, so the lowered
-                # build stands in for the executable: its runs judge every TRAP marker.
-                lowered_flags = ["-Wno-error=weavec"]
-                exe = build(case, cfg, ev, temp / "lowered", cfg.checks, None, lowered_flags,
-                            record=False)
-                ev.lowered_ran = exe is not None
-            analysed = case.analysed_units()
-            if not case.has_main and len(analysed) > 1:
-                translated = tool_arguments(case.flags, legacy=False)
-                command = [str(cfg.weavec), f"--ledger={ledger_dir / 'whole-program.ledger.json'}",
-                           *translated.options, *(["--require=" + cfg.require] if cfg.require else []),
-                           "--whole-program", *(str(u) for u in analysed), "--", "-ferror-limit=0",
-                           "-fno-color-diagnostics", *translated.compiler]
-                record_tool(ev, command, temp, cfg.compile_timeout, "weavec --whole-program")
-            load_ledgers(ev, ledger_dir)
-            ev.diagnostics = sorted(set(ev.diagnostics))
-            runs_possible = (ev.built or ev.lowered_ran) and not cfg.no_run and not cfg.no_emission
-            ev.ledger_proxy = not runs_possible and (cfg.no_run or cfg.no_emission or not case.has_main)
-            if runs_possible:
-                env = run_environment()
-                ev.runs = run_executable(exe, case, cfg, temp, env, cfg.run_timeout)
-                report_exe = build(case, cfg, ev, temp / "report", "report", None, lowered_flags,
-                                   record=False)
-                if report_exe is None:
-                    ev.tool_failures.append("the report-mode build failed")
-                else:
-                    ev.ran = True
-                    report_runs = run_executable(report_exe, case, cfg, temp, env, cfg.run_timeout)
-                    ev.run_reported = [bool(parse_reports(run.stderr, temp)) for run in report_runs]
-                    seen = set()
-                    for run in report_runs:
-                        ev.report_runs.append(parse_reports(run.stderr, temp))
-                        for report in ev.report_runs[-1]:
-                            if report not in seen:
-                                seen.add(report)
-                                ev.reports.append(report)
-                    if cfg.checks == "verify":
-                        # Only a `__weavec_prv_*` check can raise a weavec.proven
-                        # trap, and the ledger counts the ones the build planned
-                        # (section 10.7). Programs trap on their own too: macOS's
-                        # libmalloc traps on a real double free and _FORTIFY_SOURCE
-                        # on an overflow, both with SIGTRAP, and the report-mode
-                        # build, which has no proven check, then traps the same way.
-                        planned = verify_checks(ev)
-                        for run, report_run, run_input in zip(ev.runs, report_runs,
-                                                              case.run_inputs or [RunInput((), None)]):
-                            if not run.trapped:
-                                continue
-                            what = shlex.join(run.args) or "(no arguments)"
-                            if not parse_reports(report_run.stderr, temp):
-                                if planned == 0:
-                                    ev.notes.append(f"run {what}: {run.describe()} with no verify "
-                                                    f"check in the ledger (the program's own trap)")
-                                elif report_run.trapped:
-                                    ev.notes.append(f"run {what}: {run.describe()}, and the "
-                                                    f"report-mode run too (the program's own trap)")
-                                else:
-                                    ev.proven_traps.append(
-                                        f"run {what}: weavec.proven trap (the verify build trapped "
-                                        f"where no unproven check failed)")
-                            elif cfg.lldb:
-                                reason = lldb_trap_reason(exe, run_input, temp)
-                                if reason and "weavec.proven" in reason:
-                                    ev.proven_traps.append(f"run {what}: weavec.proven trap")
-        if (cfg.asan or case.asan) and not case.tool and case.has_main and not cfg.no_run:
-            run_asan(case, cfg, ev, temp / "asan")
-    finally:
-        if cfg.keep:
-            ev.notes.append(f"kept {temp}")
-        else:
-            shutil.rmtree(temp, ignore_errors=True)
-    ev.seconds = time.perf_counter() - start
-    return evaluate(case, ev)
+def scratch_for(case: Case, cfg: Config) -> Path:
+    return Path(tempfile.mkdtemp(prefix=case.rel.replace("/", "_") + ".", dir=cfg.scratch))
 
 
-def run_asan(case: Case, cfg: Config, ev: Evidence, directory: Path) -> None:
-    """Plain Clang with weavec.h (-fno-weavec) and ASan, plus array-bounds for static arrays.
-
-    The -I is needed because v0.10.0's -fno-weavec also drops weavec.h.
-    """
-    directory.mkdir(parents=True, exist_ok=True)
-    output = directory / "a.out"
-    command = [str(cfg.weavec_cc), "-fno-weavec", "-fsanitize=address", "-fsanitize=array-bounds",
-               "-fno-omit-frame-pointer", "-g", "-O0", f"-I{RESOURCE_INCLUDE}", *plain_flags(case.flags)]
-    for unit in case.units:
-        command.extend(plain_flags(case.unit_flags.get(unit, ())))
-    command.extend([*(str(u) for u in case.units), "-o", str(output)])
-    code, _, err, timed_out = run_process(command, directory, cfg.compile_timeout)
-    if code != 0 or not output.exists():
-        ev.tool_failures.append("the ASan build failed: " + ("timed out" if timed_out else first_line(err)))
-        return
-    options = "detect_leaks=0:detect_stack_use_after_return=1:abort_on_error=0"
-    env = run_environment(
-        ASAN_OPTIONS=options + (":" + os.environ["ASAN_OPTIONS"] if os.environ.get("ASAN_OPTIONS") else ""),
-        UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1", **sanitizer_symbolizer())
-    ev.asan_ran = True
-    for run_input in case.run_inputs or [RunInput((), None)]:
-        code, _, err, timed_out = run_process([str(output), *run_input.args], directory, ASAN_TIMEOUT,
-                                              run_input.stdin, env)
-        ev.asan_runs.append(Run(run_input.args, code, timed_out))
-        report = parse_sanitizer(err)
-        if report is not None and ev.asan is None:
-            ev.asan = report
-
-
-# ---------------------------------------------------------------------------
-# Detection cases (RFC 0034 section 9, gate F4)
-# ---------------------------------------------------------------------------
-
-# The report-mode builds of a detection case leave the C library's own
-# fortification out, so that the first failure they report is WeaveC's.
-NO_FORTIFY = ["-D_FORTIFY_SOURCE=0"]
-
-
-def detection_runs(case: Case, cfg: Config, ev: Evidence, directory: Path, extra: list[str],
-                   ledger: Path | None = None) -> None:
-    """Build the case (bug, or twin with `extra`) as the default build does,
-    run it, and rebuild it in report mode to name each failed check."""
-    exe = build(case, cfg, ev, directory / "build", cfg.checks, ledger, extra, record=True, analyze_link=False)
-    if ledger is not None:
-        load_ledgers(ev, ledger)
-    ev.built = exe is not None
-    ev.diagnostics = sorted(set(ev.diagnostics))
-    if exe is None:
-        return
-    env = run_environment()
-    ev.runs = run_executable(exe, case, cfg, directory, env, cfg.run_timeout)
-    report_exe = build(case, cfg, ev, directory / "report", "report", None, [*extra, *NO_FORTIFY], record=False,
-                       analyze_link=False)
-    if report_exe is None:
-        ev.tool_failures.append("the report-mode build failed")
-        return
-    ev.ran = True
-    report_runs = run_executable(report_exe, case, cfg, directory, env, cfg.run_timeout)
-    ev.report_runs = [parse_reports(run.stderr, directory) for run in report_runs]
-    ev.run_reported = [bool(reports) for reports in ev.report_runs]
-    for reports in ev.report_runs:
-        for report in reports:
-            if report not in ev.reports:
-                ev.reports.append(report)
-    if cfg.checks == "verify":
-        # F4: no bug runs past a proven facet. A verify-mode trap where the
-        # report-mode run (which has no proven checks) names no failure is a
-        # `weavec.proven` one, unless the build planned no verify check or the
-        # report-mode run traps the same way (the program's own trap).
-        for run, report_run, reports in zip(ev.runs, report_runs, ev.report_runs):
-            if run.trapped and not reports and not report_run.trapped and verify_checks(ev) != 0:
-                ev.proven_traps.append(f"run {shlex.join(run.args) or '(no arguments)'}: weavec.proven trap "
-                                       f"(the verify build trapped where no unproven check failed)")
-
-
-def run_detection_case(case: Case, cfg: Config) -> dict:
-    """A detection case: the bug build must stop at or before a STOP line (a
-    WeaveC error stops the build, or the run traps and the report-mode run's
-    first failure is on a STOP line), and the twin (built with the DETECT
-    flags) must build and run with no error, trap or failed check."""
-    bug, twin = Evidence(cfg.checks), Evidence(cfg.checks)
-    skip = ("--legacy" if cfg.legacy else "--no-run" if cfg.no_run else "--no-emission" if cfg.no_emission
-            else "--require" if cfg.require else None)
-    if skip:
-        result = evaluate_detection(case, bug, twin)
-        result.update(status="skip", failures=[], notes=[f"a detection case needs the default build and its run "
-                                                         f"(not {skip})"])
-        return result
-    start = time.perf_counter()
-    temp = Path(tempfile.mkdtemp(prefix="weavec-case-", dir=cfg.work))
-    try:
-        ledger = None
-        if cfg.checks == "verify":
-            # verify_checks reads the bug build's ledgers: did it plan a verify check?
-            ledger = temp / "ledger"
-            ledger.mkdir()
-        detection_runs(case, cfg, bug, temp / "bug", ["-g"] if cfg.checks == "verify" else [], ledger)
-        detection_runs(case, cfg, twin, temp / "twin", list(case.detect or ()))
-        if cfg.asan or case.asan:
-            run_asan(case, cfg, bug, temp / "asan")
-    finally:
-        if cfg.keep:
-            bug.notes.append(f"kept {temp}")
-        else:
-            shutil.rmtree(temp, ignore_errors=True)
-    bug.seconds = time.perf_counter() - start
-    return evaluate_detection(case, bug, twin)
-
-
-def evaluate_detection(case: Case, bug: Evidence, twin: Evidence) -> dict:
-    """Judge a detection case (pure): did the bug stop, and is the twin clean?"""
+def run_markers(case: Case, cfg: Config) -> dict:
+    ev = Evidence()
     failures: list[str] = list(case.errors)
-    notes = list(bug.notes)
-    stops = {located(m.file, m.line) for m in case.markers if m.kind == "STOP"}
-    known_miss = [m for m in case.markers if m.kind == "MISS"]
-    failures.extend(bug.tool_failures)
-    failures.extend(f"compiler error: {e}" for e in bug.clang_errors)
-    stop = where = None
-    errors = [d for d in bug.diagnostics if d.severity == "error"]
-    if errors:
-        stop, where = "compile", errors[0].text()
-        if not any((d.file, d.line) in stops for d in errors):
-            notes.append(f"the build stopped at an error on no STOP line: {where}")
-    why_not = "no executable was built" if not bug.built else "the report-mode build was not run"
-    if stop is None and bug.ran:
-        why_not = "the run did not trap"
-        for number, run in enumerate(bug.runs):
-            reports = bug.report_runs[number] if number < len(bug.report_runs) else []
-            first = reports[0] if reports else None
-            if first is not None and (first.file, first.line) in stops and run.trapped:
-                stop = "run"
-                where = f"{first.template} at {relative(first.file)}:{first.line}:{first.column}"
-                break
-            if run.timed_out:
-                why_not = "the run timed out"
-            elif run.trapped and first is None:
-                why_not = f"the run was {run.describe()}, but the report-mode run names no failed check"
-            elif first is not None:
-                where_first = f"{first.template} at {relative(first.file)}:{first.line}"
-                why_not = (f"the first failed check is {where_first}, on no STOP line" if run.trapped
-                           else f"the report-mode run fails {where_first}, but the trap-mode run was "
-                                f"{run.describe()}")
-            else:
-                why_not = f"the run did not trap ({run.describe()})"
-    flip = False
-    if stop is None and not known_miss:
-        failures.append(f"the bug did not stop: {why_not}")
-    elif stop is not None and known_miss:
-        flip = True
-        notes.append(f"known miss now stops ({stop}: {where}): remove its MISS marker")
-    elif stop is None:
-        notes.append(f"known miss ({'; '.join(m.value for m in known_miss)}): {why_not}")
-    failures.extend(bug.proven_traps)
-    # The twin: no error, no trap or other death, no failed check.
-    twin_failures = list(twin.tool_failures) + [f"compiler error: {e}" for e in twin.clang_errors]
-    twin_failures += [f"error: {d.text()}" for d in twin.diagnostics if d.severity == "error"]
-    for number, run in enumerate(twin.runs):
-        if run.timed_out or run.signal is not None:
-            twin_failures.append(f"run {shlex.join(run.args) or '(no arguments)'}: {run.describe()}")
-    for report in twin.reports:
-        twin_failures.append(f"failed check {report.template} at {relative(report.file)}:{report.line}:"
-                             f"{report.column}")
-    if twin.built is False and not twin_failures and case.detect is not None and (bug.built or bug.diagnostics):
-        twin_failures.append("no executable was built")
-    failures.extend(f"the fixed twin ({' '.join(case.detect or ())}) stops: {f}" for f in twin_failures)
-    asan = None
-    if bug.asan_ran:
-        asan = bug.asan.kind if bug.asan else False
+    if case.errors:
+        return {"case": case.rel, "suite": case.suite, "status": "error", "failures": failures,
+                "notes": [], "kind": "markers"}
+    directory = scratch_for(case, cfg)
+    try:
+        analysed = bool(case.bugs or case.clean or case.tool)
+        if analysed:
+            analyse(case, cfg, ev, directory)
+        if not case.tool:
+            ledger = bool([m for m in case.markers if m.kind in LEDGER_MARKERS]
+                          or case.expectations)
+            exe = build(case, cfg, ev, directory / "build", [], ledger)
+            judge_ledger(case, ev, failures)
+            if exe is not None and not cfg.no_run:
+                run_all(case, cfg, ev, exe, directory / "build")
+                judge_runs(case, ev, failures, ev.notes)
+                if case.clean:
+                    for run in ev.runs:
+                        if run.reports or run.signal is not None:
+                            failures.append(f"run {shlex.join(run.args) or '(no arguments)'}: "
+                                            f"{run.describe()} in a CLEAN case")
+            if (cfg.asan or case.asan) and case.has_main and not cfg.no_run:
+                run_asan(case, cfg, ev, directory / "asan")
+                bug_case = case.is_bug_case
+                if bug_case and case.asan and ev.asan_ran and ev.asan_report is None:
+                    failures.append("ASan reported nothing")
+                if not bug_case and ev.asan_report is not None:
+                    failures.append(f"ASan reported {ev.asan_report} in a case without a bug")
+        if analysed:
+            # A case that cannot run (no main, TOOL) has no stop to excuse
+            # a BUG the analysis does not report.
+            runnable = case.has_main and not case.tool
+            judge_diagnostics(case, ev, failures, bool(ev.runs) or not runnable)
+        failures.extend(ev.failures)
+    finally:
+        if not cfg.keep:
+            shutil.rmtree(directory, ignore_errors=True)
     return {
-        "case": case.rel, "suite": case.suite,
-        "status": "error" if case.errors else "fail" if failures else "pass",
+        "case": case.rel, "suite": case.suite, "status": "fail" if failures else "pass",
+        "failures": failures, "notes": ev.notes, "kind": "markers",
+        "diagnostics": [d.text() for d in ev.diagnostics],
+        "runs": [{"args": list(r.args), "result": r.describe(),
+                  "reports": [x.text() for x in r.reports]} for r in ev.runs],
+        "asan": ev.asan_report, "commands": ev.commands,
+    }
+
+
+def run_detection(case: Case, cfg: Config) -> dict:
+    """RFC 0034 section 9, kept by RFC 0035: does the bug stop, is the twin clean?"""
+    failures: list[str] = list(case.errors)
+    notes: list[str] = []
+    if case.errors:
+        return {"case": case.rel, "suite": case.suite, "status": "error", "failures": failures,
+                "notes": [], "kind": "detection"}
+    directory = scratch_for(case, cfg)
+    bug, twin = Evidence(), Evidence()
+    stop = where = None
+    try:
+        exe = build(case, cfg, bug, directory / "bug", [], False)
+        stops = {located(m.file, m.line) for m in case.markers if m.kind == "STOP"}
+        known_miss = [m for m in case.markers if m.kind == "MISS"]
+        why_not = "no executable was built"
+        if exe is not None and not cfg.no_run:
+            run_all(case, cfg, bug, exe, directory / "bug")
+            why_not = "the run did not stop"
+            for run in bug.runs:
+                first = run.stop
+                if first is not None and (first.file is None or (first.file, first.line) in stops):
+                    stop = "fault" if first.file is None else "run"
+                    where = first.text()
+                    break
+                if first is not None:
+                    why_not = f"the first stop is {first.text()}, on no STOP line"
+                elif run.timed_out:
+                    why_not = "the run timed out"
+        flip = False
+        if cfg.no_run:
+            pass
+        elif stop is None and not known_miss:
+            failures.append(f"the bug did not stop: {why_not}")
+        elif stop is not None and known_miss:
+            flip = True
+            notes.append(f"known miss now stops ({where}): remove its MISS marker")
+        elif stop is None:
+            notes.append(f"known miss ({'; '.join(m.value for m in known_miss)}): {why_not}")
+        for run in bug.runs:
+            failures.extend(f"a proof was wrong: {r.text()}" for r in run.reports if r.proven)
+        twin_exe = build(case, cfg, twin, directory / "twin", list(case.detect or ()), False)
+        twin_failures = list(twin.failures)
+        if twin_exe is not None and not cfg.no_run:
+            run_all(case, cfg, twin, twin_exe, directory / "twin")
+            for run in twin.runs:
+                if run.timed_out or run.signal is not None or run.reports:
+                    twin_failures.append(f"run {shlex.join(run.args) or '(no arguments)'}: "
+                                         f"{run.describe()}"
+                                         + (f", {run.reports[0].text()}" if run.reports else ""))
+        failures.extend(f"the fixed twin ({' '.join(case.detect or ())}) stops: {f}"
+                        for f in twin_failures)
+        failures.extend(f for f in bug.failures)
+        if cfg.asan:
+            run_asan(case, cfg, bug, directory / "asan")
+    finally:
+        if not cfg.keep:
+            shutil.rmtree(directory, ignore_errors=True)
+    return {
+        "case": case.rel, "suite": case.suite, "status": "fail" if failures else "pass",
         "failures": failures, "notes": notes, "kind": "detection",
-        "class": stop or "miss", "bugs": [],
-        "detection": {"stop": stop, "where": where, "knownMiss": bool(known_miss), "flip": flip,
-                      "twinClean": not twin_failures, "asan": asan},
-        "diagnostics": [d.text() for d in bug.diagnostics],
-        "runs": [{"args": list(r.args), "result": r.describe()} for r in bug.runs],
-        "reports": [f"{r.template} at {relative(r.file)}:{r.line}:{r.column}" for r in bug.reports],
-        "twin": {"diagnostics": [d.text() for d in twin.diagnostics],
-                 "runs": [{"args": list(r.args), "result": r.describe()} for r in twin.runs]},
-        "asan": {"report": asan} if bug.asan_ran else None,
-        "commands": bug.commands + twin.commands, "seconds": round(bug.seconds, 3),
+        "detection": {"stop": stop, "where": where, "knownMiss": bool(known_miss),
+                      "flip": flip, "asan": bug.asan_report if bug.asan_ran else None},
+        "runs": [{"args": list(r.args), "result": r.describe(),
+                  "reports": [x.text() for x in r.reports]} for r in bug.runs],
+        "commands": bug.commands + twin.commands,
     }
 
 
 # ---------------------------------------------------------------------------
-# --compare-golden
+# Output
 # ---------------------------------------------------------------------------
-
-_FLAG_SUPPORT: dict[tuple[str, str], bool] = {}
-
-
-def tool_accepts(weavec: Path, option: str, scratch: Path) -> bool:
-    key = (str(weavec), option)
-    if key not in _FLAG_SUPPORT:
-        source = scratch / "empty.c"
-        source.write_text("int weavec_probe;\n")
-        code, _, err, _ = run_process([str(weavec), option, str(source), "--"], scratch, 60)
-        _FLAG_SUPPORT[key] = code == 0
-    return _FLAG_SUPPORT[key]
-
-
-def compare_case(case: Case, weavec: Path, golden: Path, cfg: Config, scratch: Path) -> dict:
-    if case.errors:
-        result = evaluate(case, Evidence("legacy"))
-        result.update(compared=False)
-        return result
-    rejected = [o for o in tool_arguments(case.flags, legacy=True).options
-                if not tool_accepts(weavec, o, scratch)]
-    if rejected:
-        result = evaluate(case, Evidence("legacy"))
-        result.update(status="skip", compared=False, failures=[],
-                      notes=[f"excluded: the binary under test rejects {' '.join(rejected)}"])
-        return result
-    mine = run_legacy(case, weavec, cfg)
-    theirs = run_legacy(case, golden, cfg)
-    result = evaluate(case, mine)
-    ours = collections.Counter(d.key() for d in mine.raw_diagnostics)
-    gold = collections.Counter(d.key() for d in theirs.raw_diagnostics)
-    differences = ["- golden: " + format_key(key) for key in sorted((gold - ours).elements())]
-    differences += ["+ tested: " + format_key(key) for key in sorted((ours - gold).elements())]
-    failed_tools = [f"tested {f}" for f in mine.tool_failures] + [f"golden {f}" for f in theirs.tool_failures]
-    result["compared"] = True
-    result["differences"] = differences
-    result["markerStatus"] = result["status"]
-    result["markerFailures"] = result["failures"]
-    result["failures"] = differences + failed_tools
-    result["status"] = "fail" if result["failures"] else "pass"
-    return result
-
-
-def format_key(key: tuple) -> str:
-    file, line, column, severity, identifier, message = key
-    where = f"{file}:{line}:{column}" if file else "<no location>"
-    return f"{where}: {severity}: {message} [weavec::{identifier}]"
-
-
-# ---------------------------------------------------------------------------
-# Reporting
-# ---------------------------------------------------------------------------
-
-
-STATUS_COUNTS = {"pass": "passed", "fail": "failed", "error": "errors", "skip": "skipped", "xfail": "xfailed",
-                 "xpass": "xpassed"}
-STATUS_LABELS = {"pass": "PASS", "fail": "FAIL", "error": "ERROR", "skip": "SKIP", "xfail": "XFAIL",
-                 "xpass": "XPASS"}
-# Statuses that do not fail the run: an expected failure, and an XFAIL case
-# that passes now (reported, so that its marker is removed).
-PASSING_STATUSES = ("pass", "skip", "xfail", "xpass")
 
 
 def summarize(results: list[dict]) -> dict:
-    suites: dict[str, dict] = {}
+    suites: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
+    detection = collections.Counter()
     for result in results:
-        suite = suites.setdefault(result["suite"], {
-            "cases": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0, "xfailed": 0, "xpassed": 0,
-            "bugCases": 0, "bugCasesPassed": 0, "classes": {c: 0 for c in CLASSES},
-            "pins": 0, "pinsSatisfied": 0, "pinsReported": 0,
-            "cleanCases": 0, "cleanPassed": 0, "cleanBuilds": 0})
-        suite["cases"] += 1
-        status = result["status"]
-        suite[STATUS_COUNTS[status]] += 1
-        if result["kind"] == "detection" and status != "skip" and status != "error":
-            # RFC 0034 gate F4: how many bugs stop, and no twin stops.
-            detection = suite.setdefault("detection", {
-                "cases": 0, "stops": 0, "compileStops": 0, "runStops": 0, "knownMisses": 0,
-                "knownMissesStopping": [], "misses": [], "twinsClean": 0, "asanRan": 0, "asanDetected": 0})
-            d = result["detection"]
+        suites[result["suite"]][result["status"]] += 1
+        if result.get("kind") == "detection":
+            d = result.get("detection") or {}
             detection["cases"] += 1
-            detection["stops"] += d["stop"] is not None
-            detection["compileStops"] += d["stop"] == "compile"
-            detection["runStops"] += d["stop"] == "run"
-            detection["knownMisses"] += d["knownMiss"]
-            if d["flip"]:
-                detection["knownMissesStopping"].append(result["case"])
-            if d["stop"] is None:
-                detection["misses"].append(result["case"])
-            detection["twinsClean"] += d["twinClean"]
-            if d["asan"] is not None:
-                detection["asanRan"] += 1
-                detection["asanDetected"] += bool(d["asan"])
-        if result["kind"] == "bug":
-            suite["bugCases"] += 1
-            suite["bugCasesPassed"] += status == "pass"
-            if result.get("class"):
-                suite["classes"][result["class"]] += 1
-            if "legacyClass" in result and result["legacyClass"]:
-                legacy = suite.setdefault("legacyClasses", {c: 0 for c in LEGACY_CLASSES})
-                legacy[result["legacyClass"]] += 1
-        elif result["kind"] == "clean":
-            suite["cleanCases"] += 1
-            suite["cleanPassed"] += status == "pass"
-            suite["cleanBuilds"] += bool(result.get("cleanBuild"))
-        for bug in result.get("bugs", []):
-            if bug["id"] is None:
-                continue
-            suite["pins"] += 1
-            suite["pinsSatisfied"] += bug["satisfiedBy"] is not None
-            suite["pinsReported"] += bool(bug["reported"])
-    total = {k: sum(s[k] for s in suites.values()) for k in
-             ("cases", "passed", "failed", "errors", "skipped", "xfailed", "xpassed")}
-    stops = [s["detection"] for s in suites.values() if "detection" in s]
-    if stops:
-        total["detectionCases"] = sum(d["cases"] for d in stops)
-        total["detectionStops"] = sum(d["stops"] for d in stops)
-    return {"total": total, "suites": suites}
+            detection["stops"] += 1 if d.get("stop") else 0
+            detection["asan"] += 1 if d.get("asan") else 0
+    totals = collections.Counter()
+    for counter in suites.values():
+        totals.update(counter)
+    return {"suites": {k: dict(v) for k, v in sorted(suites.items())}, "totals": dict(totals),
+            "detection": dict(detection)}
 
 
 def print_result(result: dict, verbose: bool) -> None:
-    label = STATUS_LABELS[result["status"]]
-    extra = []
-    if result.get("legacyClass"):
-        extra.append(result["legacyClass"])
-    elif result.get("class"):
-        extra.append(result["class"])
-    print(f"{label:5} {result['case']}" + (f"  [{', '.join(extra)}]" if extra else ""), flush=True)
-    if result["status"] != "xfail" or verbose:
-        for failure in result["failures"]:
-            print(f"      {failure}")
-    if verbose:
-        notes = result["notes"]
-    elif result["status"] in ("xfail", "xpass"):
-        notes = result["notes"][:1]  # the XFAIL reason, or that the marker can go
-    else:
-        notes = [n for n in result["notes"] if n.startswith("known miss now stops")]
-    for note in notes:
-        print(f"      note: {note}")
-    if verbose:
-        for command in result.get("commands", []):
-            print(f"      $ {command}")
+    status = result["status"].upper()
+    if status == "PASS" and not verbose:
+        return
+    print(f"{status}: {result['case']}")
+    for failure in result["failures"]:
+        print(f"    {failure}")
+    for note in result["notes"]:
+        print(f"    note: {note}")
 
 
-def print_summary(summary: dict, legacy: bool, compared: bool = False) -> None:
-    print()
-    verdict = "identical to the golden run" if compared else "passed"
-    for name, suite in sorted(summary["suites"].items()):
-        parts = [f"{suite['passed']}/{suite['cases']} cases {verdict}"]
-        if suite["failed"] or suite["errors"]:
-            parts.append(f"{suite['failed']} {'differ' if compared else 'failed'}, "
-                         f"{suite['errors']} marker errors")
-        if suite["skipped"]:
-            parts.append(f"{suite['skipped']} {'excluded' if compared else 'skipped'}")
-        if suite["xfailed"] or suite["xpassed"]:
-            parts.append(f"{suite['xfailed']} expected failures, {suite['xpassed']} XFAIL cases passing now")
-        if suite["bugCases"] and not compared:
-            parts.append(f"bug cases {suite['bugCasesPassed']}/{suite['bugCases']}")
-            parts.append(f"pins {suite['pinsSatisfied']}/{suite['pins']} satisfied, "
-                         f"{suite['pinsReported']} reported")
-        if suite["cleanCases"] and not compared:
-            parts.append(f"clean {suite['cleanPassed']}/{suite['cleanCases']}")
-        print(f"{name}: " + "; ".join(parts))
-        if "detection" in suite:
-            d = suite["detection"]
-            line = (f"  detection: {d['stops']}/{d['cases']} bugs stop ({d['compileStops']} at compile time, "
-                    f"{d['runStops']} at run time); {d['knownMisses']} known misses, "
-                    f"{len(d['knownMissesStopping'])} of them stopping now; "
-                    f"{d['twinsClean']}/{d['cases']} fixed twins clean")
-            if d["asanRan"]:
-                line += f"; ASan reports {d['asanDetected']}/{d['asanRan']}"
-            print(line)
-            for case in d["knownMissesStopping"]:
-                print(f"    now stops (remove its MISS marker): {case}")
-        if suite["bugCases"]:
-            if legacy and "legacyClasses" in suite:
-                print("  v0.10.0 classes: " + ", ".join(
-                    f"{suite['legacyClasses'][c]} {c.lower()}" for c in LEGACY_CLASSES))
-            else:
-                print("  classes: " + ", ".join(f"{suite['classes'][c]} {c}" for c in CLASSES
-                                                if suite["classes"][c]))
-    total = summary["total"]
-    print(f"total: {total['passed']}/{total['cases']} cases {verdict}, {total['failed']} "
-          f"{'differ' if compared else 'failed'}, {total['errors']} marker errors, {total['skipped']} skipped"
-          + (f", {total['xfailed']} expected failures, {total['xpassed']} XFAIL cases passing now"
-             if total["xfailed"] or total["xpassed"] else ""))
+def print_summary(summary: dict) -> None:
+    for suite, counts in summary["suites"].items():
+        print(f"  {suite}: " + ", ".join(f"{v} {k}" for k, v in sorted(counts.items())))
+    totals = summary["totals"]
+    print("total: " + ", ".join(f"{v} {k}" for k, v in sorted(totals.items())))
+    detection = summary["detection"]
+    if detection.get("cases"):
+        line = f"detection: {detection.get('stops', 0)} of {detection['cases']} bugs stopped"
+        if detection.get("asan"):
+            line += f" (ASan: {detection['asan']})"
+        print(line)
 
 
 def default_build_dir() -> Path:
-    for preset in ("release", "dev"):
-        if (ROOT / "build" / preset / "bin" / "weavec-cc").exists():
-            return ROOT / "build" / preset
+    for name in ("release", "dev"):
+        candidate = ROOT / "build" / name
+        if (candidate / "bin" / "weavec-cc").exists():
+            return candidate
     return ROOT / "build" / "dev"
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter,
-                                     epilog="See test/cases/README.md for the marker grammar.")
+                                     epilog=__doc__.split("\n\n", 1)[1])
     parser.add_argument("--weavec-cc", type=Path, help="weavec-cc to test (default: <build-dir>/bin)")
     parser.add_argument("--weavec", type=Path, help="weavec to test (default: <build-dir>/bin)")
     parser.add_argument("--build-dir", type=Path,
-                        help="build tree whose bin/ holds the binaries (default: build/release, else build/dev)")
+                        help="where bin/ is (default: build/release, else build/dev)")
+    parser.add_argument("--clang", default=None, help="the reference compiler for --asan")
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES, help="the cases tree")
     parser.add_argument("--jobs", "-j", type=int, default=os.cpu_count() or 1,
-                        help="cases run at once (default: the CPU count)")
+                        help="cases run at once")
     parser.add_argument("--checks", choices=("trap", "verify"), default="trap",
-                        help="the -fweavec-checks mode of the executable build (default: trap)")
-    parser.add_argument("--require", choices=("none", "guarded", "checked", "proven"),
-                        help="add -fweavec-require to every build")
+                        help="the -fweavec-checks mode of the builds")
     parser.add_argument("--asan", action="store_true", help="run the ASan oracle for every case")
-    parser.add_argument("--legacy", action="store_true",
-                        help="v0.10.0 semantics against WEAVEC_GOLDEN_DIR: diagnostics only")
-    parser.add_argument("--no-emission", action="store_true",
-                        help="checks are not emitted yet: checked facets stand in for traps")
-    parser.add_argument("--no-run", action="store_true", help="build, diagnostics and ledger only")
-    parser.add_argument("--compare-golden", action="store_true",
-                        help="fail on any difference from the golden binaries' sorted diagnostics")
-    parser.add_argument("--golden-dir", type=Path, default=os.environ.get("WEAVEC_GOLDEN_DIR"),
-                        help="golden v0.10.0 binaries (default: $WEAVEC_GOLDEN_DIR)")
+    parser.add_argument("--no-run", action="store_true", help="analyse and build only")
     parser.add_argument("--filter", action="append", default=[], metavar="GLOB",
-                        help="select cases by path under test/cases, e.g. 'soundness/**' (repeatable)")
+                        help="select cases by path under the cases tree (repeatable)")
     parser.add_argument("--json", type=Path, metavar="OUT", help="write the results as JSON")
-    parser.add_argument("--timeout", type=float, default=COMPILE_TIMEOUT, help="seconds per compile or link")
+    parser.add_argument("--timeout", type=float, default=COMPILE_TIMEOUT,
+                        help="seconds per compile or link")
     parser.add_argument("--run-timeout", type=float, default=RUN_TIMEOUT, help="seconds per run")
     parser.add_argument("--keep", action="store_true", help="keep each case's build directory")
-    parser.add_argument("--lldb", action="store_true",
-                        help="with --checks verify, ask lldb for the category of a trap that the "
-                             "report-mode run also attributes to an unproven check")
     parser.add_argument("--min-stops", type=int, metavar="N",
-                        help="fail unless at least N of the selected detection cases stop (RFC 0034 gate F4: "
-                             "--filter 'detection/**' --min-stops 54)")
-    parser.add_argument("--verbose", "-v", action="store_true", help="print notes too")
+                        help="fail unless at least N detection cases stop")
+    parser.add_argument("--verbose", "-v", action="store_true", help="print passing cases too")
     args = parser.parse_args(argv)
 
-    if args.jobs < 1:
-        parser.error("--jobs must be positive")
-    if args.legacy and args.compare_golden:
-        parser.error("--compare-golden already runs both binaries in legacy mode")
-    if (args.legacy or args.compare_golden) and (args.asan or args.no_emission or args.require
-                                                 or args.checks != "trap"):
-        parser.error("--legacy and --compare-golden take no build, run or ledger options")
-    golden = args.golden_dir.resolve() if args.golden_dir else None
-    build_dir = (args.build_dir or default_build_dir()).resolve()
+    build_dir = args.build_dir or default_build_dir()
     weavec = args.weavec or build_dir / "bin" / "weavec"
     weavec_cc = args.weavec_cc or build_dir / "bin" / "weavec-cc"
-    if args.legacy:
-        if golden is None and args.weavec is None:
-            parser.error("--legacy needs WEAVEC_GOLDEN_DIR (or --golden-dir, or --weavec)")
-        weavec = args.weavec or golden / "weavec"
-    elif args.compare_golden and golden is None:
-        parser.error("--compare-golden needs WEAVEC_GOLDEN_DIR (or --golden-dir)")
-
-    try:
-        cases, _ = discover(args.cases)
-    except OSError as error:
-        print(f"error: cannot read {args.cases}: {error}", file=sys.stderr)
-        return 2
+    for tool in (weavec, weavec_cc):
+        if not tool.exists():
+            print(f"run-cases: {tool} does not exist; build it first", file=sys.stderr)
+            return 2
+    clang = args.clang or shutil.which("clang") or "clang"
+    if args.clang is None:
+        prefix = os.environ.get("WEAVEC_LLVM_PREFIX")
+        if prefix and (Path(prefix) / "bin" / "clang").exists():
+            clang = str(Path(prefix) / "bin" / "clang")
+    cases, _ = discover(args.cases)
     selected = select(cases, args.filter)
     if not selected:
-        print("error: no case matches " + " ".join(args.filter or ["(no filter)"]), file=sys.stderr)
+        print("run-cases: no case selected", file=sys.stderr)
         return 2
-    if args.legacy:
-        needed = [weavec]
-    elif args.compare_golden:
-        needed = [weavec, golden / "weavec"]
-    else:
-        needed = [weavec_cc]
-        if any(c.tool or (not c.has_main and len(c.analysed_units()) > 1) for c in selected):
-            needed.append(weavec)
-    for binary in needed:
-        if not Path(binary).is_file():
-            print(f"error: {binary} does not exist; build it or pass --weavec/--weavec-cc", file=sys.stderr)
-            return 2
-
-    cfg = Config(weavec=Path(weavec).resolve(), weavec_cc=Path(weavec_cc).resolve(),
-                 legacy=args.legacy, checks=args.checks,
-                 require=args.require if args.require and args.require != "none" else None,
-                 asan=args.asan, no_emission=args.no_emission, no_run=args.no_run,
-                 compile_timeout=args.timeout, run_timeout=args.run_timeout, keep=args.keep,
-                 lldb=args.lldb)
-    scratch = Path(tempfile.mkdtemp(prefix="weavec-cases-"))
-    cfg.work = scratch
-    started = time.perf_counter()
+    scratch = Path(tempfile.mkdtemp(prefix="weavec-cases."))
+    cfg = Config(weavec=weavec.resolve(), weavec_cc=weavec_cc.resolve(), clang=clang,
+                 checks=args.checks, asan=args.asan, no_run=args.no_run, keep=args.keep,
+                 compile_timeout=args.timeout, run_timeout=args.run_timeout, scratch=scratch)
+    results: list[dict] = []
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            if args.compare_golden:
-                futures = [pool.submit(compare_case, case, cfg.weavec, golden / "weavec", cfg, scratch)
-                           for case in selected]
-            else:
-                futures = [pool.submit(run_case, case, cfg) for case in selected]
-            results = []
-            for future in futures:
-                result = future.result()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+            for result in pool.map(lambda case: run_case(case, cfg), selected):
                 results.append(result)
-                if args.compare_golden:
-                    label = {"pass": "SAME", "fail": "DIFF", "error": "ERROR", "skip": "SKIP"}[result["status"]]
-                    print(f"{label:5} {result['case']}", flush=True)
-                    for line in result["failures"][:20]:
-                        print(f"      {line}")
-                    if args.verbose or result["status"] == "skip":
-                        for note in result["notes"]:
-                            print(f"      note: {note}")
-                elif result["status"] != "pass" or args.verbose or \
-                        (result.get("detection") or {}).get("flip"):
-                    print_result(result, args.verbose)
+                print_result(result, args.verbose)
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        if not args.keep:
+            shutil.rmtree(scratch, ignore_errors=True)
     summary = summarize(results)
-    print_summary(summary, args.legacy or args.compare_golden, args.compare_golden)
-    if args.compare_golden:
-        excluded = [r["case"] for r in results if r["status"] == "skip"]
-        if excluded:
-            print(f"excluded from the comparison: {len(excluded)} (flags removed from the binary under test)")
-    print(f"({len(results)} cases in {time.perf_counter() - started:.1f} s)")
+    print_summary(summary)
     if args.json:
-        document = {
-            "schema": "weavec-cases", "version": 1,
-            "mode": {"legacy": args.legacy, "compareGolden": args.compare_golden, "checks": args.checks,
-                     "require": args.require or "none", "asan": args.asan,
-                     "noEmission": args.no_emission, "noRun": args.no_run},
-            "binaries": {"weavec": str(cfg.weavec), "weavec-cc": str(cfg.weavec_cc),
-                         "golden": str(golden) if golden else None},
-            "filters": args.filter, "summary": summary,
-            "failures": [{"case": r["case"], "failures": r["failures"]} for r in results
-                         if r["status"] in ("fail", "error")],
-            "cases": results,
-        }
-        args.json.parent.mkdir(parents=True, exist_ok=True)
-        args.json.write_text(json.dumps(document, indent=2) + "\n")
-    ok = all(r["status"] in PASSING_STATUSES for r in results)
-    if args.min_stops is not None:
-        stops = summary["total"].get("detectionStops", 0)
-        cases = summary["total"].get("detectionCases", 0)
-        verdict = "pass" if stops >= args.min_stops else "FAIL"
-        print(f"detection stops: {stops}/{cases} (at least {args.min_stops} wanted): {verdict}")
-        ok = ok and stops >= args.min_stops
-    return 0 if ok else 1
+        args.json.write_text(json.dumps({"summary": summary, "results": results}, indent=2) + "\n")
+    failed = any(r["status"] in ("fail", "error") for r in results)
+    if args.min_stops is not None and summary["detection"].get("stops", 0) < args.min_stops:
+        print(f"run-cases: {summary['detection'].get('stops', 0)} detection stops, fewer than "
+              f"{args.min_stops}", file=sys.stderr)
+        failed = True
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

@@ -33,12 +33,6 @@ static IntegerValue integer(IntegerType type, std::int64_t value) {
 TEST(TargetInteger, TypesAndFullWidthValues) {
   EXPECT_EQ(U64.mask(), UINT64_MAX);
   EXPECT_EQ(I64.signBit(), std::uint64_t{1} << 63U);
-  EXPECT_EQ(IntegerType::parse("u64"), U64);
-  EXPECT_EQ(IntegerType::parse("b1"), BooleanType);
-  EXPECT_FALSE(IntegerType::parse("i0"));
-  EXPECT_FALSE(IntegerType::parse("u65"));
-  EXPECT_FALSE(IntegerType::parse("i032"));
-  EXPECT_FALSE(IntegerType::parse("b8"));
   EXPECT_FALSE((IntegerType{0, true}).valid());
   EXPECT_EQ(IntegerValue::ofBits(U64, UINT64_MAX).toString(),
             "18446744073709551615");
@@ -183,9 +177,8 @@ TEST(TargetInteger, ExhaustiveSmallWidthConcreteArithmetic) {
   }
 }
 
-TEST(IntegerRanges, CanonicalParsingAndJoins) {
+TEST(IntegerRanges, Joins) {
   const auto a = IntegerRange::between(integer(I8, -4), integer(I8, 9));
-  EXPECT_EQ(IntegerRange::parse(a.toString()), a);
   EXPECT_EQ(a.minimum()->signedValue(), -4);
   EXPECT_EQ(a.maximum()->signedValue(), 9);
   EXPECT_FALSE(a.constant());
@@ -196,18 +189,11 @@ TEST(IntegerRanges, CanonicalParsingAndJoins) {
             IntegerRange::between(integer(I8, 5), integer(I8, 9)));
   EXPECT_EQ(a.united(b),
             IntegerRange::between(integer(I8, -4), integer(I8, 20)));
-  EXPECT_EQ(a.widened(b),
-            IntegerRange::between(integer(I8, -4), integer(I8, 127)));
-  EXPECT_EQ(a.widened(a), a);
   // More pieces than the representation keeps collapse to their hull, not to
   // the whole type: `{1, 3, 5}` still excludes 0 and everything above 5.
   const auto pieces = IntegerRange::fromRanks(U8, {{1, 1}, {3, 3}, {5, 5}});
   EXPECT_FALSE(pieces.isFull());
   EXPECT_EQ(pieces, IntegerRange::between(integer(U8, 1), integer(U8, 5)));
-  for (const auto *const text :
-       {"u65:0-1", "u8:0-256", "u8:3-2", "u8:1-1,2-2", "u8:1-1,3-3,5-5",
-        "u8:01-2", "u8:1-2,", "u8:0-1junk"})
-    EXPECT_FALSE(IntegerRange::parse(text)) << text;
 }
 
 TEST(IntegerRanges, ConversionWrapAndBoolean) {
@@ -224,8 +210,6 @@ TEST(IntegerRanges, ConversionWrapAndBoolean) {
   EXPECT_FALSE(widened.contains(integer(U32, 5)));
   EXPECT_TRUE(IntegerRange::full(U64).converted(I8).isFull());
   EXPECT_EQ(IntegerRange::full(U64).toString(), "u64:0-18446744073709551615");
-  EXPECT_EQ(IntegerRange::parse(IntegerRange::full(U64).toString()),
-            IntegerRange::full(U64));
 }
 
 TEST(IntegerRanges, ExhaustiveConversionContainsEveryConcreteImage) {
@@ -399,14 +383,14 @@ TEST(IntegerRanges, AbstractArithmeticContainsIndependentConcreteImages) {
                   invalid |= !expected;
                   if (expected)
                     ASSERT_TRUE(actual.values.contains(*expected))
-                        << toString(op) << ' ' << lhs.toString() << ' '
+                        << static_cast<int>(op) << ' ' << lhs.toString() << ' '
                         << rhs.toString() << " wrap=" << wrapSigned
                         << " misses bits=" << expected->bits;
                 }
               }
               ASSERT_FALSE(actual.alwaysInvalid && valid);
               ASSERT_FALSE(invalid && !actual.mayBeInvalid)
-                  << toString(op) << ' ' << lhs.toString() << ' '
+                  << static_cast<int>(op) << ' ' << lhs.toString() << ' '
                   << rhs.toString();
               if (invalid) {
                 // Invalid arithmetic must not leave a fact usable to prune an
@@ -632,7 +616,7 @@ TEST(IntegerRanges, CheckedArithmeticContainsIndependentMathematicalResults) {
                   ASSERT_TRUE(actual.overflow.contains(IntegerValue{
                       BooleanType,
                       static_cast<std::uint64_t>(exact < lo || exact > hi)}))
-                      << toString(op) << ' ' << lhs.toString() << ' '
+                      << static_cast<int>(op) << ' ' << lhs.toString() << ' '
                       << rhs.toString() << " -> " << output.toString();
                 }
               }
@@ -642,10 +626,6 @@ TEST(IntegerRanges, CheckedArithmeticContainsIndependentMathematicalResults) {
 }
 
 TEST(TargetInteger, MalformedAndOversizedTypesDoNotBecomeSupportedWidths) {
-  for (const auto *const text :
-       {"u4294967297", "i18446744073709551615", "u18446744073709551616", "u+8",
-        "i-1", "b0", "b64"})
-    EXPECT_FALSE(IntegerType::parse(text)) << text;
   for (const auto type :
        {IntegerType{.width = 0, .isSigned = false},
         IntegerType{.width = 65, .isSigned = true},

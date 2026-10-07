@@ -1,38 +1,27 @@
-# The runtime libraries of RFC 0030 and RFC 0032, built for the host and
-# installed under lib/weavec next to include/weavec.h:
+# The runtime libraries of RFC 0035, built for the host and installed under
+# lib/weavec next to include/weavec.h:
 #
-#   libweavec_rt.a     the runtime every enforcing link carries (RFC 0032):
-#                      the arena allocator, the object table (heap, stack and
-#                      global objects), the guards, and __weavec_rt_report
+#   libweavec_rt.a     the runtime every enforcing link carries: the arena
+#                      allocator and its shadow memory, the guards' slow
+#                      paths, the checked library calls, frame and global
+#                      registration, and the reports
 #   libweavec_alloc.a  malloc, free and the rest of the standard allocation
 #                      functions over the arena; left out of a link whose
 #                      program defines the allocator itself (RFC 0032, 2.6)
-#   libweavec_chk.a    out-of-line check helpers, for precompiled headers and
-#                      modules (RFC 0030, 10.9), generated from the prelude
-#                      itself by `weavec-cc -fweavec-print-prelude=out-of-line`
 set(WEAVEC_RUNTIME_OUTPUT_DIR
     "${PROJECT_BINARY_DIR}/${WEAVEC_RESOURCE_DIR_RELATIVE}")
 
-set(_weavec_chk_inc "${CMAKE_CURRENT_BINARY_DIR}/weavec_chk_helpers.inc")
-set(_weavec_chk_report_inc
-    "${CMAKE_CURRENT_BINARY_DIR}/weavec_chk_report_helpers.inc")
-add_custom_command(
-  OUTPUT "${_weavec_chk_inc}" "${_weavec_chk_report_inc}"
-  COMMAND weavec-cc -fweavec-print-prelude=out-of-line -fweavec-checks=verify -o
-          "${_weavec_chk_inc}"
-  COMMAND weavec-cc -fweavec-print-prelude=out-of-line -fweavec-checks=report -o
-          "${_weavec_chk_report_inc}"
-  DEPENDS weavec-cc
-  COMMENT "Generating the out-of-line check helpers")
+# The guard pass calls the slow paths with Clang's preserve_all convention
+# (weavec_rt.h).
+if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+  message(FATAL_ERROR "The WeaveC runtime must be built with Clang (CC).")
+endif()
 
-add_library(weavec_rt STATIC weavec_alloc.c weavec_objects.c weavec_owner.c
-                             weavec_report.c weavec_rt.h)
+add_library(weavec_rt STATIC weavec_alloc.c weavec_guard.c weavec_libc.c
+                             weavec_owner.c weavec_report.c weavec_rt.h)
 add_library(weavec_alloc STATIC weavec_malloc.c weavec_rt.h)
-add_library(weavec_chk STATIC weavec_chk.c weavec_chk_report.c
-                              "${_weavec_chk_inc}" "${_weavec_chk_report_inc}")
-target_include_directories(weavec_chk PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 
-foreach(_weavec_runtime IN ITEMS weavec_rt weavec_alloc weavec_chk)
+foreach(_weavec_runtime IN ITEMS weavec_rt weavec_alloc)
   # C, so none of weavec::options' C++ flags.
   set_target_properties(
     ${_weavec_runtime} PROPERTIES ARCHIVE_OUTPUT_DIRECTORY
@@ -87,7 +76,7 @@ if(WEAVEC_BUILD_TESTS)
 endif()
 
 if(WEAVEC_INSTALL)
-  install(TARGETS weavec_rt weavec_alloc weavec_chk
+  install(TARGETS weavec_rt weavec_alloc
           ARCHIVE DESTINATION "${WEAVEC_RESOURCE_DIR_RELATIVE}"
                   COMPONENT WeaveC_Runtime)
 endif()

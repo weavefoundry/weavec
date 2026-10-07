@@ -13,18 +13,18 @@ static char *xmalloc(size_t n) {
 
 static void put_eight(char *b) {
   for (int i = 0; i < 8; i++)
-    b[i] = 'A';
+    b[i] = 'A'; // TRAP
 }
 
 void bad(void) {
   char *buf = xmalloc(4);
-  put_eight(buf); // BUG: out-of-bounds // TRAP: len
+  put_eight(buf); // BUG: out-of-bounds
   free(buf);
 }
 
 void bad_direct(void) {
   char *buf = xmalloc(4);
-  buf[4] = 0; // BUG: out-of-bounds // TRAP: index
+  buf[4] = 0; // BUG: out-of-bounds // TRAP
   free(buf);
 }
 

@@ -55,10 +55,10 @@ npm run test:browser
 
 The build checks TypeScript, every internal page and fragment link, local assets, canonical URLs, metadata, search output, and the 404 page. Browser tests exercise desktop and mobile navigation, search, RFC filtering, both themes, and accessibility.
 
-Tutorial examples are also exercised against WeaveC by the compiler CI: `weavec` must report the use-after-free example and accept its fix, and `weavec-cc` must record the lookup example's checked index in the ledger and trap on a negative index. You can run them locally from the repository root; `weavec-cc` is taken from the same directory unless `--weavec-cc` names it:
+Tutorial examples are also exercised against WeaveC by the compiler CI: `weavec` must report the use-after-free example and accept its fix; `weavec-cc` must record the lookup example's guarded load in the enforcement ledger and stop a negative index with an `index-out-of-bounds` report, and must stop the vector example's read past its heap block with a `heap-buffer-overflow` report. You can run them locally from the repository root; `weavec-cc` is taken from the same directory unless `--weavec-cc` names it:
 
 ```sh
-python3 docs/scripts/check-examples.py --weavec build/dev/bin/weavec
+python3 docs/scripts/check-examples.py --weavec build/dev/bin/weavec --weavec-cc build/dev/bin/weavec-cc
 ```
 
 ## GitHub Pages deployment

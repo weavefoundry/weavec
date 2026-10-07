@@ -15,35 +15,35 @@
 struct pair { int a; long b; };
 struct box { char *s, *e; struct pair *v, *ve; struct pair **pp; };
 static int plus(struct box *b, long k) {
-  return *(b->s + k); // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return *(b->s + k); // BUG: out-of-bounds // TRAP
 }
 static int plus_arrow(struct box *b, long k) {
-  return (int)(b->v + k)->b; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return (int)(b->v + k)->b; // BUG: out-of-bounds // TRAP
 }
 static int plus_swapped(struct box *b, long k) {
-  return *(k + b->s); // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return *(k + b->s); // BUG: out-of-bounds // TRAP
 }
 static int deref_member(struct box *b, long k) {
-  return (int)(*(b->v + k)).b; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return (int)(*(b->v + k)).b; // BUG: out-of-bounds // TRAP
 }
 static int local(struct box *b, long k) {
   const char *p = b->s + k;
-  return *p; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return *p; // BUG: out-of-bounds // TRAP
 }
 static int advance(struct box *b, long k) {
   const char *p = b->s;
   p += k;
-  return *p; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return *p; // BUG: out-of-bounds // TRAP
 }
 static int walk(struct box *b, long k) {
   const char *p = b->s;
   long j;
   for (j = 0; j < k; j++) p++;
-  return *p; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return *p; // BUG: out-of-bounds // TRAP
 }
 static int postincrement(struct box *b, long k) {
   const char *p = b->s + k;
-  return *p++; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return *p++; // BUG: out-of-bounds // TRAP
 }
 int main(int argc, char **argv) {
   struct box b;

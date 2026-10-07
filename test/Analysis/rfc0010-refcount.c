@@ -32,7 +32,7 @@ static struct obj *obj_ref(struct obj *o) {
 
 // The unref: a release guarded by the count. The object engine does not infer
 // RFC 0010 count functions yet, so it is a possible release of `o` and its
-// name (RFC 0031 §5.5; test/cases/KNOWN-DIFFERENCES.md).
+// name (RFC 0031 §5.5; the retired golden comparison of RFC 0030).
 // DUMP-LABEL: function 'obj_unref':
 // DUMP: release *param0 free may when always
 // DUMP: release *param0->name free may when always
@@ -105,7 +105,7 @@ int stored_share(struct holder *h) {
 // release of a share this function does not own is a discipline.
 // Without RFC 0010 count inference the object engine gives a possible use
 // after free here: a warning on correct code (RFC 0031 §5.5;
-// test/cases/KNOWN-DIFFERENCES.md, *Lit tests*).
+// the retired golden comparison of RFC 0030, *Lit tests*).
 void keep(struct obj *o) { obj_ref(o); }
 int retained_then_released(struct obj *o) {
   obj_ref(o);
@@ -144,7 +144,7 @@ int use_after_last(void) {
 // The old engine reported a definite use after the share release. Without
 // count inference the object engine reports a possible use after free: an
 // error became a warning, the facet is still not proven (RFC 0031 §5.5;
-// test/cases/KNOWN-DIFFERENCES.md, *Lit tests*).
+// the retired golden comparison of RFC 0030, *Lit tests*).
 int released_borrow(struct obj *o) {
   obj_unref(o);
   // CHECK: rfc0010-refcount.c:[[@LINE+1]]:10: warning: use of 'o' after it may have been freed [weavec::use-after-free]
@@ -187,7 +187,7 @@ struct list {
 // The old engine reported `'p' is leaked` (note: reference taken here) at the
 // `obj_ref`. The object engine does not infer the count, so a share taken on
 // a borrowed object is not an owned object and its leak is not reported: a
-// lost warning (RFC 0031 §5.5; test/cases/KNOWN-DIFFERENCES.md, *Lit tests*).
+// lost warning (RFC 0031 §5.5; the retired golden comparison of RFC 0030, *Lit tests*).
 void local_retained(struct list *l) {
   struct obj *p = l->head;
   obj_ref(p);

@@ -36,11 +36,9 @@ add_custom_target(
   USES_TERMINAL)
 add_dependencies(check-weavec check-weavec-unit)
 
-# RFC 0030 §15: one case tree under test/cases/, run by scripts/run-cases.py
-# (registered in cases/CMakeLists.txt). The recall pins and the evaluation
-# programs live there now, so scripts/recall.py and scripts/evaluate.py are
-# gone. What is left here needs only Python: the harness tests of the scripts
-# that survive.
+# The case tree under test/cases/ is run by scripts/run-cases.py (registered
+# in cases/CMakeLists.txt). What is left here needs only Python: the tests of
+# the corpus gate and the hygiene gate.
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
   add_test(NAME corpus-harness
@@ -91,7 +89,7 @@ set(WEAVEC_LIT_JOBS
 add_custom_target(
   check-weavec-lit
   COMMAND "${WEAVEC_LIT}" ${WEAVEC_LIT_ARGS} "${CMAKE_CURRENT_BINARY_DIR}"
-  DEPENDS weavec weavec-cc weavec_rt weavec_alloc weavec_chk
+  DEPENDS weavec weavec-cc weavec_rt weavec_alloc
   COMMENT "Running WeaveC lit tests"
   USES_TERMINAL)
 add_dependencies(check-weavec check-weavec-lit)

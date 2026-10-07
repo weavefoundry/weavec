@@ -72,30 +72,6 @@ SlotCollection::function(llvm::StringRef name) const {
   return found == functions.end() ? nullptr : found->second;
 }
 
-std::optional<core::SlotKey>
-SlotCollection::slotOf(const clang::ValueDecl &decl) const {
-  if (const auto *field = llvm::dyn_cast<clang::FieldDecl>(&decl))
-    return core::SlotKey::field(
-        SlotCollector::recordSlotKey(*field->getParent(), decl.getASTContext(),
-                                     unitName),
-        field->getNameAsString());
-  const auto *variable = llvm::dyn_cast<clang::VarDecl>(&decl);
-  if (variable == nullptr || llvm::isa<clang::ParmVarDecl>(variable) ||
-      !variable->hasGlobalStorage())
-    return std::nullopt;
-  const std::string own = variable->getNameAsString();
-  if (variable->isStaticLocal()) {
-    const auto *function =
-        llvm::dyn_cast<clang::FunctionDecl>(variable->getDeclContext());
-    return core::SlotKey::staticGlobal(
-        unitName,
-        (function != nullptr ? function->getNameAsString() + "." : "") + own);
-  }
-  return variable->isExternallyVisible()
-             ? core::SlotKey::global(own)
-             : core::SlotKey::staticGlobal(unitName, own);
-}
-
 /// The reference that names a direct call's callee, through `*`, `&` and
 /// parentheses.
 static const clang::DeclRefExpr *

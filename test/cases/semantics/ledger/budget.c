@@ -6,12 +6,10 @@
 // unresolved(budget); temporal unresolved(budget). The function's row and the summary list
 // it as over budget.
 // FLAGS: -fweavec-budget=1
-// EXPECT-LEDGER: /summary/overBudget/0 == "walk"
-// EXPECT-LEDGER: /units/0/functions/0/overBudget == true
 int walk(const int *p, int n, int k) {
   int a[4] = {0};
   int s = 0;
   for (int i = 0; i < n; i++)
-    s += p[i]; // UNRESOLVED: spatial:budget // UNRESOLVED: temporal:budget // TRAP: nonnull
-  return s + a[k]; // TRAP: index
+    s += p[i]; // TRAP
+  return s + a[k]; // TRAP
 }

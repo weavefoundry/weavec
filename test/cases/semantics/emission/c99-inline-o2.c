@@ -8,12 +8,12 @@
 // definition, used only by a call that is not inlined, is in the second unit.
 // Without the runtime: the guards of p[i] would make 'get' too large for the
 // inliner in report mode, and the call would reach the second unit's definition.
-// FLAGS: -O2 -fno-weavec-runtime
+// FLAGS: -O2
 // UNITS: Inputs/inline-get-extern.c
 // RUN-INPUT:
 inline int get(const int *p, int i) {
   if (i < 0) return -1;
-  return p[i]; // TRAP: nonnull
+  return p[i]; // TRAP
 }
 
 int main(int argc, char **argv) {

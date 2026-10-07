@@ -375,9 +375,6 @@ static void readAnnotations(const clang::Decl &decl, clang::QualType type,
     table.addProblem(
         KindProblem{.location = at, .message = std::move(message)});
   };
-  // §6.3: `WEAVEC_REQUIRE_SAFE` goes before a function.
-  if (annotations.requireSafe && position != Position::Result)
-    problem("WEAVEC_REQUIRE_SAFE on " + subject + ", which is not a function");
   if (annotations.nonNull)
     facts.addNullability(KindLevel::Annotation, core::Nullability::Nonnull, at);
   if (annotations.nullable)
@@ -661,15 +658,11 @@ void AttributeReader::readFunction(const clang::FunctionDecl &function,
 
     // The result: nullability, and `WEAVEC_STRING` (§7.2). The function's
     // own name is no sibling of its result.
-    const AnnotationSet onFunction = getAnnotations(*redecl);
     const clang::SourceLocation at = redecl->getLocation();
     readAnnotations(
         *redecl, redecl->getReturnType(),
         [](llvm::StringRef) -> std::optional<Sibling> { return std::nullopt; },
         result, table, Position::Result);
-    // §6.3: `WEAVEC_REQUIRE_SAFE` holds the function to `checked`.
-    if (onFunction.requireSafe)
-      table.setRequireSafe(canonical);
     if (redecl->getReturnType()->isPointerType()) {
       if (redecl->hasAttr<clang::ReturnsNonNullAttr>())
         result.addNullability(level, core::Nullability::Nonnull, at);
@@ -708,8 +701,7 @@ void AttributeReader::readField(const clang::FieldDecl &field,
   const clang::QualType type = field.getType();
   if (!type->isPointerType() && !type->isArrayType()) {
     // Only malformed annotations to report: an extent on a non-pointer.
-    if (const AnnotationSet set = getAnnotations(field);
-        set.extent() || set.requireSafe) {
+    if (const AnnotationSet set = getAnnotations(field); set.extent()) {
       PositionFacts ignored(table, field.getNameAsString());
       readAnnotations(
           field, type,
@@ -765,8 +757,7 @@ void AttributeReader::readVariable(const clang::VarDecl &variable,
                                    KindTable &table) {
   const clang::QualType type = variable.getType();
   const AnnotationSet annotations = getAnnotations(variable);
-  if (!type->isPointerType() && !annotations.extent() &&
-      !annotations.requireSafe)
+  if (!type->isPointerType() && !annotations.extent())
     return;
   PositionFacts facts(table, variable.getNameAsString());
   readAnnotations(
