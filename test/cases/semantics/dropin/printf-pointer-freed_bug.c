@@ -7,7 +7,7 @@
 #include <string.h>
 static void drop(char *p, int really) { if (really) free(p); }
 static void show(FILE *f, const char *name) {
-  fprintf(f, "name=%s\n", name); // TRAP: object
+  fprintf(f, "name=%s\n", name); // TRAP
 }
 int main(int argc, char **argv) {
   if (argc < 2) return 2;

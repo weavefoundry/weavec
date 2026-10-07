@@ -6,5 +6,5 @@ int main(int argc, char **argv) {
   (void)argv;
   union pun u;
   u.bits = (uintptr_t)argc * 0x1000u;
-  return *u.p; // BUG: out-of-bounds // NOT-PROVEN: spatial
+  return *u.p; // BUG: out-of-bounds
 }

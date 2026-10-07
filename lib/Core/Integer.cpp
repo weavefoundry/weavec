@@ -40,30 +40,6 @@ std::string IntegerType::toString() const {
                    : std::string(isSigned ? "i" : "u") + std::to_string(width);
 }
 
-static std::optional<std::uint64_t> unsignedNumber(std::string_view text) {
-  if (text.empty() || (text.size() > 1 && text.front() == '0'))
-    return std::nullopt;
-  std::uint64_t value = 0;
-  const auto [end, error] =
-      std::from_chars(text.data(), text.data() + text.size(), value);
-  if (error != std::errc{} || end != text.data() + text.size())
-    return std::nullopt;
-  return value;
-}
-
-std::optional<IntegerType> IntegerType::parse(std::string_view text) {
-  if (text == "b1")
-    return BooleanType;
-  if (text.size() < 2 || (text.front() != 'i' && text.front() != 'u'))
-    return std::nullopt;
-  const auto width = unsignedNumber(text.substr(1));
-  if (!width || *width < 1 || *width > 64)
-    return std::nullopt;
-  return IntegerType{.width = static_cast<unsigned>(*width),
-                     .isSigned = text.front() == 'i',
-                     .isBoolean = false};
-}
-
 IntegerValue IntegerValue::ofBits(IntegerType type,
                                   std::uint64_t bits) noexcept {
   return {.type = type,
@@ -102,24 +78,6 @@ std::string IntegerValue::toString() const {
   return (negative() ? "-" : "") + std::to_string(magnitude());
 }
 
-static constexpr std::array<std::string_view, 21> OperatorNames{
-    "add", "sub", "mul", "div", "rem", "shl",  "shr",
-    "and", "or",  "xor", "neg", "not", "lnot", "eq",
-    "ne",  "lt",  "le",  "gt",  "ge",  "min",  "max"};
-
-std::string_view toString(IntegerOp op) noexcept {
-  const auto index = static_cast<std::size_t>(op);
-  return index < OperatorNames.size() ? std::span(OperatorNames)[index]
-                                      : "invalid";
-}
-
-std::optional<IntegerOp> parseIntegerOp(std::string_view text) {
-  const auto *const it = std::ranges::find(OperatorNames, text);
-  if (it == OperatorNames.end())
-    return std::nullopt;
-  return static_cast<IntegerOp>(std::distance(OperatorNames.begin(), it));
-}
-
 bool isUnary(IntegerOp op) noexcept {
   return op == IntegerOp::Negate || op == IntegerOp::Complement ||
          op == IntegerOp::LogicalNot;
@@ -143,21 +101,6 @@ IntegerOp negateComparison(IntegerOp op) noexcept {
     return IntegerOp::LessEqual;
   case IntegerOp::GreaterEqual:
     return IntegerOp::Less;
-  default:
-    return op;
-  }
-}
-
-IntegerOp reverseComparison(IntegerOp op) noexcept {
-  switch (op) {
-  case IntegerOp::Less:
-    return IntegerOp::Greater;
-  case IntegerOp::LessEqual:
-    return IntegerOp::GreaterEqual;
-  case IntegerOp::Greater:
-    return IntegerOp::Less;
-  case IntegerOp::GreaterEqual:
-    return IntegerOp::LessEqual;
   default:
     return op;
   }
@@ -349,26 +292,6 @@ bool IntegerRange::contains(IntegerValue value) const noexcept {
   });
 }
 
-bool IntegerRange::contains(const IntegerRange &other) const noexcept {
-  if (type != other.type)
-    return false;
-  return std::ranges::all_of(other.intervals, [this](const auto &range) {
-    return std::ranges::any_of(intervals, [&range](const auto &mine) {
-      return mine.lower <= range.lower && mine.upper >= range.upper;
-    });
-  });
-}
-
-bool IntegerRange::disjoint(const IntegerRange &other) const noexcept {
-  if (type != other.type)
-    return false;
-  for (const auto &a : intervals)
-    for (const auto &b : other.intervals)
-      if (a.lower <= b.upper && b.lower <= a.upper)
-        return false;
-  return true;
-}
-
 std::optional<IntegerValue> IntegerRange::constant() const noexcept {
   if (intervals.size() != 1 ||
       intervals.front().lower != intervals.front().upper)
@@ -441,22 +364,6 @@ IntegerRange IntegerRange::united(const IntegerRange &other) const {
   return fromRanks(type, std::move(ranges));
 }
 
-IntegerRange IntegerRange::widened(const IntegerRange &other) const {
-  if (type != other.type)
-    return full(type);
-  if (empty())
-    return other;
-  if (other.empty() || contains(other))
-    return *this;
-  const auto lower = other.intervals.front().lower < intervals.front().lower
-                         ? 0
-                         : intervals.front().lower;
-  const auto upper = other.intervals.back().upper > intervals.back().upper
-                         ? type.mask()
-                         : intervals.back().upper;
-  return fromRanks(type, {{.lower = lower, .upper = upper}});
-}
-
 IntegerRange IntegerRange::satisfying(IntegerOp op,
                                       const IntegerRange &rhs) const {
   if (type != rhs.type || !isComparison(op))
@@ -511,40 +418,6 @@ std::string IntegerRange::toString() const {
     text += std::to_string(range.lower) + "-" + std::to_string(range.upper);
   }
   return text;
-}
-
-std::optional<IntegerRange> IntegerRange::parse(std::string_view text) {
-  if (text.size() > 128)
-    return std::nullopt;
-  const auto colon = text.find(':');
-  if (colon == std::string_view::npos)
-    return std::nullopt;
-  const auto type = IntegerType::parse(text.substr(0, colon));
-  if (!type)
-    return std::nullopt;
-  text.remove_prefix(colon + 1);
-  std::vector<IntegerInterval> ranges;
-  while (!text.empty()) {
-    const auto comma = text.find(',');
-    const auto part = text.substr(0, comma);
-    const auto dash = part.find('-');
-    if (dash == std::string_view::npos || ranges.size() >= MaxIntegerIntervals)
-      return std::nullopt;
-    const auto lower = unsignedNumber(part.substr(0, dash));
-    const auto upper = unsignedNumber(part.substr(dash + 1));
-    if (!lower || !upper || *lower > *upper || *upper > type->mask())
-      return std::nullopt;
-    if (!ranges.empty() && (ranges.back().upper == UINT64_MAX ||
-                            *lower <= ranges.back().upper + 1))
-      return std::nullopt;
-    ranges.push_back({.lower = *lower, .upper = *upper});
-    if (comma == std::string_view::npos)
-      break;
-    text.remove_prefix(comma + 1);
-    if (text.empty())
-      return std::nullopt;
-  }
-  return fromRanks(*type, std::move(ranges));
 }
 
 static std::optional<std::vector<IntegerValue>>

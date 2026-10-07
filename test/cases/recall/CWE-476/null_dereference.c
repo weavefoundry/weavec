@@ -15,12 +15,12 @@ void bad_unchecked_malloc(void) {
 
 void bad_assigned_null(void) {
   int *p = NULL;
-  *p = 1; // BUG: null-dereference // TRAP: nonnull
+  *p = 1; // BUG: null-dereference // TRAP
 }
 
 void bad_after_test(int *p) {
   if (p == NULL)
-    print_int(*p); // BUG: null-dereference // TRAP: nonnull
+    print_int(*p); // BUG: null-dereference // TRAP
 }
 
 void good(void) {

@@ -7,7 +7,7 @@
 #include <string.h>
 struct builder { char *data; size_t cap; };
 static void append(struct builder *b, const char *s) {
-  strcat(b->data, s); // BUG: out-of-bounds // TRAP: len
+  strcat(b->data, s); // BUG: out-of-bounds // TRAP
 }
 int main(int argc, char **argv) {
   struct builder b;

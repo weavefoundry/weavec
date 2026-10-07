@@ -3,7 +3,7 @@ title: Contribute to WeaveC
 description: Build the project, understand the architecture, propose design changes, and contribute tests or documentation.
 ---
 
-WeaveC is developed in the [weavefoundry/weavec repository](https://github.com/weavefoundry/weavec). Contributions can improve diagnostics, supported C patterns, test coverage, performance, or the documentation itself.
+WeaveC is developed in the [weavefoundry/weavec repository](https://github.com/weavefoundry/weavec). Contributions can improve the guards and the runtime, the advisory analysis and its diagnostics, test coverage, performance, or the documentation itself.
 
 ## Set up the compiler
 
@@ -15,18 +15,18 @@ cmake --build --preset dev
 ctest --preset dev
 ```
 
-The [architecture guide](/internals/architecture/) explains the three libraries: Core owns the model and the ledger, Analysis bridges Clang to Core behind the engine seam, and Frontend orchestrates check insertion, the driver, program analysis, and diagnostics.
+The [architecture guide](/internals/architecture/) explains the three libraries and the runtime: Core owns the model and the library table, Analysis bridges Clang to Core behind the engine seam, Frontend holds the guard passes, the enforcement ledger, the compiler driver, whole-program analysis and diagnostics, and `runtime/` is the C runtime every enforcing link carries.
 
 ## Read the design before changing it
 
-Ownership semantics, checker rules, annotations, diagnostic identifiers, and serialized cross-unit contracts are specified by RFCs. Read the relevant accepted RFC before changing those areas. Propose a new RFC for a new design decision; a bug fix that restores the specified behavior does not need one.
+Ownership semantics, checker rules, annotations, diagnostic identifiers, the guards and the rules that remove them, the runtime and its reports, and the ledger format are specified by RFCs. Read the relevant accepted RFC before changing those areas. Propose a new RFC for a new design decision; a bug fix that restores the specified behavior does not need one.
 
 Start with the [RFC process](/rfcs/process/#process) and [RFC library](/rfcs/). Core must remain independent of Clang and LLVM headers.
 
 ## Make a reviewable change
 
-- Add meaningful unit and integration coverage for changed behavior. Name new tests by feature (`test/cases/<area>/…`, `test/Emission/<feature>-*.c`); existing `rfcNNNN-` names may stay.
-- Every new diagnostic needs a stable ID, an annotation-reference entry, resolution guidance in `docs/data/diagnostic-remedies.json`, a unit test, and a lit test pinning its exact message.
+- Add meaningful unit and integration coverage for changed behavior. Name new tests by feature (`test/cases/<area>/…`, `test/Guards/<feature>.c`); existing `rfcNNNN-` names may stay.
+- Every new diagnostic needs a stable ID, an annotation-reference entry, resolution guidance in `docs/data/diagnostic-remedies.json`, a unit test, and a lit test pinning its exact message. A new or changed run-time report needs a lit test in `test/Guards/` pinning its exact text.
 - Use Conventional Commit titles and update the relevant user guide.
 - Run formatting and required checks. Generated build outputs are not source files.
 - Leave `CHANGELOG.md` to semantic-release; do not edit it manually.

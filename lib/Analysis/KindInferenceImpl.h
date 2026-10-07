@@ -188,8 +188,7 @@ struct SlotAddressArgument {
 };
 
 /// A function's CFG (every expression an element, in evaluation order) with
-/// its post-dominator tree and where each statement sits (§7.4 rule 7,
-/// §7.5).
+/// its post-dominator tree and where each statement sits (§7.5).
 struct FunctionCfg {
   std::unique_ptr<clang::CFG> cfg;
   std::unique_ptr<clang::CFGPostDomTree> postDominators;
@@ -308,11 +307,6 @@ public:
   // -- Results ----------------------------------------------------------------
   std::vector<ResolvedCandidate> candidates;
   std::vector<DisqualifiedRecord> disqualified;
-  std::vector<StoreGroup> groups;
-  /// `groups` by each of their stores (`KindInferenceResult::groupsOf`).
-  mutable llvm::DenseMap<const clang::Stmt *, llvm::SmallVector<unsigned, 1>>
-      groupsByStore;
-  mutable bool groupsIndexed = false;
   mutable llvm::DenseMap<const clang::FunctionDecl *, bool> returns;
 
   // -- Steps ------------------------------------------------------------------
@@ -322,7 +316,6 @@ public:
   void fillTable();
   void inferMustAccess();
   void inferFieldCandidates();
-  void collectStoreGroups();
 
   // Helpers shared by the steps.
   [[nodiscard]] std::optional<unsigned>

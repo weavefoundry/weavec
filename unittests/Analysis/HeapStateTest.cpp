@@ -21,7 +21,7 @@ using Strings = std::vector<std::string>;
 /// `text`, or empty when there is none.
 static std::string outcomeAt(const test::AnalysisResult &result,
                              std::string_view text, core::Facet facet) {
-  for (const core::UnitLedger &unit : result.planned.ledger.units)
+  for (const core::UnitLedger &unit : result.ledger.units)
     for (const core::FunctionLedger &function : unit.functions)
       for (const core::Site &site : function.sites) {
         const core::FacetRecord *record = site.facet(facet);

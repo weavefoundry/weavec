@@ -6,23 +6,17 @@
 // RUN: not %weavec --whole-program %s %S/Inputs/handlers.c -- 2>&1 | FileCheck %s
 //
 // Alone, the call through `h` has no candidates: it is a call into unknown
-// code (RFC 0030 §5.1), a ledger row, and nothing is reported.
-// RUN: %weavec --ledger=%t.json %s -- 2>&1 | FileCheck --check-prefix=ALONE %s
-// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
+// code (RFC 0030 §5.1), not proven, and nothing is reported.
+// RUN: %weavec %s -- 2>&1 | FileCheck --check-prefix=ALONE %s
 #include "../Inputs/prelude.h"
 
 void (*get_handler(void))(void *);
 
 // ALONE-NOT: {{warning|error}}:
 // ALONE: 0 errors, 0 warnings
-// LEDGER: "text": "get_handler()",
-// LEDGER: "reason": "unknown-callee",
 // RFC 0030 §9.3: an indirect call through a slot with no known target. The
 // object engine takes the slot solution (RFC 0031 *Indirect calls at link*),
 // whose detail names the open source of the slot.
-// LEDGER: "text": "h(buf)",
-// LEDGER: "reason": "callback",
-// LEDGER-NEXT: "detail": "the result of 'get_handler', which has no body here",
 
 int run(void) {
   char *buf = malloc(4);

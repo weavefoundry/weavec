@@ -7,7 +7,6 @@
 // The fields are cleared, so no boundary is left holding a released pointer: no temporal
 // facet of the unit is unresolved.
 // CLEAN
-// EXPECT-LEDGER: /summary/facets/temporal/unresolved == 0
 #include <stdlib.h>
 
 struct pair { int *a; int *b; };

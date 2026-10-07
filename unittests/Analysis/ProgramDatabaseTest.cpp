@@ -61,7 +61,7 @@ struct NodeProgram {
     // record is not among them), so its slots stay open.
     auto facts = std::make_shared<analysis::ProgramFacts>();
     core::SlotRules rules = unit.harness->kinds->slots.rules();
-    rules.scope = core::SlotScope::Link;
+    rules.scope = core::SlotScope::Program;
     facts->slots = unit.harness->kinds->slots.exported().solve(rules);
     db.programFacts = std::move(facts);
   }

@@ -7,6 +7,6 @@
 
 int twice(int *p, int i) {
   int a;
-  WEAVEC_UNSAFE { a = p[i]; } // TRUSTED: spatial:unsafe // TRUSTED: null:unsafe
-  return a + p[0]; // TRAP: nonnull
+  WEAVEC_UNSAFE { a = p[i]; }
+  return a + p[0]; // TRAP
 }

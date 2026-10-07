@@ -98,10 +98,6 @@ TEST(PointerKind, ExtentTerms) {
             ExtentTerm::constant(4));
   EXPECT_NE(ExtentTerm::of(ExtentPath::ofParam(2), 4, 0),
             ExtentTerm::of(ExtentPath::ofParam(2), 2, 0));
-  EXPECT_EQ(ExtentPath::parse(".count"), ExtentPath::ofField("count"));
-  EXPECT_EQ(ExtentPath::parse("param 7"), ExtentPath::ofParam(7));
-  EXPECT_FALSE(ExtentPath::parse("param"));
-  EXPECT_FALSE(ExtentPath::parse(".a.b"));
 }
 
 TEST(PointerKind, JoinOfEqualKindsIsTheKind) {
@@ -171,59 +167,6 @@ TEST(PointerKind, JoinOfNullabilityAndSource) {
   EXPECT_EQ(join(inferred, declared), joined);
 }
 
-TEST(PointerKind, RequirementsCombineByConjunction) {
-  KindRequirements requirements;
-  EXPECT_TRUE(requirements.empty());
-  EXPECT_EQ(requirements.toString(), "unknown nullable");
-  requirements.add(PointerKind::counted(paramOne()));
-  requirements.add(PointerKind::single(Nullability::Nonnull));
-  EXPECT_EQ(requirements.nullability(), Nullability::Nonnull);
-  ASSERT_EQ(requirements.shapes().size(), 2U);
-  // Every shape requirement carries the conjunction's nullability.
-  EXPECT_EQ(requirements.toString(),
-            "single nonnull & counted(param 1 scale 1 plus 0) nonnull");
-  // `unknown` adds only its nullability; duplicates merge.
-  requirements.add(PointerKind::unknown());
-  requirements.add(PointerKind::counted(paramOne()));
-  EXPECT_EQ(requirements.shapes().size(), 2U);
-}
-
-TEST(PointerKind, RequirementConjunctionIsCanonical) {
-  const KindRequirements a(PointerKind::counted(ExtentTerm::constant(4)));
-  KindRequirements b(PointerKind::counted(ExtentTerm::constant(8)));
-  b.add(PointerKind::nulTerminated(Nullability::Nonnull));
-  const KindRequirements ab = conjoin(a, b);
-  EXPECT_EQ(ab, conjoin(b, a));
-  // Two constants of one shape and source: the larger implies the smaller.
-  EXPECT_EQ(ab.toString(), "counted(8) nonnull & nul-terminated nonnull");
-  // Different sources are enforced differently and stay apart.
-  KindRequirements c(PointerKind::counted(
-      ExtentTerm::constant(4), Nullability::Nullable, KindSource::Declared));
-  c.add(PointerKind::counted(ExtentTerm::constant(8)));
-  EXPECT_EQ(c.shapes().size(), 2U);
-  // Equal requirements keep the stronger source.
-  KindRequirements d(PointerKind::counted(paramOne()));
-  d.add(PointerKind::counted(paramOne(), Nullability::Nullable,
-                             KindSource::Declared));
-  ASSERT_EQ(d.shapes().size(), 1U);
-  EXPECT_EQ(d.shapes()[0].source, KindSource::Declared);
-}
-
-TEST(PointerKind, RequirementSpellingsRoundTrip) {
-  KindRequirements requirements(PointerKind::single(Nullability::Nonnull));
-  requirements.add(PointerKind::endedBy(ExtentPath::ofParam(2), 1));
-  const auto parsed = KindRequirements::parse(requirements.toString());
-  ASSERT_TRUE(parsed);
-  EXPECT_EQ(*parsed, requirements);
-  const auto onlyNonnull = KindRequirements::parse("unknown nonnull");
-  ASSERT_TRUE(onlyNonnull);
-  EXPECT_FALSE(onlyNonnull->empty());
-  EXPECT_TRUE(onlyNonnull->shapes().empty());
-  EXPECT_EQ(onlyNonnull->nullability(), Nullability::Nonnull);
-  EXPECT_FALSE(KindRequirements::parse("single nonnull &"));
-  EXPECT_FALSE(KindRequirements::parse(""));
-}
-
 TEST(PointerKind, ExtentClasses) {
   EXPECT_FALSE(extentClassOf(PointerKind::unknown()));
   EXPECT_FALSE(extentClassOf(
@@ -245,8 +188,6 @@ TEST(PointerKind, ExtentClasses) {
   EXPECT_TRUE(isCheckOperand(ExtentClass::Exact));
   EXPECT_TRUE(isCheckOperand(ExtentClass::Declared));
   EXPECT_FALSE(isCheckOperand(ExtentClass::LowerBound));
-  EXPECT_TRUE(canProveViolation(ExtentClass::Exact));
-  EXPECT_FALSE(canProveViolation(ExtentClass::Declared));
   EXPECT_EQ(toString(ExtentClass::LowerBound), "lower-bound");
 }
 

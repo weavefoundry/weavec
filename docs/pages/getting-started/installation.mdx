@@ -73,7 +73,7 @@ cmake --install build/release --prefix "$HOME/.local"
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-The install puts `weavec` and `weavec-cc` in `bin/`, and `weavec.h` and the runtime archives (`libweavec_rt.a`, `libweavec_alloc.a`, `libweavec_chk.a`) under `lib/weavec/`. `weavec-cc` finds the archives relative to its own location, so move the prefix as a whole. Add the PATH export to your shell configuration to retain it in new terminals. Use the [developer guide](/contributing/development/) for debug builds, alternative LLVM installations, and build options.
+The install puts `weavec` and `weavec-cc` in `bin/`, and `weavec.h` and the runtime archives (`libweavec_rt.a`, `libweavec_alloc.a`) under `lib/weavec/`. `weavec-cc` finds the archives relative to its own location, so move the prefix as a whole. Add the PATH export to your shell configuration to retain it in new terminals. Use the [developer guide](/contributing/development/) for debug builds, alternative LLVM installations, and build options.
 
 ## 4. Verify the installation
 

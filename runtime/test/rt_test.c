@@ -6,7 +6,7 @@
 |*
 |*===----------------------------------------------------------------------===*|
 |*
-|* RFC 0032, section 12. One program, linked with libweavec_rt.a and
+|* RFC 0035, section 5. One program, linked with libweavec_rt.a and
 |* libweavec_alloc.a, so `malloc` here is the arena's. Each test is a
 |* function; a test that must stop the program runs in a child process and
 |* the parent checks how it died. Run without arguments for every test, or
@@ -21,12 +21,14 @@
 #include "../weavec_rt.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -37,7 +39,15 @@
 #include <malloc.h>
 #endif
 
+#ifndef MAP_ANONYMOUS
+#define MAP_ANONYMOUS MAP_ANON
+#endif
+
+#if !defined(__APPLE__)
+/* (The runtime defines it where the C library does; libSystem has only a
+ * variant symbol.) */
 void *reallocarray(void *, size_t, size_t);
+#endif
 
 /* Sizes no allocator can serve, which the compiler must not see. */
 static volatile size_t tooMany = (size_t)-1;
@@ -64,8 +74,18 @@ static int inArena(const void *p) {
   return (uintptr_t)p - __weavec_rt_heap.base < __weavec_rt_heap.bytes;
 }
 
-/* Runs `body` in a child; true when it died by a trap. */
-static int trapsIn(void (*body)(void)) {
+/* Whether the n bytes at p are addressable. */
+static int addressable(const void *p, size_t n) {
+  return __weavec_rt_range_ok((uintptr_t)p, n);
+}
+
+static unsigned char shadowAt(const void *p) {
+  return *weavecRtShadowOf((uintptr_t)p);
+}
+
+/* Runs `body` in a child; how it ended: 0 a normal exit, the signal that
+ * stopped it otherwise. Its standard error goes to `log` when given. */
+static int endOf(void (*body)(void), const char *log) {
   int status = 0;
   const pid_t child = fork();
   if (child == 0) {
@@ -73,14 +93,61 @@ static int trapsIn(void (*body)(void)) {
      * system that hands each one to a crash reporter would take seconds). */
     const struct rlimit none = {0, 0};
     (void)setrlimit(RLIMIT_CORE, &none);
-    (void)freopen("/dev/null", "w", stderr);
+    (void)freopen(log != NULL ? log : "/dev/null", "w", stderr);
     body();
     _exit(0);
   }
   if (child < 0 || waitpid(child, &status, 0) != child)
-    return 0;
-  return WIFSIGNALED(status) &&
-         (WTERMSIG(status) == SIGTRAP || WTERMSIG(status) == SIGILL);
+    return -1;
+  return WIFSIGNALED(status) ? WTERMSIG(status) : 0;
+}
+
+/* True when `body` died by a trap. */
+static int trapsIn(void (*body)(void)) {
+  const int end = endOf(body, NULL);
+  return end == SIGTRAP || end == SIGILL;
+}
+
+/* True when `body` was stopped: a trap, or the C library's abort. */
+static int stopsIn(void (*body)(void)) {
+  const int end = endOf(body, NULL);
+  return end == SIGTRAP || end == SIGILL || end == SIGABRT || end == SIGSEGV ||
+         end == SIGBUS;
+}
+
+/* The first line `body` printed on standard error. */
+static void firstLine(void (*body)(void), char *line, size_t size) {
+  char path[] = "/tmp/weavec_rt_test_XXXXXX";
+  const int fd = mkstemp(path);
+  FILE *file;
+  line[0] = 0;
+  if (fd < 0)
+    return;
+  close(fd);
+  (void)endOf(body, path);
+  file = fopen(path, "r");
+  if (file != NULL) {
+    if (fgets(line, (int)size, file) == NULL)
+      line[0] = 0;
+    fclose(file);
+  }
+  unlink(path);
+}
+
+/*===-- The shadow ----------------------------------------------------------===*/
+
+static void testShadowReady(void) {
+  void *p = opaque(malloc(1));
+  CHECK(weavecRtShadowReady());
+  CHECK(__weavec_rt_shadow.bits >= 39 && __weavec_rt_shadow.bits <= 48);
+  /* The arena lies inside the window. */
+  CHECK(weavecRtInWindow(__weavec_rt_heap.base + __weavec_rt_heap.bytes - 1));
+  /* Untracked memory is addressable. */
+  {
+    char local[64];
+    CHECK(addressable(opaque(local), sizeof local));
+  }
+  free(p);
 }
 
 /*===-- The allocator -------------------------------------------------------===*/
@@ -88,41 +155,42 @@ static int trapsIn(void (*body)(void)) {
 static void testClasses(void) {
   size_t size;
   /* Every size around every class boundary: the block is in the arena, its
-   * extent is exact, it is zero, and one byte after it belongs to nothing. */
+   * bytes are addressable and zero, and the byte after it is not. */
   for (size = 0; size < 70000; size = size < 600 ? size + 1 : size + size / 7) {
     unsigned char *p = (unsigned char *)opaque(malloc(size));
-    struct __weavec_rt_found found;
     size_t i;
     CHECK(p != NULL);
     if (p == NULL)
       return;
     CHECK(inArena(p));
     CHECK(((uintptr_t)p & 15) == 0);
-    found = __weavec_rt_find(p);
-    CHECK(found.state == WeavecRtTrackedLive);
-    CHECK(found.base == (uintptr_t)p);
-    CHECK(found.size == size);
     for (i = 0; i < size; ++i)
       if (p[i] != 0) {
         CHECK(!"a fresh block is zero");
         break;
       }
     memset(p, 0xa5, size);
-    /* Interior, last byte, one past the end. */
-    if (size != 0) {
-      CHECK(__weavec_rt_find(p + size - 1).base == (uintptr_t)p);
-      CHECK(__weavec_rt_object(p, (long long)size - 1, 1, 0, 1) == 0);
-    }
-    CHECK(__weavec_rt_find(p + size).base == (uintptr_t)p);
-    CHECK(__weavec_rt_object(p, (long long)size, 1, 0, 1) != 0);
-    CHECK(__weavec_rt_object(p + size, -1, 1, 0, 1) == (size == 0));
-    CHECK(__weavec_rt_object(p, -1, 1, 0, 1) != 0);
-    CHECK(__weavec_rt_object(p, 0, 0, 0, size) == 0);
-    CHECK(__weavec_rt_object(p, 0, 0, 0, size + 1) != 0);
+    CHECK(addressable(p, size));
+    CHECK(!addressable(p + size, 1));
+    CHECK(!addressable(p, size + 1));
     CHECK(__weavec_rt_size(p) == size);
     free(p);
-    CHECK(__weavec_rt_find(p).state == WeavecRtTrackedDead);
+    CHECK(!addressable(p, 1));
+    CHECK(shadowAt(p) == WeavecRtShadowHeapFreed);
   }
+}
+
+static void testShadowEncoding(void) {
+  unsigned char *p = (unsigned char *)opaque(malloc(20));
+  CHECK(shadowAt(p) == 0);
+  CHECK(shadowAt(p + 16) == 4);
+  /* The slot of a 20-byte block is 32 bytes: no granule after it. */
+  free(p);
+  p = (unsigned char *)opaque(malloc(16));
+  CHECK(shadowAt(p) == 0);
+  CHECK(shadowAt(p + 16) == WeavecRtShadowHeapTail);
+  free(p);
+  CHECK(shadowAt(p) == WeavecRtShadowHeapFreed);
 }
 
 /* The program's path, for a test that runs in a copy of itself. */
@@ -162,6 +230,7 @@ static void testReuseIsZero(void) {
     unsigned i;
     for (i = 0; i < 200; ++i)
       CHECK(p[i] == 0);
+    CHECK(addressable(p, 200) && !addressable(p, 201));
     memset(p, 0xff, 200);
     free(p);
   }
@@ -177,6 +246,7 @@ static void testAlignment(void) {
       CHECK(p != NULL);
       CHECK(((uintptr_t)p & (alignment - 1)) == 0);
       CHECK(__weavec_rt_size(p) == size);
+      CHECK(addressable(p, size));
       CHECK(posix_memalign(&q, alignment, size) == 0);
       CHECK(((uintptr_t)q & (alignment - 1)) == 0);
       free(p);
@@ -185,8 +255,8 @@ static void testAlignment(void) {
   }
   {
     void *q = NULL;
-    CHECK(posix_memalign(&q, 3, 8) == EINVAL);
     size_t odd = 24;
+    CHECK(posix_memalign(&q, 3, 8) == EINVAL);
     CHECK(aligned_alloc((size_t)(uintptr_t)opaque((void *)odd), 8) == NULL);
   }
 }
@@ -200,33 +270,36 @@ static void testRealloc(void) {
   same = (char *)realloc(p, 36);
   CHECK(same == p);
   CHECK(__weavec_rt_size(p) == 36);
+  CHECK(addressable(p, 36) && !addressable(p, 37));
   same = (char *)opaque(realloc(p, 44));
   CHECK(same == p);
   p = same;
   CHECK(p[35] == 'a' && p[36] == 0 && p[43] == 0);
-  CHECK(__weavec_rt_object(p, 43, 1, 0, 1) == 0);
-  CHECK(__weavec_rt_object(p, 44, 1, 0, 1) != 0);
-  /* Out of the class: a new block, and the old one is dead. */
+  CHECK(addressable(p, 44) && !addressable(p, 45));
+  /* Out of the class: a new block, and the old one is released. */
   moved = (char *)opaque(realloc(p, 5000));
   CHECK(moved != p);
   CHECK(moved[0] == 'a' && moved[35] == 'a' && moved[36] == 0 &&
         moved[4999] == 0);
-  CHECK(__weavec_rt_live(p) != 0);
-  CHECK(__weavec_rt_live(moved) == 0);
+  CHECK(!addressable(p, 1));
+  CHECK(addressable(moved, 5000));
   /* realloc(p, 0) releases and returns an empty block. */
   p = (char *)opaque(realloc(moved, 0));
   CHECK(p != NULL && __weavec_rt_size(p) == 0);
-  CHECK(__weavec_rt_live(moved) != 0);
+  CHECK(!addressable(moved, 1));
+  CHECK(!addressable(p, 1));
   free(p);
   p = (char *)realloc(NULL, 10);
   CHECK(p != NULL && __weavec_rt_size(p) == 10);
   free(p);
   CHECK(opaque(calloc(tooMany, 16)) == NULL);
+#if !defined(__APPLE__)
   CHECK(opaque(reallocarray(NULL, tooMany, 16)) == NULL);
+#endif
 }
 
 static void testQuarantine(void) {
-  /* A released block stays dead while the budget holds, in release order. */
+  /* With no budget the newest release is the first to be reused. */
   enum { Blocks = 64 };
   void *blocks[Blocks];
   unsigned i;
@@ -237,10 +310,19 @@ static void testQuarantine(void) {
     blocks[i] = opaque(malloc(1000));
   for (i = 0; i < Blocks; ++i)
     free(blocks[i]);
-  /* No budget: the newest release is the first to be reused. */
   again = opaque(malloc(1000));
-  CHECK(__weavec_rt_live(again) == 0);
+  CHECK(addressable(again, 1000));
   free(again);
+}
+
+static void testQuarantineHolds(void) {
+  /* Under the default budget a released block stays released. */
+  void *p = opaque(malloc(1000));
+  unsigned i;
+  free(p);
+  for (i = 0; i < 100; ++i)
+    free(opaque(malloc(1000)));
+  CHECK(!addressable(p, 1));
 }
 
 static void doubleFree(void) {
@@ -277,49 +359,31 @@ static void wildFree(void) {
 static void testInvalidReleases(void) {
   CHECK(trapsIn(doubleFree));
   CHECK(trapsIn(interiorFree));
-  CHECK(trapsIn(stackFree));
   CHECK(trapsIn(reallocDead));
   CHECK(trapsIn(wildFree));
-  {
-    static const void *const descriptor[2] = {aGlobal, (void *)sizeof aGlobal};
-    __weavec_rt_globals_add(descriptor, descriptor + 2);
-    CHECK(trapsIn(globalFree));
-  }
-  {
-    char *p = (char *)opaque(malloc(24));
-    char local[8] = {0};
-    CHECK(__weavec_rt_release_ok(NULL) == 0);
-    CHECK(__weavec_rt_release_ok(p) == 0);
-    CHECK(__weavec_rt_release_ok(p + 1) != 0);
-    CHECK(__weavec_rt_release_ok(opaque(local)) != 0);
-    CHECK(__weavec_rt_release_ok(aGlobal) != 0);
-    free(p);
-    CHECK(__weavec_rt_release_ok(p) != 0);
-  }
+  /* Outside the arena a release goes to the next allocator, which stops
+   * the program (glibc aborts; Darwin's zones trap). */
+  CHECK(stopsIn(stackFree));
+  CHECK(stopsIn(globalFree));
 }
 
 static void testHuge(void) {
   const size_t size = ((size_t)1 << 30) + 12345;
   char *p = (char *)opaque(malloc(size));
-  struct __weavec_rt_found found;
   char *q;
   CHECK(p != NULL);
   if (p == NULL)
     return;
   CHECK(!inArena(p));
-  found = __weavec_rt_find(p + 100);
-  CHECK(found.state == WeavecRtTrackedLive && found.base == (uintptr_t)p &&
-        found.size == size);
   p[0] = 1;
   p[size - 1] = 2;
-  CHECK(__weavec_rt_object(p, (long long)size - 1, 1, 0, 1) == 0);
-  CHECK(__weavec_rt_object(p, (long long)size, 1, 0, 1) != 0);
+  CHECK(addressable(p + size - 64, 64));
+  CHECK(!addressable(p + size - 1, 2));
   CHECK(__weavec_rt_size(p) == size);
   q = (char *)opaque(realloc(p, 64));
   CHECK(inArena(q) && q[0] == 1);
-  /* The released mapping is a dead object, not someone else's memory. */
-  CHECK(__weavec_rt_find(p).state == WeavecRtTrackedDead);
-  CHECK(__weavec_rt_live(p) != 0);
+  /* The released mapping is a released object, not someone else's. */
+  CHECK(!addressable(p, 1));
   free(q);
   p = (char *)opaque(aligned_alloc((size_t)1 << 21, ((size_t)1 << 30) + 1));
   CHECK(p != NULL && ((uintptr_t)p & (((size_t)1 << 21) - 1)) == 0);
@@ -330,16 +394,15 @@ static void testHuge(void) {
 static void testForeign(void) {
   /* Blocks of another allocator go back to it. */
 #if defined(__APPLE__)
-  /* (The default zone is the arena's, RFC 0033 section 6.2: another
-   * zone stands for the system's.) */
+  /* (The default zone is the arena's: another zone stands for the
+   * system's.) */
   malloc_zone_t *other = malloc_create_zone(0, 0);
   char *system = (char *)malloc_zone_malloc(other, 100);
   char *line = NULL;
   size_t capacity = 0;
   FILE *file;
   CHECK(!inArena(system));
-  CHECK(__weavec_rt_find(system).state == WeavecRtUntracked);
-  CHECK(__weavec_rt_object(system, 1000, 1, 0, 1) == 0);
+  CHECK(addressable(system, 1000));
   CHECK(malloc_size(system) >= 100);
   system = (char *)realloc(system, 5000);
   CHECK(system != NULL);
@@ -352,12 +415,11 @@ static void testForeign(void) {
   if (file != NULL) {
     CHECK(getline(&line, &capacity, file) >= 0);
     CHECK(inArena(line));
-    CHECK(__weavec_rt_size(line) >= capacity || capacity != 0);
     fclose(file);
   }
   free(line);
-  /* strdup allocates in the system library: untracked, and freed here. */
   line = strdup("a string from the system");
+  CHECK(inArena(line));
   free(line);
 #else
   /* Everything the C library allocates is the arena's: the definition in
@@ -378,266 +440,269 @@ static void testForeign(void) {
 #endif
 }
 
-/*===-- Stack objects -------------------------------------------------------===*/
+/*===-- Guards --------------------------------------------------------------===*/
 
-static __attribute__((noinline)) int guardByte(const char *p, long long index) {
-  return __weavec_rt_object(opaque((void *)(uintptr_t)p), index, 1, 0, 1);
+static const struct __weavec_rt_site trapSite = {"rt_test.c", 1, 2, 0};
+static const struct __weavec_rt_site reportSite = {"rt_test.c", 3, 4,
+                                                   WeavecRtSiteReport};
+
+static void overflowRead(void) {
+  char *p = (char *)opaque(malloc(20));
+  __weavec_rt_guard((uintptr_t)p + 16, 8, &trapSite);
 }
 
-static __attribute__((noinline)) void innerFrame(const char *outer) {
-  char mine[24] = {0};
-  void *frame = __builtin_frame_address(0);
-  __weavec_rt_stack_enter(mine, sizeof mine, frame, 0);
-  CHECK(guardByte(mine, 0) == 0);
-  CHECK(guardByte(mine, 23) == 0);
-  CHECK(guardByte(mine, 24) != 0);
-  CHECK(guardByte(mine + 24, 0) != 0);
-  CHECK(guardByte(mine + 24, -1) == 0);
-  CHECK(guardByte(mine, -1) != 0 || guardByte(mine, -1) == 0);
-  /* The caller's object is still found from here. */
-  CHECK(guardByte(outer, 7) == 0);
-  CHECK(guardByte(outer, 8) != 0);
-  __weavec_rt_stack_leave(mine, frame);
-  /* Untracked once its scope ended. */
-  CHECK(__weavec_rt_find(mine).state == WeavecRtUntracked);
+static void useAfterFree(void) {
+  char *p = (char *)opaque(malloc(20));
+  free(p);
+  __weavec_rt_guard((uintptr_t)p, 4, &trapSite);
 }
 
-static void testStack(void) {
-  char buffer[8] = {0};
-  char other[8] = {0};
-  void *frame = __builtin_frame_address(0);
-  CHECK(__weavec_rt_find(buffer).state == WeavecRtUntracked);
-  __weavec_rt_stack_enter(buffer, sizeof buffer, frame, 0);
-  CHECK(__weavec_rt_find(buffer + 3).state == WeavecRtTrackedLive);
-  CHECK(__weavec_rt_find(buffer + 3).base == (uintptr_t)buffer);
-  /* An unregistered neighbour is untracked, unless it starts exactly where
-   * the registered one ends (the compiler must not fold the comparison). */
-  CHECK(__weavec_rt_find(other).state == WeavecRtUntracked ||
-        (uintptr_t)opaque(other) == (uintptr_t)opaque(buffer) + 8);
-  innerFrame(buffer);
-  CHECK(guardByte(buffer, 7) == 0);
-  CHECK(__weavec_rt_live(buffer) == 0);
-  __weavec_rt_stack_leave(buffer, frame);
-  CHECK(__weavec_rt_find(buffer).state == WeavecRtUntracked);
-  /* Leaving something that was never entered is ignored. */
-  __weavec_rt_stack_leave(other, frame);
+static void reportedOverflow(void) {
+  char *p = (char *)opaque(malloc(20));
+  __weavec_rt_range((uintptr_t)p, 21, &reportSite);
+  __weavec_rt_range((uintptr_t)p, 21, &reportSite);
+  _exit(7);
 }
 
-/* RFC 0034, section 4: an object off a granule (a parameter's storage) next
- * to one on a granule. Neither's shadow may hide the other's. */
-static void testMixedNeighbours(void) {
-  char area[64] __attribute__((aligned(16))) = {0};
-  char *const exact = area + 16;
-  char *const mixed = area + 8;
-  void *frame = __builtin_frame_address(0);
-  unsigned g;
-  /* The exact one first, then the mixed one ending where it starts: the
-   * exact one's first granule stays its own, and its leave clears it. */
-  __weavec_rt_stack_enter(exact, 32, frame, 0);
-  __weavec_rt_stack_enter(mixed, 8, frame, 0);
-  CHECK(guardByte(exact, 0) == 0);
-  CHECK(guardByte(exact, 31) == 0);
-  CHECK(guardByte(mixed, 7) == 0);
-  __weavec_rt_stack_leave(mixed, frame);
-  __weavec_rt_stack_leave(exact, frame);
-  if (weavecRtShadowReady())
-    for (g = 1; g < 4; ++g)
-      CHECK(!weavecRtIsObjectByte(*weavecRtShadowOf((uintptr_t)area + 16 * g)));
-  /* The mixed one first, then an exact one sharing its last granule: the
-   * granule stays mixed, so the mixed one's bytes stay reachable. */
-  __weavec_rt_stack_enter(area + 8, 8, frame, 0);
-  __weavec_rt_stack_enter(area, 8, frame, 0);
-  CHECK(guardByte(area + 8, 0) == 0);
-  CHECK(guardByte(area + 8, 7) == 0);
-  CHECK(guardByte(area, 7) == 0);
-  __weavec_rt_stack_leave(area + 8, frame);
-  __weavec_rt_stack_leave(area, frame);
+static void nullBase(void) { __weavec_rt_null(64, &trapSite); }
+
+static void nullRead(void) {
+  __weavec_rt_guard((uintptr_t)opaque(NULL) + 8, 4, &trapSite);
 }
 
-/* Clearing a large range (a thread's whole stack below a `setjmp`) maps
- * the shadow's whole pages afresh and writes the ends. */
-static void testShadowClear(void) {
-  static char span[4 << 20] __attribute__((aligned(16)));
-  const uintptr_t low = (uintptr_t)span + 8, high = (uintptr_t)span + sizeof span - 8;
-  uintptr_t a;
-  if (!weavecRtShadowReady())
-    return;
-  for (a = low & ~(uintptr_t)15; a < high; a += 4096)
-    *weavecRtShadowOf(a) = 0x41;
-  *weavecRtShadowOf(low) = 0x41;
-  *weavecRtShadowOf(high - 1) = 0x41;
-  weavecRtShadowClear(low, high);
-  for (a = low & ~(uintptr_t)15; a < high; a += 4096)
-    CHECK(*weavecRtShadowOf(a) == 0);
-  CHECK(*weavecRtShadowOf(low) == 0);
-  CHECK(*weavecRtShadowOf(high - 1) == 0);
+static void nullString(void) {
+  (void)__weavec_rt_strlen(opaque(NULL), ~(uint64_t)0, &trapSite);
 }
 
-/* A large exactly encoded object: its runs are logarithmic, so a lookup
- * anywhere in it finds its start and end, and a guard from its start to
- * its far end passes. */
-static void testLargeObject(void) {
-  static char big[(1 << 20) + 24] __attribute__((aligned(16)));
-  struct __weavec_rt_found found;
-  if (!weavecRtShadowReady())
-    return;
-  weavecRtShadowObject((uintptr_t)big, sizeof big, 1);
-  found = __weavec_rt_find(big + 700001);
-  CHECK(found.state == WeavecRtTrackedLive);
-  CHECK(found.base == (uintptr_t)big);
-  CHECK(found.size == sizeof big);
-  CHECK(guardByte(big, 0) == 0);
-  CHECK(guardByte(big, (long long)sizeof big - 1) == 0);
-  CHECK(guardByte(big, (long long)sizeof big) != 0);
-  weavecRtShadowClear((uintptr_t)big, (uintptr_t)big + sizeof big);
+static void testGuards(void) {
+  char line[256];
+  char *p = (char *)opaque(malloc(20));
+  /* Passing guards return. */
+  __weavec_rt_guard((uintptr_t)p, 20, &trapSite);
+  __weavec_rt_guard((uintptr_t)p + 19, 1, &trapSite);
+  __weavec_rt_range((uintptr_t)p, 0, &trapSite);
+  free(p);
+  CHECK(trapsIn(overflowRead));
+  CHECK(trapsIn(useAfterFree));
+  CHECK(trapsIn(nullBase));
+  /* The lowest page is poisoned: a guard near null fails as one. */
+  CHECK(trapsIn(nullRead));
+  firstLine(nullRead, line, sizeof line);
+  CHECK(strstr(line, "weavec: null-dereference at rt_test.c:1:2") == line);
+  firstLine(overflowRead, line, sizeof line);
+  CHECK(strstr(line, "weavec: heap-buffer-overflow at rt_test.c:1:2: read "
+                     "of 8 bytes") == line);
+  firstLine(useAfterFree, line, sizeof line);
+  CHECK(strstr(line, "weavec: heap-use-after-free at rt_test.c:1:2") == line);
+  /* Report mode: once per site, and the program goes on. */
+  CHECK(endOf(reportedOverflow, NULL) == 0);
+  firstLine(reportedOverflow, line, sizeof line);
+  CHECK(strstr(line, "weavec: heap-buffer-overflow at rt_test.c:3:4") == line);
 }
 
-/* An object whose last granule unknown storage may share (a frame with
- * unnamed storage) has the whole granule, and is still found from its
- * middle; one that nothing shares has it exact. */
-static void testLoosePartial(void) {
-  /* Two whole granules of its own, whatever the linker puts after it. */
-  static struct {
-    char object[24];
-    char rest[8];
-  } block __attribute__((aligned(16)));
-  char *const shared = block.object;
-  if (!weavecRtShadowReady())
-    return;
-  weavecRtShadowClear((uintptr_t)&block, (uintptr_t)&block + sizeof block);
-  weavecRtShadowObject((uintptr_t)shared, sizeof block.object, 0);
-  CHECK(*weavecRtShadowOf((uintptr_t)shared) == WeavecRtShadowObjectRun + 1);
-  CHECK(*weavecRtShadowOf((uintptr_t)shared + 16) ==
-        WeavecRtShadowObjectLast + 16);
-  CHECK(__weavec_rt_find(shared + 20).base == (uintptr_t)shared);
-  CHECK(guardByte(shared, 31) == 0);
-  weavecRtShadowClear((uintptr_t)&block, (uintptr_t)&block + sizeof block);
-  weavecRtShadowObject((uintptr_t)shared, sizeof block.object, 1);
-  CHECK(*weavecRtShadowOf((uintptr_t)shared + 16) ==
-        WeavecRtShadowObjectLast + 8);
-  weavecRtShadowClear((uintptr_t)&block, (uintptr_t)&block + sizeof block);
-}
-
-static jmp_buf jump;
-
-static __attribute__((noinline)) void jumpsOut(void) {
-  char lost[32] = {0};
-  __weavec_rt_stack_enter(lost, sizeof lost, __builtin_frame_address(0), 0);
-  CHECK(__weavec_rt_find(lost).state == WeavecRtTrackedLive);
-  longjmp(jump, 1);
-}
-
-static __attribute__((noinline)) uintptr_t sameDepth(void) {
-  /* Occupies the stack where `jumpsOut`'s frame was. */
-  volatile char unknown[32];
-  unknown[0] = 0;
-  return (uintptr_t)opaque((void *)(uintptr_t)unknown);
-}
-
-static void testLongjmp(void) {
-  if (setjmp(jump) == 0) {
-    jumpsOut();
-    CHECK(!"longjmp returns");
-  }
-  /* What `longjmp` skipped is dropped when the `setjmp` returns again. */
-  __weavec_rt_stack_rewind(__builtin_frame_address(0));
-  CHECK(__weavec_rt_find((void *)sameDepth()).state == WeavecRtUntracked);
-}
-
-static __attribute__((noinline)) void deepFrames(unsigned depth,
-                                                 const char *outermost) {
-  char mine[16] = {0};
-  void *frame = __builtin_frame_address(0);
-  __weavec_rt_stack_enter(mine, sizeof mine, frame, 0);
-  if (depth != 0)
-    deepFrames(depth - 1, outermost);
-  else
-    CHECK(guardByte(outermost, 15) == 0 && guardByte(outermost, 16) != 0);
-  CHECK(guardByte(mine, 15) == 0);
-  __weavec_rt_stack_leave(mine, frame);
-}
-
-static void testDeepStack(void) {
-  char outermost[16] = {0};
-  void *frame = __builtin_frame_address(0);
-  __weavec_rt_stack_enter(outermost, sizeof outermost, frame, 0);
-  /* More frames than the list holds inline. */
-  deepFrames(500, outermost);
-  __weavec_rt_stack_leave(outermost, frame);
-}
-
-/*===-- Global objects ------------------------------------------------------===*/
-
-static char pairOfGlobals[2][16];
-
-static void testGlobals(void) {
-  static const void *const descriptors[4] = {
-      pairOfGlobals[0], (void *)(uintptr_t)16, pairOfGlobals[1],
-      (void *)(uintptr_t)16};
-  __weavec_rt_globals_add(descriptors, descriptors + 4);
-  CHECK(__weavec_rt_find(pairOfGlobals[0] + 5).base ==
-        (uintptr_t)pairOfGlobals[0]);
-  CHECK(guardByte(pairOfGlobals[0], 15) == 0);
-  CHECK(guardByte(pairOfGlobals[0], 16) != 0);
-  /* The start of the second is one past the first for a negative index. */
-  CHECK(guardByte(pairOfGlobals[1], -1) == 0);
-  CHECK(guardByte(pairOfGlobals[1], 0) == 0);
-  CHECK(guardByte(pairOfGlobals[1], 16) != 0);
-  /* RFC 0033 section 4: the byte before the first is another object's, which
-   * a backward index may reach, or nothing's, which it may not. */
-  CHECK(guardByte(pairOfGlobals[0], -1) ==
-        (__weavec_rt_find(pairOfGlobals[0] - 1).state != WeavecRtTrackedLive));
-  CHECK(__weavec_rt_string("a literal is untracked") == 0);
+static void unterminated(void) {
+  char *p = (char *)opaque(malloc(16));
+  memset(p, 'x', 16);
+  (void)__weavec_rt_strlen(p, ~(uint64_t)0, &trapSite);
 }
 
 static void testStrings(void) {
+  char *p = (char *)opaque(malloc(40));
+  char local[8] = "abc";
+  strcpy(p, "a string of thirty-five characters!");
+  CHECK(__weavec_rt_strlen(p, ~(uint64_t)0, &trapSite) == 35);
+  CHECK(__weavec_rt_strlen(p, 4, &trapSite) == 4);
+  CHECK(__weavec_rt_strlen(p + 30, ~(uint64_t)0, &trapSite) == 5);
+  CHECK(__weavec_rt_strlen(opaque(local), ~(uint64_t)0, &trapSite) == 3);
+  CHECK(__weavec_rt_strlen("literal", ~(uint64_t)0, &trapSite) == 7);
+  free(p);
+  CHECK(trapsIn(unterminated));
+  /* A null string is the call's to accept, or an access through null. */
+  {
+    static const struct __weavec_rt_site nullOk = {"rt_test.c", 5, 6,
+                                                   WeavecRtSiteNullOk};
+    CHECK(__weavec_rt_strlen(NULL, ~(uint64_t)0, &nullOk) == 0);
+  }
+  CHECK(trapsIn(nullString));
+}
+
+static void copyTooLong(void) {
   char *p = (char *)opaque(malloc(8));
-  memcpy(p, "1234567", 8);
-  CHECK(__weavec_rt_string(p) == 0);
-  CHECK(__weavec_rt_string(p + 7) == 0);
-  p[7] = 'x';
-  CHECK(__weavec_rt_string(p) != 0);
-  CHECK(__weavec_rt_string(p + 8) != 0);
-  free(p);
-  CHECK(__weavec_rt_string(p) != 0);
+  (void)__weavec_rt_strcpy(p, "eight chars", &trapSite);
 }
 
-/* RFC 0034, section 5.2: the room a checked sprintf may write. */
-static void testRoom(void) {
-  char *p = (char *)opaque(malloc(24));
-  char buffer[16] = {0};
-  void *frame = __builtin_frame_address(0);
-  int untracked = 0;
-  CHECK(__weavec_rt_room(p) == 24);
-  CHECK(__weavec_rt_room(p + 10) == 14);
-  CHECK(__weavec_rt_room(p + 23) == 1);
-  /* One past the end has no room, whatever lies there. */
-  CHECK(__weavec_rt_room(p + 24) == 0 ||
-        __weavec_rt_find(p + 24).base == (uintptr_t)p + 24);
-  free(p);
-  CHECK(__weavec_rt_room(p) == 0);
-  CHECK(__weavec_rt_room(&untracked) == ~0ULL);
-  CHECK(__weavec_rt_room(NULL) == ~0ULL);
-  __weavec_rt_stack_enter(buffer, sizeof buffer, frame, 0);
-  CHECK(__weavec_rt_room(buffer + 4) == 12);
-  __weavec_rt_stack_leave(buffer, frame);
-  CHECK(__weavec_rt_room(buffer + 4) == ~0ULL);
+static void printTooLong(void) {
+  char *p = (char *)opaque(malloc(8));
+  (void)__weavec_rt_sprintf(&trapSite, p, "%d-%d", 12345, 6789);
 }
 
-/*===-- Threads and fork ----------------------------------------------------===*/
+static void compareTooFar(void) {
+  char *p = (char *)opaque(malloc(4));
+  memcpy(p, "abcd", 4);
+  (void)__weavec_rt_strcmp(p, "abcde", &trapSite);
+}
+
+static void searchTooFar(void) {
+  char *p = (char *)opaque(malloc(4));
+  memcpy(p, "abcd", 4);
+  (void)__weavec_rt_memchr(p, 'z', 8, &trapSite);
+}
+
+static void printUnterminated(void) {
+  char out[64];
+  char *p = (char *)opaque(malloc(4));
+  memcpy(p, "abcd", 4);
+  (void)__weavec_rt_snprintf(&trapSite, out, sizeof out, "[%s]", p);
+}
+
+static void testCheckedCalls(void) {
+  char *p = (char *)opaque(malloc(16));
+  char *q;
+  CHECK(__weavec_rt_strcpy(p, "short", &trapSite) == p);
+  CHECK(strcmp(p, "short") == 0);
+  CHECK(__weavec_rt_strcat(p, "er", &trapSite) == p);
+  CHECK(strcmp(p, "shorter") == 0);
+  q = __weavec_rt_stpcpy(p, "abc", &trapSite);
+  CHECK(q == p + 3 && *q == 0);
+  CHECK(__weavec_rt_sprintf(&trapSite, p, "%d", 42) == 2);
+  CHECK(strcmp(p, "42") == 0);
+  /* A size larger than the buffer is no error when the output fits. */
+  CHECK(__weavec_rt_snprintf(&trapSite, p, 1000, "%s", "fits") == 4);
+  CHECK(strcmp(p, "fits") == 0);
+  CHECK(__weavec_rt_snprintf(&trapSite, p, 4, "%s", "truncated") == 9);
+  CHECK(strcmp(p, "tru") == 0);
+  /* A search or comparison checks only what it read. */
+  memcpy(p, "ab\nc", 4);
+  CHECK(__weavec_rt_memchr(p, '\n', 1000, &trapSite) == p + 2);
+  CHECK(__weavec_rt_strchr("abc", 'b', &trapSite) != NULL);
+  CHECK(__weavec_rt_strchr("abc", 'z', &trapSite) == NULL);
+  CHECK(__weavec_rt_strcmp("abc", "abd", &trapSite) < 0);
+  CHECK(__weavec_rt_strcmp("abc", "abc", &trapSite) == 0);
+  CHECK(__weavec_rt_strncmp("abcx", "abcy", 3, &trapSite) == 0);
+  CHECK(__weavec_rt_strncmp("b", "a", 1000, &trapSite) > 0);
+  CHECK(__weavec_rt_strcasecmp("Content-Type", "content-type", &trapSite) == 0);
+  CHECK(__weavec_rt_strncasecmp("HEADx", "heady", 4, &trapSite) == 0);
+  CHECK(__weavec_rt_strcasecmp("a", "B", &trapSite) < 0);
+  /* A range check reads the shadow eight granules at a time. */
+  {
+    char *big = (char *)opaque(malloc(1000));
+    CHECK(__weavec_rt_range_ok((uintptr_t)big, 1000));
+    CHECK(__weavec_rt_range_ok((uintptr_t)big + 3, 997));
+    CHECK(!__weavec_rt_range_ok((uintptr_t)big, 1001));
+    CHECK(!__weavec_rt_range_ok((uintptr_t)big + 999, 2));
+    free(big);
+    CHECK(!__weavec_rt_range_ok((uintptr_t)big, 16));
+  }
+  free(p);
+  CHECK(trapsIn(copyTooLong));
+  CHECK(trapsIn(printTooLong));
+  CHECK(trapsIn(compareTooFar));
+  /* A format's %s arguments are checked, up to their precision. */
+  CHECK(trapsIn(printUnterminated));
+  {
+    char out[16];
+    char *word = (char *)opaque(malloc(4));
+    memcpy(word, "abcd", 4);
+    CHECK(__weavec_rt_snprintf(&trapSite, out, sizeof out, "%.4s|%d|%s",
+                               word, 7, (const char *)NULL) > 0);
+    CHECK(strncmp(out, "abcd|7|", 7) == 0);
+    free(word);
+  }
+  CHECK(trapsIn(searchTooFar));
+}
+
+/*===-- Frames and globals --------------------------------------------------===*/
+
+static unsigned char aTrackedGlobal[64] __attribute__((aligned(32)));
+
+static void testGlobals(void) {
+  const struct __weavec_rt_global global = {(uintptr_t)aTrackedGlobal, 20, 64};
+  __weavec_rt_globals_register(&global, 1);
+  CHECK(addressable(aTrackedGlobal, 20));
+  CHECK(!addressable(aTrackedGlobal, 21));
+  CHECK(!addressable(aTrackedGlobal + 40, 1));
+  __weavec_rt_globals_unregister(&global, 1);
+  CHECK(addressable(aTrackedGlobal, 64));
+}
+
+static void testAllocas(void) {
+  unsigned char buffer[128] __attribute__((aligned(32)));
+  const uintptr_t at = (uintptr_t)opaque(buffer);
+  __weavec_rt_alloca_poison(at, 40);
+  CHECK(addressable(buffer, 40));
+  CHECK(!addressable(buffer + 40, 1));
+  CHECK(!addressable(buffer + 64, 1));
+  __weavec_rt_alloca_unpoison(at, at + sizeof buffer);
+  CHECK(addressable(buffer, sizeof buffer));
+}
+
+static jmp_buf unwound;
+static uintptr_t poisoned;
+
+static __attribute__((noinline)) void deep(void) {
+  unsigned char frame[64] __attribute__((aligned(32)));
+  poisoned = (uintptr_t)opaque(frame);
+  weavecRtShadowSet(poisoned, 64, WeavecRtShadowStackMid);
+  CHECK(!addressable(frame, 1));
+  /* What a guarded program does before a call that does not return. */
+  __weavec_rt_unpoison_stack();
+  longjmp(unwound, 1);
+}
+
+static void testUnpoisonStack(void) {
+  if (setjmp(unwound) == 0)
+    deep();
+  CHECK(addressable((void *)poisoned, 64));
+}
+
+static void testMappings(void) {
+  void *map = __weavec_rt_mmap(NULL, 1 << 16, PROT_READ | PROT_WRITE,
+                               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0, NULL);
+  CHECK(map != MAP_FAILED);
+  if (map == MAP_FAILED)
+    return;
+  weavecRtShadowSet((uintptr_t)map, 1 << 16, WeavecRtShadowStackMid);
+  CHECK(!addressable(map, 1));
+  CHECK(__weavec_rt_munmap(map, 1 << 16, NULL) == 0);
+  CHECK(addressable(map, 1 << 16));
+}
+
+/*===-- Array bounds --------------------------------------------------------===*/
+
+struct OutOfBounds {
+  const char *file;
+  unsigned line;
+  unsigned column;
+  const void *arrayType;
+  const void *indexType;
+};
+
+void __ubsan_handle_out_of_bounds(void *data, uintptr_t index);
+
+static void boundsReported(void) {
+  static const struct OutOfBounds data = {"array.c", 5, 6, NULL, NULL};
+  __ubsan_handle_out_of_bounds((void *)&data, 9);
+  _exit(0);
+}
+
+static void testArrayBounds(void) {
+  char line[256];
+  firstLine(boundsReported, line, sizeof line);
+  CHECK(strstr(line, "weavec: index-out-of-bounds at array.c:5:6: index 9") ==
+        line);
+}
+
+/*===-- Threads and processes -----------------------------------------------===*/
 
 static void *worker(void *argument) {
   unsigned seed = (unsigned)(uintptr_t)argument;
   void *held[64] = {0};
   unsigned round;
-  char local[32] = {0};
-  void *frame = __builtin_frame_address(0);
-  __weavec_rt_stack_enter(local, sizeof local, frame, 0);
   for (round = 0; round < 20000; ++round) {
     const unsigned slot = (seed = seed * 1103515245u + 12345u) >> 16 & 63;
     const size_t size = (seed >> 8) % 3000;
     if (held[slot] != NULL) {
-      if (__weavec_rt_live(held[slot]) != 0)
+      if (!addressable(held[slot], __weavec_rt_size(held[slot])))
         return (void *)1;
       free(held[slot]);
     }
@@ -648,9 +713,6 @@ static void *worker(void *argument) {
   }
   for (round = 0; round < 64; ++round)
     free(held[round]);
-  if (guardByte(local, 31) != 0 || guardByte(local, 32) == 0)
-    return (void *)1;
-  __weavec_rt_stack_leave(local, frame);
   return NULL;
 }
 
@@ -681,37 +743,37 @@ static void testFork(void) {
   CHECK(child > 0);
   CHECK(waitpid(child, &status, 0) == child);
   CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
-  CHECK(__weavec_rt_live(p) == 0);
+  CHECK(addressable(p, 100));
   free(p);
 }
 
-/*===-- Driver --------------------------------------------------------------===*/
+/*===-- main ----------------------------------------------------------------===*/
 
 static const struct {
   const char *name;
   void (*run)(void);
 } Tests[] = {
+    {"shadow-ready", testShadowReady},
     {"classes", testClasses},
+    {"shadow-encoding", testShadowEncoding},
+    {"reuse-is-zero", testReuseIsZero},
     {"alignment", testAlignment},
     {"realloc", testRealloc},
+    {"quarantine", testQuarantine},
+    {"quarantine-holds", testQuarantineHolds},
     {"invalid-releases", testInvalidReleases},
     {"huge", testHuge},
     {"foreign", testForeign},
-    {"stack", testStack},
-    {"mixed-neighbours", testMixedNeighbours},
-    {"shadow-clear", testShadowClear},
-    {"large-object", testLargeObject},
-    {"loose-partial", testLoosePartial},
-    {"longjmp", testLongjmp},
-    {"deep-stack", testDeepStack},
-    {"globals", testGlobals},
+    {"guards", testGuards},
     {"strings", testStrings},
-    {"room", testRoom},
+    {"checked-calls", testCheckedCalls},
+    {"globals", testGlobals},
+    {"allocas", testAllocas},
+    {"unpoison-stack", testUnpoisonStack},
+    {"mappings", testMappings},
+    {"array-bounds", testArrayBounds},
     {"threads", testThreads},
     {"fork", testFork},
-    /* These run in a copy of the program with no quarantine. */
-    {"reuse-is-zero", testReuseIsZero},
-    {"quarantine", testQuarantine},
 };
 
 int main(int argc, char **argv) {

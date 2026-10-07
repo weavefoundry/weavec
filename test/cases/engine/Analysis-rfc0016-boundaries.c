@@ -4,9 +4,8 @@
 // limits these pins hit were the old engine's; RFC 0031's alias contexts (§6.6)
 // run every call below, find no bug (each callee reads before it frees, and a
 // fresh allocation is distinct from `q`), and prove the calls. The rows are
-// listed in test/cases/KNOWN-DIFFERENCES.md.
+// listed in the retired golden comparison of RFC 0030.
 // CLEAN
-// EXPECT-LEDGER: /summary/facets/temporal/unresolved == 0
 #include "Inputs/prelude.h"
 
 #define PARAMS_13 char *a, char *b, char *c, char *d, char *e, char *f, char *g, char *h, char *i, char *j, char *k, char *l, char *m

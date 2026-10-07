@@ -1,8 +1,8 @@
-// RFC 0033 §6.2: on Darwin one runtime serves every image of a process. A
+// RFC 0035 §9: on Darwin one runtime serves every image of a process. A
 // shared library built by weavec-cc releases the executable's blocks, the
 // executable releases the library's, a guard in the library sees the
 // executable's heap object (and so traps past its end), and the C
-// library's own allocations (strdup) are in the arena.
+// library's own allocations (strdup) are in the arena, with their shadow.
 //
 // REQUIRES: host-darwin
 // RUN: rm -rf %t && mkdir -p %t
@@ -17,7 +17,7 @@
 // RUN: env WEAVEC_RT_STATS=1 %t/prog ok 2>&1 | FileCheck --check-prefix=STATS %s
 //
 // OK: shared: tracked tracked
-// PAST: weavec: runtime check failed: object
+// PAST: weavec: heap-buffer-overflow at {{.*}}runtime-one-per-process-lib.c:{{[0-9]+}}:{{[0-9]+}}: read of 1 bytes
 // One line of statistics: the owner's.
 // STATS-COUNT-1: weavec: runtime: {{[0-9]+}} allocations
 
@@ -28,9 +28,9 @@
 char *lib_copy(const char *s);
 void lib_release(char *p);
 int lib_read(const char *p, long i);
-/* Fails a 100-byte access exactly when the block is tracked (and smaller). */
-extern int __weavec_rt_object(const void *, long long, unsigned long long,
-                              unsigned long long, unsigned long long);
+/* Whether the n bytes at an address are addressable: not past the end of
+ * a tracked block. */
+extern int __weavec_rt_range_ok(unsigned long address, unsigned long long n);
 
 int main(int argc, char **argv) {
   char *mine = malloc(8);
@@ -42,8 +42,10 @@ int main(int argc, char **argv) {
   if (strcmp(argv[1], "past") == 0)
     return lib_read(mine, 8) == 'm';
   printf("shared: %s %s\n",
-         __weavec_rt_object(theirs, 0, 0, 0, 100) ? "tracked" : "untracked",
-         __weavec_rt_object(system, 0, 0, 0, 100) ? "tracked" : "untracked");
+         __weavec_rt_range_ok((unsigned long)theirs, 100) ? "untracked"
+                                                          : "tracked",
+         __weavec_rt_range_ok((unsigned long)system, 100) ? "untracked"
+                                                          : "tracked");
   lib_release(mine);
   free(theirs);
   free(system);

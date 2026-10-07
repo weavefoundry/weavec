@@ -5,7 +5,6 @@
 // to globals without a declared kind, which are no sites either, so each function's only
 // site is its exit at the end of the body: the unit has three sites.
 // CLEAN
-// EXPECT-LEDGER: /summary/sites == 3
 #include <stddef.h>
 
 struct s { int a; int b; };

@@ -1,8 +1,7 @@
 // RFC 0008, *Nullness*: a pointer that is null or may be null on some path
 // is not dereferenced, nor passed to a callee that dereferences it. Testing
 // the pointer, or its callee's outcome, clears the fact on the surviving edge.
-// RUN: not %weavec --ledger=%t.json %s -- 2>&1 | FileCheck %s
-// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
+// RUN: not %weavec %s -- 2>&1 | FileCheck %s
 // RUN: not %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
 #include <stdlib.h>
 #include <string.h>
@@ -148,8 +147,6 @@ int redundant_tests(struct node *n) {
 int filled_by_unchecked_code(void) {
   struct list l = {0, NULL};
   // RFC 0030 §5.1: unknown code, a ledger row; what it reaches is unknown.
-  // LEDGER: "text": "fill(&l)",
-  // LEDGER: "reason": "unknown-callee",
   fill(&l);
   if (l.len == 0)
     return 0;

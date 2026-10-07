@@ -4,7 +4,7 @@
 // Distinct unresolved scalar indices are not proof of disjointness.
 // RFC 0030 (*Diagnostics*, §15 item 3): `analysis-incomplete` is removed; each
 // such pin now has the ledger row that replaces it (`UNRESOLVED`), and is
-// listed in test/cases/KNOWN-DIFFERENCES.md.
+// listed in the retired golden comparison of RFC 0030.
 #include "Inputs/prelude.h"
 
 // Reported: same witness.
@@ -60,7 +60,7 @@ void null_out(char **a, int n) {
     free(a[i]);
     a[i] = NULL;
   }
-  use(a[0]); // NOT-PROVEN: temporal
+  use(a[0]);
 }
 
 void incremented(char **a, int i) {

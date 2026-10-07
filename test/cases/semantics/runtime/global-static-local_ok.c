@@ -10,7 +10,7 @@ static const int *squares(void) {
   return table;
 }
 static int at(const struct view *v, int i) {
-  return v->p[i]; // GUARDED: spatial
+  return v->p[i];
 }
 int main(int argc, char **argv) {
   struct view v = {squares()};

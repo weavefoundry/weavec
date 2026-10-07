@@ -145,15 +145,6 @@ core::ObjectId FunctionRun::recordResultObject(const CallExpr &call) const {
   return objects.intern(key, info);
 }
 
-core::ObjectId FunctionRun::functionObject(const FunctionDecl &fn) const {
-  core::ObjectKey key;
-  key.kind = core::ObjectKind::Function;
-  key.handle = handleOf(fn.getCanonicalDecl());
-  core::ObjectInfo info;
-  info.name = nameOf(fn);
-  return objects.intern(key, info);
-}
-
 core::ObjectId
 FunctionRun::allocationObject(const Expr &site, QualType pointee,
                               const std::string &name,
@@ -2242,14 +2233,6 @@ std::vector<std::int64_t> FunctionRun::wideningThresholds(unsigned head) const {
   return {collector.values.begin(), collector.values.end()};
 }
 
-/// The block of `id` in `graph`.
-static const CFGBlock *findBlock(const CFG &graph, unsigned id) {
-  for (const CFGBlock *block : graph)
-    if (block->getBlockID() == id)
-      return block;
-  return nullptr;
-}
-
 RunResult FunctionRun::run() {
   RunResult result;
   if (std::getenv("WEAVEC_ENGINE_TRACE") != nullptr)
@@ -2301,7 +2284,6 @@ RunResult FunctionRun::run() {
   for (unsigned id : rpo)
     order.push_back(byId[id]);
   auto blockById = [&](unsigned id) { return byId[id]; };
-  (void)findBlock;
   core::HeapState start;
   initialState(start);
   seedContextGlobals(*this, start, aliasContext, function);

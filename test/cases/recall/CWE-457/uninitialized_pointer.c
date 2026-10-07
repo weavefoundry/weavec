@@ -3,7 +3,7 @@
 
 void bad(void) {
   char *data;
-  data[0] = 'A'; // BUG: use-of-uninitialized // TRAP: nonnull
+  data[0] = 'A'; // BUG: use-of-uninitialized // TRAP
 }
 
 void bad_on_path(int flag) {

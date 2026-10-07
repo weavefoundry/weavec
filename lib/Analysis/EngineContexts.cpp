@@ -16,7 +16,7 @@
 
 #include "Engine.h"
 #include "weavec/Analysis/ClangLocation.h"
-#include "weavec/Core/EffectsIO.h"
+#include "weavec/Core/Effects.h"
 
 #include "clang/Basic/SourceManager.h"
 

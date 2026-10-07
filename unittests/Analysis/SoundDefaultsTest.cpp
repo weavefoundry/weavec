@@ -40,9 +40,7 @@ static Lines outcomes(const core::Ledger &ledger, llvm::StringRef function) {
         if (record == nullptr)
           continue;
         line += " " + std::string(core::toString(facet)) + "=" +
-                record->decision.compact();
-        if (record->check)
-          line += ":" + std::string(core::toString(record->check->kind));
+                test::compactOf(record->decision);
       }
       out.push_back(line);
     }
@@ -65,14 +63,13 @@ static Piped pipe(const test::CollectedUnit &unit,
   Piped out;
   for (const core::Diagnostic &d : collected.diagnostics()) {
     std::string line = std::to_string(d.location.line) + ": " +
-                       std::string(core::toString(d.severity)) + ": " +
-                       d.message;
+                       test::severityText(d.severity) + ": " + d.message;
     for (const core::Diagnostic &note : d.notes)
       line += " [" + note.message + "]";
     out.diagnostics.push_back(line);
   }
   if (result.ledger)
-    out.ledger = result.ledger->ledger;
+    out.ledger = *result.ledger;
   return out;
 }
 
@@ -186,9 +183,10 @@ void f(void) {
   EXPECT_TRUE(piped.diagnostics.empty()) << piped.diagnostics.front();
   EXPECT_TRUE(llvm::StringRef(row(piped, "f", "b.data[4]", 0))
                   .starts_with("b.data[4] spatial=proven"));
-  EXPECT_EQ(row(piped, "f", "b.data[4]", 1),
-            "b.data[4] spatial=unresolved/unknown-extent null=checked:nonnull "
-            "temporal=unresolved/unknown-callee");
+  EXPECT_EQ(
+      row(piped, "f", "b.data[4]", 1),
+      "b.data[4] spatial=unresolved/unknown-extent null=unresolved/undecided "
+      "temporal=unresolved/unknown-callee");
 }
 
 TEST(SoundDefaults, ThirdPartySystemHeadersAreUnknownCode) {
@@ -260,7 +258,7 @@ void walk(node *item) {
             (Lines{"4: warning: use of 'q' after it may have been freed "
                    "[freed here on some paths (through 'p')]"}));
   EXPECT_EQ(row(piped, "unknown", "q[0]"),
-            "q[0] spatial=proven null=checked:nonnull "
+            "q[0] spatial=proven null=unresolved/undecided "
             "temporal=unresolved/unknown-callee");
 }
 
@@ -354,7 +352,7 @@ int walk(const int *p, int n) {
   ASSERT_EQ(piped.ledger.units.front().functions.size(), 1U);
   EXPECT_TRUE(piped.ledger.units.front().functions.front().overBudget);
   EXPECT_EQ(row(piped, "walk", "p[i]"),
-            "p[i] spatial=unresolved/budget null=checked:nonnull "
+            "p[i] spatial=unresolved/budget null=unresolved/budget "
             "temporal=unresolved/budget");
   // Unlimited, the same function is analysed.
   UnitPipelineOptions unlimited;
@@ -380,7 +378,7 @@ int refuted(void) { int i = 10; ASSUME(i < 4); return i; }
   EXPECT_EQ(row(piped, "proven", "ASSUME(n>0)"),
             "ASSUME(n>0) assertion=proven");
   EXPECT_EQ(row(piped, "checked", "ASSUME(n>0)"),
-            "ASSUME(n>0) assertion=checked:assert");
+            "ASSUME(n>0) assertion=unresolved/undecided");
   EXPECT_EQ(row(piped, "refuted", "ASSUME(i<4)"),
             "ASSUME(i<4) assertion=violation");
 }
@@ -400,7 +398,7 @@ void g(char *p) { UNSAFE { free(p); p[0] = 1; } }
   // The trusted dereference did not make `p` non-null (its Single default
   // proves the element, §7.3).
   EXPECT_EQ(row(piped, "f", "p[0]"),
-            "p[0] spatial=proven null=checked:nonnull temporal=proven");
+            "p[0] spatial=proven null=unresolved/undecided temporal=proven");
 }
 
 // -- §5.4 setjmp and §11 zero-initialisation ---------------------------------
@@ -418,7 +416,7 @@ int run(char *p) {
   // §5.4: what the flow proved (here `p`'s Single default) may be stale
   // after a `longjmp`.
   EXPECT_EQ(row(piped, "run", "p[0]"),
-            "p[0] spatial=unresolved/setjmp null=checked:nonnull "
+            "p[0] spatial=unresolved/setjmp null=unresolved/setjmp "
             "temporal=unresolved/setjmp");
 }
 
@@ -427,7 +425,7 @@ TEST(SoundDefaults, WithoutZeroInitialisationAMaybeUninitialisedPointer) {
 int deref(int c, int *q) { int *p; if (c) p = q; return *p; }
 )c");
   EXPECT_TRUE(llvm::StringRef(row(pipe(unit), "deref", "*p"))
-                  .contains("null=checked:nonnull"));
+                  .contains("null=unresolved/undecided"));
   UnitPipelineOptions none;
   none.engine.zeroInit = false;
   EXPECT_TRUE(llvm::StringRef(row(pipe(unit, none), "deref", "*p"))

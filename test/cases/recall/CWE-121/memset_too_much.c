@@ -10,7 +10,7 @@ struct record {
 
 void bad(void) {
   char buf[32];
-  memset(buf, 0, 64); // BUG: out-of-bounds // TRAP: len
+  memset(buf, 0, 64); // BUG: out-of-bounds // TRAP
   print_bytes(buf, 32);
 }
 
@@ -20,7 +20,7 @@ void bad(void) {
 // bytes and `bad_member` needs 21 (§3.3, as for the soundness probes whose
 // argument breaks the callee's requirement).
 void bad_member(struct record *r) {
-  r->name[16] = 0;
+  r->name[16] = 0; // TRAP
 }
 
 // Driver (RFC 0030 section 17.2): executes the defect so the runtime oracle can observe the check.
@@ -29,6 +29,6 @@ int main(int argc, char **argv) {
   int which = argc > 1 ? argv[1][0] - '0' : 0;
   struct record r;
   if (which == 1) bad();
-  if (which == 2) bad_member(&r); // BUG: out-of-bounds // TRAP: len
+  if (which == 2) bad_member(&r); // BUG: out-of-bounds
   return 0;
 }

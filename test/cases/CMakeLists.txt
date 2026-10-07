@@ -1,8 +1,7 @@
-# The test/cases suites (RFC 0030 section 17.4): one CTest test per top-level
+# The test/cases suites (RFC 0035 section 11): one CTest test per top-level
 # directory, run by scripts/run-cases.py against this build tree's weavec and
 # weavec-cc, so `ctest -j` runs the suites in parallel. WEAVEC_CASES_ARGS adds
-# runner options to every suite, for example `--no-run` in the ASan job or
-# `--no-emission` before checks are emitted. The golden binaries are not needed.
+# runner options to every suite, for example `--no-run` in the ASan job.
 
 find_package(Python3 COMPONENTS Interpreter)
 if(NOT Python3_Interpreter_FOUND)
@@ -52,6 +51,6 @@ endforeach()
 add_test(NAME cases-runner-harness
          COMMAND "${Python3_EXECUTABLE}"
                  "${PROJECT_SOURCE_DIR}/scripts/test_run_cases.py")
-# The harness drives the same compile-and-run pipeline over fixtures.
+# The runner's unit tests.
 set_tests_properties(cases-runner-harness PROPERTIES LABELS "unit" PROCESSORS
                                                      "${WEAVEC_CASES_JOBS}")

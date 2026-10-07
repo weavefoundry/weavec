@@ -20,6 +20,6 @@ static void find(const char *text, const char **err) {
 int main(void) {
   const char *err;
   find("a,b,xyz", &err);
-  printf("%.3s\n", err); // BUG: use-after-free // TRAP: live
+  printf("%.3s\n", err); // BUG: use-after-free // TRAP
   return 0;
 }

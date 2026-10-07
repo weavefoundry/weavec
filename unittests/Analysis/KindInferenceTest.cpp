@@ -21,12 +21,12 @@
 #include "weavec/Analysis/SlotCollector.h"
 #include "weavec/Core/LibrarySpec.h"
 
-#include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Tooling/Tooling.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -148,6 +148,16 @@ inferUnit(const std::string &code, KindInferenceOptions options = {}) {
   return unit;
 }
 
+/// §7.6: the unit's candidates, sorted.
+static std::vector<FieldCandidate>
+fieldCandidates(const KindInferenceResult &inferred) {
+  std::vector<FieldCandidate> out;
+  for (const ResolvedCandidate &resolved : inferred.resolvedCandidates())
+    out.push_back(resolved.candidate);
+  std::ranges::sort(out);
+  return out;
+}
+
 namespace {
 
 // §7.3: A1 defaults, and the uses that rest on them.
@@ -178,7 +188,6 @@ int sized(int *a) { return (int)sizeof(*a); }
   ASSERT_NE(entry, nullptr);
   EXPECT_EQ(entry->extentClass, core::ExtentClass::LowerBound);
   EXPECT_FALSE(entry->hasDeclaredShape());
-  EXPECT_FALSE(entry->isCheckOperand());
 }
 
 // §7.3: a static function whose address is not taken joins its arguments.
@@ -223,7 +232,6 @@ TEST(KindInference, MainArgv) {
   EXPECT_EQ(argv->kind.toString(), "counted(param 0 scale 1 plus 1) nonnull");
   EXPECT_EQ(argv->shapeLevel, KindLevel::SystemHeader);
   EXPECT_TRUE(argv->shapeFromSystemHeader());
-  EXPECT_FALSE(argv->isCheckOperand());
   const auto moved =
       inferUnit("int main(int argc, char **argv) { argv++; return argc; }");
   const KindEntry *shifted = moved->kinds.param(*moved->function("main"), 1);
@@ -488,119 +496,10 @@ int infinite(int *p) { loops(); return *p; }
   // one that never returns, or may exit, does not.
   EXPECT_EQ(unit->requirements("helped", 0),
             std::vector<std::string>{"single nonnull (R1)"});
-  EXPECT_TRUE(unit->inferred.alwaysReturns(*unit->function("helper")));
-  EXPECT_FALSE(unit->inferred.alwaysReturns(*unit->function("fatal")));
-  EXPECT_FALSE(unit->inferred.alwaysReturns(*unit->function("fatals")));
-  EXPECT_TRUE(unit->inferred.alwaysReturns(*unit->function("loops")))
-      << "not terminating is not exiting";
   EXPECT_EQ(unit->requirements("infinite", 0),
             std::vector<std::string>{"single nonnull (R1)"});
 }
 
-/// Every call of a function, with whether it is known to return.
-class CallReturns : public clang::RecursiveASTVisitor<CallReturns> {
-public:
-  CallReturns(const KindInferenceResult &inferred,
-              std::vector<std::pair<std::string, bool>> &seen)
-      : result(inferred), out(seen) {}
-  // The CRTP hook is found by name.
-  // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
-  bool VisitCallExpr(clang::CallExpr *call) {
-    const clang::FunctionDecl *callee = call->getDirectCallee();
-    out.emplace_back(callee != nullptr ? callee->getNameAsString() : "*fp",
-                     result.knownToReturn(*call));
-    return true;
-  }
-
-private:
-  const KindInferenceResult &result;
-  std::vector<std::pair<std::string, bool>> &out;
-};
-
-// §7.5 "known to return": the table, platform declarations, builtins, the
-// unit's definitions; never an indirect or unknown callee.
-TEST(KindInference, KnownToReturn) {
-  const auto unit = inferUnit(R"c(
-void unknown(void);
-static int twice(int n) { return n < 1 ? 0 : twice(n - 1); }
-static void bail(void) { exit(2); }
-static void outer(void) { bail(); }
-void calls(void (*fp)(void), const char *s) {
-  (void)strlen(s);
-  exit(0);
-  unknown();
-  (void)twice(3);
-  outer();
-  fp();
-  (void)__builtin_expect(1, 1);
-}
-)c");
-  std::vector<std::pair<std::string, bool>> seen;
-  CallReturns visitor(unit->inferred, seen);
-  // RecursiveASTVisitor takes a mutable declaration but only reads it.
-  // NOLINTBEGIN(cppcoreguidelines-pro-type-const-cast)
-  visitor.TraverseDecl(
-      const_cast<clang::FunctionDecl *>(unit->function("calls")));
-  // NOLINTEND(cppcoreguidelines-pro-type-const-cast)
-  EXPECT_EQ(seen, (std::vector<std::pair<std::string, bool>>{
-                      {"strlen", true},
-                      {"exit", false},
-                      {"unknown", false},
-                      {"twice", true},
-                      {"outer", false},
-                      {"*fp", false},
-                      {"__builtin_expect", true}}));
-}
-
-// §7.4 rule 7: stores of a relation in one block, with no call, loop or
-// access through the object between them, form one group.
-TEST(KindInference, StoreGroups) {
-  const auto unit = inferUnit(R"c(
-#define COUNTED_BY(n) __attribute__((annotate("weavec.counted_by." #n)))
-struct buf { char *COUNTED_BY(cap) data; unsigned long cap; unsigned long len; };
-void grow(struct buf *b, unsigned long n) {
-  b->data = malloc(n);
-  b->cap = n;
-}
-void split(struct buf *b, unsigned long n) {
-  b->cap = n;
-  b->data = malloc(n);
-}
-void touched(struct buf *b, struct buf *other, unsigned long n) {
-  b->cap = n;
-  other->cap = b->cap;
-  b->data = 0;
-}
-void looped(struct buf *b, unsigned long n) {
-  b->cap = 0;
-  for (unsigned long i = 0; i < n; i++)
-    b->len++;
-  b->data = 0;
-}
-)c");
-  std::vector<std::string> groups;
-  for (const StoreGroup &group : unit->inferred.storeGroups()) {
-    std::string text = group.function->getNameAsString() + ":";
-    for (const clang::FieldDecl *field : group.fields)
-      text += " " + field->getNameAsString();
-    text += " x" + std::to_string(group.stores.size());
-    groups.push_back(text);
-    EXPECT_EQ(group.last(), group.stores.back());
-    EXPECT_EQ(group.record, unit->field("buf", "data")->getParent());
-  }
-  EXPECT_EQ(groups,
-            (std::vector<std::string>{"grow: data cap x2",
-                                      // A call between the stores splits them.
-                                      "split: cap x1", "split: data x1",
-                                      // So does an access through the object.
-                                      "touched: cap x1", "touched: cap x1",
-                                      "touched: data x1",
-                                      // And a loop.
-                                      "looped: cap x1", "looped: data x1"}));
-}
-
-// §7.6: candidates of the unit's structs, pruned to related fields and
-// disqualified by the writes the store-group rule cannot see.
 TEST(KindInference, FieldCandidates) {
   const char *code = R"c(
 struct vec { int *data; unsigned long len; unsigned long cap; char *name; };
@@ -621,7 +520,7 @@ void use(struct vec *v, struct holder *h, const char *raw, long *l,
 )c";
   const auto unit = inferUnit(code);
   std::vector<std::string> candidates;
-  for (const FieldCandidate &candidate : unit->inferred.fieldCandidates())
+  for (const FieldCandidate &candidate : fieldCandidates(unit->inferred))
     candidates.push_back(candidate.record + " " +
                          (candidate.bytes ? "bytes(" : "count(") +
                          candidate.pointer + ") == " + candidate.count + " + " +
@@ -646,11 +545,11 @@ void use(struct vec *v, struct holder *h, const char *raw, long *l,
   KindInferenceOptions all;
   all.pruneUnrelatedCandidates = false;
   const auto unpruned = inferUnit(code, all);
-  EXPECT_EQ(unpruned->inferred.fieldCandidates().size(), 14U);
+  EXPECT_EQ(fieldCandidates(unpruned->inferred).size(), 14U);
   // The designated first cut: no candidates at all.
   KindInferenceOptions cut;
   cut.fieldCandidates = false;
-  EXPECT_TRUE(inferUnit(code, cut)->inferred.fieldCandidates().empty());
+  EXPECT_TRUE(fieldCandidates(inferUnit(code, cut)->inferred).empty());
 }
 
 // §13.1 `imports.calls` and the §7.3 Call-site row: Single-valid arguments.
@@ -731,7 +630,7 @@ void use(struct s *o, int *q) {
       for (const core::Site &site : row.sites) {
         std::string text(core::toString(site.kind));
         if (site.boundary)
-          text += "/" + std::string(core::toString(*site.boundary));
+          text += "/" + test::boundaryText(*site.boundary);
         text += " " + site.text;
         for (const core::Facet facet : core::AllFacets)
           if (site.hasFacet(facet))

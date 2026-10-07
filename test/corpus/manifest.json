@@ -1,89 +1,34 @@
 {
   "schema": "weavec-corpus-manifest",
-  "version": 1,
+  "version": 2,
   "_comment": [
-    "The corpus of RFC 0030, section 17.5, read by scripts/corpus-gate.py; test/corpus/README.md",
-    "documents every field. Each project is pinned to a 40-hex `sha` and checked out once into",
-    "<workdir>/<project>. Each config names the files it analyses (`compile`: per-file",
-    "weavec-cc -c, and weavec --whole-program over all of them when `wholeProgram` is true;",
-    "--legacy runs the v0.10.0 weavec tool exactly as scripts/corpus.py did). `build`, `test`",
-    "and `bench` commands run under /bin/sh in a fresh copy of the checkout with CC set to the",
-    "compiler (a wrapper around weavec-cc, or the reference compiler), JOBS to the parallelism,",
-    "SUPPORT to test/corpus/support/<project> and BENCH to test/corpus/bench. `{support}` in",
-    "compile arguments expands to the same support directory. `lowered` holds the only allowed",
-    "-Wno-error=weavec-<id> flags, each next to the fingerprint of its triaged-true definite",
-    "error. `gates` carries the limits of gates G9-G15, and `gates.heldOut` those of RFC 0031's",
-    "G5, G6 and G12 for the configs marked `heldOut` (RFC 0031, section 11.2: the eleven held-out",
-    "projects, run by --full and by --held-out). RFC 0033, section 11: a config marked heldOut may",
-    "name a `set`, `fresh` (its eight projects, run by --full and by --held-out, gated by D1 and D5",
-    "under `gates.rfc0033`) or `sealed` (five projects, run only by --sealed or --only, built with",
-    "the reference compiler alone until gate D2). RFC 0034, section 9: two more sets, `fresh34`",
-    "(ten projects, run by --full, --held-out and --set fresh34, gated by F1, F5 and F7 under",
-    "`gates.rfc0034`; the only held-out configs with a `bench`) and `sealed34` (five projects, run",
-    "only by --set sealed34 or --only, built with the reference compiler alone until gate F2)."
+    "The corpus of RFC 0035, section 11, read by scripts/corpus-gate.py; test/corpus/README.md",
+    "documents every field and gate. Each project is pinned to a 40-hex `sha` and checked out once",
+    "into <workdir>/<project>. Each config names the files --quick analyses with weavec (per file,",
+    "or as one program when `wholeProgram` is true) and compiles with weavec-cc -c -O2 into",
+    "enforcement ledgers (`compile`; `{support}` in its arguments expands to",
+    "test/corpus/support/<project>). `build`, `test` and `bench` commands run under /bin/sh in a",
+    "fresh copy of the checkout with CC set to the compiler (a wrapper around weavec-cc or the",
+    "reference compiler), JOBS to the parallelism, SUPPORT to test/corpus/support/<project>, BENCH",
+    "to test/corpus/bench and CACHE to a directory kept between runs. A config marked `heldOut`",
+    "runs with --full (or --held-out); one with `set` belongs to that set: fresh, fresh34 and fresh35",
+    "run with the held-out ones, sealed, sealed34 and sealed35 only when --set or --only names them.",
+    "`gates` holds the limits of the gates of RFC 0035's *Acceptance gates* that the corpus measures."
   ],
   "gates": {
     "referenceMachine": "darwin-arm64 Apple M3 x8",
-    "G9": {
-      "maxDefiniteErrors": 10,
-      "mustReport": [
-        {
-          "config": "zlib",
-          "file": "test/minigzip.c",
-          "line": 568,
-          "ids": ["double-free", "use-after-free"],
-          "note": "minigzip's repeated fclose(stdout): gz_uncompress closes stdout on every iteration of the -c -d loop (v0.10.0: error, double-free)"
-        }
-      ]
+    "buildTime": {
+      "_comment": "RFC 0035 G9 (--full): each config's weavec-cc build within maxBuildRatio of the reference compiler's CPU time, and no per-file compile of --quick above maxUnitRatio of the reference compiler's (among the files the reference compiler takes at least minUnitCpuSeconds for).",
+      "maxBuildRatio": 1.5,
+      "maxUnitRatio": 3.0,
+      "minUnitCpuSeconds": 0.25
     },
-    "G10": {"maxPossibleTemporal": 65, "maxPossibleTemporalPerConfig": {"jansson": 20}},
-    "G12": {"minReportedShare": 0.9},
-    "G13": {"maxUnitUnresolvedShare": {"linenoise": 0.25, "cJSON": 0.25, "sds": 0.6}},
-    "G14": {
-      "_comment": "RFC 0032 R6 as amended (Implementation amendments, 3): user CPU of the default build (with the runtime), of the build with -fno-weavec-runtime, and the default build's peak resident size, each over the reference compiler's.",
-      "maxOverhead": {"lua": 6.5, "zlib": 2.0, "cJSON": 2.0},
-      "maxOverheadNoRuntime": {"lua": 1.15, "zlib": 1.1, "cJSON": 1.15},
-      "maxRssRatio": {"lua": 2.0, "zlib": 2.0, "cJSON": 2.0}
-    },
-    "rfc0032": {
-      "_comment": "RFC 0032 R4: the unresolved share of each facet over the original configs together and over the held-out configs together.",
-      "R4": {"maxUnresolvedShare": {"spatial": 0.12, "null": 0.01, "temporal": 0.20}}
-    },
-    "G15": {
-      "maxProgramCpuSeconds": {"lua": 214},
-      "maxBuildStepWallSeconds": {"zlib": {"step": "make -j8", "seconds": 6.6}},
-      "maxOverBudgetShare": 0.01
-    },
-    "heldOut": {
-      "_comment": "RFC 0031's gates over the configs marked heldOut (section 11.2), which G9 and G10 do not count: G5 (no definite error triaged false; with --full every build and test suite passes with no trap), G6 (their unresolved temporal share together, program ledgers where a whole-program analysis exists and unit ledgers otherwise) and G12 (the single-unit compiles of mujs one.c and sqlite3.c; the weavec-cc build's CPU time against the reference compiler's is reported, not limited). G6's limit is the ratchet of RFC 0031's *Gates carried forward*. G15's over-budget share counts them with the original configs (RFC 0031 G11).",
-      "G5": {"maxFalseDefiniteErrors": 0, "maxTraps": 0},
-      "G6": {"maxTemporalUnresolvedShare": 0.5},
-      "G12": {
-        "maxUnitCost": {
-          "mujs": {"file": "one.c", "cpuSeconds": 900, "maxRssMiB": 4096},
-          "sqlite": {"file": "sqlite3.c", "cpuSeconds": 900, "maxRssMiB": 4096}
-        }
-      }
-    },
-    "rfc0033": {
-      "_comment": "RFC 0033's gates over the configs of set fresh (section 11), which G9, G10, G11 and RFC 0031's held-out gates do not count: D1 (no definite error triaged false; with --full every build and test suite passes, in trap mode with no trap and in report mode with no failure) and D5 (with --full the weavec-cc build's CPU time over the reference compiler's, per config). The sealed configs get the same values under rfc0033.sealed.*, from the one --sealed run of gate D2.",
-      "D1": {"maxFalseDefiniteErrors": 0, "maxTraps": 0},
-      "D5": {"maxBuildRatio": 4.0}
-    },
-    "rfc0034": {
-      "_comment": "RFC 0034's gates (Acceptance gates). F1 over the configs of set fresh34 (section 9): every build passes with the default flags (or stops only at definite errors triaged true) and every test suite passes, in trap mode with no trap and in report mode with no failure. F2: the same over set sealed34, with F5's build ratio, from the one --set sealed34 run. F5: with --full each config's weavec-cc build CPU time at most maxBuildRatio times the reference compiler's (every config but sealed34 ones; the reference compiler builds each once more); the single-unit compiles of maxUnitCpuSeconds within their CPU seconds; no compilation above maxCompileRssMiB (the per-file compiles of --quick, and every compiler process of a --full trap-mode build). F7: with --bench the default build's run time (with the runtime) over the reference compiler's: each fresh34 workload at most maxOverhead and their geometric mean at most maxGeometricMean; RFC 0032's G14 benchmarks at maxOverheadG14.",
-      "F1": {"maxFalseDefiniteErrors": 0, "maxTraps": 0},
-      "F2": {"maxFalseDefiniteErrors": 0, "maxTraps": 0},
-      "F5": {
-        "maxBuildRatio": 5.0,
-        "maxUnitCpuSeconds": {"sqlite": {"file": "sqlite3.c", "cpuSeconds": 120}},
-        "maxCompileRssMiB": 2048
-      },
-      "F7": {
-        "maxOverhead": 4.0,
-        "maxGeometricMean": 2.5,
-        "maxOverheadG14": {"lua": 2.5, "zlib": 1.5, "cJSON": 1.5}
-      }
+    "runTime": {
+      "_comment": "RFC 0035 G7 (--bench, --full): the best-of-N user CPU of each workload built by weavec-cc over the reference compiler's. Each workload of a set in `sets` at most the larger of maxOverhead and its ASan ratio, and their geometric mean at most maxGeometricMean once all of them ran; the workloads of maxOverheadPerConfig at their own limits.",
+      "sets": ["fresh34", "fresh35"],
+      "maxOverhead": 2.0,
+      "maxGeometricMean": 1.8,
+      "maxOverheadPerConfig": {"lua": 2.0, "zlib": 1.4, "cJSON": 1.4}
     }
   },
   "projects": [
@@ -237,7 +182,6 @@
           "notes": "A garbage-collected VM. realloc through the l_alloc function pointer, a 968-block interpreter loop with computed goto (luaV_execute), linked stacks of locals in the parser. The build is the developer makefile with POSIX and dlopen (as LUA_USE_LINUX, which also suits macOS) and without the Linux-only -Wl,-E; the test is the named testes subset below, run by support/lua/subset.lua in user mode. Left out: files.lua (needs /dev/full, missing on macOS), main.lua (stand-alone interpreter tests, skipped in user mode anyway), big.lua and heavy.lua (long), and the T-library tests (need a build with ltests.h).",
           "compile": {"files": ["l*.c"], "args": ["-std=c99", "-I.", "-DLUA_USE_POSIX"]},
           "wholeProgram": true,
-          "link": {"args": ["-lm", "-ldl"]},
           "build": ["make -j\"$JOBS\" CC=\"$CC\" MYCFLAGS=\"-std=c99 -DLUA_USE_POSIX -DLUA_USE_DLOPEN\" MYLDFLAGS= MYLIBS=-ldl"],
           "test": ["cd testes && ../lua \"$SUPPORT/subset.lua\" gc.lua db.lua calls.lua strings.lua literals.lua tpack.lua attrib.lua gengc.lua locals.lua constructs.lua code.lua cstack.lua nextvar.lua pm.lua utf8.lua api.lua memerr.lua events.lua vararg.lua closure.lua coroutine.lua goto.lua errors.lua math.lua sort.lua bitwise.lua verybig.lua"],
           "bench": {
@@ -614,8 +558,7 @@
           },
           "build": ["make -j\"$JOBS\" CC=\"$CC\" MALLOC=libc BUILD_TLS=no CLANG=clang OPTIMIZATION=-O2"],
           "test": ["sh \"$SUPPORT/run-tests.sh\" unit/type/list unit/type/hash unit/type/set unit/type/zset unit/type/string unit/type/incr unit/expire unit/keyspace unit/sort unit/scan unit/hyperloglog"],
-          "testTimeout": 1800,
-          "lowered": [{"flag": "-Wno-error=weavec-null-dereference", "fingerprint": "c4ec5c76c9434538f0c6ca4ffdb4347f", "note": "the latent null dereference triaged true at src/cluster_legacy.c:237-238 (auxHumanNodenameSetter's `!n` branch)"}]
+          "testTimeout": 1800
         }
       ]
     },
@@ -777,7 +720,6 @@
           "name": "mbedtls",
           "heldOut": true,
           "set": "sealed",
-          "lowered": [{"flag": "-Wno-error=weavec-use-after-free", "fingerprint": "b0cd26ca6a62842ceabce58c8f63069e", "note": "metatest's deliberate read after free (framework/tests/programs/metatest.c:158), triaged true"}, {"flag": "-Wno-error=weavec-double-free", "fingerprint": "2daed3f2a8c327a83a41c73dbc92f836", "note": "metatest's deliberate double free (framework/tests/programs/metatest.c:168), triaged true"}],
           "notes": "SEALED (RFC 0033, section 11): built with the reference compiler only until gate D2. A TLS and cryptography library: multi-precision integers in limb arrays, cipher and message-digest contexts dispatched through info tables, the PSA key store, X.509 and ASN.1 parsers over caller buffers, the TLS record layer. Its CMake build needs the framework submodule, which the gate's checkout leaves empty: support/mbedtls/fetch-framework.sh fetches it once into $CACHE at the commit the pinned commit records and copies it in (the generated library sources are committed; the test suites are generated with python3's standard library). The build is the library, the programs and the test suites (MBEDTLS_FATAL_WARNINGS off: the project builds with -Werror and a new compiler's warnings are not its bugs); the test is CTest, serially (135 suites in about 20 s: the PSA storage and ITS suites keep their files in the shared working directory and fail when run in parallel), and programs/test/selftest.",
           "compile": {
             "files": ["library/aes.c", "library/aria.c", "library/asn1parse.c", "library/asn1write.c", "library/base64.c", "library/bignum.c", "library/bignum_core.c", "library/camellia.c", "library/ccm.c", "library/chacha20.c", "library/chachapoly.c", "library/cipher.c", "library/cmac.c", "library/ctr_drbg.c", "library/des.c", "library/ecdh.c", "library/ecdsa.c", "library/ecp.c", "library/ecp_curves.c", "library/entropy.c", "library/gcm.c", "library/hkdf.c", "library/hmac_drbg.c", "library/md.c", "library/md5.c", "library/oid.c", "library/pem.c", "library/pk.c", "library/pkparse.c", "library/poly1305.c", "library/rsa.c", "library/sha1.c", "library/sha256.c", "library/sha512.c", "library/sha3.c", "library/ssl_tls.c", "library/ssl_msg.c", "library/x509.c", "library/x509_crt.c", "library/x509_crl.c"],

@@ -5,7 +5,6 @@
 // subtree, and freeing 't' last, are proven.
 // CLEAN
 // ASAN
-// EXPECT-LEDGER: /summary/facets/temporal/unresolved == 0
 #include <stdlib.h>
 struct tree { struct tree *left, *right; int v; };
 void free_tree(struct tree *t) {

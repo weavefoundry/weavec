@@ -15,7 +15,7 @@ __attribute__((noinline)) void s3(int k) {
   keep1 = bx.buf;
   q->buf = malloc(2 * sizeof(int));
   if (!q->buf) abort();
-  bx.buf[10] = k;      /* heap overflow: bx.buf now has 2 ints */ // BUG: out-of-bounds // TRAP: index
+  bx.buf[10] = k;      /* heap overflow: bx.buf now has 2 ints */ // BUG: out-of-bounds // TRAP
   keep2 = bx.buf;
 }
 int main(int argc, char **argv) { (void)argv; s3(argc); puts("completed without trap"); return 0; }

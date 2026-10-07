@@ -15,13 +15,13 @@ static struct node *make_node(int value) {
 
 void bad(void) {
   struct node *n = make_node(1);
-  print_int(n->value); // BUG: null-dereference
+  print_int(n->value); // BUG: null-dereference // MISS: the analysis does not report a callee's possibly-null result; the guard stops at run time
   free(n);
 }
 
 void bad_passed_on(void) {
   struct node *n = make_node(1);
-  (void)strlen((char *)n); // BUG: null-dereference
+  (void)strlen((char *)n); // BUG: null-dereference // MISS: as above
   free(n);
 }
 

@@ -13,25 +13,25 @@
 struct pair { int a; long b; };
 struct box { char *s, *e; struct pair *v, *ve; struct pair **pp; };
 static int subscript_member(struct box *b, long k) {
-  return (int)b->v[k].b; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return (int)b->v[k].b; // BUG: out-of-bounds // TRAP
 }
 static int address_arrow(struct box *b, long k) {
-  return (&b->v[k])->a; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return (&b->v[k])->a; // BUG: out-of-bounds // TRAP
 }
 static int two_levels(struct box *b, long k) {
-  return (int)b->pp[0][k].b; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  return (int)b->pp[0][k].b; // BUG: out-of-bounds // TRAP
 }
 static int copy(struct box *b, long k) {
-  b->v[k] = b->v[0]; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  b->v[k] = b->v[0]; // BUG: out-of-bounds // TRAP
   return 0;
 }
 static int compound(struct box *b, long k) {
-  b->s[k] += 1; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  b->s[k] += 1; // BUG: out-of-bounds // TRAP
   return 0;
 }
 static int loop_write(struct box *b, long k) {
   long j;
-  for (j = 0; j <= k; j++) b->s[j] = 0; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  for (j = 0; j <= k; j++) b->s[j] = 0; // BUG: out-of-bounds // TRAP
   return 0;
 }
 int main(int argc, char **argv) {

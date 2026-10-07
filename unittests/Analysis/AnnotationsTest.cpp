@@ -50,13 +50,13 @@ TEST(ParseAnnotation, RecognisesSizedBy) {
   EXPECT_EQ(parseAnnotation("weavec.sized_by.n + 1"), Annotation::Invalid);
 }
 
-// RFC 0030, *Annotation surface*: the extent macros, `WEAVEC_STRING` and
-// `WEAVEC_REQUIRE_SAFE`; `WEAVEC_CHECKED` is gone.
+// RFC 0030, *Annotation surface*: the extent macros and `WEAVEC_STRING`;
+// `WEAVEC_CHECKED` is gone, and RFC 0035 deletes `WEAVEC_REQUIRE_SAFE`.
 TEST(ParseAnnotation, RecognisesKindSpellings) {
   EXPECT_EQ(parseAnnotation("weavec.counted_by.len"), Annotation::CountedBy);
   EXPECT_EQ(parseAnnotation("weavec.ended_by.end"), Annotation::EndedBy);
   EXPECT_EQ(parseAnnotation("weavec.string"), Annotation::String);
-  EXPECT_EQ(parseAnnotation("weavec.require_safe"), Annotation::RequireSafe);
+  EXPECT_EQ(parseAnnotation("weavec.require_safe"), Annotation::Invalid);
   EXPECT_EQ(parseAnnotation("weavec.counted_by."), Annotation::Invalid);
   EXPECT_EQ(parseAnnotation("weavec.counted_by.2n"), Annotation::Invalid);
   EXPECT_EQ(parseAnnotation("weavec.ended_by.p + 1"), Annotation::Invalid);
@@ -68,8 +68,8 @@ TEST(ParseAnnotation, RecognisesKindSpellings) {
 TEST(GetAnnotations, CollectsKindAnnotations) {
   auto ast = clang::tooling::buildASTFromCodeWithArgs(
       R"c(
-      __attribute__((annotate("weavec.require_safe")))
-      void f(char *__attribute__((annotate("weavec.counted_by.n"))) p,
+      __attribute__((annotate("weavec.nullable")))
+      char *f(char *__attribute__((annotate("weavec.counted_by.n"))) p,
              unsigned long n,
              const char *__attribute__((annotate("weavec.string"))) s,
              int *__attribute__((annotate("weavec.ended_by.e"))) b,
@@ -87,7 +87,7 @@ TEST(GetAnnotations, CollectsKindAnnotations) {
       f = fn;
   ASSERT_NE(f, nullptr);
   const AnnotationSet onFunction = getAnnotations(*f);
-  EXPECT_TRUE(onFunction.requireSafe);
+  EXPECT_TRUE(onFunction.nullable);
   EXPECT_TRUE(onFunction.any());
   EXPECT_FALSE(onFunction.extent());
   const AnnotationSet p = getAnnotations(*f->getParamDecl(0));

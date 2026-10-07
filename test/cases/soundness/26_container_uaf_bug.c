@@ -11,5 +11,5 @@ int main(void) {
   char *items[4];
   for (int i = 0; i < 4; i++) { items[i] = malloc(4); if (!items[i]) return 1; items[i][0] = (char)i; }
   for (int i = 0; i < 4; i++) free(items[i]);
-  return items[2][0]; // MISS: the filling loop is not recognised, so the cell reads as uninitialized rather than freed
+  return items[2][0]; // TRAP
 }

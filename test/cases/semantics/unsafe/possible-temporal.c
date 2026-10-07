@@ -8,6 +8,6 @@
 void h(char *p, int c) {
   WEAVEC_UNSAFE {
     if (c) free(p);
-    p[0] = 1; // BUG: use-after-free possible // UNRESOLVED: temporal:may-released
+    p[0] = 1; // BUG: use-after-free possible
   }
 }

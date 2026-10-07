@@ -10,12 +10,12 @@
 
 void two(char *a, char *b) {
   free(a);
-  b[0] = 1; // BUG: use-after-free definite // UNRESOLVED: temporal:may-alias-released
+  b[0] = 1; // BUG: use-after-free definite
 }
 
 int main(void) {
   char *p = malloc(8);
   if (!p) return 1;
-  two(p, p); // NOT-PROVEN: temporal
+  two(p, p);
   return 0;
 }

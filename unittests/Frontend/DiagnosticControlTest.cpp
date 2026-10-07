@@ -100,8 +100,7 @@ TEST(DiagnosticControl, ErrorsCannotBeDisabledOnlyLowered) {
        {core::diag::NullDereference, core::diag::UseOfUninitialized,
         core::diag::OutOfBounds, core::diag::UnsafeOperation,
         core::diag::AnnotationMismatch, core::diag::InvalidIntegerOperation,
-        core::diag::ContradictedAssumption, core::diag::UnresolvedOperation,
-        core::diag::UncheckedOperation}) {
+        core::diag::ContradictedAssumption}) {
     DiagnosticControl control;
     std::string error;
     const std::string flag = "-Wno-weavec-" + std::string(id);
@@ -118,6 +117,10 @@ TEST(DiagnosticControl, ErrorsCannotBeDisabledOnlyLowered) {
     const auto lowered = control.apply(make(id, Severity::Error));
     ASSERT_TRUE(lowered);
     EXPECT_EQ(lowered->severity, Severity::Warning);
+    // A lowered error may then be disabled (`-fweavec-diagnose`).
+    ASSERT_TRUE(control.parse(flag, error));
+    EXPECT_TRUE(error.empty());
+    EXPECT_FALSE(control.apply(make(id, Severity::Error)));
   }
 }
 
@@ -132,7 +135,6 @@ TEST(DiagnosticControl, DisablingAMixedIdKeepsItsDefiniteErrors) {
   const auto definite = control.apply(make(UseAfterFree, Severity::Error));
   ASSERT_TRUE(definite);
   EXPECT_EQ(definite->severity, Severity::Error);
-  EXPECT_TRUE(control.isEnabled(UseAfterFree));
 
   // The group flag does the same for every id.
   DiagnosticControl group;
@@ -155,9 +157,6 @@ TEST(DiagnosticControl, AllocationFailureIsOffByDefault) {
       EXPECT_TRUE(control.parse(flag, error));
       EXPECT_TRUE(error.empty()) << flag << ": " << error;
     }
-    EXPECT_EQ(
-        control.isEnabled(AllocationFailure),
-        control.apply(make(AllocationFailure, Severity::Warning)).has_value());
     if (const auto adjusted =
             control.apply(make(AllocationFailure, Severity::Warning)))
       return adjusted->severity;
@@ -183,23 +182,9 @@ TEST(DiagnosticControl, AllocationFailureIsOffByDefault) {
   // Every other id is on by default.
   const DiagnosticControl defaults;
   for (const std::string_view id : core::diag::All)
-    EXPECT_EQ(defaults.isEnabled(id), id != AllocationFailure) << id;
-}
-
-TEST(DiagnosticControl, NewIdsFollowTheirSeverities) {
-  DiagnosticControl control;
-  std::string error;
-  ASSERT_TRUE(control.parse("-Wno-weavec-unanalyzed-input", error));
-  EXPECT_TRUE(error.empty());
-  EXPECT_FALSE(control.apply(
-      make(core::diag::UnanalyzedInput, Severity::Warning, "link input")));
-  EXPECT_FALSE(control.isEnabled(core::diag::UnanalyzedInput));
-  ASSERT_TRUE(control.parse("-Werror=weavec-unanalyzed-input", error));
-  EXPECT_EQ(control
-                .apply(make(core::diag::UnanalyzedInput, Severity::Warning,
-                            "link input"))
-                ->severity,
-            Severity::Error);
+    EXPECT_EQ(defaults.apply(make(id, Severity::Warning)).has_value(),
+              id != AllocationFailure)
+        << id;
 }
 
 TEST(DiagnosticControl, RejectsRemovedIds) {
@@ -332,13 +317,11 @@ TEST(DiagnosticIds, DefaultSeverities) {
        {core::diag::NullDereference, core::diag::UseOfUninitialized,
         core::diag::OutOfBounds, core::diag::UnsafeOperation,
         core::diag::AnnotationMismatch, core::diag::InvalidIntegerOperation,
-        core::diag::ContradictedAssumption, core::diag::UnresolvedOperation,
-        core::diag::UncheckedOperation})
+        core::diag::ContradictedAssumption})
     always(id, Severity::Error);
-  // Warnings, never errors (RFC 0007: a leak; RFC 0030 §13.2: a link input).
+  // Warnings, never errors (RFC 0007: a leak).
   for (const std::string_view id :
-       {Leak, core::diag::InvalidAnnotation, AllocationFailure,
-        core::diag::UnanalyzedInput})
+       {Leak, core::diag::InvalidAnnotation, AllocationFailure})
     always(id, Severity::Warning);
   always("no-such-id", Severity::Error);
 
@@ -352,11 +335,11 @@ TEST(DiagnosticIds, DefaultSeverities) {
   for (const char *id :
        {"leak", "mismatched-release", "null-dereference",
         "use-of-uninitialized", "invalid-release", "out-of-bounds",
-        "contradicted-assumption", "allocation-failure", "unresolved-operation",
-        "unchecked-operation", "unanalyzed-input"})
+        "contradicted-assumption", "allocation-failure"})
     EXPECT_TRUE(core::diag::isKnown(id)) << id;
-  // The 20 ids of RFC 0030 (*Diagnostics*).
-  EXPECT_EQ(core::diag::All.size(), 20U);
+  // The 20 ids of RFC 0030 (*Diagnostics*), less the three RFC 0035
+  // deletes.
+  EXPECT_EQ(core::diag::All.size(), 17U);
 }
 
 TEST(DiagnosticIds, RemovedIdsAreRefused) {
@@ -366,10 +349,12 @@ TEST(DiagnosticIds, RemovedIdsAreRefused) {
     std::string error;
     ASSERT_TRUE(control.parse("-Wno-weavec-" + std::string(id), error));
     EXPECT_EQ(error, "unknown WeaveC diagnostic '" + std::string(id) +
-                         "' (removed by RFC 0030)");
+                         "' (removed by " +
+                         std::string(core::diag::removedBy(id)) + ")");
   }
-  for (const char *id : {"checking-incomplete", "checking-failed",
-                         "analysis-incomplete", "annotation-required"})
+  for (const char *id :
+       {"checking-incomplete", "checking-failed", "analysis-incomplete",
+        "annotation-required", "unresolved-operation", "unchecked-operation"})
     EXPECT_TRUE(core::diag::isRemoved(id)) << id;
   EXPECT_FALSE(core::diag::isRemoved("use-after-free"));
 }

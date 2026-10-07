@@ -9,7 +9,7 @@ int main(void) {
   if (!p) return 1;
   p[0] = 1;
   if (setjmp(env) != 0) {
-    return p[0]; // BUG: use-after-free // NOT-PROVEN: temporal // TRAP: object
+    return p[0]; // BUG: use-after-free // TRAP
   }
   free(p);
   fail();

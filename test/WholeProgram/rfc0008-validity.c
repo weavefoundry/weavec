@@ -2,10 +2,8 @@
 // `notnull` outcomes and interior results travel in the program database, so
 // a caller in this unit is checked against definitions in another.
 //
-// RUN: not %weavec --no-runtime --whole-program %s %S/Inputs/validity.c -- -I%S/Inputs 2>&1 | FileCheck %s
-// RUN: not %weavec --no-runtime --whole-program --ledger=%t.json %s %S/Inputs/validity.c -- -I%S/Inputs 2>/dev/null
-// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
-// RUN: not %weavec --no-runtime --whole-program --dump-analysis %s %S/Inputs/validity.c -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=DUMP %s
+// RUN: not %weavec --whole-program %s %S/Inputs/validity.c -- -I%S/Inputs 2>&1 | FileCheck %s
+// RUN: not %weavec --whole-program --dump-analysis %s %S/Inputs/validity.c -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=DUMP %s
 #include <stdlib.h>
 #include <string.h>
 #include "validity.h"
@@ -48,7 +46,7 @@
 // The summary goes to stderr and the dump to stdout, and `2>&1` joins them on
 // one descriptor. The summary must land after the whole dump, never inside a
 // dump line: only draining the dump stream first orders two buffered streams
-// over one descriptor (LedgerOutput.cpp, printSummary). Without that the point
+// over one descriptor (AnalysisSummary.cpp, printLine). Without that the point
 // they interleave at is the point some buffer happened to fill, which differs
 // between libcs -- on glibc it fell inside the 'vec_grow' line above.
 // DUMP: program slots:
@@ -93,11 +91,8 @@ void interior_release(const char *t) {
   // `find`'s result is `unknown` across the unit boundary (RFC 0031 §6.1;
   // in one unit, `strchr`'s interior result gives `invalid-release`): the
   // release is not proven, and `s` may be leaked where `p` is not `s`
-  // (test/cases/KNOWN-DIFFERENCES.md, *Lit tests*).
-  // CHECK: rfc0008-validity.c:[[@LINE+4]]:3: warning: 's' is leaked [weavec::leak]
-  // LEDGER: "text": "free(p)",
-  // LEDGER: "temporal": {
-  // LEDGER-NEXT: "outcome": "unresolved",
+  // (the retired golden comparison of RFC 0030, *Lit tests*).
+  // CHECK: rfc0008-validity.c:[[@LINE+1]]:3: warning: 's' is leaked [weavec::leak]
   free(p);
 }
 

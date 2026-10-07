@@ -3,31 +3,27 @@ weavec_add_library(
   Frontend
   SOURCES AnalysisStats.cpp
           ClangDiagnosticSink.cpp
-          DeferredCodeGenConsumer.cpp
           DiagnosticControl.cpp
-          # RFC 0031 §9.2: the dispatch edge split.
-          DispatchEdges.cpp
           Driver.cpp
           FrontendAction.cpp
-          # RFC 0034 §1: the guards the backend canonicalises, merges and
-          # expands.
-          GuardPasses.cpp
-          Prelude.cpp
           ProgramAnalysis.cpp
           ResourceDir.cpp
-          # RFC 0030: the ledger writers, where ledgers and summary lines
-          # go, the format-28 unit record and the link step.
-          LedgerOutput.cpp
-          LedgerWriter.cpp
-          LinkStep.cpp
-          RecordFacts.cpp
-          RecordPayload.cpp
-          UnitRecord.cpp
-          # RFC 0030 S5: the check rewrites and zero-initialisation.
-          CheckEmitter.cpp
-          ZeroInit.cpp
-          # RFC 0032 §4, §5: which stack and global objects are registered.
-          ObjectRegistration.cpp
+          # RFC 0035: the guard pass, its frames, globals and library calls,
+          # the unsafe regions and the enforcement ledger.
+          EnforcementLedger.cpp
+          GuardExpand.cpp
+          GuardFrames.cpp
+          GuardLoops.cpp
+          GuardGlobals.cpp
+          GuardInsert.cpp
+          GuardLibrary.cpp
+          GuardPass.cpp
+          UnsafeRegions.cpp
+          # RFC 0035 §8: the advisory analysis's summary lines and what
+          # `weavec --whole-program` checks across units.
+          AnalysisSummary.cpp
+          InterfaceFacts.cpp
+          ProgramChecks.cpp
   PUBLIC_DEPS weavec::Analysis
   USES_LLVM)
 

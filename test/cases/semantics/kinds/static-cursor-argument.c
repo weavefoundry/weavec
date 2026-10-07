@@ -9,7 +9,7 @@
 // ASAN
 static int get(const int *p, int i) {
   if (i < 0) return 0;
-  return p[i]; // BUG: out-of-bounds // UNRESOLVED: spatial:unknown-extent // TRAP: object
+  return p[i]; // BUG: out-of-bounds // TRAP
 }
 
 int main(int argc, char **argv) {

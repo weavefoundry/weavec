@@ -1,9 +1,5 @@
-// RFC 0013: swap inputs and consumption of extracted old values cross unit records.
+// RFC 0013: swap inputs and consumption of extracted old values cross units.
 // RUN: not %weavec --whole-program %s %S/Inputs/heap13.c -- 2>&1 | FileCheck %s
-// RUN: rm -rf %t && mkdir -p %t
-// RUN: %weavec_cc -c %S/Inputs/heap13.c -o %t/library.o 2>&1 | count 0
-// RUN: %weavec_cc -c %s -o %t/caller.o 2>&1 | count 0
-// RUN: not %weavec_cc -fweavec-link=analyze %t/library.o %t/caller.o -o %t/program 2>&1 | FileCheck %s
 #include "../Inputs/prelude.h"
 #include "Inputs/heap13.h"
 

@@ -6,7 +6,7 @@
 #include <stdio.h>
 struct text { const char *p; };
 static int third(const struct text *t) {
-  return t->p[2]; // GUARDED: spatial
+  return t->p[2];
 }
 int main(int argc, char **argv) {
   struct text lit = {"literal"};

@@ -93,10 +93,6 @@ struct LibTerm {
   /// Parses a whole term; `std::nullopt` with `error` set otherwise.
   [[nodiscard]] static std::optional<LibTerm> parse(std::string_view text,
                                                     std::string &error);
-  /// True if the term mentions `wanted` anywhere.
-  [[nodiscard]] bool mentions(Kind wanted) const;
-  /// Every argument index the term reads, in first-mention order.
-  [[nodiscard]] std::vector<unsigned> arguments() const;
 
   /// Known values for the leaves of a term; an empty function or a
   /// `std::nullopt` answer makes the leaf unknown.
@@ -146,16 +142,14 @@ struct LibDisjoint {
   friend bool operator==(const LibDisjoint &, const LibDisjoint &) = default;
 };
 
-/// RFC 0034 §5.2: `wrapper(name, room, source, disjoint)`: the prelude's
-/// checked wrapper `__weavec_chk_<name>` may replace the call. It computes at
-/// run time what the row's terms state but a check could not name at the
-/// site: the bytes argument 0 needs (`room`), the bytes argument 1 needs
-/// (`source`, a copy's), and the row's `disjoint` clause.
+/// RFC 0035 §2.5: `wrapper(name)`: the runtime's checked
+/// `__weavec_rt_<name>` replaces the call. It takes the call's arguments and
+/// the site (first when the call is variadic, last otherwise) and checks
+/// what the call reads and writes as it runs: the bytes the row's terms
+/// could not name before the call (a formatted write's), or fewer than
+/// they name (`memchr` reads up to the byte it finds).
 struct LibWrapper {
   std::string name;
-  bool room = false;
-  bool source = false;
-  bool disjoint = false;
 
   friend bool operator==(const LibWrapper &, const LibWrapper &) = default;
 };
@@ -373,8 +367,11 @@ struct LibraryEntry {
   bool noreturn = false;
   bool exits = false;
   bool returnsTwice = false;
+  /// `wide`: the row's strings end in a zero `wchar_t`, and `count` and
+  /// `strlen(aN)` count `wchar_t` elements (`wcslen`).
+  bool wide = false;
   std::optional<LibFormat> format;
-  /// RFC 0034 §5.2: the checked wrapper that may replace the call.
+  /// RFC 0035 §2.5: the runtime's checked version that replaces the call.
   std::optional<LibWrapper> wrapper;
   /// The line of `LibrarySpec.txt` the row starts on.
   unsigned line = 0;
@@ -394,8 +391,6 @@ struct LibraryEntry {
   [[nodiscard]] bool usesValueOnly(unsigned index) const noexcept;
   /// Neither `noreturn` nor `exits` (§7.5 "known to return").
   [[nodiscard]] bool knownToReturn() const noexcept;
-  /// Declared by the compiler rather than a header (`__builtin_expect`).
-  [[nodiscard]] bool isCompilerBuiltin() const noexcept;
   /// A fact rests on the row's own statement about hidden behaviour: a
   /// `static`/`interior-state` result, `retain`/`reads`/`invalidates`, or
   /// a callback clause. Such facets are `trusted(library-spec)` (§8.2).
@@ -407,9 +402,6 @@ struct LibraryEntry {
   /// matches anything, as does a pointer declared where the row says
   /// `other`, for `va_list`).
   [[nodiscard]] bool accepts(const LibSignature &declared) const;
-  /// The canonical row text, which `LibrarySpec::parse` reads back to an
-  /// equal entry (header and line aside).
-  [[nodiscard]] std::string str() const;
 
   friend bool operator==(const LibraryEntry &, const LibraryEntry &) = default;
 };
@@ -435,9 +427,8 @@ class LibrarySpec {
 public:
   /// The table embedded in the library, parsed on first use. A parse error
   /// is a build-time test failure; should it happen anyway the table is
-  /// empty and `shippedError()` says why.
+  /// empty.
   [[nodiscard]] static const LibrarySpec &shipped();
-  [[nodiscard]] static const std::string &shippedError();
   /// The embedded text itself.
   [[nodiscard]] static std::string_view shippedText();
 
@@ -456,9 +447,6 @@ public:
 
   /// The row named exactly `name` (the first, if it has overloads).
   [[nodiscard]] const LibraryEntry *find(std::string_view name) const;
-  /// Every row named exactly `name`.
-  [[nodiscard]] std::vector<const LibraryEntry *>
-  overloads(std::string_view name) const;
   /// Resolves a callee name: the row's own name, a `chk` alias, or either
   /// behind a `__builtin_` prefix. The first overload wins.
   [[nodiscard]] std::optional<LibraryMatch>
@@ -508,11 +496,6 @@ inline constexpr std::string_view StreamFamily = "fclose";
 /// malformed one.
 [[nodiscard]] std::optional<unsigned>
 formatArgumentCount(std::string_view format, LibFormat::Kind kind);
-
-/// RFC 0030 §10.4: the bounded writer that lowers a `printf`-family row
-/// writing an unbounded destination, as `snprintf` lowers `sprintf` and
-/// `vsnprintf` lowers `vsprintf`; empty for any other name.
-[[nodiscard]] std::string boundedWriterName(std::string_view writer);
 
 } // namespace weavec::core
 

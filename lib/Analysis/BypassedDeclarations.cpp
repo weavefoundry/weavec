@@ -144,9 +144,4 @@ bypassedDeclarations(const clang::Stmt &body) {
   return BypassFinder(body, /*anyType=*/false).result();
 }
 
-std::vector<const clang::VarDecl *>
-bypassedDeclarationsOfAnyType(const clang::Stmt &body) {
-  return BypassFinder(body, /*anyType=*/true).result();
-}
-
 } // namespace weavec::analysis

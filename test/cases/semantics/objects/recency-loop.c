@@ -6,7 +6,6 @@
 // RUN-INPUT: 3
 // CLEAN
 // ASAN
-// EXPECT-LEDGER: /summary/facets/temporal/unresolved == 0
 #include <stdlib.h>
 struct n { struct n *next; int v; };
 int main(int argc, char **argv) {

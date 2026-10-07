@@ -19,7 +19,7 @@ static struct options g_options;
 int run_with_callbacks(const struct options *opts); /* in another unit */
 
 static int cred(void *payload) {
-  *(char **)payload = strdup("http://example.com/");
+  *(char **)payload = strdup("http:// example.com/");
   return 0;
 }
 

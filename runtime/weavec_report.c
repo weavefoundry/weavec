@@ -1,4 +1,4 @@
-/*===- weavec_report.c - Failed checks: reports and fatal errors ---*- C -*-===*\
+/*===- weavec_report.c - Failures: reports and fatal errors -------*- C -*-===*\
 |*
 |* Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 |* See LICENSE for license information.
@@ -6,29 +6,26 @@
 |*
 |*===----------------------------------------------------------------------===*|
 |*
-|* RFC 0030, section 10.7, and RFC 0032, section 3. Under
-|* -fweavec-checks=report a failed check or guard calls __weavec_rt_report
-|* instead of trapping, and the program goes on, with no guarantee. The
-|* runtime prints
+|* RFC 0035, section 5.3. A failed guard prints
 |*
-|*   weavec: runtime check failed: <template> at <file>:<line>:<column>
+|*   weavec: <kind> at <file>:<line>:<column>: <read|write> of <n> bytes at <a>
 |*
-|* to stderr once per site, where <template> is nonnull, index, span, len,
-|* disjoint, assert, violation, object, live or release. With
-|* WEAVEC_RT_ABORT=1 in the environment it prints the line and aborts. The
-|* case runner and the corpus gate attribute traps to lines and templates
-|* through this output.
+|* to stderr (a second line places a heap address in its object) and traps;
+|* under -fweavec-checks=report it prints the line once per site and the
+|* program goes on, with no guarantee. With WEAVEC_RT_ABORT=1 a report traps
+|* too. The case runner and the corpus gate attribute traps to lines and
+|* kinds through this output.
 |*
-|* __weavec_rt_fatal is how the allocator stops a release no guard saw (in a
-|* unit built without WeaveC, or at a proven facet): it prints
+|* __weavec_rt_fatal is how the allocator stops an invalid release: it
+|* prints
 |*
 |*   weavec: <what> of <pointer>: <why>
 |*
 |* and traps. It uses no allocation and no stdio.
 |*
 |* __weavec_rt_trapping (RFC 0033, section 6.1) runs before every trap of a
-|* failed check or guard: a trap the program has blocked or catches would
-|* otherwise repeat forever on Darwin instead of ending the program.
+|* failure: a trap the program has blocked or catches would otherwise repeat
+|* forever on Darwin instead of ending the program.
 |*
 \*===----------------------------------------------------------------------===*/
 
@@ -37,7 +34,6 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -45,7 +41,7 @@
 #include <sys/auxv.h>
 #endif
 
-/* The sites already reported, as 64-bit hashes of (template, file, line,
+/* The sites already reported, as 64-bit hashes of (kind, file, line,
  * column) in an open-addressing table; 0 marks a free slot. When the table
  * is full every further failure is printed, which is harmless. */
 enum { SiteSlots = 4096 };
@@ -154,30 +150,131 @@ void __weavec_rt_trapping(void) {
   (void)pthread_sigmask(SIG_UNBLOCK, &traps, NULL);
 }
 
-void __weavec_rt_report(const char *check, const char *file, unsigned line,
-                        unsigned column) {
-  WEAVEC_RT_FORWARD_VOID(report, check, file, line, column);
-  const int abortNow = shouldAbort();
-  char text[1024];
-  int size;
-  if (!abortNow && !firstReport(siteHash(check, file, line, column)))
-    return;
-  size = snprintf(text, sizeof text,
-                  "weavec: runtime check failed: %s at %s:%u:%u\n",
-                  check ? check : "?", file ? file : "<unknown>", line, column);
+/* Prints a report line (or appends it to the log). */
+static void emit(const char *text, int size) {
   if (size < 0)
-    size = 0;
-  if ((size_t)size >= sizeof text) {
-    /* A path too long for the line: keep the line a line. */
-    size = (int)sizeof text - 1;
-    text[size - 1] = '\n';
-  }
+    return;
   if (!logReport(text, (size_t)size)) {
-    fputs(text, stderr);
-    fflush(stderr);
+    const long written = (long)write(2, text, (size_t)size);
+    (void)written;
   }
-  if (abortNow)
-    abort();
+}
+
+/* A line being written. The runtime formats its own numbers: a program may
+ * define snprintf (an embedded printf without %ll). */
+struct Line {
+  char *at;
+  char *end;
+};
+
+static void put(struct Line *line, const char *text) {
+  while (*text != 0 && line->at < line->end)
+    *line->at++ = *text++;
+}
+
+static void putUnsigned(struct Line *line, unsigned long long value,
+                        unsigned base) {
+  char digits[24];
+  unsigned count = 0;
+  do {
+    digits[count++] = "0123456789abcdef"[value % base];
+    value /= base;
+  } while (value != 0);
+  while (count != 0 && line->at < line->end)
+    *line->at++ = digits[--count];
+}
+
+static void putHex(struct Line *line, unsigned long long value) {
+  put(line, "0x");
+  putUnsigned(line, value, 16);
+}
+
+/* Ends the line with a newline, which always fits, and returns its size. */
+static int finish(struct Line *line, char *text) {
+  *line->at++ = '\n';
+  return (int)(line->at - text);
+}
+
+/* Where a heap address lies relative to its object, for the second line;
+ * its size, 0 when there is nothing to say. */
+static int describeHeap(uintptr_t address, char *text, size_t room) {
+  const struct weavecRtHeapObject object = weavecRtHeapObjectAt(address);
+  struct Line line = {text, text + room - 1};
+  if (!object.found)
+    return 0;
+  put(&line, "weavec: ");
+  putHex(&line, address);
+  if (!object.live) {
+    put(&line, " is inside a released heap block at ");
+    putHex(&line, object.base);
+  } else if (address >= object.base + object.size) {
+    put(&line, " is ");
+    putUnsigned(&line, address - object.base - object.size, 10);
+    put(&line, " bytes after the ");
+    putUnsigned(&line, object.size, 10);
+    put(&line, "-byte heap object at ");
+    putHex(&line, object.base);
+  } else {
+    return 0;
+  }
+  return finish(&line, text);
+}
+
+void weavecRtFail(const char *kind, uintptr_t address, uint64_t width,
+                  const struct __weavec_rt_site *site) {
+  const unsigned flags = site != NULL ? site->flags : 0;
+  const char *file = site != NULL && site->file != NULL ? site->file : NULL;
+  const unsigned line = site != NULL ? site->line : 0;
+  const unsigned column = site != NULL ? site->column : 0;
+  const int report = (flags & WeavecRtSiteReport) != 0 && !shouldAbort();
+  char text[1024];
+  struct Line out = {text, text + sizeof text - 1};
+  int size;
+  if (report && !firstReport(siteHash(kind, file, line, column)))
+    return;
+  put(&out, "weavec: ");
+  if ((flags & WeavecRtSiteProven) != 0)
+    put(&out, "weavec.proven: ");
+  put(&out, kind);
+  put(&out, " at ");
+  if (file != NULL) {
+    put(&out, file);
+    put(&out, ":");
+    putUnsigned(&out, line, 10);
+    put(&out, ":");
+    putUnsigned(&out, column, 10);
+  } else {
+    put(&out, "<unknown>");
+  }
+  put(&out, ": ");
+  if (strcmp(kind, "index-out-of-bounds") == 0) {
+    put(&out, "index ");
+    if ((long long)address < 0) {
+      put(&out, "-");
+      putUnsigned(&out, 0 - (unsigned long long)address, 10);
+    } else {
+      putUnsigned(&out, address, 10);
+    }
+  } else if (width == 0) {
+    put(&out, "access at ");
+    putHex(&out, address);
+  } else {
+    put(&out, (flags & WeavecRtSiteWrite) != 0 ? "write" : "read");
+    put(&out, " of ");
+    putUnsigned(&out, width, 10);
+    put(&out, " bytes at ");
+    putHex(&out, address);
+  }
+  emit(text, finish(&out, text));
+  if (strncmp(kind, "heap-", 5) == 0) {
+    size = describeHeap(address, text, sizeof text);
+    if (size > 0)
+      emit(text, size);
+  }
+  if (report)
+    return;
+  __weavec_rt_trapping();
+  __builtin_trap();
 }
 
 /* Counted without synchronisation: a diagnostic aid, not an account. */
@@ -185,23 +282,25 @@ unsigned long long weavecRtStats[WeavecRtStatCount];
 
 __attribute__((destructor)) static void printStats(void) {
   static const char *const Names[WeavecRtStatCount] = {
-      "allocations",      "releases",      "recycled slots",
-      "huge blocks",      "lookups",       "heap lookups",
-      "stack lookups",    "global lookups", "untracked lookups",
-      "slow guards",      "stack objects entered"};
+      "allocations", "releases",      "recycled slots",   "huge blocks",
+      "slow guards", "range guards",  "string guards",    "stack unpoisons"};
   const char *value = getenv("WEAVEC_RT_STATS");
   int i;
   /* (The owner's counters count every image's work.) */
   if (weavecRtForward() != 0 || value == NULL || strcmp(value, "1") != 0)
     return;
-  for (i = 0; i < WeavecRtStatCount; ++i)
-    fprintf(stderr, "weavec: runtime: %llu %s\n", weavecRtStats[i], Names[i]);
-}
-
-static char *appendText(char *at, const char *end, const char *text) {
-  while (*text != 0 && at < end)
-    *at++ = *text++;
-  return at;
+  for (i = 0; i < WeavecRtStatCount; ++i) {
+    char text[128];
+    struct Line line = {text, text + sizeof text - 1};
+    put(&line, "weavec: runtime: ");
+    putUnsigned(&line, weavecRtStats[i], 10);
+    put(&line, " ");
+    put(&line, Names[i]);
+    {
+      const long written = (long)write(2, text, (size_t)finish(&line, text));
+      (void)written;
+    }
+  }
 }
 
 void __weavec_rt_fatal(const char *what, const void *p, const char *why) {
@@ -212,26 +311,16 @@ void __weavec_rt_fatal(const char *what, const void *p, const char *why) {
       __builtin_unreachable();
     }
   }
-  char line[256] = {0};
-  const char *end = line + sizeof line - 1;
-  char *at = line;
-  uintptr_t value = (uintptr_t)p;
-  char digits[2 * sizeof value];
-  unsigned count = 0;
-  at = appendText(at, end, "weavec: ");
-  at = appendText(at, end, what);
-  at = appendText(at, end, " of 0x");
-  do {
-    digits[count++] = "0123456789abcdef"[value & 15];
-    value >>= 4;
-  } while (value != 0);
-  while (count != 0 && at < end)
-    *at++ = digits[--count];
-  at = appendText(at, end, ": ");
-  at = appendText(at, end, why);
-  *at++ = '\n';
+  char text[256];
+  struct Line line = {text, text + sizeof text - 1};
+  put(&line, "weavec: ");
+  put(&line, what);
+  put(&line, " of ");
+  putHex(&line, (uintptr_t)p);
+  put(&line, ": ");
+  put(&line, why);
   {
-    const long written = (long)write(2, line, (size_t)(at - line));
+    const long written = (long)write(2, text, (size_t)finish(&line, text));
     (void)written;
   }
   __weavec_rt_trapping();

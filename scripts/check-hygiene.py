@@ -43,9 +43,9 @@ Seven checks, one per bullet of H2 (its fourth bullet is split in two):
                      string literals ignored. A missing lib/Analysis/Engine.h
                      is a violation.
   engine-lines       lib/Analysis/Engine*.h and lib/Analysis/Engine*.cpp
-                     (EngineIntegers.h included) total at most 22,000 lines.
+                     (EngineIntegers.h included) total at most 21,500 lines.
   library-lines      the code under lib/, include/ and tools/ totals at most
-                     70,000 lines. lib/Core/LibrarySpec.txt does not count:
+                     57,000 lines. lib/Core/LibrarySpec.txt does not count:
                      it is a declarative table, and its growth is coverage,
                      not sprawl. Both limits are ratchets (RFC 0030 gate H2):
                      they are lowered as code is deleted, and raised only by
@@ -62,7 +62,14 @@ Seven checks, one per bullet of H2 (its fourth bullet is split in two):
                      (21,078 and 69,980 lines measured). RFC 0034 (gate
                      H1, Implementation amendments) raised them to 22,000
                      and 72,000 for the shadow guards' passes, confirmation
-                     by replay and the work and memory budgets.
+                     by replay and the work and memory budgets. RFC 0035
+                     (stage S6) lowered them to 21,500 and 58,000 once the
+                     check planner, the unit records, the link step and the
+                     analysis ledger were deleted (21,121 and 57,963 lines
+                     measured), and the library limit to 57,000 for gate H1
+                     once the summary text format, the link-only paths and
+                     the code only tests used were deleted (55,992 lines
+                     measured).
   runtime-lines      the C runtime (runtime/, its tests under runtime/test/
                      excluded) totals at most 4,000 lines (RFC 0032 gate H1).
                      It is counted apart from the libraries: it is linked
@@ -122,8 +129,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Recorded by RFC 0031 stage S7 and RFC 0032, 0033 and 0034 gate H1 (see the
 # module docstring).
-ENGINE_LINE_LIMIT = 22_000
-LIBRARY_LINE_LIMIT = 72_000
+ENGINE_LINE_LIMIT = 21_500
+LIBRARY_LINE_LIMIT = 57_000
 RUNTIME_LINE_LIMIT = 4_000
 
 # retired-name

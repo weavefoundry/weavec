@@ -9,7 +9,7 @@
 
 struct buf { char *WEAVEC_COUNTED_BY(cap) data; size_t cap; };
 
-char at(const struct buf *b, size_t i) { return b->data[i]; } // BUG: out-of-bounds // TRAP: index
+char at(const struct buf *b, size_t i) { return b->data[i]; } // BUG: out-of-bounds // TRAP
 
 int main(int argc, char **argv) {
   char storage[8] = "abcdefg";

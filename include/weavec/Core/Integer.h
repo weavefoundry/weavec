@@ -36,7 +36,6 @@ struct IntegerType {
   /// Bit pattern <-> numeric-order position (both are their own inverse).
   [[nodiscard]] std::uint64_t rank(std::uint64_t bits) const noexcept;
   [[nodiscard]] std::string toString() const;
-  [[nodiscard]] static std::optional<IntegerType> parse(std::string_view text);
 
   friend auto operator<=>(const IntegerType &, const IntegerType &) = default;
 };
@@ -83,12 +82,9 @@ enum class IntegerOp : std::uint8_t {
   Maximum,
 };
 
-[[nodiscard]] std::string_view toString(IntegerOp op) noexcept;
-[[nodiscard]] std::optional<IntegerOp> parseIntegerOp(std::string_view text);
 [[nodiscard]] bool isUnary(IntegerOp op) noexcept;
 [[nodiscard]] bool isComparison(IntegerOp op) noexcept;
 [[nodiscard]] IntegerOp negateComparison(IntegerOp op) noexcept;
-[[nodiscard]] IntegerOp reverseComparison(IntegerOp op) noexcept;
 
 enum class IntegerError : std::uint8_t {
   None,
@@ -139,8 +135,6 @@ public:
   [[nodiscard]] bool empty() const noexcept { return intervals.empty(); }
   [[nodiscard]] bool isFull() const noexcept;
   [[nodiscard]] bool contains(IntegerValue value) const noexcept;
-  [[nodiscard]] bool contains(const IntegerRange &other) const noexcept;
-  [[nodiscard]] bool disjoint(const IntegerRange &other) const noexcept;
   [[nodiscard]] std::optional<IntegerValue> constant() const noexcept;
   [[nodiscard]] std::optional<IntegerValue> minimum() const noexcept;
   [[nodiscard]] std::optional<IntegerValue> maximum() const noexcept;
@@ -150,13 +144,10 @@ public:
   [[nodiscard]] IntegerRange converted(IntegerType destination) const;
   [[nodiscard]] IntegerRange intersect(const IntegerRange &other) const;
   [[nodiscard]] IntegerRange united(const IntegerRange &other) const;
-  /// Extrapolate changing bounds to the type endpoints at a loop join.
-  [[nodiscard]] IntegerRange widened(const IntegerRange &other) const;
   /// Values of this operand for which `this op rhs` can hold.
   [[nodiscard]] IntegerRange satisfying(IntegerOp op,
                                         const IntegerRange &rhs) const;
   [[nodiscard]] std::string toString() const;
-  [[nodiscard]] static std::optional<IntegerRange> parse(std::string_view text);
 
   friend auto operator<=>(const IntegerRange &, const IntegerRange &) = default;
 

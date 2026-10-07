@@ -9,14 +9,14 @@
 #include <stdlib.h>
 
 int get(const int *p) __attribute__((nonnull(1)));
-int get(const int *p) { return *p; }
+int get(const int *p) { return *p; } // TRAP
 
-int get2(const int *_Nonnull p) { return *p; }
+int get2(const int *_Nonnull p) { return *p; } // TRAP
 
 int main(int argc, char **argv) {
   static const int x = 7;
   int which = argc > 1 ? atoi(argv[1]) : 0;
   const int *p = which == 0 ? &x : NULL;
-  if (which == 1) return get(p); // TRAP: nonnull
-  return get2(p); // TRAP: nonnull
+  if (which == 1) return get(p);
+  return get2(p);
 }

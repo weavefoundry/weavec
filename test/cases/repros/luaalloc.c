@@ -3,8 +3,6 @@
 // tfree2 and misses the use-after-free in tfree.
 // intended (RFC 0030 sections 9.1 and 9.3, gate S7): exactly two findings, both definite:
 // the slot's known target l_alloc frees when nsize == 0, which mfree passes as a constant.
-// EXPECT-LEDGER: /summary/errors == 2
-// EXPECT-LEDGER: /summary/warnings == 0
 // ASAN
 #include <stdlib.h>
 typedef void *(*Alloc)(void *ud, void *ptr, size_t osize, size_t nsize);

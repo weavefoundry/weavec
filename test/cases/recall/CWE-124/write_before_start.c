@@ -5,7 +5,7 @@
 
 void bad(void) {
   char buf[10];
-  buf[-1] = 'A'; // BUG: out-of-bounds // TRAP: index
+  buf[-1] = 'A'; // BUG: out-of-bounds // TRAP
   print_bytes(buf, 10);
 }
 
@@ -13,7 +13,7 @@ void bad_heap(void) {
   char *buf = malloc(10);
   if (!buf)
     return;
-  buf[-1] = 'A'; // BUG: out-of-bounds // TRAP: index
+  buf[-1] = 'A'; // BUG: out-of-bounds // TRAP
   free(buf);
 }
 

@@ -102,8 +102,6 @@ public:
                 std::optional<std::int64_t> hi);
   /// Whether `x - y <= c` holds.
   [[nodiscard]] bool entails(Sym x, Sym y, std::int64_t c) const;
-  /// Removes every bound mentioning `x`.
-  void forget(Sym x);
   /// Symbols with at least one bound.
   [[nodiscard]] std::vector<Sym> symbols() const;
   /// Keeps only the symbols `keep` accepts.

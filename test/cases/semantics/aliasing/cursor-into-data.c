@@ -11,7 +11,7 @@ struct buf { char *data; char *cur; };
 
 void reset(struct buf *b) {
   free(b->data);
-  b->cur[0] = 0; // BUG: use-after-free // UNRESOLVED: temporal:may-alias-released
+  b->cur[0] = 0; // BUG: use-after-free
   b->data = NULL;
   b->cur = NULL;
 }

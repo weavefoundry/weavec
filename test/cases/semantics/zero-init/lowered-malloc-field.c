@@ -13,7 +13,7 @@ int main(int argc, char **argv) {
   (void)argv;
   if (!n) return 1;
   n->v = argc;
-  int r = n->next->v; // TRAP: nonnull
+  int r = n->next->v; // TRAP
   free(n);
   return r;
 }

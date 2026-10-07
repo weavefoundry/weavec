@@ -15,5 +15,5 @@ int main(void) {
   for (int i = 0; i < 4; i++)
     free(a[i]);
   struct n *first = a[0];
-  return first->v; // BUG: use-after-free // NOT-PROVEN: temporal
+  return first->v; // BUG: use-after-free
 }

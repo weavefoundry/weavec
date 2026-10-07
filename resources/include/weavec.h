@@ -7,9 +7,13 @@
 |*===----------------------------------------------------------------------===*|
 |*
 |* Lightweight annotations that let you guide WeaveC's ownership inference
-|* where it cannot prove safety on its own. Every macro expands to nothing on
-|* compilers that do not understand Clang's `annotate` attribute, so annotated
-|* code stays buildable with any C toolchain.
+|* where it cannot prove safety on its own. They are inputs to WeaveC's
+|* advisory analysis (`weavec`, `weavec-cc -fweavec-diagnose`) and do not
+|* change the generated code, except WEAVEC_UNSAFE: weavec-cc guards every
+|* memory access at run time outside an unsafe region, whatever the other
+|* annotations say. Every macro expands to nothing on compilers that do not
+|* understand Clang's `annotate` attribute, so annotated code stays buildable
+|* with any C toolchain.
 |*
 |*   #include <weavec.h>
 |*
@@ -34,7 +38,6 @@
 |*   void fill(char *WEAVEC_COUNTED_BY(len) buf, size_t len);   // extents
 |*   size_t sum(const int *WEAVEC_ENDED_BY(end) p, const int *end);
 |*   size_t name_len(const char *WEAVEC_STRING name);
-|*   WEAVEC_REQUIRE_SAFE int parse(const char *WEAVEC_STRING s) { ... }
 |*
 \*===----------------------------------------------------------------------===*/
 
@@ -42,7 +45,7 @@
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 0
-#define WEAVEC_H_VERSION_MINOR 9
+#define WEAVEC_H_VERSION_MINOR 10
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -70,45 +73,39 @@
 #define WEAVEC_MUT WEAVEC_ANNOTATE_("weavec.mut_borrowed")
 
 /**
- * A raw pointer: no ownership guarantee at all. Dereferencing or releasing
- * it is allowed only inside a WEAVEC_UNSAFE function or block. Copying,
- * comparing and passing it to another WEAVEC_RAW parameter are fine.
+ * A raw pointer: no ownership guarantee at all. The analysis reports
+ * dereferencing or releasing it outside a WEAVEC_UNSAFE function or block.
+ * Copying, comparing and passing it to another WEAVEC_RAW parameter are
+ * fine.
  */
 #define WEAVEC_RAW WEAVEC_ANNOTATE_("weavec.raw")
 
 /**
  * Makes a function body (when placed before its definition) or a block (when
- * placed before a compound statement) an unsafe region: its raw pointers and
- * its spatial and null operations are trusted, so no runtime checks are
- * inserted there. Temporal state (frees, moves) is still tracked, possible
- * temporal findings are still warnings, and definite violations remain
- * errors; what the region does to the surrounding code is checked there.
- * Keep regions small and document the invariant that makes the code sound.
+ * placed before a compound statement) an unsafe region: weavec-cc does not
+ * guard its memory accesses or check its array indexes at run time (as for a
+ * function marked no_sanitize("address")), and the analysis trusts its raw
+ * pointers and its spatial and null operations. The analysis still tracks
+ * temporal state (frees, moves) there and still reports possible temporal
+ * findings and definite violations; what the region does to the surrounding
+ * code is checked there. The only annotation that changes the generated
+ * code. Keep regions small and document the invariant that makes the code
+ * sound.
  */
 #define WEAVEC_UNSAFE WEAVEC_ANNOTATE_("weavec.unsafe")
 
 /**
- * Before a function definition: its sites are held to
- * -fweavec-require=checked, whatever the command line says. Every operation
- * in the body must be proven safe or guarded by a runtime check; anything
- * else is an `unresolved-operation` error. (Replaces WEAVEC_CHECKED.)
- */
-#define WEAVEC_REQUIRE_SAFE WEAVEC_ANNOTATE_("weavec.require_safe")
-
-/**
- * The pointer may be null. On a parameter, the body is checked (a
- * dereference without a preceding null test is reported) and callers may
- * pass null; on a return type, callers must test the result before
- * dereferencing it; on a variable or field, every load is treated as
- * possibly null. Does not change ownership.
+ * The pointer may be null. On a parameter, the body treats it as possibly
+ * null until it tests it, and callers may pass null; on a return type,
+ * callers must test the result before dereferencing it; on a variable or
+ * field, every load is treated as possibly null. Does not change ownership.
  */
 #define WEAVEC_NULLABLE WEAVEC_ANNOTATE_("weavec.nullable")
 
 /**
- * The pointer is never null. On a parameter, a possibly-null argument is
- * checked at the call and a null one is an error; on a return type, the
- * result needs no test; on a variable or field, loads are never reported.
- * Does not change ownership.
+ * The pointer is never null. On a parameter, a definitely null argument is
+ * reported; on a return type, the result needs no test; on a variable or
+ * field, loads are never reported. Does not change ownership.
  */
 #define WEAVEC_NONNULL WEAVEC_ANNOTATE_("weavec.nonnull")
 
@@ -146,17 +143,16 @@
  * and character pointees) are accessible; `n` names a sibling parameter or
  * field, in any position (`void fill(char *WEAVEC_COUNTED_BY(len) buf,
  * size_t len)`, `struct buf { char *WEAVEC_COUNTED_BY(cap) data; size_t
- * cap; }`). The kind is checked at every call and every store, and
- * accesses through the pointer are proven against it or checked at run
- * time.
+ * cap; }`). The analysis checks the kind at every call and every store and
+ * proves accesses through the pointer against it. weavec-cc guards those
+ * accesses against the object the pointer points into, not against `n`.
  */
 #define WEAVEC_COUNTED_BY(n) WEAVEC_ANNOTATE_("weavec.counted_by." #n)
 
 /**
  * The same as WEAVEC_COUNTED_BY(n): `n` counts elements (bytes for void and
- * character pointees), unlike Clang's byte-counting `sized_by`. Calls and
- * accesses through the pointer are checked against it when not proven. New
- * code should use WEAVEC_COUNTED_BY.
+ * character pointees), unlike Clang's byte-counting `sized_by`. New code
+ * should use WEAVEC_COUNTED_BY.
  */
 #define WEAVEC_SIZED_BY(n) WEAVEC_ANNOTATE_("weavec.sized_by." #n)
 
@@ -184,12 +180,11 @@
  * States that `expr` holds here, and the analysis assumes it from here on,
  * as if the code below were inside `if (expr)`: `WEAVEC_ASSUME(len <= cap)`
  * lets the checker prove an access in bounds when the invariant that makes
- * it so is not visible in the function. The assumption itself is not
- * trusted: when the analysis proves `expr`, nothing is added; when it
- * refutes it, that is a `contradicted-assumption` error; otherwise
- * `weavec-cc` turns the call into a runtime assertion that traps when
- * `expr` is false. `expr` must be side-effect free; under other compilers
- * it is an unevaluated operand and is not compiled at all.
+ * it so is not visible in the function. When the analysis refutes `expr`,
+ * that is a `contradicted-assumption`. Nothing checks it at run time, and
+ * no guard depends on it: it is a statement to the analysis only. `expr`
+ * must be side-effect free; under other compilers it is an unevaluated
+ * operand and is not compiled at all.
  */
 #if WEAVEC_ENABLED
 WEAVEC_ANNOTATE_("weavec.assume")

@@ -12,7 +12,7 @@
 struct node { int kind; int len; char name[64]; double extra[8]; };
 struct holder { struct node *n; };
 static int kind_of(const struct holder *h) {
-  return h->n->kind + h->n->len; // GUARDED: spatial
+  return h->n->kind + h->n->len;
 }
 int main(int argc, char **argv) {
   struct holder h;

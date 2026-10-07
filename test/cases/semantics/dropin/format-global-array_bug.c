@@ -12,6 +12,6 @@ int main(int argc, char **argv) {
     memset(name, 'x', sizeof name);
   else
     strcpy(name, "ok");
-  printf("%s\n", name); // TRAP: len
+  printf("%s\n", name); // TRAP
   return 0;
 }

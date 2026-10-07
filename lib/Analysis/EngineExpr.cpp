@@ -941,14 +941,6 @@ std::vector<std::pair<std::uint32_t, bool>> Transfer::paramGuard() const {
   return facts;
 }
 
-void Transfer::assignVariable(const VarDecl &var, core::Sym sym) {
-  core::ObjectId object = run.variableObject(var);
-  heap.ensure(state, object);
-  Address address;
-  address.targets = {core::Target{.object = object}};
-  store(address, sym, var.getType(), nullptr);
-}
-
 void Transfer::checkLeaks(core::Sym overwritten, const Stmt &at) {
   const core::SymInfo &old = heap.info(state, overwritten);
   if (old.type != core::SymInfo::Type::Pointer || old.targets.empty())

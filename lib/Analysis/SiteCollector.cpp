@@ -131,13 +131,6 @@ SiteIndex::innermostAt(clang::SourceLocation loc,
   return best->id;
 }
 
-std::size_t SiteIndex::siteCount() const noexcept {
-  std::size_t count = 0;
-  for (const FunctionSites &function : functionList)
-    count += function.sites.size();
-  return count;
-}
-
 //===----------------------------------------------------------------------===//
 // Syntactic helpers
 //===----------------------------------------------------------------------===//
@@ -183,32 +176,30 @@ bool isReturnsTwice(const clang::FunctionDecl &function,
   return match && match->entry->returnsTwice;
 }
 
-std::optional<WitnessTerm> argumentTerm(const core::ExtentTerm &term,
-                                        const clang::CallExpr &call) {
+std::optional<SourceTerm> argumentTerm(const core::ExtentTerm &term,
+                                       const clang::CallExpr &call) {
   if (term.isConstant())
-    return WitnessTerm::ofConstant(term.offset);
+    return SourceTerm::ofConstant(term.offset);
   if (term.path->root != core::ExtentPath::Root::Param ||
       term.path->param >= call.getNumArgs())
     return std::nullopt;
   const clang::Expr &arg = *call.getArg(term.path->param);
   if (!arg.getType()->isIntegerType())
     return std::nullopt;
-  WitnessTerm out = WitnessTerm::ofExpr(arg);
+  SourceTerm out = SourceTerm::ofExpr(arg);
   if (term.scale != 1)
-    out = WitnessTerm::mul(std::move(out), WitnessTerm::ofConstant(term.scale));
+    out = SourceTerm::mul(std::move(out), SourceTerm::ofConstant(term.scale));
   if (term.offset == std::numeric_limits<std::int64_t>::min())
     return std::nullopt;
   if (term.offset > 0)
-    out =
-        WitnessTerm::add(std::move(out), WitnessTerm::ofConstant(term.offset));
+    out = SourceTerm::add(std::move(out), SourceTerm::ofConstant(term.offset));
   else if (term.offset < 0)
-    out =
-        WitnessTerm::sub(std::move(out), WitnessTerm::ofConstant(-term.offset));
+    out = SourceTerm::sub(std::move(out), SourceTerm::ofConstant(-term.offset));
   return out;
 }
 
-std::optional<WitnessTerm> guardTerm(const RequirementGuard &guard,
-                                     const clang::CallExpr &call) {
+std::optional<SourceTerm> guardTerm(const RequirementGuard &guard,
+                                    const clang::CallExpr &call) {
   // R2's `c < e` over a loop bound: `e - c`, and `c <= e` is `e - c + 1`,
   // one term over the argument (R3's pointer guards have no term).
   if (!guard.lhs.isConstant() || guard.rhs.isConstant() || guard.rhs.scale <= 0)
@@ -330,16 +321,6 @@ static bool arrayStorageCanEnd(const clang::Expr *lvalue) {
   return true;
 }
 
-/// The address space the pointer operand points into is not the default.
-static bool inNonDefaultAddressSpace(const clang::Expr *pointer) {
-  if (pointer == nullptr)
-    return false;
-  const clang::QualType type = pointer->getType();
-  if (!type->isPointerType())
-    return false;
-  return type->getPointeeType().getAddressSpace() != clang::LangAS::Default;
-}
-
 /// Whether the statement can complete normally, so that control can reach
 /// what follows it (for the end of a body, §2.1). Conservative: true unless
 /// the syntax shows otherwise.
@@ -430,9 +411,8 @@ static std::optional<ArgumentNeed> inferredNullNeed(const KindEntry &param,
   ArgumentNeed need{.argument = static_cast<std::uint8_t>(index),
                     .nonnull = true,
                     .inferred = true};
-  need.guard = guardTerm(*first->guard, call);
-  // A guard with no C spelling here leaves the check inexpressible.
-  need.allowedIfZero = !need.guard.has_value();
+  // A guard with no C spelling here allows a null argument.
+  need.allowedIfZero = !guardTerm(*first->guard, call).has_value();
   return need;
 }
 
@@ -442,10 +422,6 @@ namespace {
 struct Context {
   /// Inside a `WEAVEC_UNSAFE` function or block.
   bool unsafe = false;
-  /// Inside the shared operand of `a ?: b` or an `OpaqueValueExpr` source.
-  bool shared = false;
-  /// Inside a constant expression.
-  bool constant = false;
 };
 
 /// How the parent uses an lvalue: accessed, only its address taken (`&`),
@@ -575,44 +551,12 @@ private:
   /// obligation, so that the store needs no Cast site of its own.
   [[nodiscard]] bool carriesOwnObligation(const clang::Expr *value) const;
   [[nodiscard]] bool isNullConstant(const clang::Expr *value) const;
-  /// §2.6: the spatial witness of an access through an array lvalue whose
-  /// extent is exact from its type.
-  [[nodiscard]] std::optional<CheckWitness>
-  arrayDefault(const clang::Expr &array, const clang::Expr *index) const;
-  /// §2.6: the spatial witness of an access through a parameter with a
-  /// declared kind over constants and unmodified parameters.
-  [[nodiscard]] std::optional<CheckWitness>
-  declaredDefault(const clang::Expr &pointer, const clang::Expr *index) const;
-  [[nodiscard]] std::optional<WitnessTerm>
-  parameterTerm(const core::ExtentTerm &term) const;
   [[nodiscard]] bool isFlexible(const clang::Expr &array) const;
   [[nodiscard]] std::optional<std::int64_t>
   constantBound(const clang::Expr &array) const;
-  [[nodiscard]] std::optional<WitnessTerm>
+  [[nodiscard]] std::optional<SourceTerm>
   libraryTerm(const core::LibTerm &term, const clang::CallExpr &call,
               const core::LibraryMatch &match) const;
-  /// §2.6: a term over constants, `sizeof`, `const` locals and parameters
-  /// never assigned or address-taken.
-  [[nodiscard]] bool isSimple(const WitnessTerm &term) const;
-  [[nodiscard]] bool isSimpleVariable(const clang::ValueDecl *decl) const;
-  /// §2.6: the bytes accessible from an argument that points to the start of
-  /// an object whose extent the types or a declaration give.
-  [[nodiscard]] std::optional<std::pair<WitnessTerm, core::ExtentClass>>
-  argumentExtent(const clang::Expr &argument) const;
-  /// §2.6: the default witnesses of a LibCall's spatial facet, one per
-  /// requirement, or none unless every requirement has simple terms.
-  [[nodiscard]] std::vector<CheckWitness>
-  libraryDefaults(const clang::CallExpr &call,
-                  const core::LibraryMatch &match) const;
-  /// §10.4 (RFC 0030 S5): the witness of the `snprintf` lowering of a
-  /// `printf`-family writer into an unbounded destination.
-  [[nodiscard]] std::optional<CheckWitness>
-  formatWriterDefault(const clang::CallExpr &call,
-                      const core::LibraryMatch &match) const;
-  /// §2.6: the same for the declared requirements of a Call's arguments.
-  [[nodiscard]] std::vector<CheckWitness>
-  declaredDefaults(const clang::CallExpr &call,
-                   const clang::FunctionDecl &callee) const;
 };
 
 } // namespace
@@ -631,8 +575,6 @@ PendingSite &Walker::addSite(core::SiteKind kind, const clang::Stmt &stmt,
   site.info.begin = range.getBegin();
   site.info.end = range.getEnd();
   site.info.inUnsafe = ctx.unsafe;
-  site.info.sharedOperand = ctx.shared;
-  site.info.constantExpression = ctx.constant;
   site.facets = facets;
   site.location = sm.getExpansionLoc(stmt.getBeginLoc());
   // The text of an operation inside a macro argument is the argument's own
@@ -705,10 +647,8 @@ void Walker::walkStmt(const clang::Stmt *stmt, Context ctx) {
     return;
   }
   if (const auto *label = llvm::dyn_cast<clang::CaseStmt>(stmt)) {
-    Context constant = ctx;
-    constant.constant = true;
-    walkExpr(label->getLHS(), constant);
-    walkExpr(label->getRHS(), constant);
+    walkExpr(label->getLHS(), ctx);
+    walkExpr(label->getRHS(), ctx);
     walkStmt(label->getSubStmt(), ctx);
     return;
   }
@@ -762,20 +702,15 @@ void Walker::walkExpr(const clang::Expr *expr, Context ctx, Use use,
   }
   if (const auto *elvis =
           llvm::dyn_cast<clang::BinaryConditionalOperator>(expr)) {
-    // `a ?: b`: `a` is evaluated once and read through opaque values; no
-    // check can replace it in place (§2.1).
-    Context shared = ctx;
-    shared.shared = true;
-    walkExpr(elvis->getCommon(), shared);
+    // `a ?: b`: `a` is evaluated once and read through opaque values.
+    walkExpr(elvis->getCommon(), ctx);
     walkExpr(elvis->getCond(), ctx);
     walkExpr(elvis->getTrueExpr(), ctx, Use::Value, required);
     walkExpr(elvis->getFalseExpr(), ctx, Use::Value, required);
     return;
   }
   if (const auto *opaque = llvm::dyn_cast<clang::OpaqueValueExpr>(expr)) {
-    Context shared = ctx;
-    shared.shared = true;
-    walkExpr(opaque->getSourceExpr(), shared);
+    walkExpr(opaque->getSourceExpr(), ctx);
     return;
   }
   if (const auto *subscript = llvm::dyn_cast<clang::ArraySubscriptExpr>(expr)) {
@@ -853,9 +788,7 @@ void Walker::walkExpr(const clang::Expr *expr, Context ctx, Use use,
   if (llvm::isa<clang::BlockExpr>(expr))
     return;
   if (const auto *constant = llvm::dyn_cast<clang::ConstantExpr>(expr)) {
-    Context folded = ctx;
-    folded.constant = true;
-    walkExpr(constant->getSubExpr(), folded, use, required);
+    walkExpr(constant->getSubExpr(), ctx, use, required);
     return;
   }
   for (const clang::Stmt *child : expr->children())
@@ -889,23 +822,6 @@ static bool isAddressOfObject(const clang::Expr *pointer) {
   return !llvm::isa<clang::ArraySubscriptExpr, clang::UnaryOperator>(object);
 }
 
-/// Records the §2.6 default witness of an access, when there is one.
-static void setDefault(SiteInfo &site, std::optional<CheckWitness> witness) {
-  site.spatialDefaults.clear();
-  if (witness)
-    site.spatialDefaults.push_back(std::move(*witness));
-}
-
-/// The default witness of an access to the first element of one object.
-static CheckWitness oneElement() {
-  return CheckWitness{.shape = CheckWitness::Shape::Index,
-                      .extent = WitnessTerm::ofConstant(1),
-                      .extentClass = core::ExtentClass::Exact,
-                      .offset = WitnessTerm::ofConstant(0),
-                      .unmodified = true,
-                      .accessesSafe = true};
-}
-
 void Walker::walkUnary(const clang::UnaryOperator &unary, Context ctx,
                        const KindEntry *required) {
   const clang::Expr *sub = unary.getSubExpr();
@@ -923,10 +839,8 @@ void Walker::walkUnary(const clang::UnaryOperator &unary, Context ctx,
       pointer = deref->getSubExpr();
     PendingSite &site = addSite(core::SiteKind::PtrArith, unary,
                                 FacetSet{.spatial = true}, ctx);
-    site.info.required = *required;
     site.info.operand = pointer;
     site.info.spatialSystemApi = required->shapeFromSystemHeader();
-    site.info.nonDefaultAddressSpace = inNonDefaultAddressSpace(pointer);
     return;
   }
   if (unary.isIncrementDecrementOp() && unary.getType()->isPointerType()) {
@@ -939,10 +853,8 @@ void Walker::walkUnary(const clang::UnaryOperator &unary, Context ctx,
       return;
     PendingSite &site = addSite(core::SiteKind::PtrArith, unary,
                                 FacetSet{.spatial = true}, ctx);
-    site.info.required = *kind;
     site.info.operand = sub;
     site.info.spatialSystemApi = kind->shapeFromSystemHeader();
-    site.info.nonDefaultAddressSpace = inNonDefaultAddressSpace(sub);
     return;
   }
   walkExpr(sub, ctx);
@@ -978,10 +890,8 @@ void Walker::walkBinary(const clang::BinaryOperator &binary, Context ctx,
     const clang::Expr *operand = lhs->getType()->isPointerType() ? lhs : rhs;
     PendingSite &site = addSite(core::SiteKind::PtrArith, binary,
                                 FacetSet{.spatial = true}, ctx);
-    site.info.required = *kind;
     site.info.operand = operand;
     site.info.spatialSystemApi = kind->shapeFromSystemHeader();
-    site.info.nonDefaultAddressSpace = inNonDefaultAddressSpace(operand);
     return;
   }
   case clang::BO_Comma:
@@ -1024,22 +934,13 @@ void Walker::walkDeref(const clang::UnaryOperator &deref, Context ctx,
   PendingSite &site = addSite(kind, deref, facets, ctx);
   site.info.operand = pointer;
   site.info.index = index;
-  site.info.nonDefaultAddressSpace = inNonDefaultAddressSpace(pointer);
-  // `*(p - i)`: the offset is `-i`, which no index check wraps.
-  if (offset && index == nullptr)
-    site.info.address = sub;
   if (!facets.spatial || (offset && index == nullptr))
     return;
-  if (const clang::Expr *array = decayedArray(pointer)) {
-    setDefault(site.info, arrayDefault(*array, index));
+  if (const clang::Expr *array = decayedArray(pointer))
     site.info.provenByType = index == nullptr && !isFlexible(*array) &&
                              constantBound(*array).value_or(0) >= 1;
-  } else if (!offset && isAddressOfObject(pointer)) {
-    setDefault(site.info, oneElement());
+  else if (!offset && isAddressOfObject(pointer))
     site.info.provenByType = true;
-  } else {
-    setDefault(site.info, declaredDefault(*pointer, index));
-  }
 }
 
 void Walker::walkSubscript(const clang::ArraySubscriptExpr &subscript,
@@ -1072,20 +973,16 @@ void Walker::walkSubscript(const clang::ArraySubscriptExpr &subscript,
   PendingSite &site = addSite(kind, subscript, facets, ctx);
   site.info.operand = base;
   site.info.index = zero ? nullptr : index;
-  site.info.nonDefaultAddressSpace = inNonDefaultAddressSpace(base);
   if (!facets.spatial)
     return;
   if (array != nullptr) {
-    setDefault(site.info, arrayDefault(*array, index));
     const auto bound =
         isFlexible(*array) ? std::nullopt : constantBound(*array);
     const auto at = index->getIntegerConstantExpr(context);
     site.info.provenByType = bound && at && at->isNonNegative() &&
                              at->getActiveBits() < 63 &&
                              at->getExtValue() < *bound;
-    return;
   }
-  setDefault(site.info, declaredDefault(*base, zero ? nullptr : index));
 }
 
 void Walker::walkMember(const clang::MemberExpr &member, Context ctx, Use use) {
@@ -1109,19 +1006,13 @@ void Walker::walkMember(const clang::MemberExpr &member, Context ctx, Use use) {
   walkExpr(base, ctx);
   PendingSite &site = addSite(kind, member, facets, ctx);
   site.info.operand = base;
-  site.info.nonDefaultAddressSpace = inNonDefaultAddressSpace(base);
   if (!facets.spatial)
     return;
-  if (const clang::Expr *array = decayedArray(base)) {
-    setDefault(site.info, arrayDefault(*array, nullptr));
+  if (const clang::Expr *array = decayedArray(base))
     site.info.provenByType =
         !isFlexible(*array) && constantBound(*array).value_or(0) >= 1;
-  } else if (isAddressOfObject(base)) {
-    setDefault(site.info, oneElement());
+  else if (isAddressOfObject(base))
     site.info.provenByType = true;
-  } else {
-    setDefault(site.info, declaredDefault(*base, nullptr));
-  }
 }
 
 void Walker::walkCast(const clang::CastExpr &cast, Context ctx, Use use,
@@ -1151,10 +1042,8 @@ void Walker::walkCast(const clang::CastExpr &cast, Context ctx, Use use,
       walkExpr(sub, ctx);
       PendingSite &site =
           addSite(core::SiteKind::Cast, cast, FacetSet{.spatial = true}, ctx);
-      site.info.required = *required;
       site.info.operand = sub;
       site.info.spatialSystemApi = required->shapeFromSystemHeader();
-      site.info.nonDefaultAddressSpace = inNonDefaultAddressSpace(sub);
       return;
     }
     // A conversion that is not widening passes the value, and its required
@@ -1238,7 +1127,7 @@ void Walker::walkCall(const clang::CallExpr &call, Context ctx) {
   addCallSites(call, ctx);
 }
 
-std::optional<WitnessTerm>
+std::optional<SourceTerm>
 Walker::libraryTerm(const core::LibTerm &term, const clang::CallExpr &call,
                     const core::LibraryMatch &match) const {
   const auto argument = [&](unsigned rowArg) -> const clang::Expr * {
@@ -1247,21 +1136,21 @@ Walker::libraryTerm(const core::LibTerm &term, const clang::CallExpr &call,
       return nullptr;
     return call.getArg(static_cast<unsigned>(index));
   };
-  const auto operand = [&](std::size_t i) -> std::optional<WitnessTerm> {
+  const auto operand = [&](std::size_t i) -> std::optional<SourceTerm> {
     if (i >= term.operands.size())
       return std::nullopt;
     return libraryTerm(term.operands[i], call, match);
   };
   switch (term.kind) {
   case core::LibTerm::Kind::Constant:
-    return WitnessTerm::ofConstant(term.value);
+    return SourceTerm::ofConstant(term.value);
   case core::LibTerm::Kind::Argument:
     if (const clang::Expr *arg = argument(term.arg))
-      return WitnessTerm::ofExpr(*arg);
+      return SourceTerm::ofExpr(*arg);
     return std::nullopt;
   case core::LibTerm::Kind::StringLength:
     if (const clang::Expr *arg = argument(term.arg))
-      return WitnessTerm::strLen(WitnessTerm::ofExpr(*arg));
+      return SourceTerm::strLen(SourceTerm::ofExpr(*arg));
     return std::nullopt;
   case core::LibTerm::Kind::Product:
   case core::LibTerm::Kind::Sum: {
@@ -1270,21 +1159,20 @@ Walker::libraryTerm(const core::LibTerm &term, const clang::CallExpr &call,
     if (!lhs || !rhs)
       return std::nullopt;
     return term.kind == core::LibTerm::Kind::Product
-               ? WitnessTerm::mul(std::move(*lhs), std::move(*rhs))
-               : WitnessTerm::add(std::move(*lhs), std::move(*rhs));
+               ? SourceTerm::mul(std::move(*lhs), std::move(*rhs))
+               : SourceTerm::add(std::move(*lhs), std::move(*rhs));
   }
   case core::LibTerm::Kind::Difference: {
     auto lhs = operand(0);
     if (!lhs)
       return std::nullopt;
-    return WitnessTerm::sub(std::move(*lhs),
-                            WitnessTerm::ofConstant(term.value));
+    return SourceTerm::sub(std::move(*lhs), SourceTerm::ofConstant(term.value));
   }
   case core::LibTerm::Kind::Quotient: {
     auto lhs = operand(0);
     if (!lhs)
       return std::nullopt;
-    return WitnessTerm::div(std::move(*lhs), term.value);
+    return SourceTerm::div(std::move(*lhs), term.value);
   }
   // `fmtlen` is never a check term (§8.1); a macro's value and `min` have
   // no C spelling at the call.
@@ -1483,15 +1371,7 @@ void Walker::addCallSites(const clang::CallExpr &call, Context ctx) {
     spatialSystemApi = facets.spatial && spatialOnlySystem;
   }
 
-  std::vector<CheckWitness> defaults;
-  if (facets.spatial && !spatialSystemApi) {
-    if (kind == core::SiteKind::LibCall)
-      defaults = libraryDefaults(call, *match);
-    else if (kind == core::SiteKind::Call && callee != nullptr)
-      defaults = declaredDefaults(call, *callee);
-  }
   PendingSite &site = addSite(kind, call, facets, ctx);
-  site.info.spatialDefaults = std::move(defaults);
   if (kind == core::SiteKind::Call)
     site.info.boundary = core::Boundary::Call;
   site.info.callee = callee;
@@ -1502,7 +1382,6 @@ void Walker::addCallSites(const clang::CallExpr &call, Context ctx) {
   site.info.reliance = std::move(reliance);
   site.info.nullSystemApi = nullSystemApi;
   site.info.spatialSystemApi = spatialSystemApi;
-  site.info.nonDefaultAddressSpace = inNonDefaultAddressSpace(operand);
   site.callee = name;
 
   if (callDoesNotReturn(call, library)) {
@@ -1524,10 +1403,8 @@ void Walker::addStore(const clang::Stmt &store, const clang::Expr &value,
     return;
   PendingSite &site =
       addSite(core::SiteKind::Cast, store, FacetSet{.spatial = true}, ctx);
-  site.info.required = slot;
   site.info.operand = &value;
   site.info.spatialSystemApi = slot.shapeFromSystemHeader();
-  site.info.nonDefaultAddressSpace = inNonDefaultAddressSpace(&value);
 }
 
 void Walker::walkInitList(const clang::InitListExpr &list, Context ctx) {
@@ -1573,13 +1450,8 @@ void Walker::walkInitList(const clang::InitListExpr &list, Context ctx) {
 void Walker::walkDecl(const clang::Decl &decl, Context ctx) {
   if (const auto *variable = llvm::dyn_cast<clang::VarDecl>(&decl)) {
     walkVariablyModified(variable->getType(), ctx);
-    if (const clang::Expr *init = variable->getInit()) {
-      // A static local's initialiser is a constant expression (§2.1).
-      Context initial = ctx;
-      if (variable->hasGlobalStorage())
-        initial.constant = true;
-      walkExpr(init, initial);
-    }
+    if (const clang::Expr *init = variable->getInit())
+      walkExpr(init, ctx);
     return;
   }
   if (const auto *alias = llvm::dyn_cast<clang::TypedefNameDecl>(&decl))
@@ -1741,417 +1613,6 @@ Walker::constantBound(const clang::Expr &array) const {
   return static_cast<std::int64_t>(*size);
 }
 
-std::optional<CheckWitness>
-Walker::arrayDefault(const clang::Expr &array, const clang::Expr *index) const {
-  // §2.6: an extent exact from the type. A flexible trailing array's extent
-  // is the rest of the allocation, which the types do not give (§7.4).
-  if (isFlexible(array))
-    return std::nullopt;
-  if (const auto bound = constantBound(array)) {
-    return CheckWitness{.shape = CheckWitness::Shape::Index,
-                        .extent = WitnessTerm::ofConstant(*bound),
-                        .extentClass = core::ExtentClass::Exact,
-                        .offset = index != nullptr ? WitnessTerm::ofExpr(*index)
-                                                   : WitnessTerm::ofConstant(0),
-                        .unmodified = true,
-                        .accessesSafe = true};
-  }
-  // A variable-length array: `sizeof` of the object's own type reads the
-  // size captured at its declaration, which never goes stale (§7.1). The
-  // element count would need a division, so the check is a span.
-  const auto *ref = llvm::dyn_cast<clang::DeclRefExpr>(array.IgnoreParens());
-  const auto *variable =
-      ref != nullptr ? llvm::dyn_cast<clang::VarDecl>(ref->getDecl()) : nullptr;
-  const auto *type = context.getAsVariableArrayType(array.getType());
-  if (variable == nullptr || type == nullptr)
-    return std::nullopt;
-  return CheckWitness{.shape = CheckWitness::Shape::Span,
-                      .extent = WitnessTerm::sizeOf(variable->getType()),
-                      .extentClass = core::ExtentClass::Exact,
-                      .base = WitnessTerm::ofPlace(*variable),
-                      .width = WitnessTerm::sizeOf(type->getElementType()),
-                      .offset = index != nullptr ? WitnessTerm::ofExpr(*index)
-                                                 : WitnessTerm::ofConstant(0),
-                      .unmodified = true,
-                      .accessesSafe = true};
-}
-
-std::optional<WitnessTerm>
-Walker::parameterTerm(const core::ExtentTerm &term) const {
-  if (term.isConstant())
-    return WitnessTerm::ofConstant(term.offset);
-  if (term.path->root != core::ExtentPath::Root::Param ||
-      term.path->param >= function.getNumParams())
-    return std::nullopt;
-  const clang::ParmVarDecl *param = function.getParamDecl(term.path->param);
-  // §2.6: parameters never assigned or address-taken.
-  if (modified.contains(param->getCanonicalDecl()))
-    return std::nullopt;
-  WitnessTerm result = WitnessTerm::ofPlace(*param);
-  if (term.scale != 1)
-    result = WitnessTerm::mul(std::move(result),
-                              WitnessTerm::ofConstant(term.scale));
-  if (term.offset != 0)
-    result = WitnessTerm::add(std::move(result),
-                              WitnessTerm::ofConstant(term.offset));
-  return result;
-}
-
-std::optional<CheckWitness>
-Walker::declaredDefault(const clang::Expr &pointer,
-                        const clang::Expr *index) const {
-  // §2.6: a declared kind of an unmodified parameter, over constants and
-  // unmodified parameters.
-  const auto *ref =
-      llvm::dyn_cast<clang::DeclRefExpr>(pointer.IgnoreParenImpCasts());
-  const auto *param = ref != nullptr
-                          ? llvm::dyn_cast<clang::ParmVarDecl>(ref->getDecl())
-                          : nullptr;
-  if (param == nullptr || param->getDeclContext() != &function ||
-      modified.contains(param->getCanonicalDecl()))
-    return std::nullopt;
-  const KindEntry *entry =
-      kinds.param(function, param->getFunctionScopeIndex());
-  if (entry == nullptr || !entry->isCheckOperand())
-    return std::nullopt;
-  const core::PointerKind &kind = entry->kind;
-  // `sized` counts bytes, which are elements only for character pointees.
-  const clang::QualType pointee = param->getType()->getPointeeType();
-  const bool elements = kind.shape == core::PointerShape::Counted ||
-                        (kind.shape == core::PointerShape::Sized &&
-                         !pointee.isNull() && pointee->isCharType());
-  if (!elements)
-    return std::nullopt;
-  auto extent = parameterTerm(kind.extent);
-  if (!extent)
-    return std::nullopt;
-  return CheckWitness{.shape = CheckWitness::Shape::Index,
-                      .extent = std::move(extent),
-                      .extentClass = core::ExtentClass::Declared,
-                      .offset = index != nullptr ? WitnessTerm::ofExpr(*index)
-                                                 : WitnessTerm::ofConstant(0),
-                      .unmodified = true,
-                      .accessesSafe = true};
-}
-
-bool Walker::isSimpleVariable(const clang::ValueDecl *decl) const {
-  const auto *variable = llvm::dyn_cast_or_null<clang::VarDecl>(decl);
-  if (variable == nullptr || !variable->hasLocalStorage() ||
-      variable->getType().isVolatileQualified())
-    return false;
-  if (llvm::isa<clang::ParmVarDecl>(variable))
-    return variable->getDeclContext() == &function &&
-           !modified.contains(variable->getCanonicalDecl());
-  return variable->getType().isConstQualified();
-}
-
-bool Walker::isSimple(const WitnessTerm &term) const {
-  switch (term.kind) {
-  case WitnessTerm::Kind::Constant:
-  case WitnessTerm::Kind::SizeOf:
-    return true;
-  case WitnessTerm::Kind::Place:
-    return term.path.empty() && isSimpleVariable(term.decl);
-  case WitnessTerm::Kind::Add:
-  case WitnessTerm::Kind::Sub:
-  case WitnessTerm::Kind::Mul:
-  case WitnessTerm::Kind::Div:
-    return std::ranges::all_of(term.operands, [this](const WitnessTerm &side) {
-      return isSimple(side);
-    });
-  case WitnessTerm::Kind::StrLen:
-    return false;
-  case WitnessTerm::Kind::Expr: {
-    if (term.expr == nullptr)
-      return false;
-    const clang::Expr *expr = term.expr->IgnoreParenImpCasts();
-    if (!expr->isValueDependent() && expr->getIntegerConstantExpr(context))
-      return true;
-    const auto *ref = llvm::dyn_cast<clang::DeclRefExpr>(expr);
-    return ref != nullptr && ref->getType()->isIntegerType() &&
-           isSimpleVariable(ref->getDecl());
-  }
-  }
-  return false;
-}
-
-std::optional<std::pair<WitnessTerm, core::ExtentClass>>
-Walker::argumentExtent(const clang::Expr &argument) const {
-  if (const clang::Expr *array = decayedArray(&argument)) {
-    if (isFlexible(*array))
-      return std::nullopt;
-    if (constantBound(*array))
-      return std::pair{WitnessTerm::sizeOf(array->getType()),
-                       core::ExtentClass::Exact};
-    // A variable-length array's `sizeof` reads the size captured at its
-    // declaration (§7.1).
-    const auto *ref = llvm::dyn_cast<clang::DeclRefExpr>(array->IgnoreParens());
-    const auto *variable = ref != nullptr
-                               ? llvm::dyn_cast<clang::VarDecl>(ref->getDecl())
-                               : nullptr;
-    if (variable != nullptr &&
-        context.getAsVariableArrayType(variable->getType()))
-      return std::pair{WitnessTerm::sizeOf(variable->getType()),
-                       core::ExtentClass::Exact};
-    return std::nullopt;
-  }
-  const clang::Expr *pointer = argument.IgnoreParenImpCasts();
-  if (const auto *address = llvm::dyn_cast<clang::UnaryOperator>(pointer);
-      address != nullptr && address->getOpcode() == clang::UO_AddrOf) {
-    const auto *ref = llvm::dyn_cast<clang::DeclRefExpr>(
-        address->getSubExpr()->IgnoreParens());
-    const auto *variable = ref != nullptr
-                               ? llvm::dyn_cast<clang::VarDecl>(ref->getDecl())
-                               : nullptr;
-    if (variable == nullptr || variable->getType()->isIncompleteType() ||
-        !variable->getType()->isConstantSizeType())
-      return std::nullopt;
-    return std::pair{WitnessTerm::sizeOf(variable->getType()),
-                     core::ExtentClass::Exact};
-  }
-  const auto *ref = llvm::dyn_cast<clang::DeclRefExpr>(pointer);
-  const auto *param = ref != nullptr
-                          ? llvm::dyn_cast<clang::ParmVarDecl>(ref->getDecl())
-                          : nullptr;
-  if (param == nullptr || !isSimpleVariable(param))
-    return std::nullopt;
-  const KindEntry *entry =
-      kinds.param(function, param->getFunctionScopeIndex());
-  if (entry == nullptr || !entry->isCheckOperand())
-    return std::nullopt;
-  auto extent = parameterTerm(entry->kind.extent);
-  if (!extent)
-    return std::nullopt;
-  if (entry->kind.shape == core::PointerShape::Sized)
-    return std::pair{std::move(*extent), core::ExtentClass::Declared};
-  const clang::QualType pointee = param->getType()->getPointeeType();
-  if (entry->kind.shape != core::PointerShape::Counted || pointee.isNull() ||
-      pointee->isIncompleteType() || !pointee->isConstantSizeType())
-    return std::nullopt;
-  return std::pair{
-      WitnessTerm::mul(std::move(*extent), WitnessTerm::sizeOf(pointee)),
-      core::ExtentClass::Declared};
-}
-
-/// The pointee of an argument before its implicit conversions (`char` for a
-/// `char *` passed as `void *`), when it is a complete object type.
-static std::optional<clang::QualType>
-accessedType(const clang::Expr &argument) {
-  const clang::QualType type = argument.IgnoreParenImpCasts()->getType();
-  if (!type->isPointerType())
-    return std::nullopt;
-  const clang::QualType pointee = type->getPointeeType();
-  if (pointee->isVoidType() || pointee->isIncompleteType() ||
-      pointee->isFunctionType() || !pointee->isConstantSizeType())
-    return std::nullopt;
-  return pointee;
-}
-
-/// §8.1: whether a library term states a formatted length.
-static bool mentionsFormatLength(const core::LibTerm &term) {
-  return term.kind == core::LibTerm::Kind::FormatLength ||
-         llvm::any_of(term.operands, mentionsFormatLength);
-}
-
-/// A `printf` format literal whose conversions neither read a string
-/// argument (`%s`) nor write through one (`%n`): the lowering is then the
-/// call's whole spatial requirement.
-static bool isPlainFormatLiteral(const clang::Expr &format) {
-  const auto *literal =
-      llvm::dyn_cast<clang::StringLiteral>(format.IgnoreParenImpCasts());
-  if (literal == nullptr || literal->getCharByteWidth() != 1)
-    return false;
-  const llvm::StringRef text = literal->getString();
-  for (std::size_t i = 0; i < text.size(); ++i) {
-    if (text[i] != '%')
-      continue;
-    if (++i >= text.size())
-      return false;
-    if (text[i] == '%')
-      continue;
-    // Argument position, flags, width, precision and length.
-    while (i < text.size() &&
-           llvm::StringRef("0123456789$-+ #'.*hljztLq").contains(text[i]))
-      ++i;
-    if (i >= text.size() ||
-        !llvm::StringRef("diouxXeEfFgGaAcp").contains(text[i]))
-      return false;
-  }
-  return true;
-}
-
-std::optional<CheckWitness>
-Walker::formatWriterDefault(const clang::CallExpr &call,
-                            const core::LibraryMatch &match) const {
-  const core::LibraryEntry &row = *match.entry;
-  if (!row.format || row.format->kind != core::LibFormat::Kind::Printf ||
-      row.params.empty() || !row.params.front().bytes ||
-      !mentionsFormatLength(*row.params.front().bytes))
-    return std::nullopt;
-  // §10.4: the unit must declare the bounded writer.
-  const std::string bounded = core::boundedWriterName(row.name);
-  if (bounded.empty() ||
-      llvm::none_of(context.getTranslationUnitDecl()->lookup(
-                        clang::DeclarationName(&context.Idents.get(bounded))),
-                    [](const clang::NamedDecl *decl) {
-                      return llvm::isa<clang::FunctionDecl>(decl);
-                    }))
-    return std::nullopt;
-  const int destination = match.callArgument(0);
-  const int format = match.callArgument(row.format->format);
-  if (destination < 0 || format < 0 ||
-      static_cast<unsigned>(std::max(destination, format)) >=
-          call.getNumArgs() ||
-      !isPlainFormatLiteral(*call.getArg(static_cast<unsigned>(format))))
-    return std::nullopt;
-  // A fortified alias's own arguments are evaluated once, by the call.
-  for (unsigned i = 0; i < call.getNumArgs(); ++i)
-    if (match.rowArgument(i) < 0 &&
-        call.getArg(i)->HasSideEffects(context,
-                                       /*IncludePossibleEffects=*/true))
-      return std::nullopt;
-  const auto have =
-      argumentExtent(*call.getArg(static_cast<unsigned>(destination)));
-  if (!have)
-    return std::nullopt;
-  return CheckWitness{.shape = CheckWitness::Shape::Length,
-                      .argument = static_cast<std::uint8_t>(destination),
-                      .extent = have->first,
-                      .extentClass = have->second,
-                      .unmodified = true,
-                      .accessesSafe = true};
-}
-
-std::vector<CheckWitness>
-Walker::libraryDefaults(const clang::CallExpr &call,
-                        const core::LibraryMatch &match) const {
-  if (auto lowered = formatWriterDefault(call, match))
-    return {std::move(*lowered)};
-  std::vector<CheckWitness> out;
-  for (unsigned i = 0; i < call.getNumArgs(); ++i) {
-    const core::LibraryParam *param = match.param(i);
-    if (param == nullptr || param->type != core::LibraryParam::Type::Pointer ||
-        (param->access == core::LibraryParam::Access::None && !param->bytes &&
-         !param->count && !param->string))
-      continue;
-    // A string requirement needs the terminator's position, which no
-    // declaration gives.
-    if (param->string)
-      return {};
-    const clang::Expr &argument = *call.getArg(i);
-    std::optional<WitnessTerm> need;
-    if (param->bytes) {
-      need = libraryTerm(*param->bytes, call, match);
-    } else {
-      const auto element = accessedType(argument);
-      if (!element)
-        return {};
-      if (param->count) {
-        if (auto count = libraryTerm(*param->count, call, match))
-          need = WitnessTerm::mul(std::move(*count),
-                                  WitnessTerm::sizeOf(*element));
-      } else {
-        need = WitnessTerm::sizeOf(*element);
-      }
-    }
-    const auto have = argumentExtent(argument);
-    if (!need || !isSimple(*need) || !have)
-      return {};
-    out.push_back(CheckWitness{.shape = CheckWitness::Shape::Length,
-                               .argument = static_cast<std::uint8_t>(i),
-                               .extent = have->first,
-                               .extentClass = have->second,
-                               .need = std::move(need),
-                               .unmodified = true,
-                               .accessesSafe = true});
-  }
-  for (const core::LibDisjoint &disjoint : match.entry->disjoint) {
-    const int first = match.callArgument(disjoint.first);
-    const int second = match.callArgument(disjoint.second);
-    if (first < 0 || second < 0 ||
-        static_cast<unsigned>(std::max(first, second)) >= call.getNumArgs())
-      return {};
-    auto length = libraryTerm(disjoint.length, call, match);
-    if (!length || !isSimple(*length))
-      return {};
-    // The other pointer is evaluated again: an array or an unmodified
-    // parameter.
-    const clang::Expr &other = *call.getArg(static_cast<unsigned>(second));
-    const clang::Expr *named = decayedArray(&other);
-    if (named == nullptr)
-      named = other.IgnoreParenImpCasts();
-    const auto *ref = llvm::dyn_cast<clang::DeclRefExpr>(named->IgnoreParens());
-    const auto *variable = ref != nullptr
-                               ? llvm::dyn_cast<clang::VarDecl>(ref->getDecl())
-                               : nullptr;
-    if (variable == nullptr ||
-        (!variable->getType()->isArrayType() && !isSimpleVariable(variable)))
-      return {};
-    out.push_back(CheckWitness{.shape = CheckWitness::Shape::Disjoint,
-                               .argument = static_cast<std::uint8_t>(first),
-                               .extentClass = core::ExtentClass::Exact,
-                               .need = std::move(length),
-                               .other = WitnessTerm::ofPlace(*variable),
-                               .unmodified = true,
-                               .accessesSafe = true});
-  }
-  return out;
-}
-
-std::vector<CheckWitness>
-Walker::declaredDefaults(const clang::CallExpr &call,
-                         const clang::FunctionDecl &callee) const {
-  std::vector<CheckWitness> out;
-  for (unsigned i = 0; i < call.getNumArgs(); ++i) {
-    const KindEntry *entry = kinds.param(callee, i);
-    if (entry == nullptr || !entry->hasDeclaredShape())
-      continue;
-    if (!entry->isCheckOperand())
-      return {};
-    // The requirement over the callee's parameters, in the caller's
-    // arguments.
-    const core::ExtentTerm &term = entry->kind.extent;
-    std::optional<WitnessTerm> need;
-    if (term.isConstant()) {
-      need = WitnessTerm::ofConstant(term.offset);
-    } else if (term.path->root == core::ExtentPath::Root::Param &&
-               term.path->param < call.getNumArgs()) {
-      need = WitnessTerm::ofExpr(*call.getArg(term.path->param));
-      if (term.scale != 1)
-        need = WitnessTerm::mul(std::move(*need),
-                                WitnessTerm::ofConstant(term.scale));
-      if (term.offset != 0)
-        need = WitnessTerm::add(std::move(*need),
-                                WitnessTerm::ofConstant(term.offset));
-    }
-    if (!need)
-      return {};
-    if (entry->kind.shape == core::PointerShape::Counted) {
-      const clang::QualType pointee =
-          i < callee.getNumParams()
-              ? callee.getParamDecl(i)->getType()->getPointeeType()
-              : clang::QualType();
-      if (pointee.isNull() || pointee->isIncompleteType() ||
-          !pointee->isConstantSizeType())
-        return {};
-      need = WitnessTerm::mul(std::move(*need), WitnessTerm::sizeOf(pointee));
-    } else if (entry->kind.shape != core::PointerShape::Sized) {
-      return {};
-    }
-    const auto have = argumentExtent(*call.getArg(i));
-    if (!isSimple(*need) || !have)
-      return {};
-    out.push_back(CheckWitness{.shape = CheckWitness::Shape::Length,
-                               .argument = static_cast<std::uint8_t>(i),
-                               .extent = have->first,
-                               .extentClass = have->second,
-                               .need = std::move(need),
-                               .unmodified = true,
-                               .accessesSafe = true});
-  }
-  return out;
-}
-
 //===----------------------------------------------------------------------===//
 // SiteCollector
 //===----------------------------------------------------------------------===//
@@ -2241,11 +1702,6 @@ SiteIndex SiteCollector::collect() {
         toCoreLocation(sm, function->getLocation());
     row.file = where.file;
     row.line = where.line;
-    row.linkage = function->isExternallyVisible() ? core::Linkage::External
-                                                  : core::Linkage::Internal;
-    row.callsSetjmp = walker.callsSetjmp;
-    // §6.3: `WEAVEC_REQUIRE_SAFE` holds the function to `checked`.
-    row.requireSafe = kinds.requireSafe(*function);
     row.sites.reserve(pending.size());
     sites.sites.reserve(pending.size());
     for (std::size_t i = 0; i < pending.size(); ++i) {

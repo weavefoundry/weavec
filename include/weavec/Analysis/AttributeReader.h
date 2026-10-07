@@ -37,9 +37,7 @@
 // resolved separately. A conflict within one level is recorded as a
 // `KindProblem` and the weaker kind (their join) is used.
 //
-// `WEAVEC_REQUIRE_SAFE` on any declaration of a function marks it in the
-// table (§6.3); on anything else it is a `KindProblem`. The ownership
-// attributes (`malloc`, `ownership_returns`, `ownership_takes`,
+// The ownership attributes (`malloc`, `ownership_returns`, `ownership_takes`,
 // `ownership_holds`) are contracts, not kinds: they become the function's
 // `OwnershipContract`, which the unknown-callee rules (§5.1) read.
 //

@@ -4,12 +4,13 @@
 // heap block traps.
 // STAGE: S8
 // FLAGS: -O1
+// TRAP-AT: Inputs/inline-fortify.h:11
 // RUN-INPUT: 64
 #include "Inputs/inline-fortify.h"
 #include <stdlib.h>
 struct packet { size_t len; unsigned char *payload; };
 static void fill(struct packet *pk, const unsigned char *src) {
-  memcpy(pk->payload, src, pk->len); // BUG: out-of-bounds // TRAP: object
+  memcpy(pk->payload, src, pk->len); // BUG: out-of-bounds // MISS: the analysis does not report a call's argument against the callee's requirement (RFC 0035 §8); the guard stops in the callee
 }
 int main(int argc, char **argv) {
   static unsigned char src[128];

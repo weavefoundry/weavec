@@ -161,8 +161,8 @@ struct SlotRow {
 enum class SlotScope : std::uint8_t {
   /// A per-TU compile.
   Unit,
-  /// The link step, or `weavec --whole-program`.
-  Link,
+  /// Every unit of a program (`weavec --whole-program`).
+  Program,
 };
 
 /// The inputs of §9.3's closed-slot rules.
@@ -171,24 +171,24 @@ enum class SlotScope : std::uint8_t {
 /// propagates along inclusions: a slot that can receive a value from an
 /// open slot is open. Seeds:
 ///
-///   - `field`: open unless its record is in `confinedRecords`, or at a
-///     closed-world link;
-///   - `global`: open unless at a closed-world link;
+///   - `field`: open unless its record is in `confinedRecords`, or in a
+///     closed-world program;
+///   - `global`: open unless in a closed-world program;
 ///   - `static`: open when in `escapedStatics`;
-///   - `param f i`: open when `f` is exported (unless at a closed-world
-///     link), or when `f`'s address reaches an open position;
+///   - `param f i`: open when `f` is exported (unless in a closed-world
+///     program), or when `f`'s address reaches an open position;
 ///   - `result f`: open when `f` has no body in the solved program.
 ///
 /// A function's address reaches an open position when it is a target of a
 /// slot whose values code outside the solved program can see: a `field`,
 /// `global` or `static` slot seeded open, `param g i` of a function `g`
-/// without a body, `result g` of an exported `g` (unless at a closed-world
-/// link), or `call-param i S` with `S` open. Local, call and the remaining
+/// without a body, `result g` of an exported `g` (unless in a closed-world
+/// program), or `call-param i S` with `S` open. Local, call and the remaining
 /// parameter and result slots are closed unless openness reaches them.
 struct SlotRules {
   SlotScope scope = SlotScope::Unit;
   /// Functions with a body in the solved program: the unit, or every unit
-  /// with a record at link.
+  /// of the program.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::set<std::string> defined = {};
   /// Externally visible functions.
@@ -202,19 +202,13 @@ struct SlotRules {
   /// `<unit>:<name>` of `static` globals whose address escapes.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::set<std::string> escapedStatics = {};
-  /// Link: the output is an executable (neither `-shared` nor `-r`).
+  /// Program: it is an executable (some unit defines `main`).
   bool executable = true;
-  /// Link: `-rdynamic` or `-Wl,-export-dynamic` was given.
-  bool exportDynamic = false;
-  /// Link: an `unanalyzed-input` exists.
-  bool unanalyzedInputs = false;
 
-  /// At link, with an executable output, no dynamic export and every
-  /// non-system input recorded, no code outside the solved program can
-  /// store into its slots or call its functions.
+  /// For a whole executable no code outside the solved program can store
+  /// into its slots or call its functions.
   [[nodiscard]] bool closedWorld() const noexcept {
-    return scope == SlotScope::Link && executable && !exportDynamic &&
-           !unanalyzedInputs;
+    return scope == SlotScope::Program && executable;
   }
 };
 
@@ -269,36 +263,6 @@ struct CallResolution {
 [[nodiscard]] std::optional<FacetDecision>
 openCallTemporalDecision(const CallResolution &resolution);
 
-/// §9.3, several closed targets: whether a target consumes an argument. A
-/// consume is unconditional only if every target consumes unconditionally;
-/// a may-effect from any target is a may-effect.
-enum class TargetConsume : std::uint8_t { None, May, Unconditional };
-
-[[nodiscard]] constexpr TargetConsume
-joinTargetConsume(TargetConsume a, TargetConsume b) noexcept {
-  return a == b ? a : TargetConsume::May;
-}
-
-/// Joins a per-target value (a summary, an effect) over `targets` with
-/// `join`. `lookup(target)` returns `std::optional<T>`; a target without a
-/// value, or no target at all, makes the join unknown (none).
-template <typename T, typename Lookup, typename Join>
-[[nodiscard]] std::optional<T>
-joinOverTargets(std::span<const std::string> targets, const Lookup &lookup,
-                const Join &join) {
-  std::optional<T> result;
-  for (const std::string &target : targets) {
-    std::optional<T> value = lookup(target);
-    if (!value)
-      return std::nullopt;
-    if (result)
-      result = join(*result, *value);
-    else
-      result = std::move(value);
-  }
-  return result;
-}
-
 /// The solved slots.
 class SlotSolution {
 public:
@@ -306,9 +270,6 @@ public:
   [[nodiscard]] const std::set<std::string> &targets(const SlotKey &slot) const;
   [[nodiscard]] bool isOpen(const SlotKey &slot) const {
     return openSource(slot).has_value();
-  }
-  [[nodiscard]] bool isClosed(const SlotKey &slot) const {
-    return !isOpen(slot);
   }
   /// Why `slot` is open. Slots the solver never saw are judged by the seed
   /// rules alone.
@@ -337,29 +298,14 @@ private:
   std::size_t stepCount = 0;
 };
 
-/// The constraints of one unit, or of a whole program at link.
+/// The constraints of one unit, or of a whole program.
 class FnSlots {
 public:
   void add(SlotConstraint constraint);
   void addMember(std::string function, SlotKey slot);
   void addSubset(SlotKey from, SlotKey to);
   void addOpen(SlotKey slot, std::string detail);
-  /// A direct call to `callee`: argument-to-parameter and
-  /// result-to-receiver copies. `arguments[n]` is the slot argument `n` is
-  /// read from, or none when it is not a function pointer. A function
-  /// designator argument is a member of `SlotKey::param(callee, n)`
-  /// (`addMember`).
-  void addDirectCall(std::string_view callee,
-                     std::span<const std::optional<SlotKey>> arguments,
-                     const std::optional<SlotKey> &receiver);
-  /// An indirect call through `callee`, the dynamic call constraint:
-  /// argument `n` flows into `SlotKey::callParam(callee, n)`, and
-  /// `SlotKey::callResult(callee)` flows to the receiver. A function
-  /// designator argument is a member of the call-param slot.
-  void addIndirectCall(const SlotKey &callee,
-                       std::span<const std::optional<SlotKey>> arguments,
-                       const std::optional<SlotKey> &receiver);
-  /// The union with `other`'s constraints (the link step).
+  /// The union with `other`'s constraints (a whole program).
   void merge(const FnSlots &other);
 
   /// Sorted and without duplicates.
@@ -385,17 +331,6 @@ public:
   /// The §13.1 export rows: one per destination slot, sorted.
   [[nodiscard]] std::vector<SlotRow> rows() const;
   [[nodiscard]] static FnSlots fromRows(std::span<const SlotRow> rows);
-
-  /// The textual form: one constraint per line,
-  ///
-  ///   member<TAB><function><TAB><slot>
-  ///   subset<TAB><from><TAB><to>
-  ///   open<TAB><slot><TAB><detail>
-  ///
-  /// with `\`, tab and newline escaped as `\\`, `\t` and `\n`.
-  [[nodiscard]] std::string print() const;
-  [[nodiscard]] static std::optional<FnSlots>
-  parse(std::string_view text, std::string *error = nullptr);
 
   friend bool operator==(const FnSlots &, const FnSlots &) = default;
 

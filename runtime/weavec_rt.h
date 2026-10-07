@@ -6,10 +6,10 @@
 |*
 |*===----------------------------------------------------------------------===*|
 |*
-|* RFC 0032. Shared by the runtime's own sources and its tests; not
-|* installed. Compiled code reaches the runtime through the entry points
-|* declared under "The object table" (the check prelude declares the same
-|* ones itself, RFC 0032 section 7) and through the standard allocation
+|* RFC 0035, section 5. Shared by the runtime's own sources and its tests;
+|* not installed. Compiled code reaches the runtime through the entry points
+|* the guard pass calls (lib/Frontend/GuardPass*.cpp declares the same
+|* ones), the shadow descriptor it reads inline, and the standard allocation
 |* functions libweavec_alloc.a defines.
 |*
 \*===----------------------------------------------------------------------===*/
@@ -17,22 +17,122 @@
 #ifndef WEAVEC_RUNTIME_WEAVEC_RT_H
 #define WEAVEC_RUNTIME_WEAVEC_RT_H
 
+#include <stdarg.h>
+#include <stdio.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
 /* Every entry point has default visibility: on ELF the first definition the
- * dynamic linker finds then serves every image (RFC 0032, section 2.5). */
+ * dynamic linker finds then serves every image. */
 #define WEAVEC_RT_API __attribute__((visibility("default")))
 
-/*===-- The arena (section 2.1) -------------------------------------------===*/
+/* The guards' slow paths keep every register of their caller, so that an
+ * inline guard costs the code around it no spills and the register
+ * allocator no live-range splits; the guard pass calls them so on AArch64
+ * and x86-64. Clang builds the runtime. */
+#if defined(__aarch64__) || defined(__x86_64__)
+#define WEAVEC_RT_SLOW __attribute__((preserve_all))
+#else
+#define WEAVEC_RT_SLOW
+#endif
+
+/*===-- The shadow (section 2.2) ------------------------------------------===*/
+
+/* One byte per 16-byte granule of a window of the address space, at
+ * base + ((address >> 4) & mask). The guard pass reads `base` and `mask` at
+ * offsets 0 and 8 once per function. Until the shadow is reserved, and when
+ * it cannot be, `mask` is 0 and `base` points to zero bytes the frame code
+ * may scribble on: every guard then passes, because the slow path knows. */
+struct __weavec_rt_shadow_t {
+  uintptr_t base;
+  uintptr_t mask;
+  /* Addresses at or above 1 << bits alias lower ones (section 2.2). */
+  unsigned bits;
+};
+
+WEAVEC_RT_API extern struct __weavec_rt_shadow_t __weavec_rt_shadow;
+
+/* Shadow values. 0: the granule's 16 bytes are addressable; 1-15: its first
+ * k bytes are; the rest name why bytes are not. */
+enum {
+  WeavecRtShadowAddressable = 0x00,
+  WeavecRtShadowGranule = 16,
+  WeavecRtShadowStackLeft = 0xF1,
+  WeavecRtShadowStackMid = 0xF2,
+  WeavecRtShadowStackRight = 0xF3,
+  WeavecRtShadowStackDynamic = 0xF4,
+  WeavecRtShadowStackScope = 0xF8,
+  WeavecRtShadowGlobal = 0xF9,
+  WeavecRtShadowHeapTail = 0xFA,
+  WeavecRtShadowHeapFreed = 0xFD,
+  /* The lowest WeavecRtNullPage bytes: an access there is through null. */
+  WeavecRtShadowNull = 0xFE
+};
+enum { WeavecRtNullPage = 65536 };
+
+static inline int weavecRtShadowReady(void) {
+  return __atomic_load_n(&__weavec_rt_shadow.mask, __ATOMIC_ACQUIRE) != 0;
+}
+
+/* Whether the shadow describes `address` itself rather than an alias. */
+static inline int weavecRtInWindow(uintptr_t address) {
+  return __weavec_rt_shadow.bits >= 64 ||
+         (address >> __weavec_rt_shadow.bits) == 0;
+}
+
+static inline unsigned char *weavecRtShadowOf(uintptr_t address) {
+  return (unsigned char *)(__weavec_rt_shadow.base +
+                           ((address >> 4) & __weavec_rt_shadow.mask));
+}
+
+/* Whether the n bytes at `address` are addressable, decided from one
+ * eight-byte load of the shadow (the inline guard's chunk check); 0 when
+ * that cannot tell (more than 113 bytes, or a poisoned byte), for the full
+ * check to decide. */
+static inline int weavecRtQuickOk(uintptr_t address, uint64_t n) {
+  uint64_t last;
+  unsigned shift;
+  uint64_t chunk;
+  unsigned char value;
+  if (n == 0)
+    return 1;
+  if (n > 113 || !weavecRtShadowReady() || !weavecRtInWindow(address))
+    return 0;
+  last = (address & 15) + n - 1;
+  shift = (unsigned)(last >> 4) * 8;
+  /* (The shadow has room for an eight-byte load past its last byte.) */
+  __builtin_memcpy(&chunk, weavecRtShadowOf(address), sizeof chunk);
+  if (shift != 0 && (chunk & (((uint64_t)1 << shift) - 1)) != 0)
+    return 0;
+  value = (unsigned char)(chunk >> shift);
+  return value == WeavecRtShadowAddressable ||
+         (value < WeavecRtShadowGranule && (last & 15) < value);
+}
+
+/* Writes `value` over the shadow of [base, base + size), 16-aligned base,
+ * whole granules (the last one partial counts whole). */
+void weavecRtShadowSet(uintptr_t base, size_t size, unsigned char value);
+
+/* Marks [base, base + size) addressable and the rest of its last granule
+ * not, with `tail`; base is 16-aligned. */
+void weavecRtShadowObject(uintptr_t base, size_t size, unsigned char tail);
+
+/* Clears the shadow of [low, high), rounded outwards to granules; whole
+ * pages of it by mapping them afresh. */
+void weavecRtShadowClear(uintptr_t low, uintptr_t high);
+
+/* The calling thread's stack top (its highest address), or 0. */
+uintptr_t weavecRtStackTop(void);
+
+/*===-- The arena (sections 5.1) -------------------------------------------===*/
 
 enum {
   /* 16, 32, ..., 128, then four classes per doubling up to 2^30. */
   WeavecRtClassCount = 100,
   WeavecRtSmallClasses = 8,
   WeavecRtMaxClassShift = 30,
-  /* A dead slot at least this large gives its pages back (section 2.4). */
+  /* A dead slot at least this large gives its pages back. */
   WeavecRtDecommitBytes = 64 * 1024
 };
 
@@ -46,23 +146,11 @@ struct __weavec_rt_class {
 };
 
 /* What a lookup of an arena pointer needs; `bytes` is 0 until the arena
- * exists, so every pointer is outside it. The guards the backend expands
- * (RFC 0034, section 1.4) read `shadow` and `mask` at fixed offsets. The
- * slot words of a region are readable as soon as the arena exists; a slot
- * the region has not reached reads as never allocated. */
+ * exists, so every pointer is outside it. */
 struct __weavec_rt_heap_t {
   uintptr_t base;
   /* classes << shift. */
   uintptr_t bytes;
-  /* RFC 0034, section 2.1: one byte per 16-byte granule of the address
-   * space, at shadow + ((address >> 4) & mask). 0: no live arena object's
-   * (outside the arena, never allocated, free, quarantined); 1-16: the
-   * first k bytes are a live arena object's; 0xFE: a live object's slot
-   * after the object. `mask` is 0 when the shadow could not be reserved,
-   * and until it is: every guard then reads the byte at `shadow`, which is
-   * 0, and asks the runtime. */
-  uintptr_t shadow;
-  uintptr_t mask;
   /* Region r's slot words start at meta + (r << (shift - 2)). */
   uintptr_t meta;
   uint32_t shift;
@@ -72,214 +160,13 @@ struct __weavec_rt_heap_t {
 
 WEAVEC_RT_API extern struct __weavec_rt_heap_t __weavec_rt_heap;
 
-/* Slot states: the low two bits of a slot word (section 2.2). */
+/* Slot states: the low two bits of a slot word. */
 enum {
   WeavecRtNever = 0,
   WeavecRtLive = 1,
   WeavecRtFree = 2,
   WeavecRtDead = 3
 };
-
-/* Shadow bytes (RFC 0034, section 2.1, as amended). A granule's byte is
- * 0 when no live tracked object has bytes in it (an untracked address, or
- * a dead or never-allocated arena slot: `base` and `bytes` tell them
- * apart); 1-16 when the first k bytes are a live heap object's (arena or
- * huge block); `Tail` after a live heap object's last byte, in its slot.
- * A stack or global object that starts on a granule (the compiler aligns
- * the ones it registers) is encoded exactly: its last granule reads
- * `ObjectLast + k` (k, 1-16, of its bytes are there), each granule r before
- * it a run byte: `ObjectRun + r` for r up to 48, and above it
- * `ObjectRun + 48 + c`, which says r is at least 2^(c + 4) (c from 1 to 15,
- * the largest r below 2^20 granules). A granule d before another is of the
- * same object when d is at most the earlier one's least r; the end of an
- * object is a logarithmic number of such jumps away. An object that does not start on a granule makes its granules, and
- * the one after it, `Mixed`, which the runtime looks up. `HugeDead` marks a
- * released huge block. */
-enum {
-  WeavecRtShadowDead = 0x00,
-  WeavecRtShadowWhole = 0x10,
-  WeavecRtShadowObjectLast = 0x40,
-  WeavecRtShadowObjectRun = 0x80,
-  WeavecRtShadowRunLimit = 63,
-  /* The untracked granule after an exactly encoded object that ends on a
-   * granule: an address one past an object belongs to it. */
-  WeavecRtShadowOnePast = 0xFB,
-  WeavecRtShadowMixed = 0xFC,
-  WeavecRtShadowHugeDead = 0xFD,
-  WeavecRtShadowTail = 0xFE
-};
-
-/*===-- The shadow (RFC 0034, section 2) -----------------------------------===*/
-
-static inline unsigned char *weavecRtShadowOf(uintptr_t address) {
-  return (unsigned char *)(__weavec_rt_heap.shadow +
-                           ((address >> 4) & __weavec_rt_heap.mask));
-}
-
-static inline int weavecRtShadowReady(void) {
-  return __atomic_load_n(&__weavec_rt_heap.mask, __ATOMIC_ACQUIRE) != 0;
-}
-
-/* Whether `v` is a stack or global object's exact encoding, and its r. */
-static inline int weavecRtIsObjectByte(unsigned char v) {
-  return (v > WeavecRtShadowObjectLast && v <= WeavecRtShadowObjectLast + 16) ||
-         (v > WeavecRtShadowObjectRun &&
-          v <= WeavecRtShadowObjectRun + WeavecRtShadowRunLimit);
-}
-/* The least r a run byte says (0 for a last granule). */
-static inline uintptr_t weavecRtObjectRun(unsigned char v) {
-  if (v <= WeavecRtShadowObjectRun)
-    return 0;
-  if (v <= WeavecRtShadowObjectRun + 48)
-    return v - WeavecRtShadowObjectRun;
-  return (uintptr_t)1 << (v - WeavecRtShadowObjectRun - 48 + 4);
-}
-/* The run byte of a granule r granules before its object's last. */
-static inline unsigned char weavecRtRunByte(uintptr_t r) {
-  unsigned c = 1;
-  if (r <= 48)
-    return (unsigned char)(WeavecRtShadowObjectRun + r);
-  while (c < 15 && ((uintptr_t)1 << (c + 5)) <= r)
-    ++c;
-  return (unsigned char)(WeavecRtShadowObjectRun + 48 + c);
-}
-
-/* A live heap object of `size` bytes at `base` (16-aligned): its whole
- * granules, then the granule its end falls in, which is a partial granule
- * or the slot's tail. */
-static inline void weavecRtShadowLive(uintptr_t base, size_t size) {
-  unsigned char *shadow = weavecRtShadowOf(base);
-  const size_t whole = size >> 4;
-  const unsigned rest = (unsigned)(size & 15);
-  if (!weavecRtShadowReady())
-    return;
-  if (whole != 0)
-    memset(shadow, WeavecRtShadowWhole, whole);
-  shadow[whole] = rest != 0 ? (unsigned char)rest : WeavecRtShadowTail;
-}
-
-/* Sets what `weavecRtShadowLive(base, size)` marked to `value`. */
-static inline void weavecRtShadowFill(uintptr_t base, size_t size,
-                                      unsigned char value) {
-  if (weavecRtShadowReady())
-    memset(weavecRtShadowOf(base), value, (size >> 4) + 1);
-}
-
-/* A live stack or global object of `size` bytes at `base`: exactly when it
- * starts on a granule, else `Mixed` over its granules and the next. When no
- * storage the runtime does not know can follow it (`known`: a global's
- * padding, a frame with no unnamed storage), an untracked granule after it
- * says that an address one past it belongs to it; otherwise it has the
- * whole of a last granule it fills only in part, since unknown storage may
- * share it. The
- * granule after it may start a live exactly encoded neighbour, whose bytes
- * stay (its leave walks them); one past the end of this one then reads as
- * the neighbour's, as with two exact objects. */
-static inline void weavecRtShadowObject(uintptr_t base, size_t size,
-                                        int known) {
-  uintptr_t g;
-  if (!weavecRtShadowReady() || size == 0)
-    return;
-  if ((base & 15) == 0) {
-    const uintptr_t n = (size + 15) >> 4;
-    /* (A range the mask does not wrap is contiguous in the shadow: the
-     * granules of one run byte are written at once.) */
-    if (weavecRtShadowOf(base + ((n - 1) << 4)) >= weavecRtShadowOf(base)) {
-      unsigned char *at = weavecRtShadowOf(base);
-      uintptr_t r = n - 1;
-      while (r > 48) {
-        const unsigned char v = weavecRtRunByte(r);
-        const uintptr_t low = v == weavecRtRunByte(49) ? 49 : weavecRtObjectRun(v);
-        memset(at, v, r - low + 1);
-        at += r - low + 1;
-        r = low - 1;
-      }
-      for (; r > 0; --r)
-        *at++ = weavecRtRunByte(r);
-    } else {
-      for (g = 0; g + 1 < n; ++g)
-        *weavecRtShadowOf(base + (g << 4)) = weavecRtRunByte(n - 1 - g);
-    }
-    /* A last granule it shares with a live mixed object stays mixed. */
-    if ((size & 15) == 0 ||
-        *weavecRtShadowOf(base + ((n - 1) << 4)) != WeavecRtShadowMixed)
-      *weavecRtShadowOf(base + ((n - 1) << 4)) =
-          (unsigned char)(WeavecRtShadowObjectLast +
-                          (known ? size - ((n - 1) << 4) : 16));
-    if (known && (size & 15) == 0 && *weavecRtShadowOf(base + (n << 4)) == 0)
-      *weavecRtShadowOf(base + (n << 4)) = WeavecRtShadowOnePast;
-    return;
-  }
-  for (g = base >> 4; g <= (base + size) >> 4; ++g) {
-    unsigned char *byte = weavecRtShadowOf(g << 4);
-    if (g << 4 < base + size || !weavecRtIsObjectByte(*byte))
-      *byte = WeavecRtShadowMixed;
-  }
-}
-
-/* The object at `base` is gone: an exactly encoded one reads untracked; of
- * a mixed one, the granules it had to itself (the runtime looks the others
- * up). */
-static inline void weavecRtShadowForget(uintptr_t base, size_t size) {
-  if (!weavecRtShadowReady() || size == 0)
-    return;
-  if ((base & 15) != 0) {
-    uintptr_t g;
-    for (g = (base + 15) >> 4; (g + 1) << 4 <= base + size; ++g)
-      *weavecRtShadowOf(g << 4) = WeavecRtShadowDead;
-    return;
-  }
-  memset(weavecRtShadowOf(base), WeavecRtShadowDead, size >> 4);
-  if ((size & 15) != 0 &&
-      *weavecRtShadowOf(base + ((size >> 4) << 4)) != WeavecRtShadowMixed)
-    *weavecRtShadowOf(base + ((size >> 4) << 4)) = WeavecRtShadowDead;
-  if (*weavecRtShadowOf(base + (((size + 15) >> 4) << 4)) ==
-      WeavecRtShadowOnePast)
-    *weavecRtShadowOf(base + (((size + 15) >> 4) << 4)) = WeavecRtShadowDead;
-}
-
-/* Zeroes `bytes` of the shadow at `start`: whole pages by mapping them
- * afresh, so that a thread's 64 MiB stack costs pages, not bytes. */
-void weavecRtShadowZero(unsigned char *start, size_t bytes);
-
-/* Clears the shadow of [low, high) (16-aligned outward). */
-static inline void weavecRtShadowClear(uintptr_t low, uintptr_t high) {
-  uintptr_t g;
-  if (!weavecRtShadowReady() || high <= low)
-    return;
-  /* (A range the mask does not wrap is contiguous in the shadow.) */
-  if (((high + 15) >> 4) - (low >> 4) > 65536 &&
-      weavecRtShadowOf(high - 1) > weavecRtShadowOf(low)) {
-    weavecRtShadowZero(weavecRtShadowOf(low),
-                       (size_t)(((high + 15) >> 4) - (low >> 4)));
-    return;
-  }
-  for (g = low >> 4; g < (high + 15) >> 4; ++g)
-    *weavecRtShadowOf(g << 4) = WeavecRtShadowDead;
-}
-
-/* The end (one past the last byte) of the exactly encoded stack or global
- * object whose granule holds `address`, found by jumping forward: 0 when
- * the granule is not one. A run of r below 63 ends r granules on; one of
- * 63 at least 63 on. */
-static inline uintptr_t weavecRtShadowObjectEnd(uintptr_t address) {
-  uintptr_t g = address >> 4;
-  unsigned char v;
-  if (!weavecRtShadowReady())
-    return 0;
-  v = *weavecRtShadowOf(g << 4);
-  while (v > WeavecRtShadowObjectLast + 16) {
-    if (!weavecRtIsObjectByte(v))
-      return 0;
-    g += weavecRtObjectRun(v);
-    v = *weavecRtShadowOf(g << 4);
-  }
-  if (!weavecRtIsObjectByte(v))
-    return 0;
-  return (g << 4) + (v - WeavecRtShadowObjectLast);
-}
-
-/*===-- The allocator (sections 2.3 to 2.6) -------------------------------===*/
 
 WEAVEC_RT_API void *__weavec_rt_alloc(size_t size, size_t alignment);
 WEAVEC_RT_API void __weavec_rt_free(void *p);
@@ -288,133 +175,181 @@ WEAVEC_RT_API void *__weavec_rt_realloc(void *p, size_t size);
  * allocator says, or 0. */
 WEAVEC_RT_API size_t __weavec_rt_size(const void *p);
 
-/*===-- The object table (sections 3 to 5) --------------------------------===*/
-
-/* What a lookup found. */
-enum { WeavecRtUntracked = 0, WeavecRtTrackedLive = 1, WeavecRtTrackedDead = 2 };
-/* Where a tracked object lives. */
-enum { WeavecRtHeap = 0, WeavecRtStack = 1, WeavecRtGlobal = 2 };
-
-struct __weavec_rt_found {
-  int state;
-  int kind;
+/* What the allocator knows of an address, for reports: whether it is in a
+ * heap slot or huge block, and that object's start, size and state. */
+struct weavecRtHeapObject {
+  int found;
+  int live;
   uintptr_t base;
   size_t size;
-  /* A stack object: the frame that entered it, and whether it was declared
-   * in a nested scope of its function. */
-  uintptr_t frame;
-  int scoped;
-  /* An arena block: its slot word and the value that makes it this block. */
-  const uint32_t *word;
-  uint32_t value;
 };
+struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address);
 
-/* The tracked object `p` points into. */
-WEAVEC_RT_API struct __weavec_rt_found __weavec_rt_find(const void *p);
+/*===-- Guards (section 5.2) -----------------------------------------------===*/
 
-/* Guards: 0 when the guard passes, non-zero when it fails. */
-WEAVEC_RT_API int __weavec_rt_object(const void *p, long long index,
-                                     unsigned long long step,
-                                     unsigned long long offset,
-                                     unsigned long long width);
-WEAVEC_RT_API int __weavec_rt_string(const char *p);
-/* The length of the string at `p`, read inside its own object: the maximum
- * when the object is dead or holds no terminator. */
-WEAVEC_RT_API unsigned long long __weavec_rt_strlen(const char *p);
-/* RFC 0034, section 5.2: the bytes from `p` to the end of the live tracked
- * object it points into; 0 in a dead one, the maximum in none. */
-WEAVEC_RT_API unsigned long long __weavec_rt_room(const void *p);
-WEAVEC_RT_API int __weavec_rt_live(const void *p);
-/* RFC 0034, section 2.5: the slow path of a guard the backend expanded,
- * and of every guard an object built without the backend pass calls. `kind`
- * is a WeavecRtGuard value, with WeavecRtGuardOverflow when the access's
- * address overflowed and WeavecRtGuardProven for verify mode's monitors of
- * proven facets. Returns when the guard passes; otherwise traps, or, with a
- * `site` (report mode), reports it and returns. */
+/* The constant record the guard pass emits per guarded site. */
 enum {
-  WeavecRtGuardObject = 0,
-  WeavecRtGuardLive = 1,
-  WeavecRtGuardKindMask = 3,
-  WeavecRtGuardOverflow = 4,
-  WeavecRtGuardProven = 8
+  WeavecRtSiteWrite = 1,
+  /* Report mode: report once and return instead of trapping. */
+  WeavecRtSiteReport = 2,
+  /* Verify mode's monitor of a guard section 6 removed. */
+  WeavecRtSiteProven = 4,
+  /* A string the call accepts as null (`system(NULL)`). */
+  WeavecRtSiteNullOk = 8
 };
 struct __weavec_rt_site {
   const char *file;
   unsigned line;
   unsigned column;
+  unsigned flags;
 };
-WEAVEC_RT_API void __weavec_rt_guard(const void *from, const void *at,
-                                     unsigned long long width, unsigned kind,
+
+/* The slow path of an inline guard of `width` bytes at `address`: returns
+ * when the bytes are addressable; else traps, or reports and returns. */
+WEAVEC_RT_API WEAVEC_RT_SLOW void
+__weavec_rt_guard(uintptr_t address, uint64_t width,
+                  const struct __weavec_rt_site *site);
+/* A guard of a base that may be null (section 2.4). */
+WEAVEC_RT_API WEAVEC_RT_SLOW void
+__weavec_rt_null(uintptr_t address, const struct __weavec_rt_site *site);
+/* A range guard; `n` may be 0. */
+WEAVEC_RT_API void __weavec_rt_range(uintptr_t address, uint64_t n,
                                      const struct __weavec_rt_site *site);
-WEAVEC_RT_API int __weavec_rt_release_ok(const void *p);
+/* Whether the range is addressable, without a report (section 6.4). */
+WEAVEC_RT_API int __weavec_rt_range_ok(uintptr_t address, uint64_t n);
+/* The length of the string at `s`, checking that its bytes and terminator
+ * are addressable; `max` bounds the scan (the bytes read are then at most
+ * `max`). */
+WEAVEC_RT_API uint64_t __weavec_rt_strlen(const char *s, uint64_t max,
+                                          const struct __weavec_rt_site *site);
 
-/* Stack objects (section 4). `flags`: the function has automatic objects
- * the list does not know (compound literals, `alloca`), so one may start
- * where this one ends; the object is declared in a nested scope. */
-enum { WeavecRtLoose = 1, WeavecRtScoped = 2 };
-WEAVEC_RT_API void *__weavec_rt_stack_enter(void *base, size_t size,
-                                            void *frame, int flags);
-WEAVEC_RT_API void __weavec_rt_stack_leave(void *base, void *frame);
-WEAVEC_RT_API void __weavec_rt_stack_rewind(void *frame);
+/* A copy whose operands overlap (section 2.5). */
+WEAVEC_RT_API void __weavec_rt_overlap(uintptr_t destination, uintptr_t source,
+                                       uint64_t n,
+                                       const struct __weavec_rt_site *site);
 
-/* Global objects (section 5): descriptors are pairs {address, size}. */
-WEAVEC_RT_API void __weavec_rt_globals_add(const void *const *begin,
-                                           const void *const *end);
+/* Checked library calls (section 2.5). */
+WEAVEC_RT_API char *__weavec_rt_strcpy(char *d, const char *s,
+                                       const struct __weavec_rt_site *site);
+WEAVEC_RT_API char *__weavec_rt_stpcpy(char *d, const char *s,
+                                       const struct __weavec_rt_site *site);
+WEAVEC_RT_API char *__weavec_rt_strcat(char *d, const char *s,
+                                       const struct __weavec_rt_site *site);
+WEAVEC_RT_API int __weavec_rt_sprintf(const struct __weavec_rt_site *site,
+                                      char *d, const char *format, ...);
+WEAVEC_RT_API int __weavec_rt_vsprintf(char *d, const char *format,
+                                       va_list arguments,
+                                       const struct __weavec_rt_site *site);
+WEAVEC_RT_API int __weavec_rt_snprintf(const struct __weavec_rt_site *site,
+                                       char *d, size_t n, const char *format,
+                                       ...);
+WEAVEC_RT_API int __weavec_rt_vsnprintf(char *d, size_t n, const char *format,
+                                        va_list arguments,
+                                        const struct __weavec_rt_site *site);
+WEAVEC_RT_API char *__weavec_rt_gets(char *d,
+                                     const struct __weavec_rt_site *site);
+/* The scanf family checks, after the call, what each conversion that ran
+ * wrote. */
+WEAVEC_RT_API int __weavec_rt_sscanf(const struct __weavec_rt_site *site,
+                                     const char *s, const char *format, ...);
+WEAVEC_RT_API int __weavec_rt_vsscanf(const char *s, const char *format,
+                                      va_list arguments,
+                                      const struct __weavec_rt_site *site);
+WEAVEC_RT_API int __weavec_rt_fscanf(const struct __weavec_rt_site *site,
+                                     FILE *stream, const char *format, ...);
+WEAVEC_RT_API int __weavec_rt_vfscanf(FILE *stream, const char *format,
+                                      va_list arguments,
+                                      const struct __weavec_rt_site *site);
+WEAVEC_RT_API int __weavec_rt_scanf(const struct __weavec_rt_site *site,
+                                    const char *format, ...);
+WEAVEC_RT_API int __weavec_rt_vscanf(const char *format, va_list arguments,
+                                     const struct __weavec_rt_site *site);
+/* The searches and comparisons check the bytes they read, up to where
+ * they stop. */
+WEAVEC_RT_API void *__weavec_rt_memchr(const void *s, int c, size_t n,
+                                       const struct __weavec_rt_site *site);
+WEAVEC_RT_API char *__weavec_rt_strchr(const char *s, int c,
+                                       const struct __weavec_rt_site *site);
+WEAVEC_RT_API int __weavec_rt_strcmp(const char *a, const char *b,
+                                     const struct __weavec_rt_site *site);
+WEAVEC_RT_API int __weavec_rt_strncmp(const char *a, const char *b, size_t n,
+                                      const struct __weavec_rt_site *site);
+WEAVEC_RT_API int __weavec_rt_strcasecmp(const char *a, const char *b,
+                                         const struct __weavec_rt_site *site);
+WEAVEC_RT_API int __weavec_rt_strncasecmp(const char *a, const char *b,
+                                          size_t n,
+                                          const struct __weavec_rt_site *site);
+/* The mappings clear the shadow of what they map and unmap. */
+WEAVEC_RT_API void *__weavec_rt_mmap(void *address, size_t length,
+                                     int protection, int flags, int fd,
+                                     long long offset,
+                                     const struct __weavec_rt_site *site);
+WEAVEC_RT_API int __weavec_rt_munmap(void *address, size_t length,
+                                     const struct __weavec_rt_site *site);
 
-/*===-- Reports ------------------------------------------------------------===*/
+/* Frames (section 3). */
+WEAVEC_RT_API void __weavec_rt_unpoison_stack(void);
+/* A dynamic stack object of `size` bytes at `address` (32-aligned), followed
+ * by its redzone up to the next 32-byte boundary and 32 bytes more. */
+WEAVEC_RT_API void __weavec_rt_alloca_poison(uintptr_t address, uint64_t size);
+/* Clears the shadow of [low, high): the dynamic objects a stack restore or a
+ * return frees. */
+WEAVEC_RT_API void __weavec_rt_alloca_unpoison(uintptr_t low, uintptr_t high);
 
-/* RFC 0033 section 6.1: called by a failed check or guard right before it
- * traps, so that the trap ends the program even where the program blocked
- * or caught SIGTRAP and SIGILL. */
+/* Globals (section 4): `n` records {address, size, size with redzone}. */
+struct __weavec_rt_global {
+  uintptr_t address;
+  uint64_t size;
+  uint64_t padded;
+};
+WEAVEC_RT_API void
+__weavec_rt_globals_register(const struct __weavec_rt_global *globals,
+                             uint64_t n);
+WEAVEC_RT_API void
+__weavec_rt_globals_unregister(const struct __weavec_rt_global *globals,
+                               uint64_t n);
+
+/*===-- Reports (section 5.3) ----------------------------------------------===*/
+
+/* Reports a failed guard of `kind` (a report kind's name) and traps, unless
+ * the site asks for a report, which is printed once per site. */
+void weavecRtFail(const char *kind, uintptr_t address, uint64_t width,
+                  const struct __weavec_rt_site *site);
+/* Called by a failure right before it traps, so that the trap ends the
+ * program even where the program blocked or caught SIGTRAP and SIGILL. */
 WEAVEC_RT_API void __weavec_rt_trapping(void);
-WEAVEC_RT_API void __weavec_rt_report(const char *check, const char *file,
-                                      unsigned line, unsigned column);
-/* Prints `weavec: <what>: <why>` with the pointer and traps. */
+/* Prints `weavec: <what> of <pointer>: <why>` and traps. */
 WEAVEC_RT_API void __weavec_rt_fatal(const char *what, const void *p,
                                      const char *why)
     __attribute__((noreturn));
 
-/*===-- One runtime per process (RFC 0033, section 6.2) --------------------===*/
+/*===-- One runtime per process --------------------------------------------===*/
 
 /* Every image linked by weavec-cc carries a copy of the runtime. On Darwin
- * each copy would have its own arena and tables, so one of them, the one
+ * each copy would have its own arena and shadow, so one of them, the one
  * `dlsym(RTLD_DEFAULT, "__weavec_rt_dispatch")` finds (the same for every
- * image), owns the process: the others forward their entry points to it
- * through its table, and copy its arena's descriptor for the guards that
- * read it inline. On ELF the dynamic linker already binds every image to
- * the first definition, and nothing forwards. */
+ * image), owns the process: the others forward their allocation entry
+ * points to it and copy its shadow descriptor, which their inline guards
+ * read. On ELF the dynamic linker already binds every image to the first
+ * definition, and nothing forwards. */
 struct __weavec_rt_dispatch {
   unsigned magic;
   unsigned version;
   const struct __weavec_rt_heap_t *heap;
+  const struct __weavec_rt_shadow_t *shadow;
   int (*initialise)(void);
   void *(*alloc)(size_t, size_t);
   void (*release)(void *);
   void *(*realloc)(void *, size_t);
   size_t (*size)(const void *);
-  struct __weavec_rt_found (*find)(const void *);
-  int (*object)(const void *, long long, unsigned long long, unsigned long long,
-                unsigned long long);
-  int (*string)(const char *);
-  unsigned long long (*strlen)(const char *);
-  int (*live)(const void *);
-  int (*releaseOk)(const void *);
-  void (*guard)(const void *, const void *, unsigned long long, unsigned,
-                const struct __weavec_rt_site *);
-  void *(*stackEnter)(void *, size_t, void *, int);
-  void (*stackLeave)(void *, void *);
-  void (*stackRewind)(void *);
-  void (*globalsAdd)(const void *const *, const void *const *);
-  void (*report)(const char *, const char *, unsigned, unsigned);
+  struct weavecRtHeapObject (*object)(uintptr_t);
   void (*fatal)(const char *, const void *, const char *);
-  unsigned long long (*room)(const void *);
 };
 WEAVEC_RT_API extern const struct __weavec_rt_dispatch __weavec_rt_dispatch;
 
 #if defined(__APPLE__)
 /* The owner's table when this copy forwards to it; null when this copy is
- * the owner (or while it is finding out, on the thread doing so). The state
- * is resolved once, so every later entry point tests one global inline. */
+ * the owner (or while it is finding out, on the thread doing so). */
 enum { WeavecRtOwnerResolved = 2 };
 extern unsigned weavecRtOwnerState;
 extern const struct __weavec_rt_dispatch *weavecRtOwner;
@@ -447,13 +382,9 @@ static inline const struct __weavec_rt_dispatch *weavecRtForward(void) {
 
 /*===-- Internal -----------------------------------------------------------===*/
 
-/* Reserves this copy's arena on first use; 0 when there is no room. */
+/* Reserves the shadow and this copy's arena on first use; 0 when there is
+ * no room for the arena. */
 int weavecRtInitialise(void);
-
-/* Whether the calling thread's stack or the global table holds `p`. */
-int weavecRtIsStackOrGlobal(const void *p);
-/* The stack and global parts of a lookup. */
-struct __weavec_rt_found weavecRtFindStackOrGlobal(const void *p);
 
 /* WEAVEC_RT_STATS=1: what the runtime did, printed when the program exits. */
 enum {
@@ -461,13 +392,10 @@ enum {
   WeavecRtStatReleases,
   WeavecRtStatRecycled,
   WeavecRtStatHuge,
-  WeavecRtStatLookups,
-  WeavecRtStatHeapLookups,
-  WeavecRtStatStackLookups,
-  WeavecRtStatGlobalLookups,
-  WeavecRtStatUntrackedLookups,
   WeavecRtStatSlowGuards,
-  WeavecRtStatStackEnters,
+  WeavecRtStatRanges,
+  WeavecRtStatStrings,
+  WeavecRtStatStackUnpoisons,
   WeavecRtStatCount
 };
 extern unsigned long long weavecRtStats[WeavecRtStatCount];

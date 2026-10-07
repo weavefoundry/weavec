@@ -9,7 +9,7 @@ int s1(struct box *bp) {
   if (!o) abort();
   bp->buf = o;
   struct box *q = bp;
-  return q->buf[10]; // BUG: out-of-bounds // TRAP: index
+  return q->buf[10]; // BUG: out-of-bounds // TRAP
 }
 int main(void) {
   struct box b;

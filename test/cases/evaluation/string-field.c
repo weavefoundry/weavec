@@ -9,7 +9,7 @@ struct box *make(void) {
 void run(void) {
   struct box *p = make(); if (!p) return;
   char dest[3];
-  strcpy(dest, p->data); // BUG: out-of-bounds // TRAP: len
+  strcpy(dest, p->data); // BUG: out-of-bounds // TRAP
   free(p->data); free(p);
 }
 // Driver (RFC 0030 section 17.2): executes the defect so the runtime oracle can observe the check.

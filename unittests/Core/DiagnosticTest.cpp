@@ -43,7 +43,6 @@ TEST(Diagnostic, AddNoteInheritsId) {
 TEST(DiagnosticCollector, CountsBySeverity) {
   DiagnosticCollector collector;
   EXPECT_TRUE(collector.empty());
-  EXPECT_FALSE(collector.hasErrors());
 
   collector.report(Diagnostic{.severity = Severity::Warning,
                               .id = diag::Leak,
@@ -59,10 +58,6 @@ TEST(DiagnosticCollector, CountsBySeverity) {
                               .fixits = {}});
 
   EXPECT_EQ(collector.size(), 2U);
-  EXPECT_EQ(collector.count(Severity::Warning), 1U);
-  EXPECT_EQ(collector.count(Severity::Error), 1U);
-  EXPECT_EQ(collector.count(Severity::Note), 0U);
-  EXPECT_TRUE(collector.hasErrors());
 
   collector.clear();
   EXPECT_TRUE(collector.empty());
@@ -76,8 +71,9 @@ TEST(DiagnosticIds, PointerValidityIdsAreKnown) {
   for (const std::string_view id :
        {diag::NullDereference, diag::UseOfUninitialized, diag::InvalidRelease})
     EXPECT_TRUE(diag::isKnown(id)) << id;
-  // RFC 0030, *Diagnostics*: 15 kept ids and 5 added ones.
-  EXPECT_EQ(diag::All.size(), 20U);
+  // RFC 0030, *Diagnostics*: 15 kept ids and 5 added ones, less the three
+  // RFC 0035 deletes.
+  EXPECT_EQ(diag::All.size(), 17U);
 }
 
 TEST(DiagnosticIds, SpatialSafetyIdIsKnown) {
@@ -91,28 +87,24 @@ TEST(DiagnosticIds, SpatialSafetyIdIsKnown) {
 }
 
 TEST(DiagnosticIds, ProveOrTrapIdsAreKnown) {
-  // RFC 0030, *Diagnostics*: the five added ids and their severities.
+  // RFC 0030, *Diagnostics*: the added ids RFC 0035 keeps, and their
+  // severities.
   EXPECT_EQ(diag::ContradictedAssumption, "contradicted-assumption");
   EXPECT_EQ(diag::AllocationFailure, "allocation-failure");
-  EXPECT_EQ(diag::UnresolvedOperation, "unresolved-operation");
-  EXPECT_EQ(diag::UncheckedOperation, "unchecked-operation");
-  EXPECT_EQ(diag::UnanalyzedInput, "unanalyzed-input");
-  for (const std::string_view id :
-       {diag::ContradictedAssumption, diag::UnresolvedOperation,
-        diag::UncheckedOperation}) {
+  // RFC 0035 deletes the require levels' ids and the link step's.
+  EXPECT_FALSE(diag::isKnown("unresolved-operation"));
+  EXPECT_FALSE(diag::isKnown("unchecked-operation"));
+  EXPECT_FALSE(diag::isKnown("unanalyzed-input"));
+  for (const std::string_view id : {diag::ContradictedAssumption}) {
     EXPECT_TRUE(diag::isKnown(id)) << id;
     EXPECT_EQ(diag::defaultSeverity(id, Certainty::Definite), Severity::Error)
         << id;
     EXPECT_TRUE(diag::isEnabledByDefault(id)) << id;
   }
-  for (const std::string_view id :
-       {diag::AllocationFailure, diag::UnanalyzedInput}) {
-    EXPECT_TRUE(diag::isKnown(id)) << id;
-    EXPECT_EQ(diag::defaultSeverity(id, Certainty::Definite), Severity::Warning)
-        << id;
-  }
+  EXPECT_TRUE(diag::isKnown(diag::AllocationFailure));
+  EXPECT_EQ(diag::defaultSeverity(diag::AllocationFailure, Certainty::Definite),
+            Severity::Warning);
   EXPECT_FALSE(diag::isEnabledByDefault(diag::AllocationFailure));
-  EXPECT_TRUE(diag::isEnabledByDefault(diag::UnanalyzedInput));
   // A temporal id is an error when definite and a warning when possible.
   EXPECT_EQ(diag::defaultSeverity(diag::UseAfterFree, Certainty::Definite),
             Severity::Error);
@@ -132,12 +124,6 @@ TEST(DiagnosticIds, ProveOrTrapIdsAreKnown) {
 TEST(Diagnostic, CertaintyDefaultsToDefinite) {
   const Diagnostic diagnostic{};
   EXPECT_EQ(diagnostic.certainty, Certainty::Definite);
-}
-
-TEST(Severity, ToString) {
-  EXPECT_EQ(toString(Severity::Note), "note");
-  EXPECT_EQ(toString(Severity::Warning), "warning");
-  EXPECT_EQ(toString(Severity::Error), "error");
 }
 
 } // namespace

@@ -15,14 +15,14 @@
 //   - `SiteCollector` enumerates the sites of every emitted function (§2.6);
 //   - the engine (`ObjectEngine`, RFC 0031) runs through `LedgerAdapter`,
 //     seeded by the kinds (§15 item 14);
-//   - `LedgerAdapter::finish` fills the defaults, applies the ledger-side
-//     rules and plans the checks;
+//   - `LedgerAdapter::finish` fills the defaults and applies the ledger-side
+//     rules;
 //   - the diagnostics are reported to the caller's sink in the order the
-//     engine produced them, followed by the require-level errors.
+//     engine produced them.
 //
-// `weavec` and `weavec-cc` reach this through the Frontend's
-// `analyzeTranslationUnit` (lib/Frontend/FrontendAction.cpp); the result's
-// `ledger` is what they write with `-fweavec-ledger` and summarise.
+// `weavec` and `weavec-cc -fweavec-diagnose` reach this through the
+// Frontend's `analyzeTranslationUnit` (lib/Frontend/FrontendAction.cpp);
+// the result's `ledger` is what `weavec` summarises (RFC 0035 §8).
 //
 //===----------------------------------------------------------------------===//
 
@@ -54,30 +54,21 @@ struct UnitPipelineOptions {
   /// Build the ledger. A silent round of the whole-program fixpoint needs
   /// only the engine's exports.
   bool buildLedger = true;
-  /// §12.1 `config`.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  core::LedgerConfig config = {};
-  /// The table to use; null for `LibrarySpec::shipped()`.
-  const core::LibrarySpec *library = nullptr;
-  /// §3.4: whether a facet's violation was lowered to a warning.
-  std::function<bool(core::SiteId, core::Facet)> lowered = nullptr;
-  /// RFC 0032 §9: possible findings on guarded facets are not reported.
-  bool dropGuardedPossible = false;
 };
 
 struct UnitPipelineResult {
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   UnitExports exports = {};
-  /// The unit's ledger and check plan; null after a discovery pass.
+  /// The unit's ledger; null after a discovery pass.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::shared_ptr<PlannedLedger> ledger = {};
-  /// The kinds the analysis used (§7), for the unit record; null after a
-  /// discovery pass.
+  std::shared_ptr<core::Ledger> ledger = {};
+  /// The kinds the analysis used (§7), for the interface facts; null after
+  /// a discovery pass.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::shared_ptr<const UnitKinds> kinds = {};
 };
 
-/// Analyses and plans one unit, reporting its diagnostics to `out`.
+/// Analyses one unit, reporting its diagnostics to `out`.
 [[nodiscard]] UnitPipelineResult
 runUnitAnalysis(clang::ASTContext &context, const UnitPipelineOptions &options,
                 core::DiagnosticSink &out);

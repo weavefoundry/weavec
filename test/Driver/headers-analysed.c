@@ -4,7 +4,7 @@
 // code of the unit references) is not, and definitions in system headers
 // never are.
 // RUN: not %weavec %s -- 2>&1 | FileCheck %s
-// RUN: not %weavec_cc -fsyntax-only %s 2>&1 | FileCheck %s
+// RUN: not %weavec_cc -fweavec-diagnose -Werror=weavec -fsyntax-only %s 2>&1 | FileCheck %s
 #include "../Inputs/prelude.h"
 #include "Inputs/buggy-header.h"
 

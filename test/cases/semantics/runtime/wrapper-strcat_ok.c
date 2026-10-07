@@ -8,7 +8,7 @@ static void put(char *dst, char **words, int i) {
   dst[0] = '>';
   dst[1] = ' ';
   dst[2] = 0;
-  strcat(dst, words[i]); // GUARDED: spatial
+  strcat(dst, words[i]);
 }
 
 int main(int argc, char **argv) {

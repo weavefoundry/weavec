@@ -16,7 +16,7 @@ static int probe(long k) {
   for (j = 0; j < 2; j++) {
     hook();
     total += p->a;
-    total += p[k].a; // GUARDED: spatial
+    total += p[k].a;
   }
   return total;
 }

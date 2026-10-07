@@ -5,7 +5,6 @@
 // temporal facet is trusted(extern-contract), and the later use and release are not
 // unresolved.
 // CLEAN
-// EXPECT-LEDGER: /summary/facets/temporal/unresolved == 0
 #include <stdlib.h>
 #include <weavec.h>
 
@@ -15,7 +14,7 @@ int f(void) {
   char *p = malloc(8);
   if (!p) return 0;
   p[0] = 1;
-  inspect(p); // TRUSTED: temporal:extern-contract
+  inspect(p);
   int v = p[0];
   free(p);
   return v;

@@ -36,8 +36,7 @@
 //     are no slots: a load from one is never Single-valid.
 //   - Must-access requirements R1–R5 (§7.5), from the function's CFG and
 //     post-dominator tree, with the `static`/exported enforcement.
-//   - Store groups (§7.4 rule 7) and the §7.6 candidates, with the
-//     disqualifications before round 1.
+//   - The §7.6 candidates, with the disqualifications before round 1.
 //
 // Single-valid values (§7.3): null; `&object`, an array decaying to its
 // first element and a string literal; an allocation whose `LibrarySpec`
@@ -101,30 +100,6 @@ struct KindInferenceOptions {
   const core::SlotSolution *slotSolution = nullptr;
 };
 
-/// §7.4 rule 7: stores that update a pointer and its count, per a declared
-/// or candidate counted relation, in one basic block with no intervening
-/// call, loop or access through the object. The obligation (a declared
-/// kind's check, or a §7.6 candidate's store verdict) is decided once,
-/// after the last store. A single store is a group of one.
-struct StoreGroup {
-  const clang::FunctionDecl *function = nullptr;
-  const clang::RecordDecl *record = nullptr;
-  /// The base of the first store's member access (`b` in `b->data = ...`).
-  const clang::Expr *object = nullptr;
-  /// The assignments (and increments) of relation fields, in evaluation
-  /// order.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::vector<const clang::Expr *> stores = {};
-  /// The relation fields the group writes, in first-store order.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::vector<const clang::FieldDecl *> fields = {};
-
-  /// The store after which the obligation is decided.
-  [[nodiscard]] const clang::Expr *last() const {
-    return stores.empty() ? nullptr : stores.back();
-  }
-};
-
 /// A §7.6 candidate with the declarations it names.
 struct ResolvedCandidate {
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
@@ -158,45 +133,20 @@ public:
   KindInferenceResult(const KindInferenceResult &) = delete;
   KindInferenceResult &operator=(const KindInferenceResult &) = delete;
 
-  /// §7.6: the candidates assumed at entry in round 1
-  /// (`EngineInput::fieldAssumptions`), sorted.
-  [[nodiscard]] std::vector<FieldCandidate> fieldCandidates() const;
+  /// §7.6: the candidates assumed at entry in round 1.
   [[nodiscard]] const std::vector<ResolvedCandidate> &
   resolvedCandidates() const noexcept;
   [[nodiscard]] const std::vector<DisqualifiedRecord> &
   disqualified() const noexcept;
-  /// §7.4 rule 7, per function in source order.
-  [[nodiscard]] const std::vector<StoreGroup> &storeGroups() const noexcept;
-  /// The groups `store` belongs to (whose last store it may be).
-  [[nodiscard]] std::vector<const StoreGroup *>
-  groupsOf(const clang::Stmt &store) const;
 
   /// §7.3: whether `value` is Single-valid for a pointer to `pointee` under
-  /// the final slot kinds (§13.1 `imports.calls`, the §7.3 Call-site row).
+  /// the final slot kinds (the §7.3 Call-site row).
   [[nodiscard]] bool isSingleValid(const clang::Expr &value,
                                    clang::QualType pointee) const;
   /// The same for argument `index` of `call`, against the parameter's
   /// pointee (the argument's own pointee past the prototype).
   [[nodiscard]] bool argumentIsSingleValid(const clang::CallExpr &call,
                                            unsigned index) const;
-
-  /// RFC 0030 §13.1 `imports[].calls[].evidence[]`: what one argument
-  /// guarantees, for the link step to decide a callee's inferred
-  /// requirements against (§13.2 step 5).
-  struct ArgumentWidth {
-    /// The bytes the value guarantees from where it points (a §7.1 lower
-    /// bound); 0 for the null pointer constant, none when unknown.
-    std::optional<std::uint64_t> bytes = std::nullopt;
-    /// The value is the null pointer constant.
-    bool null = false;
-  };
-  /// The §7.3 judgement of argument `index` of `call`, unreduced.
-  [[nodiscard]] ArgumentWidth argumentWidth(const clang::CallExpr &call,
-                                            unsigned index) const;
-  /// §7.5: whether `function`, defined in the unit, always returns.
-  [[nodiscard]] bool alwaysReturns(const clang::FunctionDecl &function) const;
-  /// §7.5: whether `call` is known to return.
-  [[nodiscard]] bool knownToReturn(const clang::CallExpr &call) const;
 
 private:
   friend class KindInference;
@@ -228,8 +178,8 @@ private:
 /// RFC 0030 §1 step 2: a unit's kinds with everything they rest on, built
 /// once per analysis of the unit before any site or engine fact. The members
 /// refer to each other and to the AST, so the bundle is built in place and
-/// kept, at one address, while the engine, the unit record and the dumps
-/// use it.
+/// kept, at one address, while the engine, the interface facts and the
+/// dumps use it.
 struct UnitKinds {
   /// The declared kinds (`AttributeReader`) completed by `KindInference`.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
@@ -248,8 +198,8 @@ struct UnitKinds {
 };
 
 /// `weavec --dump-kinds`: every entry of `kinds`, the problems and
-/// suggestions, the store groups and the candidates, one per line in source
-/// order (a debugging aid; the format is unstable).
+/// suggestions and the candidates, one per line in source order (a
+/// debugging aid; the format is unstable).
 void dumpKinds(const KindTable &kinds, const KindInferenceResult &inferred,
                clang::ASTContext &context, llvm::raw_ostream &os);
 

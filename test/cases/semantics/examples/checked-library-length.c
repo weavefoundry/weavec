@@ -13,7 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 
-void greet(const char *name) { char buf[16]; strcpy(buf, name); puts(buf); } // TRAP: len // TRAP: nonnull // TRUSTED: spatial:caller-contract
+void greet(const char *name) { char buf[16]; strcpy(buf, name); puts(buf); } // TRAP // TRAP
 
 int main(int argc, char **argv) {
   greet(argc > 1 ? argv[1] : NULL);

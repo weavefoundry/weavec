@@ -77,8 +77,8 @@ jobs:
           - name: Linux / Clang / Debug + ASan/UBSan
             os: ubuntu-24.04
             preset: ci-debug
-            # RFC 0030 (gate H1): the test/cases suites build, diagnose and
-            # write ledgers under ASan, without running the case programs.
+            # The test/cases suites analyse and build (guard passes and all)
+            # under ASan, without running the case programs.
             configure-args: -DWEAVEC_CASES_ARGS=--no-run
           - name: Linux / Clang / Release
             os: ubuntu-24.04
@@ -133,8 +133,8 @@ jobs:
       - name: Build
         run: cmake --build --preset "${{ matrix.preset }}"
 
-      # Unit, lit and the test/cases suites (one cases-<suite> test per
-      # directory of test/cases, RFC 0030 section 17.4), in parallel.
+      # Unit, runtime, lit and the test/cases suites (one cases-<suite> test
+      # per directory of test/cases, RFC 0035 section 11), in parallel.
       - name: Test
         env:
           # allow_user_poisoning=0: WeaveC is instrumented but the system's
@@ -156,23 +156,25 @@ jobs:
             --weavec "build/${{ matrix.preset }}/bin/weavec" \
             --weavec-cc "build/${{ matrix.preset }}/bin/weavec-cc"
 
-      # RFC 0030 gate H2 (as RFCs 0031 and 0032 amend it): no checked-mode or
-      # old-engine residue, no library names compared outside the LibrarySpec
-      # table, no corpus project names in lib/, the engine seam, and the
-      # engine, library and runtime line budgets.
+      # RFC 0035 gate H1: no checked-mode or old-engine residue, no library
+      # names compared outside the LibrarySpec table, no corpus project names
+      # in lib/, the engine seam, and the engine, library and runtime line
+      # budgets.
       - name: Repository hygiene
         if: runner.os == 'Linux' && matrix.preset == 'ci-release'
         run: |
           python3 scripts/test_check_hygiene.py
           python3 scripts/check-hygiene.py
 
-      # RFC 0030 (section 17.5): per-file compiles and whole-program analyses of
-      # the pinned corpus configurations in test/corpus/, checked against the
-      # ratchet in test/corpus/expected.json and the triage in
-      # test/corpus/triage.json. The weekly Corpus workflow runs --full.
+      # RFC 0035 (section 11): the corpus gate's own tests, then --quick over
+      # pinned corpus configurations in test/corpus/: the weavec analysis
+      # against the triage in test/corpus/triage.json, and the enforcement
+      # ledgers of per-file weavec-cc compiles against the ratchet in
+      # test/corpus/expected.json. The weekly Corpus workflow runs --full.
       - name: Pinned corpus
         if: matrix.preset == 'ci-release'
         run: |
+          python3 scripts/test_corpus_gate.py
           python3 scripts/corpus-gate.py --quick \
             --weavec "build/${{ matrix.preset }}/bin/weavec" \
             --weavec-cc "build/${{ matrix.preset }}/bin/weavec-cc" \

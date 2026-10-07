@@ -4,7 +4,7 @@
 void bad(void) {
   int data[10];
   for (int i = 0; i <= 10; i++)
-    data[i] = i; // BUG: out-of-bounds // TRAP: index
+    data[i] = i; // BUG: out-of-bounds // TRAP
   print_int(data[0]);
 }
 

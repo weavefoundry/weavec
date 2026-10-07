@@ -1,10 +1,14 @@
 name: Corpus
 
-# Runs the full corpus gate (RFC 0030, section 17.5) over the projects pinned
-# by SHA in test/corpus/manifest.json: per-file compiles, whole-program
-# analyses, project builds, test suites, injections and benchmarks, checked
-# against test/corpus/expected.json and test/corpus/triage.json. The gate
-# clones the projects into build/corpus. Pull requests run --quick in CI.
+# Runs the full corpus gate (RFC 0035, section 11) over the projects pinned
+# by SHA in test/corpus/manifest.json, but the sealed sets: the weavec
+# analysis and the per-file enforcement ledgers (checked against
+# test/corpus/triage.json and test/corpus/expected.json), each project's
+# build and test suite with CC=weavec-cc in trap mode (rerun in report mode,
+# and built once more with the reference compiler for the build-time gate),
+# the injected bugs and the benchmarks (against the reference compiler and
+# ASan). The gate clones the projects into build/corpus. Pull requests run
+# --quick in CI.
 on:
   schedule:
     - cron: "17 6 * * 1"
@@ -20,9 +24,10 @@ jobs:
   corpus:
     name: Corpus regression
     runs-on: ubuntu-24.04
-    # --full builds and tests every project, applies each injection and runs
-    # the benchmarks, so it needs more time than the analysis-only run did.
-    timeout-minutes: 120
+    # --full builds every project three times (trap, report, reference), runs
+    # its tests twice, builds each injection and runs every benchmark three
+    # ways: the longest job GitHub allows.
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v7
 

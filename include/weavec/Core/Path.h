@@ -185,9 +185,6 @@ struct SummaryPath {
   }
   /// True if `this` is a proper prefix of `other` (same root, fewer steps).
   [[nodiscard]] bool isProperPrefixOf(const SummaryPath &other) const;
-  /// True if any step is a dereference: the path names caller memory rather
-  /// than the callee's private copy of an argument.
-  [[nodiscard]] bool hasDeref() const noexcept;
   /// The root path (`param(i)` / `global(g)`).
   [[nodiscard]] SummaryPath rootPath() const {
     return SummaryPath{.root = root, .index = index, .steps = {}};

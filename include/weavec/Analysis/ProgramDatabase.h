@@ -41,7 +41,6 @@ namespace weavec::analysis {
 class GlobalNames {
 public:
   [[nodiscard]] std::uint32_t idFor(llvm::StringRef name);
-  [[nodiscard]] std::optional<std::uint32_t> find(llvm::StringRef name) const;
   [[nodiscard]] llvm::StringRef nameOf(std::uint32_t id) const;
   [[nodiscard]] std::size_t size() const noexcept { return names.size(); }
 
@@ -54,8 +53,8 @@ private:
 
 /// One function a unit exports.
 struct ExportedFunction {
-  /// The format-30 summary (RFC 0031 §6), with globals numbered by the
-  /// unit's `GlobalNames`.
+  /// The summary (RFC 0031 §6), with globals numbered by the unit's
+  /// `GlobalNames`.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   core::FunctionEffects effects = {};
   /// `functionTypeKey` of the definition; empty if the type has no stable
@@ -118,13 +117,6 @@ struct UnitExports {
   std::set<std::string> imports;
   /// Type keys of the unit's indirect calls.
   std::set<std::string> indirectTypes;
-  /// Callees `imports` contains for which the unit had no summary at all
-  /// (the boundary of RFC 0003).
-  std::set<std::string> unknownCallees;
-  /// RFC 0010, *Leaks of shares*: the count-field keys (`struct obj.rc`)
-  /// some function of the unit releases a share through, or that are
-  /// annotated `WEAVEC_REFCOUNT`.
-  std::set<std::string> countFields;
   /// RFC 0030 §9.4: the unit's boundary rows, for the program-wide
   /// propagation of §13.2 step 5. Filled after the engine, from what
   /// `BoundaryInvariants` made of the boundaries the engine published.
@@ -135,18 +127,18 @@ struct UnitExports {
   /// The summaries of this unit's functions in the contexts other units
   /// asked for, globals numbered by `globals`.
   std::map<ContextRequest, core::FunctionEffects> contextEffects;
-  /// True if the exported summaries (and count fields) are the same; the
-  /// fixpoint test of RFC 0005's whole-program algorithm.
+  /// True if the exported summaries are the same; the fixpoint test of RFC
+  /// 0005's whole-program algorithm.
   [[nodiscard]] bool sameSummariesAs(const UnitExports &other) const;
   /// The same, leaving out the contexts asked and served (RFC 0031 §7):
   /// what a cyclic component's fixpoint iterates on.
   [[nodiscard]] bool sameFunctionsAs(const UnitExports &other) const;
 };
 
-/// RFC 0030 §13.2: what the link step (and `weavec --whole-program`) knows
-/// about the whole program beyond the summaries, for the engine's runs over
-/// its units: the function-pointer slots solved over every unit (step 2,
-/// §9.3) and every unit's boundary rows (step 5, §9.4).
+/// RFC 0030 §13.2: what `weavec --whole-program` knows about the whole
+/// program beyond the summaries, for the engine's runs over its units: the
+/// function-pointer slots solved over every unit (step 2, §9.3) and every
+/// unit's boundary rows (step 5, §9.4).
 struct ProgramFacts {
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   core::SlotSolution slots = {};
@@ -158,11 +150,6 @@ struct ProgramFacts {
 /// candidates across units, or an empty string when the type involves an
 /// anonymous record and so has no stable spelling.
 [[nodiscard]] std::string functionTypeKey(clang::QualType type,
-                                          const clang::ASTContext &context);
-
-/// The same for a record type (`struct obj`), the first half of an RFC 0010
-/// count-field key; empty for a non-record or an anonymous one.
-[[nodiscard]] std::string recordLayoutKey(clang::QualType type,
                                           const clang::ASTContext &context);
 
 [[nodiscard]] std::string recordTypeKey(clang::QualType type,
@@ -183,9 +170,6 @@ public:
   void clear();
   [[nodiscard]] bool empty() const noexcept { return byName.empty(); }
 
-  /// Whether some unit defines `name` with external linkage.
-  [[nodiscard]] bool defines(llvm::StringRef name) const;
-
   /// The joined summary of `name`'s external definitions, or of every
   /// address-taken function of type `typeKey`, with globals numbered by
   /// `globals()`; null if there is none.
@@ -197,8 +181,6 @@ public:
   /// it; the contexts other units asked of `callee`.
   [[nodiscard]] const core::FunctionEffects *
   contextEffects(const ContextRequest &request) const;
-  [[nodiscard]] std::vector<std::string>
-  requestsFor(llvm::StringRef callee) const;
   /// Every context some unit asked for.
   [[nodiscard]] const std::set<ContextRequest> &requests() const noexcept {
     return requested;
@@ -206,15 +188,6 @@ public:
 
   [[nodiscard]] const GlobalNames &globals() const noexcept {
     return globalNames;
-  }
-
-  /// RFC 0010: whether some unit lists `key` among its count fields.
-  [[nodiscard]] bool isKnownCount(llvm::StringRef key) const {
-    return countFields.contains(key);
-  }
-  [[nodiscard]] const std::set<std::string, std::less<>> &
-  knownCounts() const noexcept {
-    return countFields;
   }
 
   /// Sorted names of every exported function, then every type key with
@@ -225,7 +198,6 @@ private:
   GlobalNames globalNames;
   std::map<std::string, core::FunctionEffects, std::less<>> byName;
   std::map<std::string, core::FunctionEffects, std::less<>> byType;
-  std::set<std::string, std::less<>> countFields;
   std::map<ContextRequest, core::FunctionEffects> byContext;
   std::set<ContextRequest> requested;
 };

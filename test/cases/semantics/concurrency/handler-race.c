@@ -24,7 +24,7 @@ int main(void) {
   signal(SIGUSR1, handler);
   if (g_buf) {
     raise(SIGUSR1);
-    g_buf[0] = 1; // BUG: null-dereference // TRAP: nonnull // TRUSTED: temporal:concurrency
+    g_buf[0] = 1; // BUG: null-dereference // TRAP
   }
   return 0;
 }

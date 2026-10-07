@@ -18,7 +18,7 @@ int main(void) {
   struct node *n = l.head;
   struct node *second = n->next;
   free(n);
-  int r = l.head->v; // BUG: use-after-free // NOT-PROVEN: temporal
+  int r = l.head->v; // BUG: use-after-free
   while (second) {
     struct node *next = second->next;
     free(second);

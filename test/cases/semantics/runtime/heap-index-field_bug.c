@@ -4,7 +4,6 @@
 // the spatial facet of 'v->data[i]' is not proven and no static check can name a bound. The
 // guard looks the block up from the pointer and traps on an index outside it, however far.
 // RUN-INPUT: 100000
-// ASAN
 #include <stdio.h>
 #include <stdlib.h>
 struct vec { int *data; size_t len, cap; };
@@ -17,7 +16,7 @@ static struct vec *vec_new(size_t cap) {
   return v;
 }
 static void vec_set(struct vec *v, size_t i, int x) {
-  v->data[i] = x; // BUG: out-of-bounds // TRAP: object // GUARDED: spatial
+  v->data[i] = x; // BUG: out-of-bounds // TRAP
 }
 int main(int argc, char **argv) {
   struct vec *v = vec_new(8);

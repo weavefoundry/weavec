@@ -6,7 +6,7 @@
 void bad(void) {
   int data[10];
   memset(data, 0, sizeof data);
-  print_int(data[10]); // BUG: out-of-bounds // TRAP: index
+  print_int(data[10]); // BUG: out-of-bounds // TRAP
 }
 
 void bad_heap(void) {
@@ -14,7 +14,7 @@ void bad_heap(void) {
   if (!data)
     return;
   memset(data, 0, 10 * sizeof *data);
-  print_int(data[10]); // BUG: out-of-bounds // TRAP: index
+  print_int(data[10]); // BUG: out-of-bounds // TRAP
   free(data);
 }
 

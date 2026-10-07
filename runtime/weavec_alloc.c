@@ -15,9 +15,10 @@
 |*   slot   = offset in the region / class size   (a multiplication)
 |*   word   = metadata[region][slot]              (size << 2 | state)
 |*
-|* RFC 0034, section 2: a shadow byte per 16-byte granule of the regions says
-|* which bytes are a live object's, so that a guard asks one load (see
-|* weavec_rt.h for the encoding). The allocator writes it whenever a slot
+|* RFC 0035, section 5.1: the shadow (one byte per 16-byte granule, see
+|* weavec_rt.h) says which bytes are addressable. An allocation marks its
+|* object addressable and the rest of its slot not (0xFA); a release marks
+|* the whole slot released (0xFD). The allocator writes it whenever a slot
 |* word changes.
 |*
 |* A request takes a slot of the smallest class strictly larger than it, so
@@ -45,6 +46,8 @@
 
 #if defined(__APPLE__)
 #include <malloc/malloc.h>
+#else
+#include <dlfcn.h>
 #endif
 
 #ifndef MAP_ANONYMOUS
@@ -54,16 +57,16 @@
 #define MAP_NORESERVE 0
 #endif
 
-/* The bytes the guards read for every address until the shadow exists (a
- * guard of a crossing access reads the second). */
-static const unsigned char deadBytes[2] = {WeavecRtShadowDead,
-                                           WeavecRtShadowDead};
+/* The bytes every guard reads until the shadow exists (`mask` is 0): zero,
+ * so every guard passes or asks the runtime, which knows. Wide enough for
+ * the widest shadow load a guard makes. */
+static unsigned char scratchShadow[64] __attribute__((aligned(16)));
 
-/* Until the shadow exists `mask` is 0, so the guards' index into it is
- * always 0: a dead byte, and the runtime answers. Until the arena exists
- * `bytes` is 0, so every pointer is outside it. */
-struct __weavec_rt_heap_t __weavec_rt_heap = {
-    0, 0, (uintptr_t)deadBytes, 0, 0, 0, 0, {{0, 0, 0, 0}}};
+struct __weavec_rt_shadow_t __weavec_rt_shadow = {(uintptr_t)scratchShadow, 0,
+                                                  64};
+
+/* Until the arena exists `bytes` is 0, so every pointer is outside it. */
+struct __weavec_rt_heap_t __weavec_rt_heap = {0, 0, 0, 0, 0, {{0, 0, 0, 0}}};
 
 /*===-- State ---------------------------------------------------------------===*/
 
@@ -196,37 +199,136 @@ static void dumpable(void *p, size_t bytes, int dump) {
 #endif
 }
 
-/* Reserves the shadow of the address space: 2^48 bytes of it where the
- * system allows, else 2^47, 2^44 (39-bit address spaces are 2^35). Pages no
- * allocation wrote read 0, which no live arena object's bytes are. */
+/* RFC 0035, section 2.2: the window the shadow covers. On Linux the user
+ * address space, whose width the stack's address gives (it lies near the
+ * top); on Darwin 2^42 bytes, because the kernel's cost of a reservation
+ * grows with its size (about 1.7 ms per TiB to map and unmap, per process),
+ * and user mappings, the arena's included, lie below 2^41. */
+static unsigned windowBits(void) {
+#if defined(__APPLE__)
+  return 42;
+#else
+  const uintptr_t stack = (uintptr_t)__builtin_frame_address(0);
+  unsigned bits = 64 - (unsigned)__builtin_clzll((unsigned long long)stack);
+  if (bits < 39)
+    bits = 39;
+  return bits;
+#endif
+}
+
+/* Reserves the shadow of the window, without backing: pages no one wrote
+ * read 0, addressable. */
 static void reserveShadow(void) {
-  static const unsigned Bits[] = {48, 47, 44, 39};
-  unsigned i;
-  for (i = 0; i < sizeof Bits / sizeof Bits[0]; ++i) {
-    const uintptr_t bytes = (uintptr_t)1 << (Bits[i] - 4);
-    void *map = mmap(NULL, bytes + 64, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (map == MAP_FAILED)
-      continue;
-    dumpable(map, bytes + 64, 0);
-    __atomic_store_n(&__weavec_rt_heap.shadow, (uintptr_t)map,
-                     __ATOMIC_RELEASE);
-    /* Published last: until then every guard asks the runtime. */
-    __atomic_store_n(&__weavec_rt_heap.mask, bytes - 1, __ATOMIC_RELEASE);
+  const unsigned bits = windowBits();
+  const uintptr_t bytes = (uintptr_t)1 << (bits - 4);
+  /* (Room for the widest load past the last byte.) */
+  void *map = mmap(NULL, bytes + 64, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  if (map == MAP_FAILED) {
+    static const char Message[] =
+        "weavec: warning: the shadow memory could not be reserved; memory "
+        "accesses are not checked\n";
+    const long written = (long)write(2, Message, sizeof Message - 1);
+    (void)written;
     return;
   }
+  dumpable(map, bytes + 64, 0);
+  __weavec_rt_shadow.bits = bits;
+  __atomic_store_n(&__weavec_rt_shadow.base, (uintptr_t)map, __ATOMIC_RELEASE);
+  /* An access near null fails its guard even when the optimiser moved
+   * the access itself to the other arm of the pointer's select. */
+  memset(map, WeavecRtShadowNull, WeavecRtNullPage >> 4);
+  /* Published last: until then every guard passes. */
+  __atomic_store_n(&__weavec_rt_shadow.mask, bytes - 1, __ATOMIC_RELEASE);
 }
 
-static inline unsigned char *shadowOf(uintptr_t address) {
-  return weavecRtShadowOf(address);
+void weavecRtShadowSet(uintptr_t base, size_t size, unsigned char value) {
+  if (!weavecRtShadowReady() || size == 0 || !weavecRtInWindow(base))
+    return;
+  memset(weavecRtShadowOf(base), value, (size + 15) >> 4);
 }
 
-static void shadowLive(uintptr_t base, size_t size) {
-  weavecRtShadowLive(base, size);
+void weavecRtShadowObject(uintptr_t base, size_t size, unsigned char tail) {
+  const size_t whole = size >> 4;
+  const unsigned rest = (unsigned)(size & 15);
+  if (!weavecRtShadowReady() || !weavecRtInWindow(base))
+    return;
+  /* A huge block's shadow is mapped afresh rather than written, so that
+   * the pages of a block nothing touches cost nothing. */
+  if (whole >= 4 * pageBytes)
+    weavecRtShadowClear(base, base + (whole << 4));
+  else if (whole != 0)
+    memset(weavecRtShadowOf(base), WeavecRtShadowAddressable, whole);
+  /* A partial last granule says how many of its bytes are the object's; an
+   * empty object's granule is all tail. */
+  if (rest != 0)
+    *weavecRtShadowOf(base + (whole << 4)) = (unsigned char)rest;
+  else if (size == 0)
+    *weavecRtShadowOf(base) = tail;
 }
 
-static void shadowDead(uintptr_t base, size_t size) {
-  weavecRtShadowFill(base, size, WeavecRtShadowDead);
+void weavecRtShadowClear(uintptr_t low, uintptr_t high) {
+  unsigned char *start;
+  size_t bytes;
+  uintptr_t first;
+  uintptr_t last;
+  if (!weavecRtShadowReady() || high <= low || !weavecRtInWindow(low) ||
+      !weavecRtInWindow(high - 1))
+    return;
+  start = weavecRtShadowOf(low);
+  bytes = (size_t)(((high + 15) >> 4) - (low >> 4));
+  first = ((uintptr_t)start + pageBytes - 1) & ~(uintptr_t)(pageBytes - 1);
+  last = ((uintptr_t)start + bytes) & ~(uintptr_t)(pageBytes - 1);
+  /* Whole pages are mapped afresh, so that a thread's 64 MiB stack costs
+   * pages, not bytes. */
+  if (bytes < 4 * pageBytes || last <= first ||
+      mmap((void *)first, last - first, PROT_READ | PROT_WRITE,
+           MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1,
+           0) == MAP_FAILED) {
+    memset(start, WeavecRtShadowAddressable, bytes);
+    return;
+  }
+  dumpable((void *)first, last - first, 0);
+  memset(start, WeavecRtShadowAddressable, first - (uintptr_t)start);
+  memset((void *)last, WeavecRtShadowAddressable,
+         (uintptr_t)start + bytes - last);
+}
+
+/* The most of a slot's tail, and of slots not handed out yet, that is
+ * poisoned: a large slot's shadow is not all written, and an access that
+ * far past an object's end is beyond any redzone ASan keeps. */
+enum { TailLimit = 64 * 1024 };
+
+/* Zeroes a recycled block. The whole pages of a large one are mapped afresh
+ * rather than written, so that the pages a release gave back stay given
+ * back until the program touches them. */
+static void zeroFill(uintptr_t base, size_t size) {
+  const uintptr_t first = (base + pageBytes - 1) & ~(uintptr_t)(pageBytes - 1);
+  const uintptr_t last = (base + size) & ~(uintptr_t)(pageBytes - 1);
+  if (size < 16 * pageBytes || last <= first ||
+      mmap((void *)first, last - first, PROT_READ | PROT_WRITE,
+           MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED) {
+    memset((void *)base, 0, size);
+    return;
+  }
+  memset((void *)base, 0, first - base);
+  memset((void *)last, 0, base + size - last);
+}
+
+/* A live object of `size` bytes at the start of `slot` bytes: the object
+ * addressable, the rest of the slot (up to TailLimit bytes of it) not. */
+static void shadowLive(uintptr_t base, size_t size, size_t slot) {
+  const size_t used = (size + 15) & ~(size_t)15;
+  weavecRtShadowObject(base, size, WeavecRtShadowHeapTail);
+  if (slot > used)
+    weavecRtShadowSet(base + used,
+                      slot - used < TailLimit ? slot - used : TailLimit,
+                      WeavecRtShadowHeapTail);
+}
+
+/* A released slot of `slot` bytes. */
+static void shadowDead(uintptr_t base, size_t slot) {
+  weavecRtShadowSet(base, slot, WeavecRtShadowHeapFreed);
 }
 
 static inline uint32_t loadWord(const uint32_t *word) {
@@ -263,7 +365,9 @@ static int reserve(unsigned shift) {
   data = (uintptr_t)__weavec_rt_heap.classes << shift;
   meta = (uintptr_t)__weavec_rt_heap.classes << (shift - 2);
   align = (uintptr_t)1 << shift;
-  total = data + meta + align;
+  /* One alignment more than the regions need: a granule before the first
+   * region is the arena's too (its guard). */
+  total = data + meta + 2 * align;
   map = mmap(NULL, total, PROT_NONE,
              MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
   if (map == MAP_FAILED)
@@ -271,7 +375,7 @@ static int reserve(unsigned shift) {
   dumpable(map, total, 0);
   /* Regions start at multiples of their size, so that the slots of a
    * power-of-two class are aligned to it. */
-  start = ((uintptr_t)map + align - 1) & ~(align - 1);
+  start = ((uintptr_t)map + WeavecRtShadowGranule + align - 1) & ~(align - 1);
   /* A guard reads a slot word without asking how far its region has got:
    * the words are readable from the start, and zero (never allocated)
    * until written. */
@@ -296,7 +400,18 @@ int weavecRtInitialise(void) {
     const long page = sysconf(_SC_PAGESIZE);
     pageBytes = page > 0 ? (size_t)page : 4096;
     reserveShadow();
-    ok = reserve(32) || reserve(30);
+    /* Regions of 2 GiB (1 GiB when that much cannot be reserved): a full
+     * region's blocks are mapped one by one (hugeAlloc), and the
+     * reservation costs start-up time with its size. */
+    ok = reserve(31) || reserve(30);
+    if (ok && weavecRtShadowReady() &&
+        !weavecRtInWindow(__weavec_rt_heap.base + __weavec_rt_heap.bytes - 1)) {
+      static const char Message[] =
+          "weavec: warning: the heap lies outside the shadow's window; heap "
+          "accesses are not checked\n";
+      const long written = (long)write(2, Message, sizeof Message - 1);
+      (void)written;
+    }
     if (ok) {
 #if defined(__APPLE__)
       registerZone();
@@ -310,6 +425,16 @@ int weavecRtInitialise(void) {
   weavecRtUnlock(&initLock);
   return ok;
 }
+
+#if !defined(__APPLE__)
+/* Before the program's own code: a function reads the shadow descriptor
+ * once on entry, so `main` would otherwise keep the empty one, and pass
+ * every guard, when its first allocation reserves the shadow. On Darwin
+ * weavec_owner.c does this once it has found the owner. */
+__attribute__((constructor(101))) static void initialiseEarly(void) {
+  (void)weavecRtInitialise();
+}
+#endif
 
 /*===-- Slots ---------------------------------------------------------------===*/
 
@@ -349,6 +474,7 @@ static void *takeSlot(unsigned region, size_t size, int *recycled) {
     *recycled = 1;
   } else {
     const uintptr_t limit = (uintptr_t)1 << __weavec_rt_heap.shift;
+    const uintptr_t before = state->committed;
     slot = state->bump;
     if (slot >= entry->capacity ||
         !commit(regionStart(region), &state->committed,
@@ -359,6 +485,22 @@ static void *takeSlot(unsigned region, size_t size, int *recycled) {
       weavecRtUnlock(&state->lock);
       return NULL;
     }
+    /* RFC 0035 section 5.1: slots the region has not handed out yet are
+     * no object's, so an index that jumps past an object's slot into them
+     * fails; each is written again when it is allocated. */
+    if (state->committed > before)
+      weavecRtShadowSet(regionStart(region) + before,
+                        entry->size <= TailLimit
+                            ? (size_t)(state->committed - before)
+                            : TailLimit,
+                        WeavecRtShadowHeapTail);
+    /* The granule before the region (the previous region's last, or the
+     * arena's guard) too: a read just before the first slot fails as an
+     * overflow instead of reaching memory nothing has committed. A slot
+     * allocated there later keeps its last byte poisoned (its slack). */
+    if (before == 0)
+      weavecRtShadowSet(regionStart(region) - WeavecRtShadowGranule,
+                        WeavecRtShadowGranule, WeavecRtShadowHeapTail);
     __atomic_store_n(&state->bump, slot + 1, __ATOMIC_RELAXED);
   }
   storeWord(&words[slot], ((uint32_t)size << 2) | WeavecRtLive);
@@ -444,13 +586,9 @@ static void giveBack(uintptr_t base, size_t bytes) {
 #endif
 }
 
-/* The pages of a dead slot, and the whole pages of its shadow, which reads
- * 0 already (`retire` cleared it). */
-static void decommit(uintptr_t base, size_t bytes) {
-  giveBack(base, bytes);
-  if (__weavec_rt_heap.mask != 0)
-    giveBack((uintptr_t)shadowOf(base), bytes >> 4);
-}
+/* The pages of a dead slot. Its shadow stays: it says the slot is
+ * released, and a page given back would read 0, addressable. */
+static void decommit(uintptr_t base, size_t bytes) { giveBack(base, bytes); }
 
 /* Makes the live slot `ref` dead and queues it. */
 static void retire(SlotRef ref) {
@@ -458,7 +596,7 @@ static void retire(SlotRef ref) {
   ClassState *state = &classState[ref.region];
   uint32_t *words = slotWords(ref.region);
   /* Before the slot is queued: once it is, another thread may recycle it. */
-  shadowDead(ref.base, loadWord(&words[ref.slot]) >> 2);
+  shadowDead(ref.base, entry->size);
   if (entry->size >= WeavecRtDecommitBytes)
     decommit(ref.base, entry->size);
   weavecRtLock(&state->lock);
@@ -561,7 +699,7 @@ static void *hugeAlloc(size_t size, size_t alignment) {
   hugeBlocks[at].mapBytes = mapBytes;
   hugeBlocks[at].dead = 0;
   ++hugeCount;
-  shadowLive(base, size);
+  shadowLive(base, size, bytes);
   if (map < __atomic_load_n(&hugeLow, __ATOMIC_RELAXED))
     __atomic_store_n(&hugeLow, map, __ATOMIC_RELAXED);
   if (map + mapBytes > __atomic_load_n(&hugeHigh, __ATOMIC_RELAXED))
@@ -606,7 +744,17 @@ static int hugeFree(uintptr_t address) {
       hugeBlocks[index].dead == 0) {
     HugeBlock *block = &hugeBlocks[index];
     block->dead = ++hugeReleases;
-    weavecRtShadowFill(block->base, block->size, WeavecRtShadowHugeDead);
+    /* A large block's ends are poisoned, its middle cleared rather than
+     * written: the middle is mapped without access below, so a use there
+     * faults, and its shadow costs no memory. */
+    if (block->size > 2 * (size_t)TailLimit) {
+      shadowDead(block->base, TailLimit);
+      weavecRtShadowClear(block->base + TailLimit,
+                          block->base + block->size - TailLimit);
+      shadowDead(block->base + block->size - TailLimit, TailLimit);
+    } else {
+      shadowDead(block->base, block->size);
+    }
     /* The memory goes back; the address range stays this block's. */
     (void)mmap((void *)block->map, block->mapBytes, PROT_NONE,
                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
@@ -629,7 +777,7 @@ static int hugeFree(uintptr_t address) {
   }
   weavecRtUnlock(&hugeLock);
   if (unmap) {
-    weavecRtShadowFill(gone.base, gone.size, WeavecRtShadowDead);
+    weavecRtShadowClear(gone.base, gone.base + gone.size + 16);
     (void)munmap((void *)gone.map, gone.mapBytes);
   }
   return ok;
@@ -663,6 +811,7 @@ static size_t nextSize(const void *p) {
 extern void __libc_free(void *) __attribute__((weak));
 extern void *__libc_realloc(void *, size_t) __attribute__((weak));
 extern void *dlsym(void *, const char *) __attribute__((weak));
+extern int dladdr(const void *, Dl_info *) __attribute__((weak));
 
 #ifndef RTLD_NEXT
 #define RTLD_NEXT ((void *)-1L)
@@ -672,8 +821,23 @@ static void *nextSymbol(const char *name) {
   return dlsym != NULL ? dlsym(RTLD_NEXT, name) : NULL;
 }
 
+/* Whether `p`, which none of this runtime's blocks holds, is known not to
+ * be the C library's either: it lies on the calling thread's stack or in a
+ * loaded image (a global). The C library need not notice. */
+static int notLibraryBlock(const void *p) {
+  const uintptr_t address = (uintptr_t)p;
+  const uintptr_t top = weavecRtStackTop();
+  Dl_info info;
+  if (top != 0 && address < top &&
+      address >= (uintptr_t)__builtin_frame_address(0))
+    return 1;
+  return dladdr != NULL && dladdr(p, &info) != 0;
+}
+
 static void nextFree(void *p) {
   void (*release)(void *) = __libc_free;
+  if (notLibraryBlock(p))
+    __weavec_rt_fatal("invalid release", p, "not a heap block");
   if (release == NULL)
     release = (void (*)(void *))nextSymbol("free");
   /* Without a next allocator the block is nobody's this runtime knows. */
@@ -684,6 +848,8 @@ static void nextFree(void *p) {
 
 static void *nextRealloc(void *p, size_t size) {
   void *(*resize)(void *, size_t) = __libc_realloc;
+  if (notLibraryBlock(p))
+    __weavec_rt_fatal("invalid release", p, "not a heap block");
   if (resize == NULL)
     resize = (void *(*)(void *, size_t))nextSymbol("realloc");
   if (resize == NULL)
@@ -736,8 +902,8 @@ void *__weavec_rt_alloc(size_t size, size_t alignment) {
     block = takeSlot(region, size, &recycled);
     if (block != NULL) {
       if (recycled && size != 0)
-        memset(block, 0, size);
-      shadowLive((uintptr_t)block, size);
+        zeroFill((uintptr_t)block, size);
+      shadowLive((uintptr_t)block, size, __weavec_rt_heap.table[region].size);
       return block;
     }
   }
@@ -800,8 +966,6 @@ void __weavec_rt_free(void *p) {
                         block.dead != 0 ? "the block was already released"
                                    : "not the start of its block");
   }
-  if (weavecRtIsStackOrGlobal(p))
-    __weavec_rt_fatal("invalid release", p, "not a heap block");
   nextFree(p);
 }
 
@@ -823,15 +987,13 @@ void *__weavec_rt_realloc(void *p, size_t size) {
       /* The block stays; bytes it gains are zero (section 2.3). */
       if (size > old)
         memset((char *)p + old, 0, size - old);
-      if (size < old)
-        shadowDead(address, old);
-      shadowLive(address, size);
+      shadowLive(address, size, __weavec_rt_heap.table[ref.region].size);
       storeWord(word, ((uint32_t)size << 2) | WeavecRtLive);
       return p;
     }
   } else if (!ownedSize(p, &old)) {
     HugeBlock block;
-    if (hugeFind(address, &block) || weavecRtIsStackOrGlobal(p))
+    if (hugeFind(address, &block))
       __weavec_rt_fatal("invalid release", p, "not the start of a live block");
     return nextRealloc(p, size);
   }
@@ -860,65 +1022,30 @@ size_t __weavec_rt_size(const void *p) {
   return nextSize(p);
 }
 
-void weavecRtShadowZero(unsigned char *start, size_t bytes) {
-  const uintptr_t first = ((uintptr_t)start + pageBytes - 1) &
-                          ~(uintptr_t)(pageBytes - 1);
-  const uintptr_t last = ((uintptr_t)start + bytes) & ~(uintptr_t)(pageBytes - 1);
-  if (last <= first ||
-      mmap((void *)first, last - first, PROT_READ | PROT_WRITE,
-           MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1,
-           0) == MAP_FAILED) {
-    memset(start, 0, bytes);
-    return;
-  }
-  dumpable((void *)first, last - first, 0);
-  memset(start, 0, first - (uintptr_t)start);
-  memset((void *)last, 0, (uintptr_t)start + bytes - last);
-}
+/*===-- Reports ------------------------------------------------------------===*/
 
-/*===-- Lookup (section 3) --------------------------------------------------===*/
-
-struct __weavec_rt_found __weavec_rt_find(const void *p) {
-  const uintptr_t address = (uintptr_t)p;
-  struct __weavec_rt_found found;
-  WEAVEC_RT_FORWARD(find, p);
-  found.state = WeavecRtUntracked;
-  found.kind = WeavecRtHeap;
-  found.base = 0;
-  found.size = 0;
-  found.frame = 0;
-  found.scoped = 0;
-  found.word = NULL;
-  found.value = 0;
-  weavecRtCount(WeavecRtStatLookups);
+struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address) {
+  struct weavecRtHeapObject object = {0, 0, 0, 0};
+  WEAVEC_RT_FORWARD(object, address);
   if (inArena(address)) {
-    weavecRtCount(WeavecRtStatHeapLookups);
     const SlotRef ref = slotOf(address);
     const uint32_t word = wordOf(ref);
-    found.base = ref.base;
-    if ((word & 3) == WeavecRtLive) {
-      found.state = WeavecRtTrackedLive;
-      found.size = word >> 2;
-      found.word = &slotWords(ref.region)[ref.slot];
-      found.value = word;
-    } else {
-      /* A free or never-allocated slot: a pointer into the arena that
-       * points to no object is stale or wild. */
-      found.state = WeavecRtTrackedDead;
-    }
-    return found;
+    object.found = (word & 3) != WeavecRtNever;
+    object.live = (word & 3) == WeavecRtLive;
+    object.base = ref.base;
+    object.size = object.live ? word >> 2 : 0;
+    return object;
   }
   {
     HugeBlock block;
     if (hugeFind(address, &block)) {
-      found.base = block.base;
-      found.size = block.size;
-      found.state = block.dead != 0 || address < block.base ? WeavecRtTrackedDead
-                                                      : WeavecRtTrackedLive;
-      return found;
+      object.found = 1;
+      object.live = block.dead == 0;
+      object.base = block.base;
+      object.size = block.size;
     }
   }
-  return weavecRtFindStackOrGlobal(p);
+  return object;
 }
 
 /*===-- fork ----------------------------------------------------------------===*/

@@ -1,4 +1,4 @@
-//===- Effects.h - Format-30 function summaries (RFC 0031) ------*- C++ -*-===//
+//===- Effects.h - Function summaries (RFC 0031) ----------------*- C++ -*-===//
 //
 // Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -9,7 +9,8 @@
 // RFC 0031 §6: what a function does to its entry heap (the objects its
 // parameters and the globals reach, named by `SummaryPath`s) and what it
 // returns, per result case. The object engine derives it at every exit and
-// instantiates it at every call; `EffectsIO` spells it as summary format 30.
+// instantiates it at every call; the program database joins the summaries
+// of several definitions and renumbers their globals between units (§7).
 //
 //===----------------------------------------------------------------------===//
 
@@ -22,6 +23,7 @@
 
 #include <compare>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -39,8 +41,6 @@ enum class ResultClass : std::uint8_t {
 };
 
 [[nodiscard]] std::string_view toString(ResultClass value) noexcept;
-[[nodiscard]] std::optional<ResultClass>
-parseResultClass(std::string_view text);
 
 /// RFC 0030 §9.1's case: the result classes under which an effect holds,
 /// optionally narrowed by a parameter's zero test. An empty class list is
@@ -276,9 +276,34 @@ struct FunctionEffects {
                          const FunctionEffects &) = default;
 };
 
-/// The summary as format-30 text lines (RFC 0031 §6.1), without the
-/// `summary` header line.
+/// The summary as text lines, for dumps.
 [[nodiscard]] std::string toText(const FunctionEffects &effects);
+
+/// A summary sound for a call that may reach either function: effects on
+/// one side only become possible ones, results are the alternatives of
+/// both, a non-null guarantee holds only where both give it.
+[[nodiscard]] FunctionEffects joinEffects(const FunctionEffects &left,
+                                          const FunctionEffects &right);
+
+/// RFC 0031 §6.4: the widening of a recursive function's summary `previous`
+/// by the next round's `next`: their join, where the integer results of one
+/// case merge into one whose bounds that moved from `previous` are dropped,
+/// so a component's rounds stop changing.
+[[nodiscard]] FunctionEffects widenEffects(const FunctionEffects &previous,
+                                           const FunctionEffects &next);
+
+/// The id a global root has in another numbering, or none when that side
+/// has no such global.
+using GlobalRenumbering =
+    std::function<std::optional<std::uint32_t>(std::uint32_t)>;
+
+/// `effects` with every global root renumbered. On the other side a global
+/// it does not have cannot be named: a store into one is dropped, a value
+/// read from one is unknown, and an effect on an object reached through one
+/// makes the summary incomplete (RFC 0030 §5.5), since the object may be
+/// reachable there through other pointers.
+[[nodiscard]] FunctionEffects renumberGlobals(const FunctionEffects &effects,
+                                              const GlobalRenumbering &map);
 
 } // namespace weavec::core
 

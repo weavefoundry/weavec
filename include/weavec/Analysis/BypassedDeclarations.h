@@ -33,11 +33,6 @@ namespace weavec::analysis {
 [[nodiscard]] std::vector<const clang::VarDecl *>
 bypassedDeclarations(const clang::Stmt &body);
 
-/// The same for locals of every type (RFC 0032 §4): a declaration a jump
-/// bypasses does not run the registration that follows it either.
-[[nodiscard]] std::vector<const clang::VarDecl *>
-bypassedDeclarationsOfAnyType(const clang::Stmt &body);
-
 } // namespace weavec::analysis
 
 #endif // WEAVEC_ANALYSIS_BYPASSEDDECLARATIONS_H

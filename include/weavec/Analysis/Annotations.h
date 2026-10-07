@@ -16,8 +16,6 @@
 #ifndef WEAVEC_ANALYSIS_ANNOTATIONS_H
 #define WEAVEC_ANALYSIS_ANNOTATIONS_H
 
-#include "weavec/Core/Ownership.h"
-
 #include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Stmt.h"
@@ -78,9 +76,6 @@ enum class Annotation : std::uint8_t {
   /// `weavec.string` -- the pointer is NUL-terminated within its object
   /// (RFC 0030 §7.2).
   String,
-  /// `weavec.require_safe` -- the function's sites are held to
-  /// `-fweavec-require=checked` (RFC 0030 §6.3).
-  RequireSafe,
   /// `weavec.assume` -- the function is `weavec.h`'s `weavec_assume_`: a
   /// call to it states that its argument holds (RFC 0012).
   Assume,
@@ -111,8 +106,6 @@ inline constexpr llvm::StringLiteral CountedByPrefix = "weavec.counted_by.";
 inline constexpr llvm::StringLiteral EndedByPrefix = "weavec.ended_by.";
 /// RFC 0030 §7.2, `WEAVEC_STRING`.
 inline constexpr llvm::StringLiteral String = "weavec.string";
-/// RFC 0030 §6.3, `WEAVEC_REQUIRE_SAFE`.
-inline constexpr llvm::StringLiteral RequireSafe = "weavec.require_safe";
 /// RFC 0012: the annotation on `weavec_assume_`, `WEAVEC_ASSUME`'s callee.
 inline constexpr llvm::StringLiteral Assume = "weavec.assume";
 } // namespace spelling
@@ -154,8 +147,6 @@ struct AnnotationSet {
   std::string endedBy;
   /// RFC 0030 §7.2: `WEAVEC_STRING`.
   bool string = false;
-  /// RFC 0030 §6.3: `WEAVEC_REQUIRE_SAFE`.
-  bool requireSafe = false;
   /// RFC 0030 §7.2: the callee releases the argument (`ownership_takes`, an
   /// ecosystem attribute; no WeaveC spelling).
   bool frees = false;
@@ -163,15 +154,13 @@ struct AnnotationSet {
   [[nodiscard]] bool any() const noexcept {
     return owned || borrowed || mutBorrowed || raw || unsafe || nullable ||
            nonNull || retains || releases || refcount || assume || invalid ||
-           string || requireSafe || frees || !family.empty() ||
-           !sizedBy.empty() || !countedBy.empty() || !endedBy.empty();
+           string || frees || !family.empty() || !sizedBy.empty() ||
+           !countedBy.empty() || !endedBy.empty();
   }
   /// True if the set declares a pointer kind's shape (RFC 0030 §7.2).
   [[nodiscard]] bool extent() const noexcept {
     return string || !sizedBy.empty() || !countedBy.empty() || !endedBy.empty();
   }
-  /// True if the set says something about nullness (RFC 0008).
-  [[nodiscard]] bool nullness() const noexcept { return nullable || nonNull; }
   /// True if the set says something about ownership (`owned`, `borrowed`,
   /// `mutBorrowed`, `raw`, `retains` or `releases`), as opposed to
   /// `unsafe`/`invalid`.
@@ -179,16 +168,10 @@ struct AnnotationSet {
     return owned || borrowed || mutBorrowed || raw || retains || releases ||
            frees;
   }
-  /// The kind a raw pointer may be *asserted* into (RFC 0004, *Laundering*):
-  /// the declared ownership kind, if it is anything but `raw`.
-  [[nodiscard]] std::optional<core::OwnershipKind> safeKind() const noexcept {
-    if (owned)
-      return core::OwnershipKind::Owned;
-    if (mutBorrowed)
-      return core::OwnershipKind::Mutable;
-    if (borrowed)
-      return core::OwnershipKind::Shared;
-    return std::nullopt;
+  /// True if a raw pointer may be *asserted* into the declared ownership
+  /// (RFC 0004, *Laundering*): owned, borrowed or mutably borrowed.
+  [[nodiscard]] bool safeOwnership() const noexcept {
+    return owned || mutBorrowed || borrowed;
   }
 
   /// Merges `other` into this set.

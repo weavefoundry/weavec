@@ -5,13 +5,12 @@
 // inside the region every facet of *reg is trusted(unsafe), as for a raw pointer. No checks
 // are emitted. Outside the region *reg is guarded (unsafe/raw-outside-region.c).
 // CLEAN
-// EXPECT-LEDGER: /summary/checked == 0
 #include <stdint.h>
 #include <weavec.h>
 
 void poke(uintptr_t addr) {
   WEAVEC_UNSAFE {
-    volatile unsigned *reg = (volatile unsigned *)addr; // TRUSTED: spatial:unsafe // TRUSTED: temporal:unsafe
-    *reg = 1; // TRUSTED: spatial:unsafe // TRUSTED: null:unsafe // TRUSTED: temporal:unsafe
+    volatile unsigned *reg = (volatile unsigned *)addr;
+    *reg = 1;
   }
 }

@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 static void put(char *dst, const char *src) {
-  strcpy(dst, src); // GUARDED: spatial
+  strcpy(dst, src);
 }
 int main(int argc, char **argv) {
   char *dst = malloc(8);

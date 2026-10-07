@@ -4,6 +4,6 @@
 int main(int argc, char **argv) {
   char buf[8];
   if (argc < 2) return 0;
-  sprintf(buf, "x=%s", argv[1]); // BUG: out-of-bounds // TRAP: len
+  sprintf(buf, "x=%s", argv[1]); // BUG: out-of-bounds // TRAP
   return buf[0];
 }

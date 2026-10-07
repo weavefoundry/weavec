@@ -2,7 +2,7 @@
 // RFC 0014: actual callbacks, pointer predicates, complete memory copies.
 // RFC 0030 (*Diagnostics*, §15 item 3): `analysis-incomplete` is removed; each
 // such pin now has the ledger row that replaces it (`UNRESOLVED`), and is
-// listed in test/cases/KNOWN-DIFFERENCES.md.
+// listed in the retired golden comparison of RFC 0030.
 #include <stdlib.h>
 #include <string.h>
 
@@ -33,7 +33,7 @@ void copied_pointer_bad(int *p) {
 }
 
 void partial(int **dest, int **source) {
-  memcpy(dest, source, 1); // UNRESOLVED: temporal:raw-cast
+  memcpy(dest, source, 1);
 }
 
 struct first { int *p; };
@@ -43,5 +43,5 @@ static void release_field(void *object) {
   free(p->p);
 }
 void incompatible(struct second *p) {
-  release_field(p); // UNRESOLVED: temporal:raw-cast
+  release_field(p);
 }

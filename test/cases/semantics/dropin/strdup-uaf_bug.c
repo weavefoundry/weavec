@@ -7,7 +7,7 @@
 #include <string.h>
 static void drop(char *p, int really) { if (really) free(p); }
 static char read_at(const char *p, int i) {
-  return p[i]; // TRAP: object
+  return p[i]; // TRAP
 }
 int main(int argc, char **argv) {
   if (argc < 2) return 2;

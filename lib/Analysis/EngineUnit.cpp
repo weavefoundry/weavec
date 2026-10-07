@@ -15,7 +15,7 @@
 #include "Engine.h"
 #include "weavec/Analysis/KindTable.h"
 #include "weavec/Analysis/SiteCollector.h"
-#include "weavec/Core/EffectsIO.h"
+#include "weavec/Core/Effects.h"
 #include "weavec/Core/Scc.h"
 
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -144,7 +144,7 @@ UnitRun::summaryOf(const FunctionDecl &callee) const {
   auto it = summaries.find(callee.getCanonicalDecl());
   if (it != summaries.end())
     return &it->second;
-  // §7: a function another unit defines, at link or in `--whole-program`.
+  // §7: a function another unit defines, in `weavec --whole-program`.
   if (input.database == nullptr || hasBody(callee) ||
       !callee.isExternallyVisible() || callee.getIdentifier() == nullptr)
     return nullptr;

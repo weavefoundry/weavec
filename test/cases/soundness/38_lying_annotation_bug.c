@@ -9,7 +9,7 @@ int main(void) {
   if (!p) return 1;
   p[0] = 1;
   inspect(p);
-  int r = p[0];
+  int r = p[0]; // TRAP
   free(p);
   return r;
 }

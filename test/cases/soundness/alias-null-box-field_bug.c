@@ -13,6 +13,6 @@ int s2(void) {
   if (!o) abort();
   bx.buf = o;
   q->buf = NULL;
-  return bx.buf[0];   /* null deref */ // BUG: null-dereference // TRAP: nonnull
+  return bx.buf[0];   /* null deref */ // BUG: null-dereference // TRAP
 }
 int main(void) { return s2() == 12345; }

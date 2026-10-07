@@ -1,8 +1,7 @@
 // RFC 0030 §8, §5.3: what the library table says beyond a summary. Hidden
 // state (`retain`, `reads`, `invalidates`), a `sync` callback's target as a
 // may-effect of the call, `alloca` storage, and a literal format's arity.
-// RUN: not %weavec --ledger=%t.json %s -- 2>&1 | FileCheck %s
-// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
+// RUN: not %weavec %s -- 2>&1 | FileCheck %s
 #include <alloca.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,10 +44,8 @@ int sort_unknown(int (*order)(const void *, const void *)) {
   qsort(xs, 2, sizeof xs[0], order);
   return xs[0];
 }
-// LEDGER: "reason": "callback",
 // The object engine words the detail itself (RFC 0031 §5.4); the reason is
 // RFC 0030's.
-// LEDGER-NEXT: "detail": "the callback of 'qsort' is not known here"
 
 char *frame(void) {
   char *p = alloca(8);

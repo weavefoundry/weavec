@@ -8,8 +8,8 @@
 //
 // RFC 0031 §5.2–§5.3: each facet of each site `SiteCollector` enumerated is
 // decided from the operand's value at the site, by RFC 0030 §3's tables,
-// with RFC 0030's messages, and a checked facet gets a witness naming C
-// places that hold the symbols its terms are over.
+// with RFC 0030's messages; a message names the C places that hold the
+// symbols its terms are over.
 //
 //===----------------------------------------------------------------------===//
 
@@ -129,16 +129,16 @@ memberPath(const ASTContext &context, QualType type, std::int64_t offset) {
 }
 
 //===----------------------------------------------------------------------===//
-// Witness terms (§5.3)
+// Source terms (§5.3)
 //===----------------------------------------------------------------------===//
 
-std::string messageSpelling(const WitnessTerm &term) {
-  if (term.kind != WitnessTerm::Kind::Place || term.decl == nullptr)
+std::string messageSpelling(const SourceTerm &term) {
+  if (term.kind != SourceTerm::Kind::Place || term.decl == nullptr)
     return term.toString();
   std::string text = term.decl->getNameAsString();
   bool pendingDeref = false;
-  for (const core::CheckPathStep &step : term.path) {
-    if (step.kind == core::CheckPathStep::Kind::Deref) {
+  for (const SourceTerm::Step &step : term.path) {
+    if (step.kind == SourceTerm::Step::Kind::Deref) {
       if (pendingDeref)
         text.insert(text.begin(), '*');
       pendingDeref = true;
@@ -152,12 +152,12 @@ std::string messageSpelling(const WitnessTerm &term) {
   return text;
 }
 
-std::optional<WitnessTerm> Transfer::nameOf(core::Sym sym, bool extent,
-                                            int depth) const {
+std::optional<SourceTerm> Transfer::nameOf(core::Sym sym, bool extent,
+                                           int depth) const {
   if (sym == core::ZeroSym)
     return std::nullopt;
   if (auto c = state.zone.constant(sym))
-    return WitnessTerm::ofConstant(*c);
+    return SourceTerm::ofConstant(*c);
   for (const auto &[id, object] : state.objects) {
     const core::ObjectInfo &info = run.table().info(id);
     if (info.key.kind != core::ObjectKind::Local &&
@@ -171,7 +171,7 @@ std::optional<WitnessTerm> Transfer::nameOf(core::Sym sym, bool extent,
     if (const core::Sym *held = object.cells.find(core::CellKey{});
         held != nullptr && *held == sym && !var->getType()->isRecordType() &&
         !var->getType()->isArrayType())
-      return WitnessTerm::ofPlace(*var);
+      return SourceTerm::ofPlace(*var);
   }
   // A member of a local struct (`s.cap`), or of the object a local pointer
   // points to the start of (`b->cap`), whose cell holds the symbol. A read
@@ -191,10 +191,10 @@ std::optional<WitnessTerm> Transfer::nameOf(core::Sym sym, bool extent,
       for (const auto &[key, held] : object.cells)
         if (held == sym && !key.isSummary())
           if (auto members = memberPath(context, type, key.offset)) {
-            std::vector<core::CheckPathStep> path;
+            std::vector<SourceTerm::Step> path;
             for (std::string &member : *members)
-              path.push_back(core::CheckPathStep::member(std::move(member)));
-            return WitnessTerm::ofPlace(*var, std::move(path));
+              path.push_back(SourceTerm::Step::member(std::move(member)));
+            return SourceTerm::ofPlace(*var, std::move(path));
           }
       continue;
     }
@@ -216,16 +216,10 @@ std::optional<WitnessTerm> Transfer::nameOf(core::Sym sym, bool extent,
       if (held == sym && !key.isSummary())
         if (auto members =
                 memberPath(context, type->getPointeeType(), key.offset)) {
-          std::vector<core::CheckPathStep> path;
-          core::CheckPathStep deref = core::CheckPathStep::deref();
-          // Checked by the term itself: the access's own `nonnull` check of
-          // the pointer may run after the term reads through it (the
-          // operands are unsequenced, RFC 0030 §10.3 amendment S6).
-          deref.checked = true;
-          path.push_back(deref);
+          std::vector<SourceTerm::Step> path{SourceTerm::Step::deref()};
           for (std::string &member : *members)
-            path.push_back(core::CheckPathStep::member(std::move(member)));
-          return WitnessTerm::ofPlace(*var, std::move(path));
+            path.push_back(SourceTerm::Step::member(std::move(member)));
+          return SourceTerm::ofPlace(*var, std::move(path));
         }
   }
   const core::SymInfo &info = heap.info(state, sym);
@@ -233,16 +227,16 @@ std::optional<WitnessTerm> Transfer::nameOf(core::Sym sym, bool extent,
       depth < 8) {
     auto base = nameOf(info.linear->var, extent, depth + 1);
     if (base) {
-      WitnessTerm term = std::move(*base);
+      SourceTerm term = std::move(*base);
       if (info.linear->scale != 1)
-        term = WitnessTerm::mul(std::move(term),
-                                WitnessTerm::ofConstant(info.linear->scale));
+        term = SourceTerm::mul(std::move(term),
+                               SourceTerm::ofConstant(info.linear->scale));
       if (info.linear->constant > 0)
-        term = WitnessTerm::add(std::move(term),
-                                WitnessTerm::ofConstant(info.linear->constant));
+        term = SourceTerm::add(std::move(term),
+                               SourceTerm::ofConstant(info.linear->constant));
       else if (info.linear->constant < 0)
-        term = WitnessTerm::sub(
-            std::move(term), WitnessTerm::ofConstant(-info.linear->constant));
+        term = SourceTerm::sub(std::move(term),
+                               SourceTerm::ofConstant(-info.linear->constant));
       return term;
     }
   }
@@ -259,23 +253,23 @@ std::optional<WitnessTerm> Transfer::nameOf(core::Sym sym, bool extent,
                  definition.op == core::IntegerOp::Multiply);
     if (definition.exact || wide) {
       auto left = nameOf(definition.left, extent, depth + 1);
-      std::optional<WitnessTerm> right;
+      std::optional<SourceTerm> right;
       if (left)
         right =
             definition.constant
-                ? std::optional(WitnessTerm::ofConstant(*definition.constant))
+                ? std::optional(SourceTerm::ofConstant(*definition.constant))
                 : nameOf(definition.right, extent, depth + 1);
       if (left && right) {
         switch (definition.op) {
         case core::IntegerOp::Add:
-          return WitnessTerm::add(std::move(*left), std::move(*right));
+          return SourceTerm::add(std::move(*left), std::move(*right));
         case core::IntegerOp::Subtract:
-          return WitnessTerm::sub(std::move(*left), std::move(*right));
+          return SourceTerm::sub(std::move(*left), std::move(*right));
         case core::IntegerOp::Multiply:
-          return WitnessTerm::mul(std::move(*left), std::move(*right));
+          return SourceTerm::mul(std::move(*left), std::move(*right));
         case core::IntegerOp::Divide:
-          if (right->kind == WitnessTerm::Kind::Constant && right->constant > 0)
-            return WitnessTerm::div(std::move(*left), right->constant);
+          if (right->kind == SourceTerm::Kind::Constant && right->constant > 0)
+            return SourceTerm::div(std::move(*left), right->constant);
           break;
         default:
           break;
@@ -324,56 +318,6 @@ std::optional<std::string> Transfer::spellAmount(core::Term bytes,
   else if (bytes.constant < 0)
     text += " - " + std::to_string(-bytes.constant);
   return text + " bytes";
-}
-
-/// `bytes` as a C term.
-static std::optional<WitnessTerm> bytesTerm(const Transfer &transfer,
-                                            const core::Term &bytes) {
-  if (!bytes.known)
-    return std::nullopt;
-  if (bytes.isConstant())
-    return bytes.constant >= 0
-               ? std::optional(WitnessTerm::ofConstant(bytes.constant))
-               : std::nullopt;
-  if (bytes.scale <= 0)
-    return std::nullopt;
-  auto base = transfer.nameOf(bytes.var, /*extent=*/true);
-  if (!base)
-    return std::nullopt;
-  WitnessTerm term = std::move(*base);
-  if (bytes.scale != 1)
-    term =
-        WitnessTerm::mul(std::move(term), WitnessTerm::ofConstant(bytes.scale));
-  if (bytes.constant > 0)
-    term = WitnessTerm::add(std::move(term),
-                            WitnessTerm::ofConstant(bytes.constant));
-  else if (bytes.constant < 0)
-    term = WitnessTerm::sub(std::move(term),
-                            WitnessTerm::ofConstant(-bytes.constant));
-  return term;
-}
-
-/// `(bytes - skip) / unit` elements as a C term.
-static std::optional<WitnessTerm> countTerm(const Transfer &transfer,
-                                            const core::Term &bytes,
-                                            std::int64_t skip,
-                                            std::int64_t unit) {
-  if (!bytes.known || unit <= 0)
-    return std::nullopt;
-  core::Term rest = bytes.plusConstant(-skip);
-  if (rest.isConstant())
-    return rest.constant >= 0
-               ? std::optional(WitnessTerm::ofConstant(rest.constant / unit))
-               : std::nullopt;
-  if (rest.scale > 0 && rest.scale % unit == 0 && rest.constant % unit == 0) {
-    core::Term elements =
-        core::Term::ofSym(rest.var, rest.scale / unit, rest.constant / unit);
-    return bytesTerm(transfer, elements);
-  }
-  auto all = bytesTerm(transfer, rest);
-  if (!all)
-    return std::nullopt;
-  return unit == 1 ? std::move(*all) : WitnessTerm::div(std::move(*all), unit);
 }
 
 //===----------------------------------------------------------------------===//
@@ -428,8 +372,7 @@ private:
 
   /// `beyond`: the index is above `INT64_MAX` for every value, so the
   /// access lies past the end of any object (RFC 0017).
-  void spatialOf(core::Sym pointer, std::int64_t width,
-                 std::optional<std::int64_t> skip, bool beyond = false);
+  void spatialOf(core::Sym pointer, std::int64_t width, bool beyond = false);
   bool writesLiteral(core::Sym pointer, const Expr &operand);
   bool memberBound(std::int64_t width);
   std::string indexText(const Expr &index);
@@ -473,7 +416,8 @@ void Decider::nullOf(core::Sym pointer, const Expr &operand) {
              core::Facet::Null);
       return;
     }
-    decide(core::Facet::Null, core::FacetDecision::checked());
+    decide(core::Facet::Null, core::FacetDecision::unresolvedFor(
+                                  core::UnresolvedReason::Undecided));
     if (applies(core::Facet::Null))
       transfer.allocationFailure(value, operand, *site.stmt);
     return;
@@ -493,7 +437,8 @@ void Decider::nullOf(core::Sym pointer, const Expr &operand) {
              core::FacetDecision::trustedFor(core::TrustReason::SystemApi));
       return;
     }
-    decide(core::Facet::Null, core::FacetDecision::checked());
+    decide(core::Facet::Null, core::FacetDecision::unresolvedFor(
+                                  core::UnresolvedReason::Undecided));
     transfer.allocationFailure(value, operand, *site.stmt);
     return;
   }
@@ -688,8 +633,7 @@ void Decider::temporalOf(core::Sym pointer, const Expr &operand,
   }
 }
 
-void Decider::spatialOf(core::Sym pointer, std::int64_t width,
-                        std::optional<std::int64_t> skip, bool beyond) {
+void Decider::spatialOf(core::Sym pointer, std::int64_t width, bool beyond) {
   if (!applies(core::Facet::Spatial))
     return;
   if (site.provenByType) {
@@ -715,105 +659,14 @@ void Decider::spatialOf(core::Sym pointer, std::int64_t width,
              core::FacetDecision::trustedFor(core::TrustReason::SystemApi));
       return;
     }
-    if (site.spatialCheckable()) {
-      decide(core::Facet::Spatial, core::FacetDecision::checked());
-      return;
-    }
     decide(core::Facet::Spatial, core::FacetDecision::unresolvedFor(reason));
-  };
-  // The witness: an index against the elements left after the constant
-  // skip, or a span from the object's start.
-  auto witnessFor = [&]() -> std::optional<CheckWitness> {
-    if (!verdict.extent || value.targets.empty())
-      return std::nullopt;
-    const core::Extent &extent = *verdict.extent;
-    const core::Target &target = value.targets.front();
-    WitnessTerm index = site.index != nullptr ? WitnessTerm::ofExpr(*site.index)
-                                              : WitnessTerm::ofConstant(0);
-    // A variable-length array: its size is the one its declaration
-    // captured, `sizeof v`, whatever its count holds now (§10.3 rule 4).
-    const core::ObjectInfo &targetInfo = run.table().info(target.object);
-    if (targetInfo.key.kind == core::ObjectKind::Local &&
-        value.targets.size() == 1)
-      if (const VarDecl *var = variableOf(targetInfo);
-          var != nullptr && context.getAsVariableArrayType(var->getType()) &&
-          // Only storage whose byte size `sizeof` can hold (RFC 0017): a
-          // product that wraps would make the check itself wrong.
-          (site.index == nullptr ||
-           transfer.bytesOf(var->getType(), *site.index)))
-        return CheckWitness{.shape = CheckWitness::Shape::Span,
-                            .extent = WitnessTerm::sizeOf(var->getType()),
-                            .extentClass = extent.cls,
-                            .base = WitnessTerm::ofPlace(*var),
-                            .width = WitnessTerm::ofConstant(width),
-                            .offset = std::move(index),
-                            .unmodified = true,
-                            .accessesSafe = true};
-    // (Not before the object's start: the index check has no lower bound
-    // but zero. So only at the object's start, or for a subscript of an
-    // array, which C bounds below by its first element; a cursor into the
-    // object, which may step back, gets a span, RFC 0030 §7.4.)
-    bool arrayBase = false;
-    if (const auto *subscript = dyn_cast<ArraySubscriptExpr>(site.stmt))
-      arrayBase =
-          subscript->getBase()->IgnoreParenImpCasts()->getType()->isArrayType();
-    if (skip && (*skip == 0 || (*skip > 0 && arrayBase)) && width > 0)
-      if (auto count = countTerm(transfer, extent.bytes, *skip, width))
-        return CheckWitness{.shape = CheckWitness::Shape::Index,
-                            .extent = std::move(count),
-                            .extentClass = extent.cls,
-                            .offset = std::move(index),
-                            .unmodified = true,
-                            .accessesSafe = true};
-    // A cursor: its object's start must have a name, and be the one start
-    // (a pointer into one of several objects of one size has no base).
-    if (std::ranges::any_of(value.targets, [&](const core::Target &each) {
-          return each.object != target.object;
-        }))
-      return std::nullopt;
-    std::optional<WitnessTerm> base;
-    for (const auto &[sym, info] : state.syms) {
-      if (info.type != core::SymInfo::Type::Pointer || info.targets.size() != 1)
-        continue;
-      if (info.targets[0].object != target.object ||
-          !(info.targets[0].offset == core::Term::of(0)))
-        continue;
-      if (auto name = transfer.nameOf(sym)) {
-        base = std::move(name);
-        break;
-      }
-    }
-    if (!base) {
-      const core::ObjectInfo &objectInfo = run.table().info(target.object);
-      if (objectInfo.key.kind == core::ObjectKind::Local ||
-          objectInfo.key.kind == core::ObjectKind::Global)
-        if (const VarDecl *var = variableOf(objectInfo);
-            var != nullptr && var->getType()->isArrayType())
-          base = WitnessTerm::ofPlace(*var);
-    }
-    auto bytes = bytesTerm(transfer, extent.bytes);
-    if (!base || !bytes)
-      return std::nullopt;
-    return CheckWitness{.shape = CheckWitness::Shape::Span,
-                        .extent = std::move(bytes),
-                        .extentClass = extent.cls,
-                        .base = std::move(base),
-                        .width = WitnessTerm::ofConstant(width),
-                        .offset = std::move(index),
-                        .unmodified = true,
-                        .accessesSafe = true};
   };
   switch (verdict.kind) {
   case Kind::Proven:
     decide(core::Facet::Spatial, core::FacetDecision::proven());
     return;
   case Kind::Violation: {
-    // RFC 0034 §6.4: a lowered violation gets the check its witness states,
-    // which traps exactly when the access is out of bounds.
     decide(core::Facet::Spatial, core::FacetDecision::violation());
-    if (std::optional<CheckWitness> witness = witnessFor();
-        witness && run.isPublishing())
-      out.witness(*site.stmt, core::Facet::Spatial, std::move(*witness));
     std::string subject = inQuotes(transfer.spell(*cast<Expr>(site.stmt)));
     // The object: an array member's is the object it is a member of.
     const Expr *objectExpr =
@@ -965,13 +818,10 @@ void Decider::spatialOf(core::Sym pointer, std::int64_t width,
            core::Facet::Spatial);
     return;
   }
-  case Kind::Checkable: {
-    std::optional<CheckWitness> witness = witnessFor();
-    decide(core::Facet::Spatial, core::FacetDecision::checked());
-    if (witness && run.isPublishing())
-      out.witness(*site.stmt, core::Facet::Spatial, std::move(*witness));
+  case Kind::Checkable:
+    decide(core::Facet::Spatial, core::FacetDecision::unresolvedFor(
+                                     core::UnresolvedReason::Undecided));
     return;
-  }
   case Kind::UnknownExtent:
     fallback(core::UnresolvedReason::UnknownExtent);
     return;
@@ -1145,11 +995,7 @@ void Decider::access() {
                                        core::UnresolvedReason::UnknownExtent));
       return;
     }
-    const core::SymInfo &value = heap.info(state, pointer);
-    std::optional<std::int64_t> skip;
-    if (value.targets.size() == 1 && value.targets[0].offset.isConstant())
-      skip = value.targets[0].offset.constant;
-    spatialOf(pointer, *width, skip);
+    spatialOf(pointer, *width);
     return;
   }
   // A variable-length array whose byte size may not be representable (or
@@ -1184,25 +1030,6 @@ void Decider::access() {
                                      core::UnresolvedReason::Unanalysed));
     return;
   }
-  // The constant part of the element's offset, when the index accounts
-  // for the rest.
-  std::optional<std::int64_t> skip;
-  if (site.index != nullptr && address.targets.size() == 1) {
-    core::Term offset = address.targets[0].offset;
-    core::Term index = transfer.termOf(transfer.valueOf(*site.index));
-    if (offset.known && index.known) {
-      core::Term scaled = index;
-      scaled.scale *= *width;
-      scaled.constant *= *width;
-      if (scaled.isConstant())
-        scaled.scale = 0;
-      core::Term negated = scaled;
-      negated.scale = -negated.scale;
-      negated.constant = -negated.constant;
-      if (auto rest = offset.plus(negated); rest && rest->isConstant())
-        skip = rest->constant;
-    }
-  }
   // RFC 0017: an unsigned index above `INT64_MAX` for every value reaches
   // past the end of any object (the zone's bounds cannot say so).
   bool beyond = false;
@@ -1215,7 +1042,7 @@ void Decider::access() {
   }
   if (!beyond && memberBound(*width))
     return;
-  spatialOf(at, *width, skip, beyond);
+  spatialOf(at, *width, beyond);
 }
 
 bool Decider::memberBound(std::int64_t width) {
@@ -1358,15 +1185,8 @@ bool Decider::memberBound(std::int64_t width) {
                                      core::UnresolvedReason::UnknownIndex));
     return true;
   }
-  decide(core::Facet::Spatial, core::FacetDecision::checked());
-  if (run.isPublishing() && applies(core::Facet::Spatial))
-    out.witness(*site.stmt, core::Facet::Spatial,
-                CheckWitness{.shape = CheckWitness::Shape::Index,
-                             .extent = WitnessTerm::ofConstant(count),
-                             .extentClass = core::ExtentClass::Exact,
-                             .offset = WitnessTerm::ofExpr(*site.index),
-                             .unmodified = true,
-                             .accessesSafe = true});
+  decide(core::Facet::Spatial,
+         core::FacetDecision::unresolvedFor(core::UnresolvedReason::Undecided));
   return true;
 }
 
@@ -2337,20 +2157,20 @@ void Transfer::decideCall(const CallExpr &call,
       core::FacetDecision decision;
       // RFC 0031 §5.4: a length that is zero accepts null (`memcpy(p, x,
       // 0)`): nothing to check.
-      std::function<bool(const WitnessTerm &)> isZero =
-          [&](const WitnessTerm &term) -> bool {
+      std::function<bool(const SourceTerm &)> isZero =
+          [&](const SourceTerm &term) -> bool {
         switch (term.kind) {
-        case WitnessTerm::Kind::Constant:
+        case SourceTerm::Kind::Constant:
           return term.constant == 0;
-        case WitnessTerm::Kind::Expr: {
+        case SourceTerm::Kind::Expr: {
           if (term.expr == nullptr)
             return false;
           auto c = state.zone.constant(valueOf(*term.expr));
           return c && *c == 0;
         }
-        case WitnessTerm::Kind::Mul:
+        case SourceTerm::Kind::Mul:
           return std::ranges::any_of(term.operands, isZero);
-        case WitnessTerm::Kind::Add:
+        case SourceTerm::Kind::Add:
           return !term.operands.empty() &&
                  std::ranges::all_of(term.operands, isZero);
         default:
@@ -2359,14 +2179,12 @@ void Transfer::decideCall(const CallExpr &call,
       };
       // RFC 0030 §8.3: a length that is non-zero for every value makes a
       // `null-if-zero` argument's null requirement definite.
-      std::function<bool(const WitnessTerm &)> isNonZero =
-          [&](const WitnessTerm &term) -> bool {
+      std::function<bool(const SourceTerm &)> isNonZero =
+          [&](const SourceTerm &term) -> bool {
         switch (term.kind) {
-        case WitnessTerm::Kind::Constant:
+        case SourceTerm::Kind::Constant:
           return term.constant != 0;
-        case WitnessTerm::Kind::SizeOf:
-          return true;
-        case WitnessTerm::Kind::Expr: {
+        case SourceTerm::Kind::Expr: {
           if (term.expr == nullptr)
             return false;
           core::Sym length = valueOf(*term.expr);
@@ -2374,7 +2192,7 @@ void Transfer::decideCall(const CallExpr &call,
           return (lo && *lo > 0) ||
                  (heap.info(state, length).nonZero && lo && *lo >= 0);
         }
-        case WitnessTerm::Kind::Mul:
+        case SourceTerm::Kind::Mul:
           return !term.operands.empty() &&
                  std::ranges::all_of(term.operands, isNonZero);
         default:
@@ -2401,17 +2219,13 @@ void Transfer::decideCall(const CallExpr &call,
             nullArgument(*call.getArg(need.argument), value, callee, direct),
             core::Certainty::Definite, &call, core::Facet::Null);
       } else {
-        decision = core::FacetDecision::checked();
+        decision = core::FacetDecision::unresolvedFor(
+            core::UnresolvedReason::Undecided);
         if (run.applies(info->id, core::Facet::Null))
           allocationFailure(value, *call.getArg(need.argument), call);
       }
-      if (run.isPublishing() && run.applies(info->id, core::Facet::Null)) {
-        core::Requirement record;
-        record.argument = need.argument;
-        record.need = "nonnull";
-        record.decision = decision;
-        run.ledger().requirement(call, core::Facet::Null, record);
-      }
+      if (run.isPublishing() && run.applies(info->id, core::Facet::Null))
+        run.ledger().requirement(call, core::Facet::Null, decision);
     }
     // A library call's temporal facet is its arguments' uses: proven unless
     // one of them says otherwise (decisions keep the worst).
@@ -2548,7 +2362,8 @@ void Transfer::decideCall(const CallExpr &call,
                                  target.functionsKnown &&
                                  !target.functions.empty()
                              ? core::FacetDecision::proven()
-                             : core::FacetDecision::checked());
+                             : core::FacetDecision::unresolvedFor(
+                                   core::UnresolvedReason::Undecided));
         }
       }
       // RFC 0004: a raw pointer handed to a callee that takes a tracked

@@ -2,7 +2,7 @@
 // ASAN
 static int sum(const int *b, const int *e) {
   int s = 0;
-  for (const int *p = b; p <= e; ++p) s += *p;
+  for (const int *p = b; p <= e; ++p) s += *p; // TRAP
   return s;
 }
 int main(void) {

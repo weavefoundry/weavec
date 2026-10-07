@@ -16,6 +16,6 @@ int f(void) {
   if (!o) return 0;
   o->refs = 1;
   o->name = NULL;
-  obj_destroy(o); // UNRESOLVED: temporal:unknown-callee
-  return o->refs; // UNRESOLVED: temporal:unknown-callee
+  obj_destroy(o);
+  return o->refs;
 }

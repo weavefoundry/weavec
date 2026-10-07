@@ -22,12 +22,12 @@
 #define WEAVEC_LIB_ANALYSIS_ENGINE_H
 
 #include "weavec/Analysis/Annotations.h"
-#include "weavec/Analysis/CheckWitness.h"
 #include "weavec/Analysis/KindInference.h"
 #include "weavec/Analysis/LedgerAdapter.h"
 #include "weavec/Analysis/ObjectEngine.h"
 #include "weavec/Analysis/SafetyEngine.h"
 #include "weavec/Analysis/SiteCollector.h"
+#include "weavec/Analysis/SourceTerm.h"
 #include "weavec/Core/Effects.h"
 #include "weavec/Core/Heap.h"
 
@@ -91,7 +91,7 @@ class UnitRun;
 
 /// A C place as a diagnostic spells it (`b->cap`, where a check's text
 /// says `(*b).cap`); any other term as the check does.
-[[nodiscard]] std::string messageSpelling(const WitnessTerm &term);
+[[nodiscard]] std::string messageSpelling(const SourceTerm &term);
 
 /// `path[*]`: the elements below `path`. Unlike `SummaryPath::indexed`,
 /// never collapsed onto a trailing dereference, so `a[*]` and `a[0]`
@@ -460,8 +460,6 @@ public:
   core::ObjectId variableObject(const clang::VarDecl &var) const;
   /// The object of a string literal or compound literal.
   core::ObjectId literalObject(const clang::Expr &literal) const;
-  /// The object of a function.
-  core::ObjectId functionObject(const clang::FunctionDecl &fn) const;
   /// An allocation site's recent object (§4.2).
   core::ObjectId allocationObject(const clang::Expr &site,
                                   clang::QualType pointee,
@@ -559,9 +557,6 @@ public:
   bool ranUnknownCode = false;
   /// The CFG element being transferred.
   void noteElement(const clang::Stmt &stmt) { currentElement = &stmt; }
-  [[nodiscard]] const clang::Stmt *currentStmt() const noexcept {
-    return currentElement;
-  }
   /// RFC 0030 §11: whether `operand` reads a local whose declaration a
   /// jump can bypass, so zero-initialisation does not reach it.
   [[nodiscard]] bool isBypassed(const clang::Expr &operand) const;
@@ -642,9 +637,9 @@ struct ArgRequirement {
   /// most, a format's least output): a bound proves or violates one way.
   enum class Bound : std::uint8_t { Exact, AtMost, AtLeast };
   Bound bound = Bound::Exact;
-  std::optional<WitnessTerm> needTerm = std::nullopt;
-  /// §7.5: checked only when this term is non-zero.
-  std::optional<WitnessTerm> guard = std::nullopt;
+  /// §7.5: it binds only under a guard not known to hold, so a shortfall is
+  /// no violation.
+  bool guarded = false;
   /// A shortfall against an exact extent is the call's violation.
   bool enforced = false;
   /// Proven or unresolved, never checked (§7.3 reliance).
@@ -764,8 +759,6 @@ public:
   [[nodiscard]] std::string spell(const clang::Expr &expr) const;
   /// The integer term a value stands for (its linear form).
   [[nodiscard]] core::Term termOf(core::Sym sym) const;
-  /// Stores `sym` as `var`'s value.
-  void assignVariable(const clang::VarDecl &var, core::Sym sym);
 
   // Calls (EngineCalls.cpp).
   core::Sym call(const clang::CallExpr &call);
@@ -1019,9 +1012,9 @@ public:
   /// `own` prefers the name a value was made under to the place holding it.
   [[nodiscard]] std::optional<std::string> spellAmount(core::Term bytes,
                                                        bool own) const;
-  /// A C place holding `sym` at this point, for witnesses (§5.3); for an
+  /// A C place holding `sym` at this point, for messages (§5.3); for an
   /// `extent` (a have), also its defining operation.
-  [[nodiscard]] std::optional<WitnessTerm>
+  [[nodiscard]] std::optional<SourceTerm>
   nameOf(core::Sym sym, bool extent = false, int depth = 0) const;
 
   // Lifetimes, boundaries and assumptions (EngineLifetimes.cpp).
@@ -1216,7 +1209,8 @@ public:
   /// linkage, `<source>#<name>` otherwise (which no other unit has).
   [[nodiscard]] std::string portableName(const clang::VarDecl &var) const;
   /// RFC 0005: the unit's functions of `typeKey` whose address is taken,
-  /// the candidates of an indirect call nothing else resolves at link.
+  /// the candidates of an indirect call nothing else resolves in the
+  /// program.
   [[nodiscard]] const std::vector<const clang::FunctionDecl *> &
   localCandidates(const std::string &typeKey) const;
   /// §4.6: a variable with static storage and internal linkage that the
@@ -1274,7 +1268,6 @@ private:
   mutable llvm::DenseMap<const clang::VarDecl *, std::uint32_t> globalIds;
   std::uint32_t internGlobal(const clang::VarDecl &var) const;
   void computeOwningSlots();
-  std::vector<std::vector<const clang::FunctionDecl *>> componentsBottomUp();
   /// §7: summaries imported from the program database, by callee name, in
   /// this unit's global numbering.
   mutable std::map<std::string, core::FunctionEffects> imported;

@@ -8,11 +8,12 @@
 
 #include "TestUtils.h"
 #include "weavec/Analysis/ProgramDatabase.h"
-#include "weavec/Core/EffectsIO.h"
+#include "weavec/Core/Effects.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
 
 namespace weavec::analysis {
 
@@ -29,7 +30,7 @@ static std::size_t countId(const test::AnalysisResult &result,
 static std::optional<core::SiteOutcome>
 outcomeAt(const test::AnalysisResult &result, std::string_view function,
           std::string_view text, core::Facet facet) {
-  for (const core::UnitLedger &unit : result.planned.ledger.units)
+  for (const core::UnitLedger &unit : result.ledger.units)
     for (const core::FunctionLedger &ledger : unit.functions)
       if (ledger.name == function)
         for (const core::Site &site : ledger.sites)
@@ -676,13 +677,14 @@ void bounds(void) { char *a[2]={0}; for(int i=0;i<3;++i) a[i]=0; }
   // definite `out-of-bounds`, which needs every value to be.
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 0U);
   unsigned checked = 0;
-  for (const core::UnitLedger &unit : result.planned.ledger.units)
+  for (const core::UnitLedger &unit : result.ledger.units)
     for (const core::FunctionLedger &function : unit.functions)
       for (const core::Site &site : function.sites)
         if (site.location.line == 5 && site.kind == core::SiteKind::Index)
           if (const core::FacetRecord *record =
                   site.facet(core::Facet::Spatial)) {
-            EXPECT_EQ(record->outcome(), core::SiteOutcome::Checked);
+            EXPECT_EQ(record->decision.unresolved,
+                      core::UnresolvedReason::Undecided);
             ++checked;
           }
   EXPECT_EQ(checked, 1U);
@@ -740,12 +742,20 @@ void composed(char **a, char **b, char **c, size_t n) {
   // caller proves nothing of them), not as an incomplete analysis.
   EXPECT_EQ(test::incomplete(result).size(), 0U)
       << ::testing::PrintToString(test::incomplete(result));
-  for (const auto &[name, dest] :
-       {std::pair{"rewritten", "p0*[]"}, std::pair{"composed", "p2*[]"}}) {
+  // `*pN[]`: every element of the array the parameter points to.
+  const auto elements = [](std::uint32_t param) {
+    return core::SummaryPath{
+        .root = core::SummaryRoot::Param,
+        .index = param,
+        .steps = {core::PathElem{.step = core::PathStep::Deref, .field = {}},
+                  core::PathElem{.step = core::PathStep::Index, .field = {}}}};
+  };
+  for (const auto &[name, dest] : {std::pair{"rewritten", elements(0)},
+                                   std::pair{"composed", elements(2)}}) {
     ASSERT_TRUE(result.summary(name));
     bool unknown = false;
     for (const core::StoreEffect &store : result.summary(name)->stores)
-      if (core::printPath(store.dest) == dest)
+      if (store.dest == dest)
         unknown =
             store.may && store.value.kind == core::ValueDesc::Kind::Unknown;
     EXPECT_TRUE(unknown) << name;

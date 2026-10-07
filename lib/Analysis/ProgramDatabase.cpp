@@ -8,7 +8,7 @@
 
 #include "weavec/Analysis/ProgramDatabase.h"
 
-#include "weavec/Core/EffectsIO.h"
+#include "weavec/Core/Effects.h"
 
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclBase.h"
@@ -37,11 +37,6 @@ std::uint32_t GlobalNames::idFor(llvm::StringRef name) {
   return it->second;
 }
 
-std::optional<std::uint32_t> GlobalNames::find(llvm::StringRef name) const {
-  const auto it = ids.find(name);
-  return it == ids.end() ? std::nullopt : std::optional(it->second);
-}
-
 llvm::StringRef GlobalNames::nameOf(std::uint32_t id) const {
   return id < names.size() ? llvm::StringRef(names[id]) : "<global>";
 }
@@ -49,8 +44,7 @@ llvm::StringRef GlobalNames::nameOf(std::uint32_t id) const {
 // -- UnitExports --------------------------------------------------------------
 
 bool UnitExports::sameFunctionsAs(const UnitExports &other) const {
-  return functions == other.functions && globals == other.globals &&
-         countFields == other.countFields;
+  return functions == other.functions && globals == other.globals;
 }
 
 bool UnitExports::sameSummariesAs(const UnitExports &other) const {
@@ -102,33 +96,6 @@ std::string recordTypeKey(QualType type, const ASTContext &context) {
   return stableTypeKey(canonical, context);
 }
 
-std::string recordLayoutKey(QualType type, const ASTContext &context) {
-  if (type.isNull() || !type->isRecordType() || type->isIncompleteType())
-    return {};
-  const auto *record = type->getAsRecordDecl();
-  const auto &layout = context.getASTRecordLayout(record);
-  // Top-level cv-qualification changes access, not the object layout.
-  std::string shape = stableTypeKey(type.getUnqualifiedType(), context);
-  if (shape.empty())
-    shape = record->isUnion() ? "union" : "struct";
-  shape += ":" + std::to_string(layout.getSize().getQuantity()) + ":" +
-           std::to_string(layout.getAlignment().getQuantity());
-  for (const auto *field : record->fields()) {
-    shape += ":" + field->getNameAsString() + ":" +
-             std::to_string(layout.getFieldOffset(field->getFieldIndex())) +
-             ":" + stableTypeKey(field->getType(), context);
-  }
-  // Hex-spelled, so the key is one token wherever it is written.
-  static constexpr std::string_view Hex = "0123456789abcdef";
-  std::string key = "-:";
-  for (const char character : shape) {
-    const auto byte = static_cast<unsigned char>(character);
-    key += Hex[byte >> 4U];
-    key += Hex[byte & 15U];
-  }
-  return key;
-}
-
 // -- ProgramDatabase ----------------------------------------------------------
 
 void ProgramDatabase::add(const UnitExports &unit) {
@@ -157,7 +124,6 @@ void ProgramDatabase::add(const UnitExports &unit) {
     if (function.addressTaken && !function.typeKey.empty())
       fold(byType, function.typeKey, std::move(effects));
   }
-  countFields.insert(unit.countFields.begin(), unit.countFields.end());
   for (const auto &[request, effects] : unit.contextEffects) {
     core::FunctionEffects renumbered =
         core::renumberGlobals(effects, toDatabase);
@@ -174,27 +140,12 @@ ProgramDatabase::contextEffects(const ContextRequest &request) const {
   return it != byContext.end() ? &it->second : nullptr;
 }
 
-std::vector<std::string>
-ProgramDatabase::requestsFor(llvm::StringRef callee) const {
-  std::vector<std::string> keys;
-  for (auto it = requested.lower_bound(
-           ContextRequest{.callee = callee.str(), .key = {}});
-       it != requested.end() && it->callee == callee; ++it)
-    keys.push_back(it->key);
-  return keys;
-}
-
 void ProgramDatabase::clear() {
   globalNames = GlobalNames{};
   byName.clear();
   byType.clear();
-  countFields.clear();
   byContext.clear();
   requested.clear();
-}
-
-bool ProgramDatabase::defines(llvm::StringRef name) const {
-  return byName.contains(name);
 }
 
 const core::FunctionEffects *
@@ -228,8 +179,6 @@ void ProgramDatabase::dump(llvm::raw_ostream &os) const {
   for (std::size_t id = 0; id < globalNames.size(); ++id)
     os << "  global" << id << " '"
        << globalNames.nameOf(static_cast<std::uint32_t>(id)) << "'\n";
-  for (const std::string &key : countFields)
-    os << "  count-field '" << key << "'\n";
   for (const ContextRequest &request : requested) {
     os << "  context '" << request.callee << "' '" << request.key << "':\n";
     if (const core::FunctionEffects *effects = contextEffects(request))

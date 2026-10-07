@@ -8,7 +8,7 @@
 
 int cols(int fd) {
   struct winsize ws;
-  if (ioctl(fd, TIOCGWINSZ, &ws) == -1) // TRUSTED: temporal:system-api
+  if (ioctl(fd, TIOCGWINSZ, &ws) == -1)
     return 80;
   return ws.ws_col;
 }

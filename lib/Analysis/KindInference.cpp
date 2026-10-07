@@ -9,8 +9,7 @@
 // §7.3: the Single-valid judgement, the greatest fixpoint over slots,
 // results, static parameters and variables, and the table it fills. The
 // walk that collects the stores is in KindInferenceCollect.cpp, §7.5 in
-// KindInferenceMustAccess.cpp, §7.4 rule 7 and §7.6 in
-// KindInferenceFields.cpp.
+// KindInferenceMustAccess.cpp, §7.6 in KindInferenceFields.cpp.
 //
 //===----------------------------------------------------------------------===//
 
@@ -936,7 +935,6 @@ void KindInferenceState::run() {
     inferMustAccess();
   if (options.fieldCandidates)
     inferFieldCandidates();
-  collectStoreGroups();
 }
 
 // -- The result
@@ -948,16 +946,6 @@ KindInferenceResult::KindInferenceResult(KindInferenceResult &&) noexcept =
     default;
 KindInferenceResult &
 KindInferenceResult::operator=(KindInferenceResult &&) noexcept = default;
-
-std::vector<FieldCandidate> KindInferenceResult::fieldCandidates() const {
-  std::vector<FieldCandidate> out;
-  if (state == nullptr)
-    return out;
-  for (const ResolvedCandidate &resolved : state->candidates)
-    out.push_back(resolved.candidate);
-  std::ranges::sort(out);
-  return out;
-}
 
 const std::vector<ResolvedCandidate> &
 KindInferenceResult::resolvedCandidates() const noexcept {
@@ -973,32 +961,6 @@ KindInferenceResult::disqualified() const noexcept {
   if (state == nullptr)
     return None;
   return state->disqualified;
-}
-
-const std::vector<StoreGroup> &
-KindInferenceResult::storeGroups() const noexcept {
-  static const std::vector<StoreGroup> None;
-  if (state == nullptr)
-    return None;
-  return state->groups;
-}
-
-std::vector<const StoreGroup *>
-KindInferenceResult::groupsOf(const clang::Stmt &store) const {
-  std::vector<const StoreGroup *> out;
-  if (state == nullptr)
-    return out;
-  if (!state->groupsIndexed) {
-    for (unsigned i = 0; i < state->groups.size(); ++i)
-      for (const clang::Expr *member : state->groups[i].stores)
-        state->groupsByStore[member].push_back(i);
-    state->groupsIndexed = true;
-  }
-  if (const auto found = state->groupsByStore.find(&store);
-      found != state->groupsByStore.end())
-    for (const unsigned i : found->second)
-      out.push_back(&state->groups[i]);
-  return out;
 }
 
 bool KindInferenceResult::isSingleValid(const clang::Expr &value,
@@ -1027,34 +989,6 @@ bool KindInferenceResult::argumentIsSingleValid(const clang::CallExpr &call,
   if (!isObjectPointer(parameter))
     return false;
   return isSingleValid(*call.getArg(index), parameter->getPointeeType());
-}
-
-KindInferenceResult::ArgumentWidth
-KindInferenceResult::argumentWidth(const clang::CallExpr &call,
-                                   unsigned index) const {
-  if (state == nullptr || index >= call.getNumArgs())
-    return {};
-  const ValueWidth width = state->judge(call.getArg(index));
-  if (width.nullOnly)
-    return ArgumentWidth{.bytes = 0, .null = true};
-  // A lower bound understated is still a lower bound: the record carries
-  // the width as a signed integer, so a width past its range is capped.
-  if (width.bytes)
-    return ArgumentWidth{
-        .bytes = std::min<std::uint64_t>(
-            *width.bytes, static_cast<std::uint64_t>(
-                              std::numeric_limits<std::int64_t>::max())),
-        .null = false};
-  return ArgumentWidth{.bytes = std::nullopt, .null = false};
-}
-
-bool KindInferenceResult::alwaysReturns(
-    const clang::FunctionDecl &function) const {
-  return state != nullptr && state->alwaysReturns(function);
-}
-
-bool KindInferenceResult::knownToReturn(const clang::CallExpr &call) const {
-  return state != nullptr && state->knownToReturn(call);
 }
 
 KindInferenceResult KindInference::infer(KindTable &kinds) {

@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 //
 // A debugging aid (unstable format): the unit's kind table, its problems and
-// suggestions, the store groups and the §7.6 candidates, one line per fact,
-// for the declarations of the main file, in source order.
+// suggestions and the §7.6 candidates, one line per fact, for the
+// declarations of the main file, in source order.
 //
 //===----------------------------------------------------------------------===//
 
@@ -125,12 +125,6 @@ void dumpKinds(const KindTable &kinds, const KindInferenceResult &inferred,
     text += " [" + std::string(toString(contract.level)) + "]";
     lines.emplace_back(function->getLocation(), std::move(text));
   }
-  for (const clang::Decl *decl : context.getTranslationUnitDecl()->decls())
-    if (const auto *function = llvm::dyn_cast<clang::FunctionDecl>(decl);
-        function != nullptr && function->doesThisDeclarationHaveABody() &&
-        inMain(function->getLocation()) && kinds.requireSafe(*function))
-      lines.emplace_back(function->getLocation(),
-                         "require-safe " + function->getNameAsString());
   for (const KindProblem &problem : kinds.problems())
     if (inMain(problem.location))
       lines.emplace_back(problem.location,
@@ -142,16 +136,6 @@ void dumpKinds(const KindTable &kinds, const KindInferenceResult &inferred,
                          "suggestion " + lineColumn(sm, suggestion.location) +
                              ": " + suggestion.message + " (insert '" +
                              suggestion.insert + "')");
-  for (const StoreGroup &group : inferred.storeGroups()) {
-    std::string text =
-        "store group in " + group.function->getNameAsString() + " at " +
-        lineColumn(sm, group.stores.front()->getBeginLoc()) + ":";
-    for (const clang::FieldDecl *field : group.fields)
-      text += " " + field->getNameAsString();
-    text += " (" + std::to_string(group.stores.size()) + " stores, last at " +
-            lineColumn(sm, group.last()->getBeginLoc()) + ")";
-    lines.emplace_back(group.stores.front()->getBeginLoc(), std::move(text));
-  }
   for (const ResolvedCandidate &resolved : inferred.resolvedCandidates()) {
     const FieldCandidate &candidate = resolved.candidate;
     lines.emplace_back(resolved.record->getLocation(),

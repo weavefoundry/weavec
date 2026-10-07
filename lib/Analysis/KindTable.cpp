@@ -65,24 +65,6 @@ std::string RequirementGuard::toString() const {
          rhs.toString();
 }
 
-std::optional<RequirementGuard> RequirementGuard::parse(std::string_view text) {
-  Relation relation = Relation::LessEqual;
-  std::size_t at = text.find(" <= ");
-  std::size_t width = 4;
-  if (at == std::string_view::npos) {
-    relation = Relation::Less;
-    at = text.find(" < ");
-    width = 3;
-  }
-  if (at == std::string_view::npos)
-    return std::nullopt;
-  const auto lhs = core::ExtentTerm::parse(text.substr(0, at));
-  const auto rhs = core::ExtentTerm::parse(text.substr(at + width));
-  if (!lhs || !rhs)
-    return std::nullopt;
-  return RequirementGuard{.lhs = *lhs, .relation = relation, .rhs = *rhs};
-}
-
 std::string MustAccessRequirement::toString() const {
   std::string text;
   if (guard)
@@ -118,11 +100,6 @@ bool KindEntry::shapeFromSystemHeader() const noexcept {
 
 bool KindEntry::nullabilityFromSystemHeader() const noexcept {
   return nullabilityLevel == KindLevel::SystemHeader;
-}
-
-bool KindEntry::isCheckOperand() const noexcept {
-  return extentClass.has_value() && core::isCheckOperand(*extentClass) &&
-         !shapeFromSystemHeader();
 }
 
 const KindEntry *KindTable::param(const clang::FunctionDecl &function,
@@ -176,14 +153,6 @@ void KindTable::setGovernedByLibrary(const clang::FunctionDecl &function) {
 
 void KindTable::addProblem(KindProblem problem) {
   problemList.push_back(std::move(problem));
-}
-
-bool KindTable::requireSafe(const clang::FunctionDecl &function) const {
-  return safe.contains(function.getCanonicalDecl());
-}
-
-void KindTable::setRequireSafe(const clang::FunctionDecl &function) {
-  safe.insert(function.getCanonicalDecl());
 }
 
 const OwnershipContract *
@@ -254,10 +223,6 @@ KindTable::covering(const clang::Stmt &access) const {
   if (found == coveringIndex.end())
     return {};
   return found->second;
-}
-
-std::size_t KindTable::size() const noexcept {
-  return params.size() + results.size() + fields.size() + variables.size();
 }
 
 static core::LibraryParam::Type classOf(clang::QualType type) {

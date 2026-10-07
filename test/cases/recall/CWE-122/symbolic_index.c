@@ -7,7 +7,7 @@ void bad(size_t n) {
   int *data = malloc(n * sizeof *data);
   if (!data)
     return;
-  data[n] = 0; // BUG: out-of-bounds // TRAP: index
+  data[n] = 0; // BUG: out-of-bounds // TRAP
   free(data);
 }
 
@@ -16,7 +16,7 @@ void bad_loop(size_t n) {
   if (!data)
     return;
   for (size_t i = 0; i <= n; i++)
-    data[i] = 0; // BUG: out-of-bounds // TRAP: index
+    data[i] = 0; // BUG: out-of-bounds // TRAP
   free(data);
 }
 

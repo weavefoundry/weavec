@@ -565,7 +565,7 @@ class MainTest(TreeTest):
         self.assertRegex(output, r"\n  files: +14 from a directory walk \(not a git work tree\); "
                                  r"skipped 0 binary, 0 unreadable\n")
         self.assertRegex(output, r"\n  LibrarySpec: +5 entries, 3 chk aliases, and their __builtin_ spellings\n")
-        self.assertRegex(output, r"\n  engine lines: +24 / 22,000 \(2 lib/Analysis/Engine\*\.\{h,cpp\} files\)\n")
+        self.assertRegex(output, r"\n  engine lines: +24 / 21,500 \(2 lib/Analysis/Engine\*\.\{h,cpp\} files\)\n")
         self.assertRegex(output, r"\n  library lines: +\d+ / 10 \(10 code files under lib/, include/ and "
                                  r"tools/, lib/Core/LibrarySpec\.txt excluded\)\n")
         self.assertRegex(output, r"\n  retired-name +1  checked-mode or old-engine names")

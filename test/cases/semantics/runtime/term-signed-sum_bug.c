@@ -12,7 +12,7 @@ static void pad(unsigned char *in, unsigned used) {
   *p++ = 0x80;
   count = 56 - 1 - count;
   if (count < 0) {
-    memset(p, 0, count + 9);
+    memset(p, 0, count + 9); // TRAP
     p = in;
     count = 56;
   }

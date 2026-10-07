@@ -10,104 +10,22 @@
 
 #include "weavec/Analysis/LedgerAdapter.h"
 #include "weavec/Analysis/UnitPipeline.h"
+#include "weavec/Frontend/AnalysisSummary.h"
 #include "weavec/Frontend/ClangDiagnosticSink.h"
-#include "weavec/Frontend/LedgerOutput.h"
-#include "weavec/Frontend/Prelude.h"
-#include "weavec/Frontend/RecordFacts.h"
-#include "weavec/Frontend/ZeroInit.h"
+#include "weavec/Frontend/InterfaceFacts.h"
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
-#include "clang/Basic/TargetInfo.h"
+#include "clang/Basic/FileManager.h"
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 
 #include <algorithm>
-#include <array>
 #include <string_view>
 #include <utility>
 
 namespace weavec::frontend {
-
-// RFC 0030 (S5, begin): lowered violations and zero-initialisation.
-
-/// The ids whose error reports a violation of `facet` (§3, §3.4).
-static llvm::ArrayRef<std::string_view> violationIds(core::Facet facet) {
-  static constexpr std::array Temporal{
-      core::diag::UseAfterFree,       core::diag::UseAfterMove,
-      core::diag::DoubleFree,         core::diag::MismatchedRelease,
-      core::diag::ConflictingBorrow,  core::diag::LifetimeTooShort,
-      core::diag::AnnotationMismatch,
-  };
-  static constexpr std::array Null{
-      core::diag::NullDereference,
-      core::diag::UseOfUninitialized,
-      core::diag::AnnotationMismatch,
-  };
-  static constexpr std::array Spatial{
-      core::diag::OutOfBounds,
-      core::diag::InvalidRelease,
-      core::diag::UnsafeOperation,
-      core::diag::AnnotationMismatch,
-  };
-  static constexpr std::array Assertion{
-      core::diag::ContradictedAssumption,
-      core::diag::AnnotationMismatch,
-  };
-  switch (facet) {
-  case core::Facet::Temporal:
-    return Temporal;
-  case core::Facet::Null:
-    return Null;
-  case core::Facet::Spatial:
-    return Spatial;
-  case core::Facet::Assertion:
-    return Assertion;
-  }
-  return {};
-}
-
-/// §3.4: a definite violation whose error the `-W` flags lower to a warning
-/// still traps, since the unit then produces an object. The planner asks
-/// per facet; an id of the facet lowered is enough, since a violation whose
-/// error stands fails the compile before any check is emitted.
-static std::function<bool(core::SiteId, core::Facet)>
-loweredViolations(const DiagnosticControl &control) {
-  return [control](core::SiteId /*site*/, core::Facet facet) {
-    for (const std::string_view id : violationIds(facet)) {
-      const core::Diagnostic probe{.severity = core::Severity::Error,
-                                   .certainty = core::Certainty::Definite,
-                                   .id = id,
-                                   .message = {},
-                                   .location = {},
-                                   .notes = {},
-                                   .fixits = {}};
-      const std::optional<core::Diagnostic> shown = control.apply(probe);
-      if (shown && shown->severity == core::Severity::Warning)
-        return true;
-    }
-    return false;
-  };
-}
-
-/// §11: which references the unit lowers, and the ledger's A5 counts.
-static std::shared_ptr<ZeroInitPlan>
-zeroInitPlanOf(clang::ASTContext &context, const FrontendOptions &options) {
-  // A freestanding unit's allocator is not the C library's, whose calloc
-  // and usable-size query the wrappers call.
-  const UsableSizeQuery query =
-      usableSizeQueryFor(context.getTargetInfo().getTriple());
-  const bool heap =
-      query != UsableSizeQuery::None && !context.getLangOpts().Freestanding;
-  return std::make_shared<ZeroInitPlan>(
-      planZeroInit(context, core::LibrarySpec::shipped(),
-                   options.config.checks != core::ChecksMode::None &&
-                       options.config.zeroInit,
-                   ZeroInitOptions{.heap = heap, .stack = true}));
-}
-
-// RFC 0030 (S5, end).
 
 UnitResult analyzeTranslationUnit(clang::ASTContext &context,
                                   clang::DiagnosticsEngine &diagnostics,
@@ -123,9 +41,6 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
   }
   analysis::UnitPipelineOptions pipeline;
   pipeline.engine = options.engine;
-  // RFC 0030 §5.5: the budget the ledger records is the one the engine
-  // counts against.
-  pipeline.engine.budget = options.config.budget;
   if (options.silent)
     pipeline.engine.dumpStream = nullptr;
   // RFC 0030 §5.6: every emitted function is analysed and reported, those
@@ -137,10 +52,7 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
     };
   pipeline.database = options.database;
   pipeline.discoverOnly = options.discoverOnly;
-  pipeline.config = options.config;
   pipeline.buildLedger = !options.silent;
-  pipeline.lowered = loweredViolations(options.control);
-  pipeline.dropGuardedPossible = options.dropGuardedPossible;
   core::DiagnosticCollector collected;
   analysis::UnitPipelineResult unit =
       analysis::runUnitAnalysis(context, pipeline, collected);
@@ -157,37 +69,18 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
     // RFC 0030 §13.2 step 2: the whole-program driver solves the slots of
     // every unit before it analyses any.
     if (options.collectInterface)
-      result.interface = std::make_shared<const record::InterfaceFacts>(
-          record::collectSlotFacts(context));
+      result.interface =
+          std::make_shared<const InterfaceFacts>(collectSlotFacts(context));
     return result;
   }
-  // RFC 0030 §11: the zero-initialisation plan, decided before anything is
-  // emitted so that the ledger's A5 counts are known when it is written.
-  if (result.ledger && !result.ledger->ledger.units.empty()) {
-    result.zeroInit = zeroInitPlanOf(context, options);
-    result.ledger->ledger.units.front().a5 = result.zeroInit->a5;
-  }
-  // RFC 0030 §13.1: what the unit record carries beyond the summaries.
-  if (options.collectInterface && !options.silent) {
-    std::uint64_t lowered = 0;
-    if (result.zeroInit)
-      lowered = static_cast<std::uint64_t>(std::ranges::count_if(
-          result.zeroInit->rewrites, [](const ZeroInitRewrite &rewrite) {
-            return rewrite.kind != ZeroInitRewrite::Kind::Alloca;
-          }));
-    const record::FactsInput input{
-        .exports = result.exports,
-        .sites = result.ledger ? result.ledger->sites.get() : nullptr,
-        .loweredAllocations = lowered,
-        .library = nullptr,
-        .kinds = unit.kinds.get()};
-    result.interface = std::make_shared<const record::InterfaceFacts>(
-        record::collectInterfaceFacts(context, input));
-  }
+  // What `weavec --whole-program` checks across units.
+  if (options.collectInterface && !options.silent)
+    result.interface = std::make_shared<const InterfaceFacts>(
+        collectInterfaceFacts(context, FactsInput{.exports = result.exports,
+                                                  .kinds = unit.kinds.get()}));
 
   ClangDiagnosticSink clangSink(diagnostics);
-  FilteringSink sink(clangSink, options.control, options.alreadyReported,
-                     options.onlyIds);
+  FilteringSink sink(clangSink, options.control, options.alreadyReported);
   if (!options.silent)
     for (const auto &diagnostic : collected.diagnostics())
       sink.report(diagnostic);
@@ -195,6 +88,29 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
   result.errors = sink.errors();
   result.warnings = sink.warnings();
   return result;
+}
+
+/// The directory the unit's relative paths are relative to.
+static std::string workingDirectoryOf(clang::FileManager &files) {
+  std::string cwd = files.getFileSystemOpts().WorkingDir;
+  if (cwd.empty())
+    if (const llvm::ErrorOr<std::string> current =
+            files.getVirtualFileSystem().getCurrentWorkingDirectory())
+      cwd = *current;
+  return cwd;
+}
+
+/// RFC 0035 §8: the summary line of a reporting run, under
+/// `FrontendOptions::summary`.
+static void printSummary(const UnitResult &result, llvm::StringRef source,
+                         clang::FileManager &files,
+                         const FrontendOptions &options) {
+  if (!options.summary || options.silent || options.discoverOnly ||
+      !result.ledger)
+    return;
+  printUnitSummary(*result.ledger,
+                   summaryName(source, workingDirectoryOf(files)),
+                   options.control);
 }
 
 UnitResult analyzeRetainedUnit(clang::ASTUnit &ast,
@@ -250,9 +166,7 @@ UnitResult analyzeRetainedUnit(clang::ASTUnit &ast,
   printer.BeginSourceFile(ast.getLangOpts(), &ast.getPreprocessor());
   auto result =
       analyzeTranslationUnit(ast.getASTContext(), diagnostics, options);
-  // RFC 0030 §1 step 5: the unit ledger and the summary line.
-  if (result.ledger)
-    emitUnitLedger(result.ledger->ledger, ast, options);
+  printSummary(result, ast.getMainFileName(), ast.getFileManager(), options);
   if (diagnostics.hasErrorOccurred() && result.errors == 0)
     result.errors = 1;
   printer.EndSourceFile();
@@ -288,9 +202,11 @@ public:
   void HandleTranslationUnit(clang::ASTContext &context) override {
     auto result =
         analyzeTranslationUnit(context, compiler.getDiagnostics(), options);
-    // RFC 0030 §1 step 5: the unit ledger and the summary line.
-    if (result.ledger)
-      emitUnitLedger(result.ledger->ledger, compiler, options);
+    const clang::FrontendOptions &frontend = compiler.getFrontendOpts();
+    if (!frontend.Inputs.empty() && frontend.Inputs.front().isFile() &&
+        compiler.hasFileManager())
+      printSummary(result, frontend.Inputs.front().getFile(),
+                   compiler.getFileManager(), options);
     if (options.onResult)
       options.onResult(std::move(result));
   }

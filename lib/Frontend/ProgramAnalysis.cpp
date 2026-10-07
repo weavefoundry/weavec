@@ -10,11 +10,11 @@
 
 #include "weavec/Analysis/LedgerAdapter.h"
 #include "weavec/Core/Diagnostic.h"
-#include "weavec/Core/EffectsIO.h"
+#include "weavec/Core/Effects.h"
 #include "weavec/Core/Scc.h"
 #include "weavec/Frontend/AnalysisStats.h"
-#include "weavec/Frontend/LedgerOutput.h"
-#include "weavec/Frontend/LinkStep.h"
+#include "weavec/Frontend/AnalysisSummary.h"
+#include "weavec/Frontend/ProgramChecks.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -32,29 +32,12 @@ ProgramAnalysis::ProgramAnalysis(FrontendOptions opts)
     : options(std::move(opts)),
       // A unit may run again after it reported (to serve a context): its
       // summary line is its last run's, printed when the program is done.
-      unitSummaries(options.ledgerOutput.printsSummary()) {
-  options.ledgerOutput.summary = false;
+      unitSummaries(options.summary) {
+  options.summary = false;
 }
 
-void ProgramAnalysis::addUnit(std::unique_ptr<ProgramUnit> unit,
-                              std::optional<analysis::UnitExports> known,
-                              std::set<ReportedDiagnostic> reported) {
-  units.push_back(Unit{.unit = std::move(unit),
-                       .exports = std::move(known),
-                       .reported = std::move(reported)});
-}
-
-void ProgramAnalysis::addServingUnit(std::unique_ptr<ProgramUnit> unit,
-                                     analysis::UnitExports known,
-                                     std::set<ReportedDiagnostic> reported) {
-  units.push_back(Unit{.unit = std::move(unit),
-                       .exports = std::move(known),
-                       .reported = std::move(reported),
-                       .dormant = true});
-}
-
-void ProgramAnalysis::addExports(analysis::UnitExports exports) {
-  fixed.push_back(std::move(exports));
+void ProgramAnalysis::addUnit(std::unique_ptr<ProgramUnit> unit) {
+  units.push_back(Unit{.unit = std::move(unit)});
 }
 
 void ProgramAnalysis::touchRetainedUnit(ProgramUnit &unit) {
@@ -77,7 +60,6 @@ ProgramAnalysis::runUnit(ProgramUnit &unit, const FrontendOptions &overrides) {
   FrontendOptions run = options;
   run.database = overrides.database;
   run.alreadyReported = overrides.alreadyReported;
-  run.onlyIds = overrides.onlyIds;
   run.silent = overrides.silent;
   run.holdFor = overrides.holdFor;
   run.discoverOnly = overrides.discoverOnly;
@@ -106,7 +88,6 @@ static analysis::UnitExports skeleton(const analysis::UnitExports &exports) {
   analysis::UnitExports result = exports;
   for (auto &[name, function] : result.functions)
     function.effects = core::FunctionEffects{};
-  result.unknownCallees.clear();
   return result;
 }
 
@@ -160,21 +141,8 @@ static void announce(llvm::raw_ostream *dump, const ProgramUnit &unit) {
     *dump << "unit '" << unit.name() << "':\n";
 }
 
-bool ProgramAnalysis::exhausted() const {
-  return budgetSeconds > 0 && std::chrono::duration<double>(
-                                  std::chrono::steady_clock::now() - started)
-                                      .count() > budgetSeconds;
-}
-
 void ProgramAnalysis::analyzeAcyclic(unsigned index, Result &result) {
   Unit &unit = units[index];
-  // RFC 0033 §7: past the budget the compile-time view stands.
-  if (exhausted()) {
-    result.unfinished.push_back(unit.unit->name());
-    if (unit.exports)
-      settled.add(*unit.exports);
-    return;
-  }
   announce(options.engine.dumpStream, *unit.unit);
 
   FrontendOptions overrides;
@@ -185,7 +153,7 @@ void ProgramAnalysis::analyzeAcyclic(unsigned index, Result &result) {
   std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
   if (!run) {
     result.failed.push_back(unit.unit->name());
-    // The compile-time view is the best the rest of the program can get.
+    // The discovered view is the best the rest of the program can get.
     if (unit.exports)
       settled.add(*unit.exports);
     return;
@@ -201,8 +169,8 @@ void ProgramAnalysis::settle(Unit &unit, UnitResult run) const {
   unit.held = run.held;
   unit.reported.insert(run.reported.begin(), run.reported.end());
   // RFC 0030 §2.6: only the last reporting run publishes.
-  if (run.ledger && (ledgers || interfaces || unitSummaries))
-    unit.ledger = std::make_shared<const core::Ledger>(run.ledger->ledger);
+  if (run.ledger && (interfaces || unitSummaries))
+    unit.ledger = std::move(run.ledger);
   if (run.interface)
     unit.interface = std::move(run.interface);
 }
@@ -217,8 +185,6 @@ void ProgramAnalysis::widen(analysis::UnitExports &exports,
         before != previous.functions.end())
       function.effects =
           core::joinEffects(function.effects, before->second.effects);
-  exports.countFields.insert(previous.countFields.begin(),
-                             previous.countFields.end());
 }
 
 void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
@@ -302,18 +268,13 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
 
   bool stale = false;
   bool changed = true;
-  bool cut = false;
-  for (unsigned round = 0; round < MaxRounds && changed && !cut; ++round) {
+  for (unsigned round = 0; round < MaxRounds && changed; ++round) {
     if (options.engine.stats)
       options.engine.stats->add("program_fixpoint_rounds");
     changed = false;
     for (const unsigned k : schedule) {
       if (broken[k] || !dirty[k])
         continue;
-      if (exhausted()) {
-        cut = true;
-        break;
-      }
       dirty[k] = false;
       if (stale) {
         // RFC 0020: no analyzer is active between unit runs. Release the
@@ -349,7 +310,7 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
       }
     }
   }
-  if (changed && !cut) {
+  if (changed) {
     std::vector<std::string> names;
     names.reserve(component.size());
     for (const unsigned member : component)
@@ -365,13 +326,6 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
     Unit &unit = units[component[k]];
     if (broken[k])
       continue;
-    // RFC 0033 §7: a group the budget cut keeps its compile-time view.
-    if (cut || exhausted()) {
-      broken[k] = true;
-      current[k] = *unit.exports;
-      result.unfinished.push_back(unit.unit->name());
-      continue;
-    }
     announce(options.engine.dumpStream, *unit.unit);
     FrontendOptions overrides;
     overrides.database = &db;
@@ -404,11 +358,6 @@ void ProgramAnalysis::analyzeComponent(const std::vector<unsigned> &component,
                                        Result &result) {
   if (component.size() == 1 && !units[component.front()].exports)
     return;
-  // (A serving unit calls into no other unit: a component of its own.)
-  if (component.size() == 1 && units[component.front()].dormant) {
-    settled.add(*units[component.front()].exports);
-    return;
-  }
   if (component.size() == 1)
     analyzeAcyclic(component.front(), result);
   else
@@ -417,14 +366,10 @@ void ProgramAnalysis::analyzeComponent(const std::vector<unsigned> &component,
 
 ProgramAnalysis::Result ProgramAnalysis::run() {
   Result result;
-  started = std::chrono::steady_clock::now();
   settled.clear();
-  settled.programFacts = programFacts;
   attempted.clear();
   boundedRetention = false;
   retainedUnits.clear();
-  for (const analysis::UnitExports &exports : fixed)
-    settled.add(exports);
 
   // Discovery: one parse, no analysis, for units whose exports are not
   // already on hand.
@@ -442,7 +387,7 @@ ProgramAnalysis::Result ProgramAnalysis::run() {
     }
   }
   // RFC 0030 §13.2 step 2 in `weavec --whole-program`.
-  if (interfaces && !programFacts)
+  if (interfaces)
     solveDiscoveredSlots();
   settled.programFacts = programFacts;
 
@@ -461,17 +406,11 @@ ProgramAnalysis::Result ProgramAnalysis::run() {
   }
   serveContexts(result);
   if (unitSummaries) {
-    LedgerOutputOptions summaryOnly = options.ledgerOutput;
-    summaryOnly.path.clear();
-    summaryOnly.summary = true;
-    for (const Unit &unit : units) {
-      if (!unit.ledger || unit.ledger->units.empty())
-        continue;
-      core::Ledger ledger = *unit.ledger;
-      (void)emitUnitLedger(ledger,
-                           UnitIdentity{.source = ledger.units.front().source},
-                           options.config, summaryOnly);
-    }
+    for (const Unit &unit : units)
+      if (unit.ledger && !unit.ledger->units.empty())
+        printUnitSummary(*unit.ledger,
+                         summaryName(unit.ledger->units.front().source, {}),
+                         options.control);
   }
 
   if (llvm::raw_ostream *dump = options.engine.dumpStream) {
@@ -512,8 +451,6 @@ void ProgramAnalysis::serveContexts(Result &result) {
   auto rebuild = [&] {
     settled.clear();
     settled.programFacts = programFacts;
-    for (const analysis::UnitExports &exports : fixed)
-      settled.add(exports);
     for (const Unit &unit : units)
       if (unit.exports)
         settled.add(*unit.exports);
@@ -536,7 +473,6 @@ void ProgramAnalysis::serveContexts(Result &result) {
     result.errors += run->errors;
     result.warnings += run->warnings;
     const analysis::UnitExports before = std::move(*unit.exports);
-    unit.dormant = false;
     settle(unit, std::move(*run));
     return !unit.exports->sameSummariesAs(before);
   };
@@ -548,7 +484,7 @@ void ProgramAnalysis::serveContexts(Result &result) {
   const std::vector<std::vector<unsigned>> order =
       core::stronglyConnectedComponents(adjacency);
   std::set<unsigned> pending;
-  for (unsigned round = 0; round < MaxContextRounds && !exhausted(); ++round) {
+  for (unsigned round = 0; round < MaxContextRounds; ++round) {
     rebuild();
     // Requests no unit has served yet: their definers run, once per
     // request (one the definer cannot serve stays unserved).
@@ -564,7 +500,7 @@ void ProgramAnalysis::serveContexts(Result &result) {
     std::set<unsigned> next;
     for (const std::vector<unsigned> &component : order)
       for (const unsigned index : component) {
-        if (!pending.contains(index) || !units[index].exports || exhausted())
+        if (!pending.contains(index) || !units[index].exports)
           continue;
         const std::optional<bool> changed = reportingRun(index, true);
         // Its callers use the contexts it now serves, or its new summaries:
@@ -578,34 +514,25 @@ void ProgramAnalysis::serveContexts(Result &result) {
   // Every unit still held reports now, with whatever is served.
   for (const std::vector<unsigned> &component : order)
     for (const unsigned index : component)
-      if (units[index].held && units[index].exports) {
-        // RFC 0033 §7: past the budget its compile-time results stand.
-        if (exhausted()) {
-          result.unfinished.push_back(units[index].unit->name());
-          units[index].ledger.reset();
-          continue;
-        }
+      if (units[index].held && units[index].exports)
         (void)reportingRun(index, false);
-      }
   rebuild();
 }
 
 void ProgramAnalysis::solveDiscoveredSlots() {
   std::vector<ProgramMember> members;
-  LinkShape shape;
-  shape.executable = false;
+  bool executable = false;
   for (const Unit &unit : units) {
     if (!unit.interface)
       continue;
     ProgramMember member;
     member.source = unit.unit->name();
-    member.payload.facts.slots = unit.interface->slots;
-    shape.executable =
-        shape.executable || unit.interface->slots.defined.contains("main");
+    member.facts.slots = unit.interface->slots;
+    executable = executable || unit.interface->slots.defined.contains("main");
     members.push_back(std::move(member));
   }
   auto facts = std::make_shared<analysis::ProgramFacts>();
-  facts->slots = solveProgramSlots(members, shape);
+  facts->slots = solveProgramSlots(members, executable);
   facts->boundaries = programBoundaries(members);
   programFacts = std::move(facts);
 }
@@ -614,8 +541,7 @@ const core::Ledger *ProgramAnalysis::ledgerOf(std::size_t index) const {
   return index < units.size() ? units[index].ledger.get() : nullptr;
 }
 
-const record::InterfaceFacts *
-ProgramAnalysis::interfaceOf(std::size_t index) const {
+const InterfaceFacts *ProgramAnalysis::interfaceOf(std::size_t index) const {
   return index < units.size() ? units[index].interface.get() : nullptr;
 }
 
@@ -623,12 +549,6 @@ const analysis::UnitExports *
 ProgramAnalysis::exportsOf(std::size_t index) const {
   return index < units.size() && units[index].exports ? &*units[index].exports
                                                       : nullptr;
-}
-
-const std::set<ReportedDiagnostic> &
-ProgramAnalysis::reportedOf(std::size_t index) const {
-  static const std::set<ReportedDiagnostic> None;
-  return index < units.size() ? units[index].reported : None;
 }
 
 std::string ProgramAnalysis::unitName(std::size_t index) const {

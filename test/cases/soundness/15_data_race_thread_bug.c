@@ -11,5 +11,5 @@ int main(void) {
   pthread_t t;
   if (pthread_create(&t, NULL, worker, NULL) != 0) return 1;
   pthread_join(t, NULL);
-  return shared[0]; // BUG: use-after-free // NOT-PROVEN: temporal
+  return shared[0]; // BUG: use-after-free
 }

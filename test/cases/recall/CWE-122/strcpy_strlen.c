@@ -9,7 +9,7 @@ void bad(const char *s) {
   char *d = malloc(strlen(s));
   if (!d)
     return;
-  strcpy(d, s); // BUG: out-of-bounds // TRAP: object
+  strcpy(d, s); // BUG: out-of-bounds // TRAP
   print_line(d);
   free(d);
 }
@@ -19,7 +19,7 @@ void bad_length_first(const char *s) {
   char *d = malloc(n);
   if (!d)
     return;
-  strcpy(d, s); // BUG: out-of-bounds // TRAP: len
+  strcpy(d, s); // BUG: out-of-bounds // TRAP
   print_line(d);
   free(d);
 }
@@ -28,7 +28,7 @@ void bad_strdup_index(const char *s) {
   char *d = strdup(s);
   if (!d)
     return;
-  d[strlen(s) + 1] = 0; // BUG: out-of-bounds // TRAP: object
+  d[strlen(s) + 1] = 0; // BUG: out-of-bounds // TRAP
   print_line(d);
   free(d);
 }

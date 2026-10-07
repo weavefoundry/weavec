@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 static void copy(char *d, const char *s, size_t n) {
-  memcpy(d, s, n); // GUARDED: spatial
+  memcpy(d, s, n);
 }
 int main(int argc, char **argv) {
   char *src = calloc(1, 64);

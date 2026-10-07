@@ -9,7 +9,7 @@ static int say(char *out, const char *format, ...) {
   va_list ap;
   int written;
   va_start(ap, format);
-  written = vsprintf(out, format, ap); // GUARDED: spatial
+  written = vsprintf(out, format, ap);
   va_end(ap);
   return written;
 }

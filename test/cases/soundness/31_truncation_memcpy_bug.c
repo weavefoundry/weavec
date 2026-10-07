@@ -7,6 +7,6 @@ int main(int argc, char **argv) {
   char buf[64];
   size_t len = strlen(argv[1]);
   unsigned char n = (unsigned char)len;
-  if (n < sizeof buf) memcpy(buf, argv[1], len); // BUG: out-of-bounds // TRAP: len
+  if (n < sizeof buf) memcpy(buf, argv[1], len); // BUG: out-of-bounds // TRAP
   return buf[0];
 }

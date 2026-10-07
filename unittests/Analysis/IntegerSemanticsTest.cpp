@@ -17,7 +17,7 @@ using namespace weavec::test;
 /// with the reason when it is unresolved (`unresolved/unknown-extent`).
 static std::string spatialAt(const AnalysisResult &result, unsigned line,
                              std::string_view text) {
-  for (const core::UnitLedger &unit : result.planned.ledger.units)
+  for (const core::UnitLedger &unit : result.ledger.units)
     for (const core::FunctionLedger &function : unit.functions)
       for (const core::Site &site : function.sites)
         if (site.location.line == line && site.text == text)

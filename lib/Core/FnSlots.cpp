@@ -14,10 +14,6 @@
 
 namespace weavec::core {
 
-/// The record keyword of an `open(S)` constraint (a name the C library also
-/// uses; RFC 0030, gate H2).
-static constexpr std::string_view OpenConstraint = "open";
-
 //===----------------------------------------------------------------------===//
 // Keys and constraints
 //===----------------------------------------------------------------------===//
@@ -628,30 +624,6 @@ void FnSlots::addOpen(SlotKey slot, std::string detail) {
   add(SlotConstraint::open(std::move(slot), std::move(detail)));
 }
 
-void FnSlots::addDirectCall(std::string_view callee,
-                            std::span<const std::optional<SlotKey>> arguments,
-                            const std::optional<SlotKey> &receiver) {
-  for (std::size_t i = 0; i < arguments.size(); ++i) {
-    if (arguments[i])
-      addSubset(*arguments[i], SlotKey::param(std::string(callee),
-                                              static_cast<std::uint32_t>(i)));
-  }
-  if (receiver)
-    addSubset(SlotKey::result(std::string(callee)), *receiver);
-}
-
-void FnSlots::addIndirectCall(const SlotKey &callee,
-                              std::span<const std::optional<SlotKey>> arguments,
-                              const std::optional<SlotKey> &receiver) {
-  for (std::size_t i = 0; i < arguments.size(); ++i) {
-    if (arguments[i])
-      addSubset(*arguments[i],
-                SlotKey::callParam(callee, static_cast<std::uint32_t>(i)));
-  }
-  if (receiver)
-    addSubset(SlotKey::callResult(callee), *receiver);
-}
-
 void FnSlots::merge(const FnSlots &other) {
   all.insert(other.all.begin(), other.all.end());
 }
@@ -689,9 +661,10 @@ static LocalValue valueOf(const SlotKey &key,
       value = found->second;
     return value;
   }
-  if (key.kind == SlotKind::CallResult) {
+  if (const auto calleeKey = key.callee();
+      calleeKey && key.kind == SlotKind::CallResult) {
     // A call through a local calls every callee the local holds.
-    const LocalValue callee = valueOf(*key.callee(), values);
+    const LocalValue callee = valueOf(*calleeKey, values);
     for (const SlotKey &slot : callee.slots)
       value.slots.insert(SlotKey::callResult(slot));
     for (const std::string &function : callee.functions)
@@ -709,8 +682,9 @@ sinksOf(const SlotKey &key, const std::map<SlotKey, LocalValue> &values) {
   if (!key.isLocal())
     return {key};
   std::vector<SlotKey> sinks;
-  if (key.kind == SlotKind::CallParam) {
-    const LocalValue callee = valueOf(*key.callee(), values);
+  if (const auto calleeKey = key.callee();
+      calleeKey && key.kind == SlotKind::CallParam) {
+    const LocalValue callee = valueOf(*calleeKey, values);
     for (const SlotKey &slot : callee.slots)
       sinks.push_back(SlotKey::callParam(slot, key.index));
     for (const std::string &function : callee.functions)
@@ -809,134 +783,6 @@ FnSlots FnSlots::fromRows(std::span<const SlotRow> rows) {
       slots.addSubset(source, row.slot);
     if (row.open)
       slots.addOpen(row.slot, *row.open);
-  }
-  return slots;
-}
-
-static std::string escapeField(std::string_view text) {
-  std::string escaped;
-  escaped.reserve(text.size());
-  for (const char c : text) {
-    switch (c) {
-    case '\\':
-      escaped += "\\\\";
-      break;
-    case '\t':
-      escaped += "\\t";
-      break;
-    case '\n':
-      escaped += "\\n";
-      break;
-    default:
-      escaped += c;
-      break;
-    }
-  }
-  return escaped;
-}
-
-static std::optional<std::string> unescapeField(std::string_view text) {
-  std::string plain;
-  plain.reserve(text.size());
-  for (std::size_t i = 0; i < text.size(); ++i) {
-    if (text[i] != '\\') {
-      plain += text[i];
-      continue;
-    }
-    if (++i == text.size())
-      return std::nullopt;
-    switch (text[i]) {
-    case '\\':
-      plain += '\\';
-      break;
-    case 't':
-      plain += '\t';
-      break;
-    case 'n':
-      plain += '\n';
-      break;
-    default:
-      return std::nullopt;
-    }
-  }
-  return plain;
-}
-
-std::string FnSlots::print() const {
-  std::string text;
-  for (const SlotConstraint &constraint : all) {
-    switch (constraint.kind) {
-    case SlotConstraint::Kind::Member:
-      text += "member\t" + escapeField(constraint.function) + "\t" +
-              escapeField(constraint.slot.toString());
-      break;
-    case SlotConstraint::Kind::Subset:
-      text += "subset\t" + escapeField(constraint.from.toString()) + "\t" +
-              escapeField(constraint.slot.toString());
-      break;
-    case SlotConstraint::Kind::Open:
-      text += std::string(OpenConstraint) + "\t" +
-              escapeField(constraint.slot.toString()) + "\t" +
-              escapeField(constraint.detail);
-      break;
-    }
-    text += '\n';
-  }
-  return text;
-}
-
-std::optional<FnSlots> FnSlots::parse(std::string_view text,
-                                      std::string *error) {
-  FnSlots slots;
-  std::size_t lineNumber = 0;
-  const auto fail = [&](const std::string &why) -> std::optional<FnSlots> {
-    if (error != nullptr)
-      *error = "line " + std::to_string(lineNumber) + ": " + why;
-    return std::nullopt;
-  };
-  while (!text.empty()) {
-    ++lineNumber;
-    const std::size_t newline = text.find('\n');
-    const std::string_view line = text.substr(0, newline);
-    text.remove_prefix(newline == std::string_view::npos ? text.size()
-                                                         : newline + 1);
-    if (line.empty())
-      continue;
-    std::vector<std::string> fields;
-    std::size_t start = 0;
-    while (true) {
-      const std::size_t tab = line.find('\t', start);
-      const auto field = unescapeField(line.substr(
-          start, tab == std::string_view::npos ? std::string_view::npos
-                                               : tab - start));
-      if (!field)
-        return fail("malformed escape");
-      fields.push_back(*field);
-      if (tab == std::string_view::npos)
-        break;
-      start = tab + 1;
-    }
-    if (fields.size() != 3)
-      return fail("expected three fields");
-    if (fields[0] == "member") {
-      const auto slot = SlotKey::parse(fields[2]);
-      if (!slot || fields[1].empty())
-        return fail("malformed member constraint");
-      slots.addMember(fields[1], *slot);
-    } else if (fields[0] == "subset") {
-      const auto from = SlotKey::parse(fields[1]);
-      const auto to = SlotKey::parse(fields[2]);
-      if (!from || !to)
-        return fail("malformed subset constraint");
-      slots.addSubset(*from, *to);
-    } else if (fields[0] == OpenConstraint) {
-      const auto slot = SlotKey::parse(fields[1]);
-      if (!slot)
-        return fail("malformed open constraint");
-      slots.addOpen(*slot, fields[2]);
-    } else {
-      return fail("unknown constraint '" + fields[0] + "'");
-    }
   }
   return slots;
 }

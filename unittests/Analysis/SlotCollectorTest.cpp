@@ -38,8 +38,26 @@ struct CollectedSlots {
   SlotCollection slots;
   core::SlotSolution solution;
 
-  /// Every constraint, spelled as `FnSlots::print` spells it.
-  [[nodiscard]] std::string text() const { return slots.constraints().print(); }
+  /// Every constraint, one per line: `member<TAB><function><TAB><slot>`,
+  /// `subset<TAB><from><TAB><to>` or `open<TAB><slot><TAB><detail>`.
+  [[nodiscard]] std::string text() const {
+    std::string out;
+    for (const core::SlotConstraint &c : slots.constraints().constraints()) {
+      switch (c.kind) {
+      case core::SlotConstraint::Kind::Member:
+        out += "member\t" + c.function + "\t" + c.slot.toString();
+        break;
+      case core::SlotConstraint::Kind::Subset:
+        out += "subset\t" + c.from.toString() + "\t" + c.slot.toString();
+        break;
+      case core::SlotConstraint::Kind::Open:
+        out += "open\t" + c.slot.toString() + "\t" + c.detail;
+        break;
+      }
+      out += '\n';
+    }
+    return out;
+  }
   [[nodiscard]] bool has(const std::string &line) const {
     return text().find(line + "\n") != std::string::npos;
   }
@@ -219,11 +237,11 @@ void setup(void) {
   EXPECT_FALSE(rules.confinedRecords.contains("a.c:struct shared_ops"));
   EXPECT_TRUE(rules.escapedStatics.contains("a.c:exposed"));
   EXPECT_FALSE(rules.escapedStatics.contains("a.c:hook"));
-  EXPECT_TRUE(
-      unit->solution.isClosed(SlotKey::field("a.c:struct local_ops", "f")));
+  EXPECT_FALSE(
+      unit->solution.isOpen(SlotKey::field("a.c:struct local_ops", "f")));
   EXPECT_TRUE(
       unit->solution.isOpen(SlotKey::field("a.c:struct shared_ops", "f")));
-  EXPECT_TRUE(unit->solution.isClosed(SlotKey::staticGlobal("a.c", "hook")));
+  EXPECT_FALSE(unit->solution.isOpen(SlotKey::staticGlobal("a.c", "hook")));
   EXPECT_TRUE(unit->solution.isOpen(SlotKey::staticGlobal("a.c", "exposed")));
   // A function converted to a data pointer escapes: code outside may call it.
   EXPECT_TRUE(unit->has("member\ta.c:d\tparam <unknown> 0")) << unit->text();
@@ -309,7 +327,7 @@ struct global_State *luaL_newstate(void) { return lua_newstate(l_alloc, 0); }
   core::FnSlots program = lstate->slots.exported();
   program.merge(lauxlib->slots.exported());
   core::SlotRules link;
-  link.scope = core::SlotScope::Link;
+  link.scope = core::SlotScope::Program;
   for (const auto *unit : {lstate.get(), lauxlib.get()}) {
     link.defined.insert(unit->slots.rules().defined.begin(),
                         unit->slots.rules().defined.end());

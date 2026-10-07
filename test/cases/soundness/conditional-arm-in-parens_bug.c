@@ -12,7 +12,7 @@ static int pick(int n) {
   int total = 0;
   for (int i = 0; i < n; i++) {
     int t = (i & 1) ? (x = i, 5) : 0;
-    total += a[t]; // BUG: out-of-bounds // TRAP: index // NOT-PROVEN: spatial
+    total += a[t]; // BUG: out-of-bounds // TRAP
   }
   return total + x;
 }

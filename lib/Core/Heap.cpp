@@ -556,21 +556,6 @@ static bool rangesDisjoint(const Zone &zone, const Segment &a,
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static): Heap API
-std::optional<bool> Heap::contains(const HeapState &state,
-                                   const CellKey &position, const Term &from,
-                                   const Term &to, const Term &offset) const {
-  switch (inRange(state.zone, position, from, to, offset)) {
-  case Order::Proven:
-    return true;
-  case Order::Refuted:
-    return false;
-  case Order::Unknown:
-    return std::nullopt;
-  }
-  return std::nullopt;
-}
-
-// NOLINTNEXTLINE(readability-convert-member-functions-to-static): Heap API
 std::optional<bool> Heap::sameCell(const HeapState &state, const Term &first,
                                    const Term &second) const {
   return sameOffset(state, first, second);
@@ -1041,25 +1026,6 @@ void Heap::evictCell(HeapState &state, ObjectId objectId, CellKey key) const {
     Sym merged = summary == nullptr ? value : mergeWeak(state, *summary, value);
     state.objects.at(objectId).cells.set(position, merged);
   }
-}
-
-void Heap::evictSegment(HeapState &state, ObjectId objectId,
-                        std::size_t index) const {
-  std::vector<Segment> segments = state.objects.at(objectId).segments;
-  if (index >= segments.size())
-    return;
-  Segment removed = segments[index];
-  segments.erase(segments.begin() + static_cast<std::ptrdiff_t>(index));
-  // Older ranges it shadowed may hold its value; so may any element
-  // (through the summary cell).
-  for (std::size_t i = index; i < segments.size(); ++i)
-    if (!rangesDisjoint(state.zone, segments[i], removed))
-      segments[i].value = mergeWeak(state, segments[i].value, removed.value);
-  state.objects.at(objectId).segments = std::move(segments);
-  const Sym *summary = state.objects.at(objectId).cells.find(removed.position);
-  Sym merged = summary == nullptr ? removed.value
-                                  : mergeWeak(state, *summary, removed.value);
-  state.objects.at(objectId).cells.set(removed.position, merged);
 }
 
 void Heap::limitElements(HeapState &state, ObjectId objectId,
@@ -1583,10 +1549,6 @@ bool Heap::mayOverlap(const HeapState &state, ObjectId first,
 // Queries
 //===----------------------------------------------------------------------===//
 
-PointerNull Heap::nullness(const HeapState &state, Sym sym) const {
-  return info(state, sym).null;
-}
-
 std::optional<bool> Heap::pointersEqual(const HeapState &state, Sym first,
                                         Sym second) {
   if (first == second)
@@ -1758,11 +1720,6 @@ SpatialVerdict Heap::spatial(const HeapState &state, Sym pointer,
                              const Term &extraOffset,
                              std::int64_t width) const {
   return spatialAt(state, pointer, extraOffset, Term::of(width));
-}
-
-SpatialVerdict Heap::spatialRange(const HeapState &state, Sym pointer,
-                                  const Term &need) const {
-  return spatialAt(state, pointer, Term::of(0), need);
 }
 
 SpatialVerdict Heap::spatialAt(const HeapState &state, Sym pointer,

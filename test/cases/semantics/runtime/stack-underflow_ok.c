@@ -7,7 +7,7 @@
 static void *same(void *p) { return p; }
 static void *(*volatile hide)(void *) = same;
 static void chop(char *s) {
-  s[strlen(s) - 1] = 0; // GUARDED: spatial
+  s[strlen(s) - 1] = 0;
 }
 int main(void) {
   char buf[8];

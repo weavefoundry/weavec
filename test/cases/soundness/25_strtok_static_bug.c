@@ -7,5 +7,5 @@ int main(void) {
   char *t = strtok(s, ",");
   free(s);
   t = strtok(NULL, ","); // BUG: use-after-free
-  return t ? t[0] : 0;
+  return t ? t[0] : 0; // TRAP
 }

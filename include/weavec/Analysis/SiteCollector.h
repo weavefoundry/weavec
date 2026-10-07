@@ -46,19 +46,17 @@
 // `__builtin_constant_p` and `__builtin_object_size`), and the bodies of
 // blocks. Initialiser lists are walked in their semantic form, and sites are
 // deduplicated by statement, so shared subtrees count once. Sites in
-// constant expressions (static local initialisers, case labels), in the
-// shared operand of `a ?: b` or another `OpaqueValueExpr` source, and on
-// pointers into a non-default address space are marked, because no check
-// can serve them.
+// constant expressions (static local initialisers, case labels) are
+// decided as any other.
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef WEAVEC_ANALYSIS_SITECOLLECTOR_H
 #define WEAVEC_ANALYSIS_SITECOLLECTOR_H
 
-#include "weavec/Analysis/CheckWitness.h"
 #include "weavec/Analysis/KindTable.h"
 #include "weavec/Analysis/SlotCollector.h"
+#include "weavec/Analysis/SourceTerm.h"
 #include "weavec/Core/Ledger.h"
 #include "weavec/Core/LibrarySpec.h"
 
@@ -89,17 +87,14 @@ struct ArgumentNeed {
   /// ... unless a length is zero (`null-if-zero`, §8.3) ...
   bool allowedIfZero = false;
   /// ... namely this term over the call's arguments; none when the row's
-  /// term has no C spelling at the call (the check is then inexpressible).
-  std::optional<WitnessTerm> unlessZero = std::nullopt;
+  /// term has no C spelling at the call.
+  std::optional<SourceTerm> unlessZero = std::nullopt;
   /// The requirement rests only on system-header attributes (§7.2 level
   /// 4): its facet is `trusted(system-api)`.
   bool systemApi = false;
   /// §7.5: the nullability of a static callee's inferred requirement, which
-  /// the engine decides with the requirement's other parts ...
+  /// the engine decides with the requirement's other parts.
   bool inferred = false;
-  /// ... and which binds only when this guard term (§7.5, over the call's
-  /// arguments, saturating at zero) is non-zero; none for an unguarded one.
-  std::optional<WitnessTerm> guard = std::nullopt;
 };
 
 /// What `SiteCollector` knows about one site before the engine runs.
@@ -119,16 +114,10 @@ struct SiteInfo {
   const clang::Expr *operand = nullptr;
   /// Index sites: the subscript.
   const clang::Expr *index = nullptr;
-  /// `*(p - i)`: the difference, the address the access uses. The operand
-  /// is `p` and there is no index (no index check wraps `-i`), so a guard
-  /// of the object table (RFC 0032 §3) wraps this instead. Null elsewhere.
-  const clang::Expr *address = nullptr;
   /// Call-like sites: the direct callee.
   const clang::FunctionDecl *callee = nullptr;
   /// LibCall, Release (and a Raw release): the row that governs the call.
   std::optional<core::LibraryMatch> library = std::nullopt;
-  /// PtrArith and Cast sites: the kind of the required position.
-  std::optional<KindEntry> required = std::nullopt;
   /// Call-like sites: the arguments with a null requirement.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<ArgumentNeed> arguments = {};
@@ -154,13 +143,6 @@ struct SiteInfo {
   clang::SourceLocation end = {};
   /// Inside a `WEAVEC_UNSAFE` function or block (§6.1).
   bool inUnsafe = false;
-  /// Inside the shared operand of `a ?: b` or another `OpaqueValueExpr`
-  /// source: no check can replace the operand in place (§2.1).
-  bool sharedOperand = false;
-  /// The pointer points into a non-default address space (§2.1).
-  bool nonDefaultAddressSpace = false;
-  /// In a constant expression: decided statically, never checked (§2.1).
-  bool constantExpression = false;
   /// The null facet rests only on system-header attributes (§5.2).
   bool nullSystemApi = false;
   /// The spatial facet rests only on system-header attributes (§5.2).
@@ -169,16 +151,6 @@ struct SiteInfo {
   /// inside a non-flexible array, or a dereference of an object's address
   /// (§5.3, §5.4 keep these proven).
   bool provenByType = false;
-  /// §2.6: the spatial facet defaults to `checked` against these witnesses
-  /// (extents exact from the type, or declared over constants and
-  /// parameters never assigned or address-taken, one per requirement of a
-  /// call); empty when it defaults to `unresolved`.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::vector<CheckWitness> spatialDefaults = {};
-
-  [[nodiscard]] bool spatialCheckable() const noexcept {
-    return !spatialDefaults.empty();
-  }
 };
 
 /// Every site of the unit, by function and by statement.
@@ -243,7 +215,6 @@ public:
   ledgers() const noexcept {
     return rows;
   }
-  [[nodiscard]] std::size_t siteCount() const noexcept;
 
 private:
   friend class SiteCollector;
@@ -290,15 +261,15 @@ private:
 /// §7.5: `term`, over the callee's parameters, as a C term over `call`'s
 /// arguments; none when it names a parameter the call does not pass or a
 /// pointer (a pointer difference is never a check term, §10.3).
-[[nodiscard]] std::optional<WitnessTerm>
+[[nodiscard]] std::optional<SourceTerm>
 argumentTerm(const core::ExtentTerm &term, const clang::CallExpr &call);
 /// §7.5, §10.4: the guard `c < rhs` (`c <= rhs`) of a requirement at `call`
 /// as the term `rhs - c` (`rhs - c + 1`), non-zero exactly when the guard
 /// holds once the term helpers saturate it at zero. None when that is not
 /// exact: a pointer guard, or a term adding to a signed argument (which the
 /// helpers stop at zero first).
-[[nodiscard]] std::optional<WitnessTerm>
-guardTerm(const RequirementGuard &guard, const clang::CallExpr &call);
+[[nodiscard]] std::optional<SourceTerm> guardTerm(const RequirementGuard &guard,
+                                                  const clang::CallExpr &call);
 
 /// Whether `call` is to a function that does not return: declared
 /// `noreturn` (or `_Noreturn`), through a `noreturn` function type, or a

@@ -3,13 +3,13 @@
 // runtime no guard, so a definite use-after-free whose error is lowered to a warning inserts
 // nothing and the facet is unresolved(lowered).
 // STAGE: S5
-// FLAGS: -Wno-error=weavec-use-after-free -fno-weavec-runtime
+// FLAGS: -Wno-error=weavec-use-after-free
 #include <stdlib.h>
 
 int main(void) {
   char *p = malloc(8);
   if (!p) return 1;
   free(p);
-  p[0] = 1; // BUG: use-after-free possible // UNRESOLVED: temporal:lowered
+  p[0] = 1; // BUG: use-after-free possible
   return 0;
 }

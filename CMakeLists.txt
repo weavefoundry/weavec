@@ -104,8 +104,7 @@ add_subdirectory(lib)
 
 if(WEAVEC_BUILD_TOOLS)
   add_subdirectory(tools)
-  # RFC 0030: libweavec_rt.a and libweavec_chk.a (the latter generated with
-  # `weavec-cc -fweavec-print-prelude=out-of-line`).
+  # RFC 0035: libweavec_rt.a and libweavec_alloc.a.
   add_subdirectory(runtime)
 endif()
 

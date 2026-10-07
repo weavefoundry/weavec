@@ -16,7 +16,7 @@ struct buf {
 // -- Loads --------------------------------------------------------------------
 
 void put(struct buf *b) {
-  b->data[b->cap] = 0; // BUG: out-of-bounds
+  b->data[b->cap] = 0; // BUG: out-of-bounds // MISS: the analysis leaves an index at or past a WEAVEC_SIZED_BY count unresolved (the count becomes a contract in RFC 0036); the guard stops at run time
   if (b->cap > 0)
     b->data[b->cap - 1] = 0;
 }
@@ -25,13 +25,13 @@ void fill(struct buf *b) {
   for (size_t i = 0; i < b->cap; i++)
     b->data[i] = 0;
   for (size_t i = 0; i <= b->cap; i++)
-    b->data[i] = 0; // BUG: out-of-bounds
+    b->data[i] = 0; // BUG: out-of-bounds // MISS: as above
 }
 
 // The string checks see the count too.
 void copy(struct buf *b) {
   if (b->cap == 4)
-    strcpy(b->data, "hello"); // BUG: out-of-bounds
+    strcpy(b->data, "hello"); // BUG: out-of-bounds // MISS: as above
 }
 
 // -- Stores -------------------------------------------------------------------

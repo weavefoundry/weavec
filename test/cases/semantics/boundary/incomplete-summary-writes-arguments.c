@@ -30,5 +30,5 @@ int main(int argc, char **argv) {
   int *p = 0;
   if (fill(&p, argc))
     return 1;
-  return *p == 7 ? 0 : 2; // NOT-PROVEN: null
+  return *p == 7 ? 0 : 2;
 }

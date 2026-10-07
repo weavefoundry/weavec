@@ -1753,8 +1753,8 @@ core::Sym CallApplier::applyAnnotated(const std::vector<AnnotationSet> &params,
 core::Sym CallApplier::applyDirect(const FunctionDecl &callee) {
   const UnitRun &unit = run.unitRun();
   const FunctionDecl *canonical = callee.getCanonicalDecl();
-  // A summary of the unit (or, at link, of the program); for a call whose
-  // context the general summary does not describe, the context's (§6.6).
+  // A summary of the unit (or of the program in `weavec --whole-program`);
+  // for a call whose context it does not describe, the context's (§6.6).
   if (const core::FunctionEffects *effects = unit.summaryOf(*canonical)) {
     if (const core::FunctionEffects *specific =
             transfer.contextSummary(call, callee, args, *effects))
@@ -1929,9 +1929,9 @@ core::Sym CallApplier::apply(const FunctionDecl *callee,
       if (targets.empty() && foreign.size() == 1)
         return transfer.instantiate(call, *foreign.front(), args);
     }
-  // RFC 0005: at link an indirect call nothing resolves may reach any
-  // address-taken function of its type, this unit's and (joined) the
-  // program's.
+  // RFC 0005: in `weavec --whole-program` an indirect call nothing resolves
+  // may reach any address-taken function of its type, this unit's and
+  // (joined) the program's.
   const core::FunctionEffects *programCandidates = nullptr;
   const EngineInput &input = transfer.functionRun().unitRun().input;
   if (targets.empty() && foreign.empty() && input.database != nullptr) {

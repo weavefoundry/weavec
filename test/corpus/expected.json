@@ -1,1715 +1,231 @@
 {
   "schema": "weavec-corpus-expected",
-  "version": 1,
+  "version": 2,
   "_comment": [
-    "The corpus ratchet of RFC 0030, section 17.5, written by scripts/corpus-gate.py --update",
-    "(or --update-from a results file measured elsewhere, for example by CI). For each platform,",
-    "configs.<config> records the per-file compiles (units) and, for wholeProgram configs, the",
-    "whole-program analysis (program): errors, warnings, ledger outcome counts,",
-    "unresolvedShare.spatialNull, cpuSeconds and workCounters; --full adds traps and --bench",
-    "overhead. Counts and shares must match exactly: a worse value fails, and so does a better",
-    "one until --update records it. cpuSeconds and overhead may exceed the record by 10% on the",
-    "machine that recorded them (not compared elsewhere), work counters by 2%. The platforms stay",
-    "empty until the RFC 0030 compiler writes ledgers (S3); legacy holds v0.10.0's numbers for S0",
-    "and S1."
+    "The corpus ratchet (RFC 0035, section 11), written by scripts/corpus-gate.py --update (or",
+    "--update-from a results file measured elsewhere, for example by CI). For each platform,",
+    "configs.<config> records what --quick measured: `ledger`, the enforcement ledgers of the",
+    "per-file weavec-cc -c -O2 compiles (accesses, proven, guarded, unguarded, provenShare), and",
+    "`analysis`, the summary lines of the weavec analysis (sites, proven, notProven, violations,",
+    "trusted, errors, warnings, overBudget). provenShare must not drop, and unguarded, errors and",
+    "warnings must not rise; a better value and a change of the other counts are reported until",
+    "--update records them. test/corpus/README.md documents the gate."
   ],
   "platforms": {
     "darwin-arm64": {
       "machine": "darwin-arm64 Apple M3 x8",
-      "producer": "weavec-cc version 0.13.0-dev (6522842e8935-dirty)",
-      "updated": "2026-10-05",
+      "producer": "weavec-cc version 0.15.0-dev (90dcdf8665ea-dirty)",
+      "updated": "2026-10-06",
       "configs": {
-        "brotli": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 27618,
-              "proven": 44365,
-              "checked": 3789,
-              "guarded": 7322,
-              "violation": 0,
-              "unresolved": 2510,
-              "trusted": 9
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0208,
-              "temporal": 0.0755
-            },
-            "cpuSeconds": 20.17,
-            "workCounters": {
-              "blockTransfers": 157146,
-              "functions": 3036,
-              "sites": 27618
-            }
-          },
-          "traps": 0,
-          "overhead": 3.2709,
-          "overheadNoRuntime": 1.159,
-          "rssRatio": 0.3714
-        },
-        "bzip2": {
-          "units": {
-            "errors": 0,
-            "warnings": 1,
-            "ledger": {
-              "sites": 5230,
-              "proven": 7361,
-              "checked": 919,
-              "guarded": 3589,
-              "violation": 0,
-              "unresolved": 433,
-              "trusted": 31
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0137,
-              "temporal": 0.0724
-            },
-            "cpuSeconds": 6.73,
-            "workCounters": {
-              "blockTransfers": 35014,
-              "functions": 108,
-              "sites": 5230
-            }
-          },
-          "program": {
-            "errors": 0,
-            "warnings": 9,
-            "ledger": {
-              "sites": 5230,
-              "proven": 9587,
-              "checked": 859,
-              "guarded": 1598,
-              "violation": 0,
-              "unresolved": 278,
-              "trusted": 19
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0153,
-              "temporal": 0.0351
-            },
-            "cpuSeconds": 20.48,
-            "workCounters": {
-              "blockTransfers": 107073,
-              "functions": 108,
-              "sites": 5230
-            }
-          },
-          "traps": 0
-        },
         "cJSON": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 1221,
-              "proven": 2123,
-              "checked": 68,
-              "guarded": 378,
-              "violation": 0,
-              "unresolved": 77,
-              "trusted": 20
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.016,
-              "temporal": 0.0454
-            },
-            "cpuSeconds": 0.51,
-            "workCounters": {
-              "blockTransfers": 7132,
-              "functions": 113,
-              "sites": 1221
-            }
+          "ledger": {
+            "accesses": 734,
+            "proven": 398,
+            "guarded": 336,
+            "unguarded": 0,
+            "provenShare": 0.5422
           },
-          "traps": 0,
-          "overhead": 1.5933,
-          "overheadNoRuntime": 1.1511,
-          "rssRatio": 0.3696
-        },
-        "cJSON-program": {
-          "units": {
+          "analysis": {
+            "sites": 1221,
+            "proven": 858,
+            "notProven": 361,
+            "violations": 0,
+            "trusted": 2,
             "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 1745,
-              "proven": 2632,
-              "checked": 123,
-              "guarded": 660,
-              "violation": 0,
-              "unresolved": 234,
-              "trusted": 20
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0131,
-              "temporal": 0.1239
-            },
-            "cpuSeconds": 1.17,
-            "workCounters": {
-              "blockTransfers": 13393,
-              "functions": 151,
-              "sites": 1745
-            }
-          },
-          "program": {
-            "errors": 0,
-            "warnings": 10,
-            "ledger": {
-              "sites": 1745,
-              "proven": 2699,
-              "checked": 115,
-              "guarded": 673,
-              "violation": 0,
-              "unresolved": 166,
-              "trusted": 20
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.015,
-              "temporal": 0.081
-            },
-            "cpuSeconds": 3.51,
-            "workCounters": {
-              "blockTransfers": 25237,
-              "functions": 151,
-              "sites": 1745
-            }
+            "warnings": 4,
+            "overBudget": 0
           }
         },
-        "cmark": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 4742,
-              "proven": 6756,
-              "checked": 754,
-              "guarded": 2269,
-              "violation": 0,
-              "unresolved": 1056,
-              "trusted": 3
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0136,
-              "temporal": 0.2174
-            },
-            "cpuSeconds": 5.56,
-            "workCounters": {
-              "blockTransfers": 46423,
-              "functions": 284,
-              "sites": 4742
-            }
+        "cJSON-program": {
+          "ledger": {
+            "accesses": 988,
+            "proven": 463,
+            "guarded": 525,
+            "unguarded": 0,
+            "provenShare": 0.4686
           },
-          "traps": 0,
-          "overhead": 2.6914,
-          "overheadNoRuntime": 1.1531,
-          "rssRatio": 1.6859
-        },
-        "curl": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 21060,
-              "proven": 26210,
-              "checked": 2973,
-              "guarded": 10253,
-              "violation": 0,
-              "unresolved": 5442,
-              "trusted": 52
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0195,
-              "temporal": 0.2541
-            },
-            "cpuSeconds": 13.76,
-            "workCounters": {
-              "blockTransfers": 93249,
-              "functions": 1303,
-              "sites": 21060
-            }
-          },
-          "traps": 0,
-          "overhead": 3.5103,
-          "overheadNoRuntime": 1.2024,
-          "rssRatio": 3.2201
-        },
-        "expat": {
-          "units": {
-            "errors": 0,
-            "warnings": 3,
-            "ledger": {
-              "sites": 10111,
-              "proven": 11884,
-              "checked": 3329,
-              "guarded": 5676,
-              "violation": 0,
-              "unresolved": 1065,
-              "trusted": 76
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0136,
-              "temporal": 0.0963
-            },
-            "cpuSeconds": 9.93,
-            "workCounters": {
-              "blockTransfers": 56649,
-              "functions": 362,
-              "sites": 10111
-            }
-          },
-          "traps": 0
-        },
-        "hiredis": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 5700,
-              "proven": 6166,
-              "checked": 751,
-              "guarded": 2427,
-              "violation": 0,
-              "unresolved": 1173,
-              "trusted": 46
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0264,
-              "temporal": 0.2166
-            },
-            "cpuSeconds": 2.97,
-            "workCounters": {
-              "blockTransfers": 19217,
-              "functions": 396,
-              "sites": 5700
-            }
-          },
-          "program": {
-            "errors": 0,
-            "warnings": 129,
-            "ledger": {
-              "sites": 5700,
-              "proven": 6723,
-              "checked": 668,
-              "guarded": 2260,
-              "violation": 0,
-              "unresolved": 980,
-              "trusted": 35
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0372,
-              "temporal": 0.1613
-            },
-            "cpuSeconds": 14.31,
-            "workCounters": {
-              "blockTransfers": 114694,
-              "functions": 396,
-              "sites": 5700
-            }
-          },
-          "traps": 0
-        },
-        "http-parser": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 2202,
-              "proven": 2555,
-              "checked": 273,
-              "guarded": 768,
-              "violation": 0,
-              "unresolved": 189,
-              "trusted": 1
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0065,
-              "temporal": 0.1068
-            },
-            "cpuSeconds": 1.98,
-            "workCounters": {
-              "blockTransfers": 13359,
-              "functions": 95,
-              "sites": 2202
-            }
-          },
-          "program": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 2202,
-              "proven": 2524,
-              "checked": 283,
-              "guarded": 780,
-              "violation": 0,
-              "unresolved": 198,
-              "trusted": 2
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0172,
-              "temporal": 0.0982
-            },
-            "cpuSeconds": 10.25,
-            "workCounters": {
-              "blockTransfers": 56693,
-              "functions": 95,
-              "sites": 2202
-            }
-          },
-          "traps": 0
-        },
-        "inih": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 116,
-              "proven": 104,
-              "checked": 26,
-              "guarded": 53,
-              "violation": 0,
-              "unresolved": 19,
-              "trusted": 2
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.019,
-              "temporal": 0.1717
-            },
-            "cpuSeconds": 0.33,
-            "workCounters": {
-              "blockTransfers": 2228,
-              "functions": 13,
-              "sites": 116
-            }
-          },
-          "program": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 116,
-              "proven": 112,
-              "checked": 26,
-              "guarded": 49,
-              "violation": 0,
-              "unresolved": 16,
-              "trusted": 2
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0283,
-              "temporal": 0.1313
-            },
-            "cpuSeconds": 0.76,
-            "workCounters": {
-              "blockTransfers": 3271,
-              "functions": 13,
-              "sites": 116
-            }
-          },
-          "traps": 0
-        },
-        "janet": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 23550,
-              "proven": 17482,
-              "checked": 4693,
-              "guarded": 12192,
-              "violation": 0,
-              "unresolved": 8808,
-              "trusted": 200
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0182,
-              "temporal": 0.3754
-            },
-            "cpuSeconds": 23.24,
-            "workCounters": {
-              "blockTransfers": 158083,
-              "functions": 1616,
-              "sites": 23550
-            }
-          },
-          "traps": 0,
-          "overhead": 1.618,
-          "overheadNoRuntime": 1.1139,
-          "rssRatio": 2.0538
-        },
-        "jansson": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 2391,
-              "proven": 2739,
-              "checked": 233,
-              "guarded": 684,
-              "violation": 0,
-              "unresolved": 705,
-              "trusted": 20
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.042,
-              "temporal": 0.2824
-            },
-            "cpuSeconds": 2.53,
-            "workCounters": {
-              "blockTransfers": 17275,
-              "functions": 236,
-              "sites": 2391
-            }
-          },
-          "program": {
-            "errors": 0,
-            "warnings": 33,
-            "ledger": {
-              "sites": 2391,
-              "proven": 3012,
-              "checked": 240,
-              "guarded": 608,
-              "violation": 0,
-              "unresolved": 561,
-              "trusted": 16
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0621,
-              "temporal": 0.1938
-            },
-            "cpuSeconds": 8.03,
-            "workCounters": {
-              "blockTransfers": 57647,
-              "functions": 236,
-              "sites": 2391
-            }
-          },
-          "traps": 0
-        },
-        "jsmn": {
-          "units": {
-            "errors": 0,
-            "warnings": 3,
-            "ledger": {
-              "sites": 384,
-              "proven": 765,
-              "checked": 36,
-              "guarded": 103,
-              "violation": 0,
-              "unresolved": 27,
-              "trusted": 2
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.031,
-              "temporal": 0.0256
-            },
-            "cpuSeconds": 0.3,
-            "workCounters": {
-              "blockTransfers": 3393,
-              "functions": 17,
-              "sites": 384
-            }
-          },
-          "traps": 0
-        },
-        "libdeflate": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 3282,
-              "proven": 3099,
-              "checked": 718,
-              "guarded": 1318,
-              "violation": 0,
-              "unresolved": 274,
-              "trusted": 208
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0047,
-              "temporal": 0.0979
-            },
-            "cpuSeconds": 2.9,
-            "workCounters": {
-              "blockTransfers": 24527,
-              "functions": 334,
-              "sites": 3282
-            }
-          },
-          "traps": 0,
-          "overhead": 3.158,
-          "overheadNoRuntime": 0.9798,
-          "rssRatio": 1.088
-        },
-        "libevent": {
-          "units": {
-            "errors": 0,
-            "warnings": 2,
-            "ledger": {
-              "sites": 18276,
-              "proven": 20523,
-              "checked": 2731,
-              "guarded": 9704,
-              "violation": 0,
-              "unresolved": 4516,
-              "trusted": 131
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0351,
-              "temporal": 0.2359
-            },
-            "cpuSeconds": 9.67,
-            "workCounters": {
-              "blockTransfers": 74169,
-              "functions": 1123,
-              "sites": 18276
-            }
-          },
-          "traps": 0
-        },
-        "libgit2": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 36499,
-              "proven": 46617,
-              "checked": 3873,
-              "guarded": 16315,
-              "violation": 0,
-              "unresolved": 8248,
-              "trusted": 123
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0154,
-              "temporal": 0.2252
-            },
-            "cpuSeconds": 25.67,
-            "workCounters": {
-              "blockTransfers": 179777,
-              "functions": 2533,
-              "sites": 36499
-            }
-          },
-          "traps": 0,
-          "overhead": 2.844,
-          "overheadNoRuntime": 1.0415,
-          "rssRatio": 1.2698
-        },
-        "libsodium": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 10255,
-              "proven": 13118,
-              "checked": 304,
-              "guarded": 1032,
-              "violation": 0,
-              "unresolved": 674,
-              "trusted": 141
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0085,
-              "temporal": 0.1009
-            },
-            "cpuSeconds": 11.12,
-            "workCounters": {
-              "blockTransfers": 44485,
-              "functions": 558,
-              "sites": 10255
-            }
-          },
-          "traps": 0
-        },
-        "libuv": {
-          "units": {
-            "errors": 0,
-            "warnings": 16,
-            "ledger": {
-              "sites": 10684,
-              "proven": 13902,
-              "checked": 1344,
-              "guarded": 3668,
-              "violation": 0,
-              "unresolved": 1583,
-              "trusted": 301
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0196,
-              "temporal": 0.151
-            },
-            "cpuSeconds": 9.43,
-            "workCounters": {
-              "blockTransfers": 54363,
-              "functions": 818,
-              "sites": 10684
-            }
-          },
-          "traps": 0
-        },
-        "libyaml": {
-          "units": {
+          "analysis": {
+            "sites": 1745,
+            "proven": 1109,
+            "notProven": 634,
+            "violations": 0,
+            "trusted": 2,
             "errors": 0,
             "warnings": 10,
-            "ledger": {
-              "sites": 9316,
-              "proven": 13964,
-              "checked": 707,
-              "guarded": 8231,
-              "violation": 0,
-              "unresolved": 776,
-              "trusted": 0
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0056,
-              "temporal": 0.0788
-            },
-            "cpuSeconds": 6.93,
-            "workCounters": {
-              "blockTransfers": 43623,
-              "functions": 196,
-              "sites": 9316
-            }
+            "overBudget": 0
+          }
+        },
+        "jansson": {
+          "ledger": {
+            "accesses": 841,
+            "proven": 350,
+            "guarded": 491,
+            "unguarded": 0,
+            "provenShare": 0.4162
           },
-          "program": {
+          "analysis": {
+            "sites": 2391,
+            "proven": 1400,
+            "notProven": 987,
+            "violations": 0,
+            "trusted": 4,
             "errors": 0,
-            "warnings": 82,
-            "ledger": {
-              "sites": 9316,
-              "proven": 16070,
-              "checked": 664,
-              "guarded": 6429,
-              "violation": 0,
-              "unresolved": 556,
-              "trusted": 3
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0094,
-              "temporal": 0.0473
-            },
-            "cpuSeconds": 36.87,
-            "workCounters": {
-              "blockTransfers": 177247,
-              "functions": 196,
-              "sites": 9316
-            }
+            "warnings": 33,
+            "overBudget": 0
+          }
+        },
+        "jsmn": {
+          "ledger": {
+            "accesses": 305,
+            "proven": 213,
+            "guarded": 92,
+            "unguarded": 0,
+            "provenShare": 0.6984
           },
-          "traps": 0
+          "analysis": {
+            "sites": 384,
+            "proven": 239,
+            "notProven": 145,
+            "violations": 0,
+            "trusted": 0,
+            "errors": 0,
+            "warnings": 4,
+            "overBudget": 0
+          }
         },
         "linenoise": {
-          "units": {
+          "ledger": {
+            "accesses": 656,
+            "proven": 317,
+            "guarded": 339,
+            "unguarded": 0,
+            "provenShare": 0.4832
+          },
+          "analysis": {
+            "sites": 1121,
+            "proven": 748,
+            "notProven": 371,
+            "violations": 0,
+            "trusted": 2,
             "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 1121,
-              "proven": 1762,
-              "checked": 123,
-              "guarded": 291,
-              "violation": 0,
-              "unresolved": 90,
-              "trusted": 11
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0099,
-              "temporal": 0.0804
-            },
-            "cpuSeconds": 0.27,
-            "workCounters": {
-              "blockTransfers": 3650,
-              "functions": 85,
-              "sites": 1121
-            }
+            "warnings": 6,
+            "overBudget": 0
           }
         },
         "linenoise-program": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 1181,
-              "proven": 1807,
-              "checked": 133,
-              "guarded": 316,
-              "violation": 0,
-              "unresolved": 113,
-              "trusted": 12
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0124,
-              "temporal": 0.095
-            },
-            "cpuSeconds": 0.4,
-            "workCounters": {
-              "blockTransfers": 4648,
-              "functions": 88,
-              "sites": 1181
-            }
+          "ledger": {
+            "accesses": 693,
+            "proven": 332,
+            "guarded": 361,
+            "unguarded": 0,
+            "provenShare": 0.4791
           },
-          "program": {
+          "analysis": {
+            "sites": 1181,
+            "proven": 781,
+            "notProven": 398,
+            "violations": 0,
+            "trusted": 2,
             "errors": 0,
             "warnings": 6,
-            "ledger": {
-              "sites": 1181,
-              "proven": 1826,
-              "checked": 134,
-              "guarded": 312,
-              "violation": 0,
-              "unresolved": 102,
-              "trusted": 12
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.016,
-              "temporal": 0.0791
-            },
-            "cpuSeconds": 0.96,
-            "workCounters": {
-              "blockTransfers": 12483,
-              "functions": 88,
-              "sites": 1181
-            }
-          },
-          "traps": 0
-        },
-        "lmdb": {
-          "units": {
-            "errors": 0,
-            "warnings": 1,
-            "ledger": {
-              "sites": 7448,
-              "proven": 9341,
-              "checked": 1736,
-              "guarded": 5351,
-              "violation": 0,
-              "unresolved": 829,
-              "trusted": 46
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0234,
-              "temporal": 0.0908
-            },
-            "cpuSeconds": 6.83,
-            "workCounters": {
-              "blockTransfers": 57980,
-              "functions": 219,
-              "sites": 7448
-            }
-          },
-          "traps": 0,
-          "overhead": 1.771,
-          "overheadNoRuntime": 1.0201,
-          "rssRatio": 1.1637
+            "overBudget": 0
+          }
         },
         "log.c": {
-          "units": {
+          "ledger": {
+            "accesses": 59,
+            "proven": 37,
+            "guarded": 22,
+            "unguarded": 0,
+            "provenShare": 0.6271
+          },
+          "analysis": {
+            "sites": 74,
+            "proven": 50,
+            "notProven": 23,
+            "violations": 0,
+            "trusted": 1,
             "errors": 0,
             "warnings": 0,
-            "ledger": {
-              "sites": 74,
-              "proven": 119,
-              "checked": 18,
-              "guarded": 7,
-              "violation": 0,
-              "unresolved": 6,
-              "trusted": 4
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0215,
-              "temporal": 0.0656
-            },
-            "cpuSeconds": 0.09,
-            "workCounters": {
-              "blockTransfers": 824,
-              "functions": 12,
-              "sites": 74
-            }
+            "overBudget": 0
           }
         },
         "lua": {
-          "units": {
-            "errors": 0,
-            "warnings": 1,
-            "ledger": {
-              "sites": 14578,
-              "proven": 16698,
-              "checked": 2118,
-              "guarded": 7174,
-              "violation": 0,
-              "unresolved": 3887,
-              "trusted": 16
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0119,
-              "temporal": 0.2796
-            },
-            "cpuSeconds": 20.05,
-            "workCounters": {
-              "blockTransfers": 71266,
-              "functions": 1157,
-              "sites": 14578
-            }
+          "ledger": {
+            "accesses": 7493,
+            "proven": 2752,
+            "guarded": 4741,
+            "unguarded": 0,
+            "provenShare": 0.3673
           },
-          "program": {
+          "analysis": {
+            "sites": 14578,
+            "proven": 6451,
+            "notProven": 8123,
+            "violations": 0,
+            "trusted": 4,
             "errors": 0,
             "warnings": 79,
-            "ledger": {
-              "sites": 14578,
-              "proven": 18593,
-              "checked": 2063,
-              "guarded": 6401,
-              "violation": 0,
-              "unresolved": 3153,
-              "trusted": 19
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.029,
-              "temporal": 0.2015
-            },
-            "cpuSeconds": 158.45,
-            "workCounters": {
-              "blockTransfers": 584019,
-              "functions": 1157,
-              "sites": 14578
-            }
-          },
-          "traps": 0,
-          "overhead": 2.4272,
-          "overheadNoRuntime": 1.0934,
-          "rssRatio": 1.5393
-        },
-        "lz4": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 2925,
-              "proven": 4354,
-              "checked": 294,
-              "guarded": 761,
-              "violation": 0,
-              "unresolved": 246,
-              "trusted": 0
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0119,
-              "temporal": 0.0781
-            },
-            "cpuSeconds": 2.65,
-            "workCounters": {
-              "blockTransfers": 15557,
-              "functions": 295,
-              "sites": 2925
-            }
-          },
-          "traps": 0
-        },
-        "miniz": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 4695,
-              "proven": 7765,
-              "checked": 436,
-              "guarded": 1590,
-              "violation": 0,
-              "unresolved": 476,
-              "trusted": 46
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0109,
-              "temporal": 0.0983
-            },
-            "cpuSeconds": 3.83,
-            "workCounters": {
-              "blockTransfers": 22657,
-              "functions": 176,
-              "sites": 4695
-            }
-          },
-          "traps": 0
-        },
-        "mujs": {
-          "units": {
-            "errors": 0,
-            "warnings": 2,
-            "ledger": {
-              "sites": 10905,
-              "proven": 11924,
-              "checked": 1696,
-              "guarded": 3381,
-              "violation": 0,
-              "unresolved": 4058,
-              "trusted": 76
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0786,
-              "temporal": 0.3079
-            },
-            "cpuSeconds": 11.63,
-            "workCounters": {
-              "blockTransfers": 65102,
-              "functions": 746,
-              "sites": 10905
-            }
-          },
-          "traps": 0
-        },
-        "oniguruma": {
-          "units": {
-            "errors": 0,
-            "warnings": 5,
-            "ledger": {
-              "sites": 13137,
-              "proven": 17787,
-              "checked": 2895,
-              "guarded": 6504,
-              "violation": 0,
-              "unresolved": 2171,
-              "trusted": 34
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0266,
-              "temporal": 0.1443
-            },
-            "cpuSeconds": 24.15,
-            "workCounters": {
-              "blockTransfers": 100091,
-              "functions": 764,
-              "sites": 13137
-            }
-          },
-          "traps": 0
-        },
-        "pcre2": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 15650,
-              "proven": 6637,
-              "checked": 10853,
-              "guarded": 21603,
-              "violation": 0,
-              "unresolved": 957,
-              "trusted": 10
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0052,
-              "temporal": 0.0586
-            },
-            "cpuSeconds": 57.75,
-            "workCounters": {
-              "blockTransfers": 157460,
-              "functions": 187,
-              "sites": 15650
-            }
-          },
-          "traps": 0
-        },
-        "printf": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 148,
-              "proven": 112,
-              "checked": 28,
-              "guarded": 77,
-              "violation": 0,
-              "unresolved": 43,
-              "trusted": 0
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0301,
-              "temporal": 0.3071
-            },
-            "cpuSeconds": 0.26,
-            "workCounters": {
-              "blockTransfers": 4183,
-              "functions": 20,
-              "sites": 148
-            }
+            "overBudget": 0
           }
         },
-        "quickjs": {
-          "units": {
-            "errors": 0,
-            "warnings": 17,
-            "ledger": {
-              "sites": 36058,
-              "proven": 32840,
-              "checked": 6901,
-              "guarded": 18668,
-              "violation": 0,
-              "unresolved": 11693,
-              "trusted": 174
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0614,
-              "temporal": 0.284
-            },
-            "cpuSeconds": 32.06,
-            "workCounters": {
-              "blockTransfers": 296895,
-              "functions": 2038,
-              "sites": 36058
-            }
+        "printf": {
+          "ledger": {
+            "accesses": 62,
+            "proven": 27,
+            "guarded": 35,
+            "unguarded": 0,
+            "provenShare": 0.4355
           },
-          "traps": 0,
-          "overhead": 3.9978,
-          "overheadNoRuntime": 1.0506,
-          "rssRatio": 1.8494
-        },
-        "redis": {
-          "units": {
+          "analysis": {
+            "sites": 148,
+            "proven": 59,
+            "notProven": 89,
+            "violations": 0,
+            "trusted": 0,
             "errors": 0,
             "warnings": 0,
-            "ledger": {
-              "sites": 40105,
-              "proven": 40533,
-              "checked": 5465,
-              "guarded": 18229,
-              "violation": 0,
-              "unresolved": 11490,
-              "trusted": 449
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0304,
-              "temporal": 0.2846
-            },
-            "cpuSeconds": 25.54,
-            "workCounters": {
-              "blockTransfers": 147674,
-              "functions": 2248,
-              "sites": 40105
-            }
-          },
-          "traps": 0
+            "overBudget": 0
+          }
         },
         "sds": {
-          "units": {
+          "ledger": {
+            "accesses": 212,
+            "proven": 59,
+            "guarded": 153,
+            "unguarded": 0,
+            "provenShare": 0.2783
+          },
+          "analysis": {
+            "sites": 464,
+            "proven": 208,
+            "notProven": 256,
+            "violations": 0,
+            "trusted": 0,
             "errors": 0,
             "warnings": 11,
-            "ledger": {
-              "sites": 464,
-              "proven": 469,
-              "checked": 72,
-              "guarded": 223,
-              "violation": 0,
-              "unresolved": 88,
-              "trusted": 5
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0718,
-              "temporal": 0.1341
-            },
-            "cpuSeconds": 0.29,
-            "workCounters": {
-              "blockTransfers": 2738,
-              "functions": 49,
-              "sites": 464
-            }
-          },
-          "traps": 0
-        },
-        "sqlite": {
-          "units": {
-            "errors": 0,
-            "warnings": 71,
-            "ledger": {
-              "sites": 51972,
-              "proven": 47593,
-              "checked": 17504,
-              "guarded": 40713,
-              "violation": 0,
-              "unresolved": 16454,
-              "trusted": 208
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0747,
-              "temporal": 0.2257
-            },
-            "cpuSeconds": 68.79,
-            "workCounters": {
-              "blockTransfers": 402561,
-              "functions": 2693,
-              "sites": 51972
-            }
-          },
-          "traps": 0
-        },
-        "tinyexpr": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 1259,
-              "proven": 1451,
-              "checked": 32,
-              "guarded": 192,
-              "violation": 0,
-              "unresolved": 320,
-              "trusted": 2
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0914,
-              "temporal": 0.2455
-            },
-            "cpuSeconds": 0.56,
-            "workCounters": {
-              "blockTransfers": 9114,
-              "functions": 76,
-              "sites": 1259
-            }
-          },
-          "program": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 1259,
-              "proven": 1479,
-              "checked": 32,
-              "guarded": 192,
-              "violation": 0,
-              "unresolved": 299,
-              "trusted": 2
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0971,
-              "temporal": 0.2141
-            },
-            "cpuSeconds": 2.1,
-            "workCounters": {
-              "blockTransfers": 22557,
-              "functions": 76,
-              "sites": 1259
-            }
-          },
-          "traps": 0
-        },
-        "utf8proc": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 300,
-              "proven": 350,
-              "checked": 51,
-              "guarded": 138,
-              "violation": 0,
-              "unresolved": 19,
-              "trusted": 0
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0264,
-              "temporal": 0.041
-            },
-            "cpuSeconds": 0.36,
-            "workCounters": {
-              "blockTransfers": 3073,
-              "functions": 38,
-              "sites": 300
-            }
-          },
-          "traps": 0
-        },
-        "xz": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 11917,
-              "proven": 14682,
-              "checked": 1394,
-              "guarded": 5372,
-              "violation": 0,
-              "unresolved": 985,
-              "trusted": 29
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0094,
-              "temporal": 0.0964
-            },
-            "cpuSeconds": 11.02,
-            "workCounters": {
-              "blockTransfers": 78420,
-              "functions": 814,
-              "sites": 11917
-            }
-          },
-          "traps": 0,
-          "overhead": 1.5375,
-          "overheadNoRuntime": 1.0148,
-          "rssRatio": 1.076
+            "overBudget": 0
+          }
         },
         "zlib": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 4880,
-              "proven": 7219,
-              "checked": 486,
-              "guarded": 4354,
-              "violation": 0,
-              "unresolved": 308,
-              "trusted": 15
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0076,
-              "temporal": 0.0547
-            },
-            "cpuSeconds": 4.45,
-            "workCounters": {
-              "blockTransfers": 30815,
-              "functions": 156,
-              "sites": 4880
-            }
+          "ledger": {
+            "accesses": 4241,
+            "proven": 2181,
+            "guarded": 2060,
+            "unguarded": 0,
+            "provenShare": 0.5143
           },
-          "program": {
+          "analysis": {
+            "sites": 4880,
+            "proven": 2538,
+            "notProven": 2342,
+            "violations": 0,
+            "trusted": 0,
             "errors": 0,
             "warnings": 6,
-            "ledger": {
-              "sites": 4880,
-              "proven": 9023,
-              "checked": 482,
-              "guarded": 2658,
-              "violation": 0,
-              "unresolved": 275,
-              "trusted": 33
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0183,
-              "temporal": 0.0287
-            },
-            "cpuSeconds": 9.57,
-            "workCounters": {
-              "blockTransfers": 50266,
-              "functions": 156,
-              "sites": 4880
-            }
-          },
-          "traps": 0,
-          "overhead": 1.6152,
-          "overheadNoRuntime": 0.9982,
-          "rssRatio": 1.259
-        },
-        "zlib-ng": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 6196,
-              "proven": 8236,
-              "checked": 811,
-              "guarded": 3865,
-              "violation": 0,
-              "unresolved": 421,
-              "trusted": 250
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0058,
-              "temporal": 0.0676
-            },
-            "cpuSeconds": 9.07,
-            "workCounters": {
-              "blockTransfers": 54899,
-              "functions": 486,
-              "sites": 6196
-            }
-          },
-          "traps": 0,
-          "overhead": 2.3853,
-          "overheadNoRuntime": 1.0331,
-          "rssRatio": 1.3194
-        },
-        "zstd": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 22169,
-              "proven": 31558,
-              "checked": 2485,
-              "guarded": 5262,
-              "violation": 0,
-              "unresolved": 2622,
-              "trusted": 48
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.008,
-              "temporal": 0.1209
-            },
-            "cpuSeconds": 23.72,
-            "workCounters": {
-              "blockTransfers": 123854,
-              "functions": 2868,
-              "sites": 22169
-            }
-          },
-          "traps": 0
-        }
-      }
-    },
-    "linux-x86_64": {
-      "machine": "linux-x86_64 AMD EPYC 7763 64-Core Processor x4",
-      "producer": "weavec-cc version 0.14.0-dev (a8e5c2350f90)",
-      "updated": "2026-10-05",
-      "configs": {
-        "cJSON-program": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 1709,
-              "proven": 2630,
-              "checked": 119,
-              "guarded": 664,
-              "violation": 0,
-              "unresolved": 230,
-              "trusted": 18
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0131,
-              "temporal": 0.1219
-            },
-            "cpuSeconds": 3.8,
-            "workCounters": {
-              "blockTransfers": 13153,
-              "functions": 151,
-              "sites": 1709
-            }
-          },
-          "program": {
-            "errors": 0,
-            "warnings": 10,
-            "ledger": {
-              "sites": 1709,
-              "proven": 2697,
-              "checked": 111,
-              "guarded": 677,
-              "violation": 0,
-              "unresolved": 162,
-              "trusted": 18
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0151,
-              "temporal": 0.0789
-            },
-            "cpuSeconds": 8.51,
-            "workCounters": {
-              "blockTransfers": 25181,
-              "functions": 151,
-              "sites": 1709
-            }
-          }
-        },
-        "jansson": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 2337,
-              "proven": 2800,
-              "checked": 199,
-              "guarded": 629,
-              "violation": 0,
-              "unresolved": 693,
-              "trusted": 16
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0423,
-              "temporal": 0.2802
-            },
-            "cpuSeconds": 3.48,
-            "workCounters": {
-              "blockTransfers": 16152,
-              "functions": 236,
-              "sites": 2337
-            }
-          },
-          "program": {
-            "errors": 0,
-            "warnings": 33,
-            "ledger": {
-              "sites": 2337,
-              "proven": 3071,
-              "checked": 206,
-              "guarded": 556,
-              "violation": 0,
-              "unresolved": 548,
-              "trusted": 12
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0626,
-              "temporal": 0.1901
-            },
-            "cpuSeconds": 16.09,
-            "workCounters": {
-              "blockTransfers": 58323,
-              "functions": 236,
-              "sites": 2337
-            }
-          }
-        },
-        "linenoise-program": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 1146,
-              "proven": 1869,
-              "checked": 134,
-              "guarded": 290,
-              "violation": 0,
-              "unresolved": 83,
-              "trusted": 13
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0124,
-              "temporal": 0.0652
-            },
-            "cpuSeconds": 0.92,
-            "workCounters": {
-              "blockTransfers": 4509,
-              "functions": 88,
-              "sites": 1146
-            }
-          },
-          "program": {
-            "errors": 0,
-            "warnings": 6,
-            "ledger": {
-              "sites": 1146,
-              "proven": 1888,
-              "checked": 135,
-              "guarded": 286,
-              "violation": 0,
-              "unresolved": 72,
-              "trusted": 13
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.0159,
-              "temporal": 0.0494
-            },
-            "cpuSeconds": 2.59,
-            "workCounters": {
-              "blockTransfers": 12719,
-              "functions": 88,
-              "sites": 1146
-            }
-          }
-        },
-        "log.c": {
-          "units": {
-            "errors": 0,
-            "warnings": 0,
-            "ledger": {
-              "sites": 74,
-              "proven": 115,
-              "checked": 18,
-              "guarded": 7,
-              "violation": 0,
-              "unresolved": 6,
-              "trusted": 4
-            },
-            "unresolvedShare": {
-              "spatialNull": 0.022,
-              "temporal": 0.0678
-            },
-            "cpuSeconds": 0.12,
-            "workCounters": {
-              "blockTransfers": 718,
-              "functions": 12,
-              "sites": 74
-            }
+            "overBudget": 0
           }
         }
-      }
-    }
-  },
-  "legacy": {
-    "_comment": [
-      "v0.10.0 (golden) semantics, recorded with the golden binaries by corpus-gate.py --legacy",
-      "--update: quick holds each config's diagnostic tally and the SHA-256 of its sorted",
-      "diagnostics; injections holds whether each injection is reported at its line. S0",
-      "reproduces them (--quick --legacy, --inject --legacy), and S1's binaries must too."
-    ],
-    "quick": {
-      "platform": "darwin-arm64",
-      "producer": "weavec version 0.10.0-dev (e0e2bd68bcae)",
-      "recorded": "2026-09-18",
-      "configs": {
-        "sds": {
-          "units": 1,
-          "byId": {
-            "analysis-incomplete": 25,
-            "double-free": 3,
-            "leak": 12,
-            "null-dereference": 12
-          },
-          "bugClaims": 27,
-          "digest": "sha256:1a65e999d8dbcf2663b12a42c05a4340e8f93b850e8909064486bfc53074b171"
-        },
-        "cJSON": {
-          "units": 1,
-          "byId": {
-            "analysis-incomplete": 4,
-            "annotation-required": 11,
-            "null-dereference": 4
-          },
-          "bugClaims": 4,
-          "digest": "sha256:b1a1d449df12a350b8855617c919fdbd35cec53ff71b1d3f06675315a8bdca80"
-        },
-        "cJSON-program": {
-          "units": 1,
-          "byId": {
-            "analysis-incomplete": 5,
-            "annotation-required": 4,
-            "null-dereference": 26
-          },
-          "bugClaims": 26,
-          "digest": "sha256:4ae27e63e9c2befcf95c54e017ef91c86ab2fe73b5f476b612170a6a2e0912a5"
-        },
-        "jsmn": {
-          "units": 2,
-          "byId": {
-            "analysis-incomplete": 1,
-            "leak": 6
-          },
-          "bugClaims": 6,
-          "digest": "sha256:bdf57e94b021dde154b8e6f4b874ee9fd713ac063fec2ebc2b097beff34dd4f1"
-        },
-        "log.c": {
-          "units": 1,
-          "byId": {
-            "annotation-required": 2
-          },
-          "bugClaims": 0,
-          "digest": "sha256:5636cf7a8a8ef17b43befdcceee037db4cdafd568133fafb0460c0be427f2962"
-        },
-        "printf": {
-          "units": 1,
-          "byId": {
-            "analysis-incomplete": 13,
-            "annotation-required": 6
-          },
-          "bugClaims": 0,
-          "digest": "sha256:a63926a1d86816efca17a70e99fb9bdb8fd9bf0fe84a8950842e4ba6596fbe59"
-        },
-        "linenoise": {
-          "units": 1,
-          "byId": {
-            "analysis-incomplete": 19,
-            "annotation-required": 3,
-            "double-free": 1,
-            "null-dereference": 4
-          },
-          "bugClaims": 5,
-          "digest": "sha256:79154fd2a24741467ea5e44c92fea4be307dd6be49353eed7284db83cd813098"
-        },
-        "linenoise-program": {
-          "units": 1,
-          "byId": {
-            "analysis-incomplete": 20,
-            "annotation-required": 3,
-            "double-free": 5,
-            "leak": 1,
-            "null-dereference": 4
-          },
-          "bugClaims": 10,
-          "digest": "sha256:2b582449668cc36eb08010277ee420ca0e5eeb0d20d5f4d02aa3606fe2d819dd"
-        },
-        "zlib": {
-          "units": 1,
-          "byId": {
-            "analysis-incomplete": 60,
-            "annotation-required": 3,
-            "leak": 3,
-            "null-dereference": 29
-          },
-          "bugClaims": 32,
-          "digest": "sha256:aa644499d73427ecf3265bc83812160d9baac9f0f947d202a6856f7ce23084c5"
-        },
-        "lua": {
-          "units": 1,
-          "byId": {
-            "analysis-incomplete": 3990,
-            "annotation-required": 5,
-            "invalid-release": 1,
-            "lifetime-too-short": 2,
-            "null-dereference": 104
-          },
-          "bugClaims": 107,
-          "digest": "sha256:6bda164a8081d301257508e76da0598a6986d97298dd7e438109f39c19abd8c7"
-        },
-        "jansson": {
-          "units": 1,
-          "byId": {
-            "analysis-incomplete": 102,
-            "annotation-required": 3,
-            "double-free": 47,
-            "invalid-release": 2,
-            "null-dereference": 3,
-            "use-after-free": 32
-          },
-          "bugClaims": 84,
-          "digest": "sha256:02813322ab6aac691cc65db75406621a1aa38c206db7c83fc24605d921602f52"
-        }
-      },
-      "totals": {
-        "units": 12,
-        "byId": {
-          "analysis-incomplete": 4239,
-          "annotation-required": 40,
-          "double-free": 56,
-          "invalid-release": 3,
-          "leak": 22,
-          "lifetime-too-short": 2,
-          "null-dereference": 186,
-          "use-after-free": 32
-        },
-        "bugClaims": 301
-      }
-    },
-    "injections": {
-      "platform": "darwin-arm64",
-      "producer": "weavec version 0.10.0-dev (e0e2bd68bcae)",
-      "recorded": "2026-09-18",
-      "results": {
-        "sds-uaf-sdsfree": true,
-        "sds-df-freesplitres": true,
-        "sds-uaf-makeroomfor": true,
-        "cjson-uaf-delete": true,
-        "cjson-df-valuestring": true,
-        "cjson-oob-number": false,
-        "cjsonprog-uaf-findpointer": true,
-        "cjsonprog-df-overwrite": true,
-        "jsmn-uaf-jsondump": true,
-        "jsmn-df-jsondump": true,
-        "logc-oob-callbacks": true,
-        "logc-null-lock": false,
-        "printf-oob-pow10": false,
-        "linenoise-uaf-freehistory": true,
-        "linenoise-uaf-setmaxlen": true,
-        "lnprog-uaf-example": true,
-        "lnprog-df-example": true,
-        "zlib-df-deflateend": true,
-        "zlib-uaf-inflateend": true,
-        "zlib-uaf-gzclose-r": true,
-        "zlib-df-gzclose-w": true,
-        "zlib-oob-inflate-order": true,
-        "lua-uaf-luah-free": false,
-        "lua-df-freeproto": false,
-        "lua-uaf-lua-c": true,
-        "lua-uaf-close-state": false,
-        "jansson-df-strbuffer-close": true,
-        "jansson-df-array-remove": true,
-        "jansson-uaf-delete-string": true,
-        "jansson-uaf-hashtable-del": true,
-        "jansson-len-dump-integer": true
-      },
-      "summary": {
-        "reported": 25,
-        "total": 31
       }
     }
   }

@@ -3,5 +3,5 @@
 char *get_buffer(void);
 int main(void) {
   char *b = get_buffer();
-  return b[1000]; // BUG: out-of-bounds // NOT-PROVEN: spatial
+  return b[1000]; // BUG: out-of-bounds // MISS: the buffer comes from a unit built without WeaveC (-fno-weavec): its bounds are unknown
 }

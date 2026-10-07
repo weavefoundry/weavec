@@ -9,7 +9,7 @@
 
 int get(int i, int j) {
   int m[3][4] = {{0}};
-  return m[i][j]; // BUG: out-of-bounds // TRAP: index
+  return m[i][j]; // BUG: out-of-bounds // TRAP
 }
 
 int main(int argc, char **argv) {

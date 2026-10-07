@@ -4,16 +4,13 @@
 # only is what allows the model to be reused outside the Clang integration.
 weavec_add_library(
   Core
-  SOURCES CheckPlan.cpp
-          Diagnostic.cpp
+  SOURCES Diagnostic.cpp
           Effects.cpp
-          EffectsIO.cpp
           FnSlots.cpp
           Heap.cpp
           Integer.cpp
           Ledger.cpp
           LibrarySpec.cpp
-          Ownership.cpp
           Path.cpp
           PointerKind.cpp
           Scc.cpp

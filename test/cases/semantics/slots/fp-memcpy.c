@@ -13,6 +13,6 @@ static void *(*copy)(void *, const void *, size_t) = memcpy;
 int main(int argc, char **argv) {
   char dst[4];
   size_t n = argc > 1 ? (size_t)atoi(argv[1]) : sizeof dst;
-  copy(dst, "abcdefgh", n); // BUG: out-of-bounds // TRAP: len
+  copy(dst, "abcdefgh", n); // BUG: out-of-bounds // MISS: a library function called through a pointer is not guarded (RFC 0035 §2.5)
   return dst[0] == 'a' ? 0 : 1;
 }

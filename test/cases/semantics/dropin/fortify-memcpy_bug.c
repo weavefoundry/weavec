@@ -7,7 +7,7 @@
 #include <string.h>
 struct packet { size_t len; unsigned char *payload; };
 static void fill(struct packet *pk, const unsigned char *src) {
-  memcpy(pk->payload, src, pk->len); // BUG: out-of-bounds // TRAP: object
+  memcpy(pk->payload, src, pk->len); // BUG: out-of-bounds // TRAP
 }
 int main(int argc, char **argv) {
   static unsigned char src[128];

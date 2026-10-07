@@ -3,8 +3,7 @@
 // path, or a library call that writes through it, is a definite error. On
 // some paths only, the spatial facet is `unresolved(unknown-extent)` and
 // nothing is reported.
-// RUN: not %weavec --ledger=%t.json %s -- 2>&1 | FileCheck %s
-// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
+// RUN: not %weavec %s -- 2>&1 | FileCheck %s
 #include <string.h>
 
 void store(void) {
@@ -23,5 +22,3 @@ void maybe(int c, char *buf) {
   char *p = c ? "abc" : buf;
   p[0] = 'x';
 }
-// LEDGER: "reason": "unknown-extent",
-// LEDGER-NEXT: "detail": "it may point into a string literal",

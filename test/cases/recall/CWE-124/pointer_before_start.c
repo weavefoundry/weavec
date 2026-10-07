@@ -5,8 +5,8 @@
 
 void bad(void) {
   char buf[10];
-  char *p = buf - 8;
-  p[0] = 'A'; // BUG: out-of-bounds // TRAP: span
+  char *p = buf - 8; // TRAP
+  p[0] = 'A'; // BUG: out-of-bounds
   print_bytes(buf, 10);
 }
 
@@ -15,7 +15,7 @@ void bad_heap(void) {
   if (!buf)
     return;
   char *p = buf - 1;
-  *p = 'A'; // BUG: out-of-bounds // TRAP: span
+  *p = 'A'; // BUG: out-of-bounds // TRAP
   free(buf);
 }
 

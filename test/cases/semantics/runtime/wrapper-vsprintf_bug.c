@@ -8,7 +8,7 @@ static int say(char *out, const char *format, ...) {
   va_list ap;
   int written;
   va_start(ap, format);
-  written = vsprintf(out, format, ap); // TRAP: object // GUARDED: spatial
+  written = vsprintf(out, format, ap); // TRAP
   va_end(ap);
   return written;
 }

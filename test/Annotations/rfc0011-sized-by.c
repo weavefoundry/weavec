@@ -4,8 +4,6 @@
 // RUN: not %weavec %s -- 2>&1 | FileCheck %s
 // RUN: not %weavec %s -- 2>&1 | FileCheck --check-prefix=INVALID %s
 // RUN: not %weavec --dump-analysis %s -- 2>/dev/null | FileCheck --check-prefix=DUMP %s
-// RUN: not %weavec --ledger=%t.json %s -- 2>/dev/null
-// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
 #include "../Inputs/prelude.h"
 #include <weavec.h>
 
@@ -16,13 +14,6 @@
 // Inside the body the extent is `n` bytes; the access at `n` is one past.
 // RFC 0030 §3.3: a declared count is a lower bound on the object, so that
 // access is a checked facet, not an error, while the loop is proven.
-// LEDGER: "name": "fill",
-// LEDGER: "text": "p[i]",
-// LEDGER: "spatial": {
-// LEDGER-NEXT: "outcome": "proven",
-// LEDGER: "text": "p[n]",
-// LEDGER: "spatial": {
-// LEDGER-NEXT: "outcome": "checked",
 // The summary records the stores over their element ranges (RFC 0031 §4.9).
 // It carries no extent requirement (RFC 0031 §6.1): callers are held to the
 // annotation itself, below.
@@ -39,10 +30,6 @@ void fill(char *WEAVEC_SIZED_BY(n) p, size_t n) {
 
 // Elements, not bytes: `n` ints. `n - 1` is in the declared count only when
 // `n` is positive, which the signed `n` does not promise: checked.
-// LEDGER: "name": "ints",
-// LEDGER: "text": "p[n-1]",
-// LEDGER: "spatial": {
-// LEDGER-NEXT: "outcome": "checked",
 // DUMP-LABEL: function 'ints':
 // DUMP-NEXT: summary:
 // DUMP-NEXT: always-returns

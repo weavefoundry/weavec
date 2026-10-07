@@ -17,7 +17,7 @@ int main(void) {
   if (vec_push(&v, 1)) return 1;
   int *first = &v.data[0];
   for (int i = 0; i < 100; i++) if (vec_push(&v, i)) break;
-  int r = *first; // BUG: use-after-move // TRAP: live
+  int r = *first; // BUG: use-after-move // TRAP
   free(v.data);
   return r;
 }

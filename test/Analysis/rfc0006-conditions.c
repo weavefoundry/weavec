@@ -1,8 +1,7 @@
 // RFC 0006, *Condition facts on CFG edges*: pointer equality tests refine
 // the alias relation on the edge they hold on, and `!=` separates only
 // exact aliases (pointer arithmetic makes a copy interior).
-// RUN: not %weavec --ledger=%t.json %s -- 2>&1 | FileCheck %s
-// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
+// RUN: not %weavec %s -- 2>&1 | FileCheck %s
 // RUN: not %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
 
@@ -77,14 +76,7 @@ void equal_then_free(char *p, char *q) {
     // The object engine remembers `p == q` (RFC 0031 *Implementation
     // amendments*, *Pointer comparisons*) but does not use it to decide the
     // temporal facet of `q`: not proven, no longer definite
-    // (test/cases/KNOWN-DIFFERENCES.md, *Lit tests*).
-    // LEDGER: "line": [[@LINE+7]],
-    // LEDGER-NEXT: "column": 5,
-    // LEDGER-NEXT: "text": "use(q)",
-    // LEDGER: "facets": {
-    // LEDGER-NEXT: "temporal": {
-    // LEDGER-NEXT: "outcome": "unresolved",
-    // LEDGER-NEXT: "reason": "may-alias-released",
+    // (the retired golden comparison of RFC 0030, *Lit tests*).
     use(q);
   }
 }

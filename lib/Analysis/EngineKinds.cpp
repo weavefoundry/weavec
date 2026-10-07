@@ -381,7 +381,7 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
         row.argument = i;
         row.need = core::Term::of(*bytes);
         row.rowOnly = true;
-        requirements.push_back(std::move(row));
+        requirements.push_back(row);
       }
     // §7.2: a declared `ended-by(q)`.
     if (param->hasDeclaredShape() && !param->shapeFromSystemHeader() &&
@@ -394,10 +394,8 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
         if (auto span = between(i, param->kind.extent.path->param)) {
           std::int64_t bytes = *span + (param->kind.extent.offset * *unit);
           out.need = core::Term::of(bytes);
-          if (bytes >= 0)
-            out.needTerm = WitnessTerm::ofConstant(bytes);
         }
-      requirements.push_back(std::move(out));
+      requirements.push_back(out);
       continue;
     }
     bool enforced =
@@ -417,23 +415,15 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
           requirement.guard ? holds(*requirement.guard) : std::optional(true);
       if (guarded == false) {
         out.need = core::Term::of(0);
-        requirements.push_back(std::move(out));
+        requirements.push_back(out);
         continue;
       }
-      if (!guarded) {
-        out.guard = guardTerm(*requirement.guard, call);
-        if (!out.guard) {
-          requirements.push_back(std::move(out));
-          continue;
-        }
-      }
+      out.guarded = !guarded;
       const core::PointerKind &kind = requirement.kind;
       switch (kind.shape) {
       case core::PointerShape::Single:
-        if (auto bytes = singleWidth(context, pointee)) {
+        if (auto bytes = singleWidth(context, pointee))
           out.need = core::Term::of(*bytes);
-          out.needTerm = WitnessTerm::ofConstant(*bytes);
-        }
         break;
       case core::PointerShape::Counted:
       case core::PointerShape::Sized: {
@@ -447,22 +437,13 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
                          ? core::Term::of(count.constant * size)
                          : core::Term::ofSym(count.var, count.scale * size,
                                              count.constant * size);
-        if (auto term = argumentTerm(kind.extent, call))
-          out.needTerm = size == 1
-                             ? std::move(*term)
-                             : WitnessTerm::mul(std::move(*term),
-                                                WitnessTerm::sizeOf(pointee));
         break;
       }
       case core::PointerShape::EndedBy:
         if (unit && !kind.extent.isConstant() &&
             kind.extent.path->root == core::ExtentPath::Root::Param)
-          if (auto span = between(i, kind.extent.path->param)) {
-            std::int64_t bytes = *span + (kind.extent.offset * *unit);
-            out.need = core::Term::of(bytes);
-            if (bytes >= 0)
-              out.needTerm = WitnessTerm::ofConstant(bytes);
-          }
+          if (auto span = between(i, kind.extent.path->param))
+            out.need = core::Term::of(*span + (kind.extent.offset * *unit));
         break;
       case core::PointerShape::NulTerminated:
         out.kind = ArgRequirement::Kind::String;
@@ -471,7 +452,7 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
       case core::PointerShape::Unknown:
         continue;
       }
-      requirements.push_back(std::move(out));
+      requirements.push_back(out);
     }
     if (!enforced)
       continue;
@@ -485,10 +466,7 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
     auto publishNull = [&](const core::FacetDecision &decision) {
       if (!run.applies(site.id, core::Facet::Null))
         return;
-      core::Requirement record;
-      record.argument = i;
-      record.decision = decision;
-      run.ledger().requirement(call, core::Facet::Null, std::move(record));
+      run.ledger().requirement(call, core::Facet::Null, decision);
     };
     std::optional<bool> guardHolds = true;
     for (const MustAccessRequirement &requirement : param->mustAccess)
@@ -509,7 +487,8 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
     }
     if (value.null != core::PointerNull::Null || value.allocatorSource ||
         guardHolds != true) {
-      publishNull(core::FacetDecision::checked());
+      publishNull(core::FacetDecision::unresolvedFor(
+          core::UnresolvedReason::Undecided));
       continue;
     }
     publishNull(core::FacetDecision::violation());
@@ -528,26 +507,15 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
     if (kind.shape == core::PointerShape::NulTerminated) {
       requirement.kind = ArgRequirement::Kind::String;
       requirement.argvElement = isArgvElement(*call.getArg(shape.argument));
-      requirements.push_back(std::move(requirement));
+      requirements.push_back(requirement);
       continue;
     }
     core::Term count = core::Term::unknown();
-    std::optional<WitnessTerm> countTerm;
-    if (kind.extent.isConstant()) {
+    if (kind.extent.isConstant())
       count = core::Term::of(kind.extent.offset);
-      countTerm = WitnessTerm::ofConstant(kind.extent.offset);
-    } else if (kind.extent.path->root == core::ExtentPath::Root::Param &&
-               kind.extent.path->param < call.getNumArgs()) {
+    else if (kind.extent.path->root == core::ExtentPath::Root::Param &&
+             kind.extent.path->param < call.getNumArgs())
       count = termAt(kind.extent);
-      const Expr &arg = *call.getArg(kind.extent.path->param);
-      countTerm = WitnessTerm::ofExpr(arg);
-      if (kind.extent.scale != 1)
-        countTerm = WitnessTerm::mul(
-            std::move(*countTerm), WitnessTerm::ofConstant(kind.extent.scale));
-      if (kind.extent.offset != 0)
-        countTerm = WitnessTerm::add(
-            std::move(*countTerm), WitnessTerm::ofConstant(kind.extent.offset));
-    }
     auto element = elementBytes(context, shape.pointee);
     switch (kind.shape) {
     case core::PointerShape::Counted:
@@ -559,26 +527,20 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
                 ? core::Term::of(count.constant * *element)
                 : core::Term::ofSym(count.var, count.scale * *element,
                                     count.constant * *element);
-      if (countTerm)
-        requirement.needTerm = WitnessTerm::mul(
-            std::move(*countTerm), WitnessTerm::sizeOf(shape.pointee));
       break;
     case core::PointerShape::Sized:
       requirement.need = count;
-      requirement.needTerm = std::move(countTerm);
       break;
     case core::PointerShape::Single:
-      if (auto width = singleWidth(context, shape.pointee)) {
+      if (auto width = singleWidth(context, shape.pointee))
         requirement.need = core::Term::of(*width);
-        requirement.needTerm = WitnessTerm::ofConstant(*width);
-      } else {
+      else
         continue;
-      }
       break;
     default:
       continue;
     }
-    requirements.push_back(std::move(requirement));
+    requirements.push_back(requirement);
   }
   if (!requirements.empty())
     decideArguments(call, site, requirements, args, /*library=*/false);

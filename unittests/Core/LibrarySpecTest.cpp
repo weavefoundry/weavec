@@ -215,6 +215,8 @@ static std::string renderClauses(const LibraryEntry &entry) {
     clauses.emplace_back("exits");
   if (entry.returnsTwice)
     clauses.emplace_back("returns-twice");
+  if (entry.wide)
+    clauses.emplace_back("wide");
   if (entry.format)
     clauses.push_back(std::string(entry.format->kind == LibFormat::Kind::Printf
                                       ? "printf="
@@ -222,10 +224,7 @@ static std::string renderClauses(const LibraryEntry &entry) {
                       std::to_string(entry.format->format) + "/" +
                       std::to_string(entry.format->first));
   if (entry.wrapper)
-    clauses.push_back("wrapper=" + entry.wrapper->name +
-                      (entry.wrapper->room ? "/room" : "") +
-                      (entry.wrapper->source ? "/source" : "") +
-                      (entry.wrapper->disjoint ? "/disjoint" : ""));
+    clauses.push_back("wrapper=" + entry.wrapper->name);
   for (const LibraryChk &alias : entry.chk) {
     std::string text = "chk=" + alias.name + ":";
     for (std::size_t i = 0; i < alias.argumentOf.size(); ++i)
@@ -283,26 +282,11 @@ static const LibraryEntry &row(std::string_view name) {
 //===----------------------------------------------------------------------===//
 
 TEST(LibrarySpecTest, ShippedTableParses) {
-  EXPECT_EQ(LibrarySpec::shippedError(), "");
+  std::string error;
+  EXPECT_TRUE(LibrarySpec::parse(LibrarySpec::shippedText(), error)) << error;
   EXPECT_TRUE(LibrarySpec::shippedText().starts_with("# LibrarySpec.txt"));
   EXPECT_GE(LibrarySpec::shipped().entries().size(), 600U);
   EXPECT_GE(LibrarySpec::shipped().headers().size(), 180U);
-}
-
-TEST(LibrarySpecTest, EveryRowRoundTripsThroughItsCanonicalText) {
-  for (const LibraryEntry &entry : LibrarySpec::shipped().entries()) {
-    const std::string text =
-        (entry.header.empty() ? "builtins;\n"
-                              : "header " + entry.header + ";\n") +
-        entry.str();
-    std::string error;
-    const auto again = LibrarySpec::parse(text, error);
-    ASSERT_TRUE(again.has_value()) << text << "\n" << error;
-    ASSERT_EQ(again->entries().size(), 1U);
-    LibraryEntry copy = again->entries().front();
-    copy.line = entry.line;
-    EXPECT_EQ(copy, entry) << text;
-  }
 }
 
 TEST(LibrarySpecTest, DirectivesContinuationsAndComments) {
@@ -319,7 +303,7 @@ TEST(LibrarySpecTest, DirectivesContinuationsAndComments) {
   EXPECT_EQ(spec.entries()[0].header, "a.h");
   EXPECT_EQ(spec.entries()[0].line, 4U);
   EXPECT_EQ(spec.entries()[0].params.size(), 2U);
-  EXPECT_TRUE(spec.entries()[1].isCompilerBuiltin());
+  EXPECT_TRUE(spec.entries()[1].header.empty());
   EXPECT_EQ(spec.entries()[2].header, "a.h");
   EXPECT_EQ(spec.headers(), (std::vector<std::string>{"bits/*", "a.h"}));
 }
@@ -346,7 +330,6 @@ TEST(LibrarySpecTest, TermsParsePrintAndEvaluate) {
   ASSERT_TRUE(sum.has_value());
   EXPECT_EQ(sum->kind, LibTerm::Kind::Sum);
   EXPECT_EQ(sum->operands[1].kind, LibTerm::Kind::Product);
-  EXPECT_EQ(sum->arguments(), (std::vector<unsigned>{0, 1, 2}));
   for (const char *bad :
        {"", "a", "a0+", "min(a0)", "a0 a1", "a256", "strlen(x)", "fmtlen(a1",
         "a1-b", "x0", "a0/0", "a0/a1", "a0/-2"})
@@ -414,15 +397,11 @@ TEST(LibrarySpecTest, ParserErrorsNameTheLineAndTheProblem) {
       {"header a.h;\nf () -> int exits;", "'exits' needs a 'noreturn' result"},
       {"header a.h;\nf () -> void returns-twice;",
        "'returns-twice' needs an 'int' result"},
-      // RFC 0034 §5.2: a wrapper computes what the row states.
-      {"header a.h;\nf (w:bytes(a1), int) -> void wrapper(f,disjoint);",
-       "'wrapper(…, disjoint)' needs a 'disjoint' clause"},
-      {"header a.h;\nf (int, r:str) -> void wrapper(f,room);",
-       "'wrapper(…, room)' needs bytes behind argument 0"},
-      {"header a.h;\nf (w:bytes(a1), int) -> void wrapper(f,room,room);",
-       "expected 'room', 'source' or 'disjoint', once each"},
-      {"header a.h;\nf (w:bytes(a2), int, int) -> void wrapper(f,source);",
-       "'wrapper(…, source)' needs bytes behind argument 1"},
+      // RFC 0035 §2.5: a wrapper names the runtime's checked version.
+      {"header a.h;\nf (w:bytes(a1), int) -> void wrapper(f,room);",
+       "after the wrapper name"},
+      {"header a.h;\nf (r:str) -> int wrapper(g);",
+       "'wrapper(g)' must name the row's own function, 'f'"},
       {"header a.h;\nf (w:bytes(a1), int) -> void wrapper(f) wrapper(f);",
        "duplicate clause 'wrapper'"},
       {"header a.h;\nf () -> int", "expected ';' at the end of the entry"},
@@ -614,7 +593,6 @@ TEST(LibrarySpecTest, GlibcFortifiedSpellingsRemapArguments) {
 TEST(LibrarySpecTest, OverloadsFollowTheDeclaration) {
   using Type = LibraryParam::Type;
   const LibrarySpec &spec = LibrarySpec::shipped();
-  EXPECT_EQ(spec.overloads("qsort_r").size(), 2U);
   const LibSignature glibc{.params = {Type::Pointer, Type::Int, Type::Int,
                                       Type::Function, Type::Pointer}};
   const LibSignature bsd{.params = {Type::Pointer, Type::Int, Type::Int,
@@ -743,7 +721,7 @@ TEST(LibrarySpecTest, HeaderListNamesThePlatformHeadersOnly) {
   EXPECT_TRUE(spec.isPlatformHeader("jansson.h", true));
   // Every entry's header is in the list.
   for (const LibraryEntry &entry : spec.entries())
-    if (!entry.isCompilerBuiltin())
+    if (!entry.header.empty())
       EXPECT_TRUE(spec.isPlatformHeader(entry.header, false)) << entry.name;
 }
 
@@ -777,8 +755,8 @@ TEST(LibrarySpecTest, AccessorsDescribeTheRow) {
   EXPECT_TRUE(row("tmpnam").trustsLibrarySpec());
   EXPECT_TRUE(row("pthread_create").trustsLibrarySpec());
   EXPECT_FALSE(row("memcpy").trustsLibrarySpec());
-  EXPECT_TRUE(row("__builtin_object_size").isCompilerBuiltin());
-  EXPECT_FALSE(row("memcpy").isCompilerBuiltin());
+  EXPECT_TRUE(row("__builtin_object_size").header.empty());
+  EXPECT_FALSE(row("memcpy").header.empty());
   EXPECT_EQ(row("memcpy").param(3), nullptr);
   EXPECT_EQ(row("printf").param(1), nullptr);
   const LibSignature allocator = row("malloc").signature();
@@ -839,7 +817,7 @@ static constexpr auto HeapExpectations = std::to_array<Expectation>({
      "fresh=free null-on-failure extent=strlen(a0)+1 zeroed str", ""},
     {"strndup", "R bytes=min(a1,strlen(a0)+1) nullable-if=a1, int",
      "fresh=free null-on-failure extent=min(a1,strlen(a0))+1 zeroed str", ""},
-    {"wcsdup", "R str", "fresh=free null-on-failure zeroed str", ""},
+    {"wcsdup", "R str", "fresh=free null-on-failure zeroed str", "wide"},
     {"asprintf",
      "W out=(fresh=free null-on-failure extent=fmtlen(a1)+1 zeroed str), "
      "R str, ...",
@@ -873,13 +851,11 @@ static constexpr auto HeapExpectations = std::to_array<Expectation>({
 static constexpr auto StringExpectations = std::to_array<Expectation>({
     {"memcpy", "W bytes=a2 nullable-if=a2, R bytes=a2 nullable-if=a2, int",
      "arg=0 nonnull",
-     "disjoint=0/1/a2 copies=0/1/a2 wrapper=memcpy/room/source/disjoint "
-     "chk=__builtin___memcpy_chk:0/1/2/-1 "
+     "disjoint=0/1/a2 copies=0/1/a2 chk=__builtin___memcpy_chk:0/1/2/-1 "
      "chk=__memcpy_chk:0/1/2/-1"},
     {"memmove", "W bytes=a2 nullable-if=a2, R bytes=a2 nullable-if=a2, int",
      "arg=0 nonnull",
-     "copies=0/1/a2 wrapper=memmove/room/source "
-     "chk=__builtin___memmove_chk:0/1/2/-1 "
+     "copies=0/1/a2 chk=__builtin___memmove_chk:0/1/2/-1 "
      "chk=__memmove_chk:0/1/2/-1"},
     {"memset", "W bytes=a2 nullable-if=a2, int, int", "arg=0 nonnull",
      "fills=0/a1/a2 chk=__builtin___memset_chk:0/1/2/-1 "
@@ -889,7 +865,7 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
     {"memcmp", "R bytes=a2 nullable-if=a2, R bytes=a2 nullable-if=a2, int",
      "int", ""},
     {"memchr", "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, int, int",
-     "interior=0 nullable", ""},
+     "interior=0 nullable", "wrapper=memchr"},
     {"memrchr", "R bytes=a2 nullable-if=a2, int, int", "interior=0 nullable",
      ""},
     {"rawmemchr", "R bytes=__WEAVEC_UNBOUNDED, int", "interior=0 nonnull", ""},
@@ -906,9 +882,8 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
      "disjoint=0/1/min(a3,strlen(a1)+1) "
      "chk=__builtin___memccpy_chk:0/1/2/3/-1"},
     {"strcpy", "W bytes=strlen(a1)+1, R str", "arg=0 nonnull",
-     "disjoint=0/1/strlen(a1)+1 writes-str=0/strlen(a1) "
-     "wrapper=strcpy/room/disjoint chk=__builtin___strcpy_chk:0/1/-1 "
-     "chk=__strcpy_chk:0/1/-1"},
+     "disjoint=0/1/strlen(a1)+1 writes-str=0/strlen(a1) wrapper=strcpy "
+     "chk=__builtin___strcpy_chk:0/1/-1 chk=__strcpy_chk:0/1/-1"},
     {"strncpy",
      "W bytes=a2 nullable-if=a2, R bytes=min(a2,strlen(a1)+1) "
      "nullable-if=a2, int",
@@ -917,9 +892,8 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
      "chk=__builtin___strncpy_chk:0/1/2/-1 chk=__strncpy_chk:0/1/2/-1"},
     {"stpcpy", "W bytes=strlen(a1)+1, R str",
      "interior=0 nonnull offset=strlen(a1)",
-     "disjoint=0/1/strlen(a1)+1 writes-str=0/strlen(a1) "
-     "wrapper=stpcpy/room/disjoint chk=__builtin___stpcpy_chk:0/1/-1 "
-     "chk=__stpcpy_chk:0/1/-1"},
+     "disjoint=0/1/strlen(a1)+1 writes-str=0/strlen(a1) wrapper=stpcpy "
+     "chk=__builtin___stpcpy_chk:0/1/-1 chk=__stpcpy_chk:0/1/-1"},
     {"stpncpy",
      "W bytes=a2 nullable-if=a2, R bytes=min(a2,strlen(a1)+1) nullable-if=a2, "
      "int",
@@ -927,9 +901,9 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
      "disjoint=0/1/min(a2,strlen(a1)+1) copies=0/1/min(a2,strlen(a1)+1) "
      "chk=__builtin___stpncpy_chk:0/1/2/-1 chk=__stpncpy_chk:0/1/2/-1"},
     {"strcat", "RW str bytes=strlen(a0)+strlen(a1)+1, R str", "arg=0 nonnull",
-     "disjoint=0/1/strlen(a0)+strlen(a1)+1 "
-     "writes-str=0/strlen(a0)+strlen(a1) wrapper=strcat/room "
-     "chk=__builtin___strcat_chk:0/1/-1 chk=__strcat_chk:0/1/-1"},
+     "disjoint=0/1/strlen(a0)+strlen(a1)+1 writes-str=0/strlen(a0)+strlen(a1) "
+     "wrapper=strcat chk=__builtin___strcat_chk:0/1/-1 "
+     "chk=__strcat_chk:0/1/-1"},
     {"strncat",
      "RW str bytes=strlen(a0)+min(a2,strlen(a1))+1, "
      "R bytes=min(a2,strlen(a1)+1) nullable-if=a2, int",
@@ -945,18 +919,18 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
     {"strlen", "R str", "int value=strlen(a0)", ""},
     {"strnlen", "R bytes=min(a1,strlen(a0)+1) nullable-if=a1, int",
      "int value=min(a1,strlen(a0))", ""},
-    {"strcmp", "R str, R str", "int", ""},
+    {"strcmp", "R str, R str", "int", "wrapper=strcmp"},
     {"strncmp",
      "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, "
      "R bytes=min(a2,strlen(a1)+1) nullable-if=a2, int",
-     "int", ""},
+     "int", "wrapper=strncmp"},
     {"strcoll", "R str, R str", "int", ""},
     {"strcoll_l", "R str, R str, none nullable", "int", ""},
     {"strxfrm", "W bytes=a2 nullable-if=a2, R str, int", "int", ""},
     {"strxfrm_l", "W bytes=a2 nullable-if=a2, R str, int, none nullable", "int",
      ""},
     {"strverscmp", "R str, R str", "int", ""},
-    {"strchr", "R str, int", "interior=0 nullable", ""},
+    {"strchr", "R str, int", "interior=0 nullable", "wrapper=strchr"},
     {"strrchr", "R str, int", "interior=0 nullable", ""},
     {"strchrnul", "R str, int", "interior=0 nonnull", ""},
     {"strstr", "R str, R str", "interior=0 nullable", ""},
@@ -986,11 +960,11 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
      ""},
     {"index", "R str, int", "interior=0 nullable", ""},
     {"rindex", "R str, int", "interior=0 nullable", ""},
-    {"strcasecmp", "R str, R str", "int", ""},
+    {"strcasecmp", "R str, R str", "int", "wrapper=strcasecmp"},
     {"strncasecmp",
      "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, "
      "R bytes=min(a2,strlen(a1)+1) nullable-if=a2, int",
-     "int", ""},
+     "int", "wrapper=strncasecmp"},
     {"strcasecmp_l", "R str, R str, none nullable", "int", ""},
     {"strncasecmp_l",
      "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, "
@@ -1052,7 +1026,7 @@ static constexpr auto StdioExpectations = std::to_array<Expectation>({
     {"fgets", "W bytes=a1 nullable-if=a1, int, RW", "arg=0 nullable",
      "writes-str=0 chk=__fgets_chk:0/-1/1/2"},
     {"gets", "W bytes=__WEAVEC_UNBOUNDED", "arg=0 nullable",
-     "chk=__gets_chk:0/-1"},
+     "wrapper=gets chk=__gets_chk:0/-1"},
     {"fgetln", "RW, W", "interior=0 nullable", ""},
     {"fread", "W bytes=a1*a2 nullable-if=a1*a2, int, int, RW", "int",
      "chk=__fread_chk:0/-1/1/2/3"},
@@ -1072,12 +1046,11 @@ static constexpr auto StdioExpectations = std::to_array<Expectation>({
     {"dprintf", "int, R str, ...", "int",
      "printf=1/2 chk=__dprintf_chk:0/-1/1/2"},
     {"sprintf", "W bytes=fmtlen(a1)+1, R str, ...", "int value=fmtlen(a1)",
-     "writes-str=0/fmtlen(a1) printf=1/2 wrapper=sprintf/room "
-     "chk=__builtin___sprintf_chk:0/-1/-1/1/2 "
-     "chk=__sprintf_chk:0/-1/-1/1/2"},
+     "writes-str=0/fmtlen(a1) printf=1/2 wrapper=sprintf "
+     "chk=__builtin___sprintf_chk:0/-1/-1/1/2 chk=__sprintf_chk:0/-1/-1/1/2"},
     {"snprintf", "W bytes=a1 nullable-if=a1, int, R str, ...",
      "int value=fmtlen(a2)",
-     "writes-str=0/min(a1-1,fmtlen(a2)) printf=2/3 "
+     "writes-str=0/min(a1-1,fmtlen(a2)) printf=2/3 wrapper=snprintf "
      "chk=__builtin___snprintf_chk:0/1/-1/-1/2/3 "
      "chk=__snprintf_chk:0/1/-1/-1/2/3"},
     {"vprintf", "R str, other", "int",
@@ -1088,26 +1061,30 @@ static constexpr auto StdioExpectations = std::to_array<Expectation>({
     {"vdprintf", "int, R str, other", "int",
      "printf=1/2 chk=__vdprintf_chk:0/-1/1/2"},
     {"vsprintf", "W bytes=fmtlen(a1)+1, R str, other", "int value=fmtlen(a1)",
-     "writes-str=0/fmtlen(a1) printf=1/2 wrapper=vsprintf/room "
-     "chk=__builtin___vsprintf_chk:0/-1/-1/1/2 "
-     "chk=__vsprintf_chk:0/-1/-1/1/2"},
+     "writes-str=0/fmtlen(a1) printf=1/2 wrapper=vsprintf "
+     "chk=__builtin___vsprintf_chk:0/-1/-1/1/2 chk=__vsprintf_chk:0/-1/-1/1/2"},
     {"vsnprintf", "W bytes=a1 nullable-if=a1, int, R str, other",
      "int value=fmtlen(a2)",
-     "writes-str=0/min(a1-1,fmtlen(a2)) printf=2/3 "
+     "writes-str=0/min(a1-1,fmtlen(a2)) printf=2/3 wrapper=vsnprintf "
      "chk=__builtin___vsnprintf_chk:0/1/-1/-1/2/3 "
      "chk=__vsnprintf_chk:0/1/-1/-1/2/3"},
     {"scanf", "R str, ...", "int",
-     "scanf=0/1 chk=__isoc99_scanf:0/1 chk=__isoc23_scanf:0/1"},
+     "scanf=0/1 wrapper=scanf chk=__isoc99_scanf:0/1 chk=__isoc23_scanf:0/1"},
     {"fscanf", "RW, R str, ...", "int",
-     "scanf=1/2 chk=__isoc99_fscanf:0/1/2 chk=__isoc23_fscanf:0/1/2"},
+     "scanf=1/2 wrapper=fscanf chk=__isoc99_fscanf:0/1/2 "
+     "chk=__isoc23_fscanf:0/1/2"},
     {"sscanf", "R str, R str, ...", "int",
-     "scanf=1/2 chk=__isoc99_sscanf:0/1/2 chk=__isoc23_sscanf:0/1/2"},
+     "scanf=1/2 wrapper=sscanf chk=__isoc99_sscanf:0/1/2 "
+     "chk=__isoc23_sscanf:0/1/2"},
     {"vscanf", "R str, other", "int",
-     "scanf=0/1 chk=__isoc99_vscanf:0/1 chk=__isoc23_vscanf:0/1"},
+     "scanf=0/1 wrapper=vscanf chk=__isoc99_vscanf:0/1 "
+     "chk=__isoc23_vscanf:0/1"},
     {"vfscanf", "RW, R str, other", "int",
-     "scanf=1/2 chk=__isoc99_vfscanf:0/1/2 chk=__isoc23_vfscanf:0/1/2"},
+     "scanf=1/2 wrapper=vfscanf chk=__isoc99_vfscanf:0/1/2 "
+     "chk=__isoc23_vfscanf:0/1/2"},
     {"vsscanf", "R str, R str, other", "int",
-     "scanf=1/2 chk=__isoc99_vsscanf:0/1/2 chk=__isoc23_vsscanf:0/1/2"},
+     "scanf=1/2 wrapper=vsscanf chk=__isoc99_vsscanf:0/1/2 "
+     "chk=__isoc23_vsscanf:0/1/2"},
     {"remove", "R str", "int", ""},
     {"rename", "R str, R str", "int", ""},
     {"renameat", "int, R str, int, R str", "int", ""},
@@ -1384,8 +1361,9 @@ static constexpr auto SystemExpectations = std::to_array<Expectation>({
     {"timer_getoverrun", "none nullable", "int", ""},
     {"timer_delete", "none nullable", "int", ""},
     {"mmap", "none nullable, int, int, int, int, int",
-     "fresh=munmap nonnull extent=a1", ""},
-    {"munmap", "none nullable releases=munmap range=a1, int", "int", ""},
+     "fresh=munmap nonnull extent=a1", "wrapper=mmap"},
+    {"munmap", "none nullable releases=munmap range=a1, int", "int",
+     "wrapper=munmap"},
     {"mprotect", "none nullable, int, int", "int", ""},
     {"msync", "none nullable, int, int", "int", ""},
     {"madvise", "none nullable, int, int", "int", ""},
@@ -1622,12 +1600,12 @@ static constexpr auto SignalExpectations = std::to_array<Expectation>({
     {"sem_close", "RW releases=sem_close", "int", ""},
     {"sem_unlink", "R str", "int", ""},
     {"sem_init", "W, int, int", "int", ""},
-    {"sem_destroy", "RW", "int", ""},
-    {"sem_wait", "RW", "int", ""},
-    {"sem_trywait", "RW", "int", ""},
-    {"sem_timedwait", "RW, R", "int", ""},
-    {"sem_post", "RW", "int", ""},
-    {"sem_getvalue", "RW, W", "int", ""},
+    {"sem_destroy", "none", "int", ""},
+    {"sem_wait", "none", "int", ""},
+    {"sem_trywait", "none", "int", ""},
+    {"sem_timedwait", "none, R", "int", ""},
+    {"sem_post", "none", "int", ""},
+    {"sem_getvalue", "none, W", "int", ""},
     {"tsearch", "none nullable escapes, RW nullable, fn sync=0/1",
      "ptr nullable", ""},
     {"tfind", "none nullable, R nullable, fn sync=0/1", "ptr nullable", ""},
@@ -1792,129 +1770,132 @@ static constexpr auto NetworkExpectations = std::to_array<Expectation>({
 // <wchar.h>, <wctype.h>, <uchar.h>: wide lengths count wchar_t elements;
 // multibyte buffers count bytes.
 static constexpr auto WideExpectations = std::to_array<Expectation>({
-    {"wcslen", "R str", "int value=strlen(a0)", ""},
+    {"wcslen", "R str", "int value=strlen(a0)", "wide"},
     {"wcsnlen", "R count=min(a1,strlen(a0)+1) nullable-if=a1, int",
-     "int value=min(a1,strlen(a0))", ""},
+     "int value=min(a1,strlen(a0))", "wide"},
     {"wcscpy", "W count=strlen(a1)+1, R str", "arg=0 nonnull",
-     "chk=__wcscpy_chk:0/1/-1"},
+     "wide chk=__wcscpy_chk:0/1/-1"},
     {"wcsncpy",
      "W count=a2 nullable-if=a2, R count=min(a2,strlen(a1)+1) nullable-if=a2, "
      "int",
-     "arg=0 nonnull", "chk=__wcsncpy_chk:0/1/2/-1"},
+     "arg=0 nonnull", "wide chk=__wcsncpy_chk:0/1/2/-1"},
     {"wcpcpy", "W count=strlen(a1)+1, R str", "interior=0 nonnull",
-     "chk=__wcpcpy_chk:0/1/-1"},
+     "wide chk=__wcpcpy_chk:0/1/-1"},
     {"wcpncpy",
      "W count=a2 nullable-if=a2, R count=min(a2,strlen(a1)+1) nullable-if=a2, "
      "int",
-     "interior=0 nonnull", "chk=__wcpncpy_chk:0/1/2/-1"},
+     "interior=0 nonnull", "wide chk=__wcpncpy_chk:0/1/2/-1"},
     {"wcscat", "RW str count=strlen(a0)+strlen(a1)+1, R str", "arg=0 nonnull",
-     "chk=__wcscat_chk:0/1/-1"},
+     "wide chk=__wcscat_chk:0/1/-1"},
     {"wcsncat",
      "RW str count=strlen(a0)+min(a2,strlen(a1))+1, "
      "R count=min(a2,strlen(a1)+1) nullable-if=a2, int",
-     "arg=0 nonnull", "chk=__wcsncat_chk:0/1/2/-1"},
-    {"wcscmp", "R str, R str", "int", ""},
+     "arg=0 nonnull", "wide chk=__wcsncat_chk:0/1/2/-1"},
+    {"wcscmp", "R str, R str", "int", "wide"},
     {"wcsncmp",
      "R count=min(a2,strlen(a0)+1) nullable-if=a2, "
      "R count=min(a2,strlen(a1)+1) nullable-if=a2, int",
-     "int", ""},
-    {"wcscasecmp", "R str, R str", "int", ""},
+     "int", "wide"},
+    {"wcscasecmp", "R str, R str", "int", "wide"},
     {"wcsncasecmp",
      "R count=min(a2,strlen(a0)+1) nullable-if=a2, "
      "R count=min(a2,strlen(a1)+1) nullable-if=a2, int",
-     "int", ""},
-    {"wcscoll", "R str, R str", "int", ""},
-    {"wcsxfrm", "W count=a2 nullable-if=a2, R str, int", "int", ""},
-    {"wcschr", "R str, int", "interior=0 nullable", ""},
-    {"wcsrchr", "R str, int", "interior=0 nullable", ""},
-    {"wcsstr", "R str, R str", "interior=0 nullable", ""},
-    {"wcspbrk", "R str, R str", "interior=0 nullable", ""},
-    {"wcsspn", "R str, R str", "int", ""},
-    {"wcscspn", "R str, R str", "int", ""},
+     "int", "wide"},
+    {"wcscoll", "R str, R str", "int", "wide"},
+    {"wcsxfrm", "W count=a2 nullable-if=a2, R str, int", "int", "wide"},
+    {"wcschr", "R str, int", "interior=0 nullable", "wide"},
+    {"wcsrchr", "R str, int", "interior=0 nullable", "wide"},
+    {"wcsstr", "R str, R str", "interior=0 nullable", "wide"},
+    {"wcspbrk", "R str, R str", "interior=0 nullable", "wide"},
+    {"wcsspn", "R str, R str", "int", "wide"},
+    {"wcscspn", "R str, R str", "int", "wide"},
     {"wcstok", "RW str nullable, R str, RW out=(interior=0 nullable)",
-     "interior=0 nullable", ""},
-    {"wcswidth", "R count=min(a1,strlen(a0)+1) nullable-if=a1, int", "int", ""},
-    {"wcwidth", "int", "int", ""},
+     "interior=0 nullable", "wide"},
+    {"wcswidth", "R count=min(a1,strlen(a0)+1) nullable-if=a1, int", "int",
+     "wide"},
+    {"wcwidth", "int", "int", "wide"},
     {"wmemcpy", "W count=a2 nullable-if=a2, R count=a2 nullable-if=a2, int",
-     "arg=0 nonnull", "chk=__wmemcpy_chk:0/1/2/-1"},
+     "arg=0 nonnull", "wide chk=__wmemcpy_chk:0/1/2/-1"},
     {"wmemmove", "W count=a2 nullable-if=a2, R count=a2 nullable-if=a2, int",
-     "arg=0 nonnull", "chk=__wmemmove_chk:0/1/2/-1"},
+     "arg=0 nonnull", "wide chk=__wmemmove_chk:0/1/2/-1"},
     {"wmemset", "W count=a2 nullable-if=a2, int, int", "arg=0 nonnull",
-     "chk=__wmemset_chk:0/1/2/-1"},
+     "wide chk=__wmemset_chk:0/1/2/-1"},
     {"wmemcmp", "R count=a2 nullable-if=a2, R count=a2 nullable-if=a2, int",
-     "int", ""},
+     "int", "wide"},
     {"wmemchr", "R count=min(a2,strlen(a0)+1) nullable-if=a2, int, int",
-     "interior=0 nullable", ""},
+     "interior=0 nullable", "wide"},
     {"wmempcpy", "W count=a2 nullable-if=a2, R count=a2 nullable-if=a2, int",
-     "interior=0 nonnull", "chk=__wmempcpy_chk:0/1/2/-1"},
+     "interior=0 nonnull", "wide chk=__wmempcpy_chk:0/1/2/-1"},
     {"wcstol", "R str, W nullable out=(interior=0 nonnull), int", "int",
-     "chk=__isoc23_wcstol:0/1/2"},
+     "wide chk=__isoc23_wcstol:0/1/2"},
     {"wcstoll", "R str, W nullable out=(interior=0 nonnull), int", "int",
-     "chk=__isoc23_wcstoll:0/1/2"},
+     "wide chk=__isoc23_wcstoll:0/1/2"},
     {"wcstoul", "R str, W nullable out=(interior=0 nonnull), int", "int",
-     "chk=__isoc23_wcstoul:0/1/2"},
+     "wide chk=__isoc23_wcstoul:0/1/2"},
     {"wcstoull", "R str, W nullable out=(interior=0 nonnull), int", "int",
-     "chk=__isoc23_wcstoull:0/1/2"},
-    {"wcstod", "R str, W nullable out=(interior=0 nonnull)", "int", ""},
-    {"wcstof", "R str, W nullable out=(interior=0 nonnull)", "int", ""},
-    {"wcstold", "R str, W nullable out=(interior=0 nonnull)", "int", ""},
-    {"btowc", "int", "int", ""},
-    {"wctob", "int", "int", ""},
-    {"mbsinit", "R nullable", "int", ""},
+     "wide chk=__isoc23_wcstoull:0/1/2"},
+    {"wcstod", "R str, W nullable out=(interior=0 nonnull)", "int", "wide"},
+    {"wcstof", "R str, W nullable out=(interior=0 nonnull)", "int", "wide"},
+    {"wcstold", "R str, W nullable out=(interior=0 nonnull)", "int", "wide"},
+    {"btowc", "int", "int", "wide"},
+    {"wctob", "int", "int", "wide"},
+    {"mbsinit", "R nullable", "int", "wide"},
     {"mbrlen", "R bytes=min(a1,strlen(a0)+1) nullable, int, RW nullable", "int",
-     ""},
+     "wide"},
     {"mbrtowc",
      "W nullable, R bytes=min(a2,strlen(a1)+1) nullable, int, RW nullable",
-     "int", ""},
+     "int", "wide"},
     {"wcrtomb", "W bytes=MB_CUR_MAX nullable, int, RW nullable", "int",
-     "chk=__wcrtomb_chk:0/1/2/-1"},
+     "wide chk=__wcrtomb_chk:0/1/2/-1"},
     {"mbsrtowcs", "W count=a2 nullable, RW, int, RW nullable", "int",
-     "chk=__mbsrtowcs_chk:0/1/2/3/-1"},
+     "wide chk=__mbsrtowcs_chk:0/1/2/3/-1"},
     {"wcsrtombs", "W bytes=a2 nullable, RW, int, RW nullable", "int",
-     "chk=__wcsrtombs_chk:0/1/2/3/-1"},
+     "wide chk=__wcsrtombs_chk:0/1/2/3/-1"},
     {"mbsnrtowcs", "W count=a3 nullable, RW, int, int, RW nullable", "int",
-     "chk=__mbsnrtowcs_chk:0/1/2/3/4/-1"},
+     "wide chk=__mbsnrtowcs_chk:0/1/2/3/4/-1"},
     {"wcsnrtombs", "W bytes=a3 nullable, RW, int, int, RW nullable", "int",
-     "chk=__wcsnrtombs_chk:0/1/2/3/4/-1"},
-    {"fgetwc", "RW", "int", ""},
-    {"getwc", "RW", "int", ""},
-    {"getwchar", "", "int", ""},
-    {"fputwc", "int, RW", "int", ""},
-    {"putwc", "int, RW", "int", ""},
-    {"putwchar", "int", "int", ""},
-    {"ungetwc", "int, RW", "int", ""},
+     "wide chk=__wcsnrtombs_chk:0/1/2/3/4/-1"},
+    {"fgetwc", "RW", "int", "wide"},
+    {"getwc", "RW", "int", "wide"},
+    {"getwchar", "", "int", "wide"},
+    {"fputwc", "int, RW", "int", "wide"},
+    {"putwc", "int, RW", "int", "wide"},
+    {"putwchar", "int", "int", "wide"},
+    {"ungetwc", "int, RW", "int", "wide"},
     {"fgetws", "W count=a1 nullable-if=a1, int, RW", "arg=0 nullable",
-     "chk=__fgetws_chk:0/-1/1/2"},
-    {"fputws", "R str, RW", "int", ""},
-    {"fwide", "RW, int", "int", ""},
-    {"wprintf", "R str, ...", "int", "printf=0/1 chk=__wprintf_chk:-1/0/1"},
+     "wide chk=__fgetws_chk:0/-1/1/2"},
+    {"fputws", "R str, RW", "int", "wide"},
+    {"fwide", "RW, int", "int", "wide"},
+    {"wprintf", "R str, ...", "int",
+     "wide printf=0/1 chk=__wprintf_chk:-1/0/1"},
     {"fwprintf", "RW, R str, ...", "int",
-     "printf=1/2 chk=__fwprintf_chk:0/-1/1/2"},
+     "wide printf=1/2 chk=__fwprintf_chk:0/-1/1/2"},
     {"swprintf", "W count=a1 nullable-if=a1, int, R str, ...", "int",
-     "printf=2/3 chk=__swprintf_chk:0/1/-1/-1/2/3"},
-    {"vwprintf", "R str, other", "int", "printf=0/1 chk=__vwprintf_chk:-1/0/1"},
+     "wide printf=2/3 chk=__swprintf_chk:0/1/-1/-1/2/3"},
+    {"vwprintf", "R str, other", "int",
+     "wide printf=0/1 chk=__vwprintf_chk:-1/0/1"},
     {"vfwprintf", "RW, R str, other", "int",
-     "printf=1/2 chk=__vfwprintf_chk:0/-1/1/2"},
+     "wide printf=1/2 chk=__vfwprintf_chk:0/-1/1/2"},
     {"vswprintf", "W count=a1 nullable-if=a1, int, R str, other", "int",
-     "printf=2/3 chk=__vswprintf_chk:0/1/-1/-1/2/3"},
+     "wide printf=2/3 chk=__vswprintf_chk:0/1/-1/-1/2/3"},
     {"wscanf", "R str, ...", "int",
-     "scanf=0/1 chk=__isoc99_wscanf:0/1 chk=__isoc23_wscanf:0/1"},
+     "wide scanf=0/1 chk=__isoc99_wscanf:0/1 chk=__isoc23_wscanf:0/1"},
     {"fwscanf", "RW, R str, ...", "int",
-     "scanf=1/2 chk=__isoc99_fwscanf:0/1/2 chk=__isoc23_fwscanf:0/1/2"},
+     "wide scanf=1/2 chk=__isoc99_fwscanf:0/1/2 chk=__isoc23_fwscanf:0/1/2"},
     {"swscanf", "R str, R str, ...", "int",
-     "scanf=1/2 chk=__isoc99_swscanf:0/1/2 chk=__isoc23_swscanf:0/1/2"},
+     "wide scanf=1/2 chk=__isoc99_swscanf:0/1/2 chk=__isoc23_swscanf:0/1/2"},
     {"vwscanf", "R str, other", "int",
-     "scanf=0/1 chk=__isoc99_vwscanf:0/1 chk=__isoc23_vwscanf:0/1"},
+     "wide scanf=0/1 chk=__isoc99_vwscanf:0/1 chk=__isoc23_vwscanf:0/1"},
     {"vfwscanf", "RW, R str, other", "int",
-     "scanf=1/2 chk=__isoc99_vfwscanf:0/1/2 chk=__isoc23_vfwscanf:0/1/2"},
+     "wide scanf=1/2 chk=__isoc99_vfwscanf:0/1/2 chk=__isoc23_vfwscanf:0/1/2"},
     {"vswscanf", "R str, R str, other", "int",
-     "scanf=1/2 chk=__isoc99_vswscanf:0/1/2 chk=__isoc23_vswscanf:0/1/2"},
+     "wide scanf=1/2 chk=__isoc99_vswscanf:0/1/2 chk=__isoc23_vswscanf:0/1/2"},
     {"wcsftime", "W count=a1 nullable-if=a1, int, R str, R", "int",
-     "reads=environ"},
+     "reads=environ wide"},
     {"open_wmemstream",
      "W nullable escapes out=(fresh=free null-on-failure unzeroed), "
      "W nullable escapes",
-     "fresh=fclose null-on-failure", ""},
+     "fresh=fclose null-on-failure", "wide"},
     {"wctype", "R str", "int", ""},
     {"wctrans", "R str", "int", ""},
     {"mbrtoc8",

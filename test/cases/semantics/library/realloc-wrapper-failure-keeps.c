@@ -7,7 +7,6 @@
 // every path, and no call boundary sees a pointer that may be gone (the temporal facets
 // of the buffer's uses rest on nothing a boundary broke). Linenoise's 'abAppend'.
 // CLEAN
-// EXPECT-LEDGER: /summary/facets/temporal/proven >= 12
 // RUN-INPUT:
 #include <stdlib.h>
 #include <string.h>

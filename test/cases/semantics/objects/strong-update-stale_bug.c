@@ -13,5 +13,5 @@ int main(void) {
   if (!bx.buf) return 1;
   bx.buf[0] = 1;
   free(q->buf);
-  return bx.buf[0]; // BUG: use-after-free // NOT-PROVEN: temporal
+  return bx.buf[0]; // BUG: use-after-free
 }

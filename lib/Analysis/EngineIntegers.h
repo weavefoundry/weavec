@@ -22,11 +22,6 @@
 
 namespace weavec::analysis {
 
-inline std::uint64_t unsignedMagnitude(std::int64_t value) {
-  const auto bits = static_cast<std::uint64_t>(value);
-  return value < 0 ? std::uint64_t{0} - bits : bits;
-}
-
 [[nodiscard]] inline std::optional<core::IntegerOp>
 checkedIntegerOp(const clang::CallExpr &call) {
   // The value rule of the overflow-checking compiler builtins, by their
@@ -146,21 +141,6 @@ integerOpOf(clang::BinaryOperatorKind op) {
   default:
     return std::nullopt;
   }
-}
-
-[[nodiscard]] inline bool sameIntegerValue(core::IntegerValue a,
-                                           core::IntegerValue b) {
-  return a.negative() == b.negative() && a.magnitude() == b.magnitude();
-}
-
-[[nodiscard]] inline bool conversionPreserves(const core::IntegerRange &source,
-                                              core::IntegerType destination) {
-  if (source.empty())
-    return false;
-  return sameIntegerValue(*source.minimum(),
-                          source.minimum()->converted(destination)) &&
-         sameIntegerValue(*source.maximum(),
-                          source.maximum()->converted(destination));
 }
 
 } // namespace weavec::analysis

@@ -36,13 +36,9 @@ if not os.path.exists(weavec_cc):
 
 # Longer names first so `%weavec_cc` is not rewritten as `%weavec` + `_cc`.
 config.substitutions.append(("%weavec_cc", weavec_cc))
-# RFC 0030: the runtime archives. The check prelude is printed by
-# `%weavec_cc -fweavec-print-prelude`.
+# RFC 0035: the runtime archive.
 config.substitutions.append(
     ("%weavec_rt", os.path.join(config.weavec_lib_dir, "libweavec_rt.a"))
-)
-config.substitutions.append(
-    ("%weavec_chk", os.path.join(config.weavec_lib_dir, "libweavec_chk.a"))
 )
 # The reference compiler: the clang of the LLVM WeaveC is built against.
 config.substitutions.append(("%clang", config.clang or "clang"))

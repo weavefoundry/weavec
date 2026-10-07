@@ -1,30 +1,26 @@
 {
   "schema": "weavec-corpus-triage",
-  "version": 1,
+  "version": 2,
   "_comment": [
-    "Triage of the corpus findings (RFC 0030, section 17.5), checked by scripts/corpus-gate.py.",
-    "Every definite error and every possible temporal warning that a run reports needs an entry",
-    "{fingerprint, config, id, certainty, file, line, verdict, note}: fingerprint is the ledger's",
-    "(section 12.3), certainty is definite or possible, verdict is \"true\" or \"false\", and note",
-    "says why. An untriaged finding fails the gate; a definite error triaged false fails G9; an",
-    "entry no finding of its config matches is reported as stale without failing. A build config",
-    "that must build despite a triaged-true definite error lists -Wno-error=weavec-<id> with the",
-    "same fingerprint under `lowered` in manifest.json.",
-    "Entries appear once the RFC 0030 compiler writes ledgers (S3); v0.10.0's findings have no",
-    "fingerprints and are not triaged here. Entries a run no longer matches are removed when the",
-    "population is re-triaged (RFC 0031 stage S7 did so for the original configs).",
-    "`guardFailures` (RFC 0032, gate R3) lists the guard failures of a test suite that were",
-    "triaged as true bugs: {config, file, line, template, verdict, note}, verdict always \"true\"",
-    "and note the source evidence. A failure at such a site is not counted as a trap (G11); an",
-    "entry no report-mode run names is reported as stale without failing. A false trap is never",
-    "triaged: it is a bug in WeaveC."
+    "Triage of the corpus findings (RFC 0035, section 11), checked by scripts/corpus-gate.py.",
+    "`entries` holds verdicts on the findings of the advisory analysis (weavec, per file or",
+    "--whole-program, as --quick runs it): {config, id, certainty, file, line, verdict, note}, keyed",
+    "by config, file, line and id. certainty is definite (an error) or possible (a warning), verdict",
+    "\"true\" or \"false\", and note says why. Every definite error a run reports needs an entry, and",
+    "none may be triaged \"false\"; possible findings are counted and need none. An entry no finding",
+    "of a config that ran matches is reported as stale without failing; entries are removed when the",
+    "population is re-triaged.",
+    "`guardFailures` lists the guard failures of a test suite that are true bugs of the project:",
+    "{config, file, line, verdict, note, kind (optional, a run-time report kind)}, verdict always",
+    "\"true\" and note the source evidence. A report at such a site is not counted as a trap; an",
+    "entry no run names is reported as stale without failing. A false trap is never triaged: it is",
+    "a bug in WeaveC."
   ],
   "guardFailures": [
     {
       "config": "jansson",
       "file": "src/lookup3.h",
       "line": 259,
-      "template": "object",
       "verdict": "true",
       "note": "TRUE out-of-bounds read, by the source's own account. hashlittle's tail switch reads a whole 32-bit word of the key and masks off the bytes past the key's end (here `c+=k[2]&0xffffff`). The comment above the switch (lookup3.h:240-247) says that the expression \"actually reads beyond the end of the string, but then masks off the part it's not allowed to read\" and that Valgrind \"will still catch it and complain\"; lookup3.h:210-220 defines NO_MASKING_TRICK, which selects the byte-wise tail instead, under VALGRIND and when the compiler reports AddressSanitizer. The key is what hashtable.c passes to hash_str (hashtable.c:38, called at 238, 265, 276 and 303): the caller's key, or a pair's flexible `key` member allocated with offsetof(pair_t, key) + key_len + 1 bytes (hashtable.c:210). When the key's object ends less than a word after the last full word of the key, the read crosses the end of the object. The report-mode run of the CTest suite names these four lines and then passes."
     },
@@ -32,7 +28,6 @@
       "config": "jansson",
       "file": "src/lookup3.h",
       "line": 260,
-      "template": "object",
       "verdict": "true",
       "note": "TRUE out-of-bounds read, by the source's own account. hashlittle's tail switch reads a whole 32-bit word of the key and masks off the bytes past the key's end (here `c+=k[2]&0xffff`). The comment above the switch (lookup3.h:240-247) says that the expression \"actually reads beyond the end of the string, but then masks off the part it's not allowed to read\" and that Valgrind \"will still catch it and complain\"; lookup3.h:210-220 defines NO_MASKING_TRICK, which selects the byte-wise tail instead, under VALGRIND and when the compiler reports AddressSanitizer. The key is what hashtable.c passes to hash_str (hashtable.c:38, called at 238, 265, 276 and 303): the caller's key, or a pair's flexible `key` member allocated with offsetof(pair_t, key) + key_len + 1 bytes (hashtable.c:210). When the key's object ends less than a word after the last full word of the key, the read crosses the end of the object. The report-mode run of the CTest suite names these four lines and then passes."
     },
@@ -40,7 +35,6 @@
       "config": "jansson",
       "file": "src/lookup3.h",
       "line": 263,
-      "template": "object",
       "verdict": "true",
       "note": "TRUE out-of-bounds read, by the source's own account. hashlittle's tail switch reads a whole 32-bit word of the key and masks off the bytes past the key's end (here `b+=k[1]&0xffffff`). The comment above the switch (lookup3.h:240-247) says that the expression \"actually reads beyond the end of the string, but then masks off the part it's not allowed to read\" and that Valgrind \"will still catch it and complain\"; lookup3.h:210-220 defines NO_MASKING_TRICK, which selects the byte-wise tail instead, under VALGRIND and when the compiler reports AddressSanitizer. The key is what hashtable.c passes to hash_str (hashtable.c:38, called at 238, 265, 276 and 303): the caller's key, or a pair's flexible `key` member allocated with offsetof(pair_t, key) + key_len + 1 bytes (hashtable.c:210). When the key's object ends less than a word after the last full word of the key, the read crosses the end of the object. The report-mode run of the CTest suite names these four lines and then passes."
     },
@@ -48,172 +42,12 @@
       "config": "jansson",
       "file": "src/lookup3.h",
       "line": 264,
-      "template": "object",
       "verdict": "true",
       "note": "TRUE out-of-bounds read, by the source's own account. hashlittle's tail switch reads a whole 32-bit word of the key and masks off the bytes past the key's end (here `b+=k[1]&0xffff`). The comment above the switch (lookup3.h:240-247) says that the expression \"actually reads beyond the end of the string, but then masks off the part it's not allowed to read\" and that Valgrind \"will still catch it and complain\"; lookup3.h:210-220 defines NO_MASKING_TRICK, which selects the byte-wise tail instead, under VALGRIND and when the compiler reports AddressSanitizer. The key is what hashtable.c passes to hash_str (hashtable.c:38, called at 238, 265, 276 and 303): the caller's key, or a pair's flexible `key` member allocated with offsetof(pair_t, key) + key_len + 1 bytes (hashtable.c:210). When the key's object ends less than a word after the last full word of the key, the read crosses the end of the object. The report-mode run of the CTest suite names these four lines and then passes."
-    },
-    {
-      "config": "mbedtls",
-      "file": "library/x509_crt.c",
-      "line": 1415,
-      "template": "object",
-      "verdict": "true",
-      "note": "TRUE out-of-bounds read, in the test helpers. mbedtls_test_ssl_endpoint_certificate_init (tests/src/test_helpers/ssl_helpers.c:688-691) parses the client's EC certificate as `mbedtls_x509_crt_parse(cert->cert, mbedtls_test_cli_crt_ec_der, mbedtls_test_cli_crt_ec_len)`: the DER array with the length of the PEM text (tests/src/certs.c:131 and 297-298; the other three branches pass the matching `_der_len`). The PEM text is longer than the DER bytes, so mbedtls_x509_crt_parse's test `buf[buflen - 1] == '\\0'` (library/x509_crt.c:1415) reads past the end of the global array. The SSL suites' EC client handshakes (\"Handshake, ECDHE-ECDSA-WITH-AES-256-CCM\" and others) reach it; the report-mode run of the CTest suite names this line and then passes."
     }
   ],
   "entries": [
     {
-      "fingerprint": "e0733a070c580c5cc3cab7fac89d2866",
-      "config": "cJSON",
-      "id": "use-after-move",
-      "certainty": "possible",
-      "file": "cJSON.c",
-      "line": 546,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, and no longer a definite one. The site is cJSON's `ensure` (cJSON.c:490): `newbuffer = p->hooks.reallocate(p->buffer, newsize); if (newbuffer == NULL) p->hooks.deallocate(p->buffer);`. RFC 0030 section 8.2 makes `realloc(p, 0)` a release of `p`, so this is a double free exactly when `newsize` can be zero. It cannot: `needed += p->offset + 1` is followed by `if (needed <= p->length) return ...` with `p->length` unsigned, so the fall-through has `needed >= 1` (a wrapped `needed` is `0 <= p->length` and takes the early return), and the two arms then give `newsize = INT_MAX` or `newsize = needed * 2` with `needed <= INT_MAX / 2`. The engine now follows that argument: the per-file compile of cJSON.c is clean, and so is a standalone copy of `ensure` with the hooks bound (scratchpad/cv/e1.c). What is left is the tests build, where tests/misc_tests.c includes cJSON.c and adds `failing_realloc` (it returns NULL and releases nothing) as a second candidate for the `reallocate` slot. `realloc`'s summary carries its release guard on its result classes, and a candidate with no class-dependent consumption keeps no classes, so joining the two folds the classes away and the guard with them; the consume survives as a widened one (RFC 0030 section 9.1), which is why this is a possible finding and not an error. Reduction: scratchpad/cv/e5.c, and the regression test test/Analysis/rfc0030-slot-candidate-classes.c. Closing it needs the join to keep the informed side's classes when the other side consumes nothing."
-    },
-    {
-      "fingerprint": "662173e9eef2d3934e5c4009086c91b0",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 467,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "925eb43f483b3a771a77a2dc0e28a232",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 468,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "0f53c00e90fc2daf8643a302344fd0a0",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 469,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "71cef362ae20085165b57a443ee5ed4a",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 470,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "3a63d1289b755f2b3b05dc93b07d4576",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 471,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "c3478f81d886a3c3b49ffb6ee821b19b",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 472,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "f4034dbdd050df6e879023a6d29badc2",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 473,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "e6d9a4aa0e8456a913fb432459c340db",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 474,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "b960e7d6f3d9a64d8dfd86398b5097bf",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 476,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "a7cfd37ab6266c31791a7471972162e4",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 477,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "5756cf585740b25b3cf31f03e775408e",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 480,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "c7ff4410302bb4f26606ae663163e430",
-      "config": "cJSON",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 489,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "07afb1010e8f4f42ec3e6c96c4c8fa49",
-      "config": "zlib",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "test/minigzip.c",
-      "line": 568,
-      "verdict": "true",
-      "note": "TRUE POSITIVE, and RFC 0030 G9 requires it to be reported. minigzip's `do { ... } while (--argc)` loop calls `gz_uncompress(file, stdout)` (test/minigzip.c:568) on every argument, and `gz_uncompress` ends with `fclose(out)`, so stdout is closed once per argument; line 579's `gzdopen(fileno(stdout), outmode)` then reads a stream a previous iteration's `gzclose` already closed. Upstream bug, unchanged at the pinned SHA."
-    },
-    {
-      "fingerprint": "71ac796c31412514f32aad08eab16bd0",
-      "config": "zlib",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "test/minigzip.c",
-      "line": 579,
-      "verdict": "true",
-      "note": "TRUE POSITIVE, and RFC 0030 G9 requires it to be reported. minigzip's `do { ... } while (--argc)` loop calls `gz_uncompress(file, stdout)` (test/minigzip.c:568) on every argument, and `gz_uncompress` ends with `fclose(out)`, so stdout is closed once per argument; line 579's `gzdopen(fileno(stdout), outmode)` then reads a stream a previous iteration's `gzclose` already closed. Upstream bug, unchanged at the pinned SHA."
-    },
-    {
-      "fingerprint": "2ee09b6e94e228c8d676cfd6abc23756",
       "config": "jsmn",
       "id": "use-after-move",
       "certainty": "possible",
@@ -223,7 +57,6 @@
       "note": "FALSE POSITIVE, family A (a failed realloc). `js = realloc_it(js, jslen + r + 1)` (example/jsondump.c:109) replaces `js` with the wrapper's result, and line 110 returns when that result is NULL, so every later use of `js` (113, 117, 128, and the argument at 109 on the next iteration) reads the buffer the successful realloc just returned; the old pointer is never read again. The size is at least 2 (`r >= 1` after the `r == 0` return at 100), so realloc cannot release `js` and return NULL. What the analysis probably loses is the separation between `realloc_it`'s two exits once its summary is applied (argument moved into a non-null result, or argument released and NULL returned; `js` also starts NULL, which makes the first call a malloc), so the moved state of the argument sticks to the reassigned `js` even past the null test."
     },
     {
-      "fingerprint": "f16604f80b9d35789d3a1a068803f962",
       "config": "jsmn",
       "id": "use-after-move",
       "certainty": "possible",
@@ -233,7 +66,6 @@
       "note": "FALSE POSITIVE, family A (a failed realloc). `js = realloc_it(js, jslen + r + 1)` (example/jsondump.c:109) replaces `js` with the wrapper's result, and line 110 returns when that result is NULL, so every later use of `js` (113, 117, 128, and the argument at 109 on the next iteration) reads the buffer the successful realloc just returned; the old pointer is never read again. The size is at least 2 (`r >= 1` after the `r == 0` return at 100), so realloc cannot release `js` and return NULL. What the analysis probably loses is the separation between `realloc_it`'s two exits once its summary is applied (argument moved into a non-null result, or argument released and NULL returned; `js` also starts NULL, which makes the first call a malloc), so the moved state of the argument sticks to the reassigned `js` even past the null test."
     },
     {
-      "fingerprint": "b2c4bf8ba44843231531a7137eae0ff2",
       "config": "jsmn",
       "id": "use-after-move",
       "certainty": "possible",
@@ -243,7 +75,6 @@
       "note": "FALSE POSITIVE, family A (a failed realloc). `js = realloc_it(js, jslen + r + 1)` (example/jsondump.c:109) replaces `js` with the wrapper's result, and line 110 returns when that result is NULL, so every later use of `js` (113, 117, 128, and the argument at 109 on the next iteration) reads the buffer the successful realloc just returned; the old pointer is never read again. The size is at least 2 (`r >= 1` after the `r == 0` return at 100), so realloc cannot release `js` and return NULL. What the analysis probably loses is the separation between `realloc_it`'s two exits once its summary is applied (argument moved into a non-null result, or argument released and NULL returned; `js` also starts NULL, which makes the first call a malloc), so the moved state of the argument sticks to the reassigned `js` even past the null test."
     },
     {
-      "fingerprint": "d7300e9baf4431aeaca38af9d7d5e100",
       "config": "jsmn",
       "id": "use-after-move",
       "certainty": "possible",
@@ -253,7 +84,6 @@
       "note": "FALSE POSITIVE, family A (a failed realloc). `js = realloc_it(js, jslen + r + 1)` (example/jsondump.c:109) replaces `js` with the wrapper's result, and line 110 returns when that result is NULL, so every later use of `js` (113, 117, 128, and the argument at 109 on the next iteration) reads the buffer the successful realloc just returned; the old pointer is never read again. The size is at least 2 (`r >= 1` after the `r == 0` return at 100), so realloc cannot release `js` and return NULL. What the analysis probably loses is the separation between `realloc_it`'s two exits once its summary is applied (argument moved into a non-null result, or argument released and NULL returned; `js` also starts NULL, which makes the first call a malloc), so the moved state of the argument sticks to the reassigned `js` even past the null test."
     },
     {
-      "fingerprint": "084b327e1f9f99c57edcd9e2d6bb3b8f",
       "config": "linenoise",
       "id": "double-free",
       "certainty": "possible",
@@ -263,7 +93,6 @@
       "note": "FALSE POSITIVE, family B (array of owned pointers). `freeCompletions` (linenoise.c:706) frees `lc->cvec[i]` once for each `i < lc->len`, and each element is a distinct `malloc` copy stored by `linenoiseAddCompletion` (linenoise.c:847, `lc->cvec[lc->len++] = copy`). The engine summarises the array as one cell `cvec[*]`, so the second iteration reads as a second release of the same object."
     },
     {
-      "fingerprint": "084b327e1f9f99c57edcd9e2d6bb3b8f",
       "config": "linenoise-program",
       "id": "double-free",
       "certainty": "possible",
@@ -273,7 +102,6 @@
       "note": "FALSE POSITIVE, family B (array of owned pointers). `freeCompletions` (linenoise.c:706) frees `lc->cvec[i]` once for each `i < lc->len`, and each element is a distinct `malloc` copy stored by `linenoiseAddCompletion` (linenoise.c:847, `lc->cvec[lc->len++] = copy`). The engine summarises the array as one cell `cvec[*]`, so the second iteration reads as a second release of the same object."
     },
     {
-      "fingerprint": "3fb62d2b82b153c0ebdddc2aa95535cf",
       "config": "cJSON-program",
       "id": "double-free",
       "certainty": "possible",
@@ -283,7 +111,6 @@
       "note": "FALSE POSITIVE. In `apply_patch`'s root-replacement case, `overwrite_item(object, *value)` (cJSON_Utils.c:869) frees `object->string` at 793 and then `memcpy(root, &replacement, sizeof(cJSON))` at 804 overwrites the whole struct, so `object->string` now holds the duplicate's key, a fresh `cJSON_strdup` made by `cJSON_Duplicate` (cJSON.c, `cJSON_Duplicate_rec`); line 878 frees that new string, once. The analysis apparently does not let the struct-sized `memcpy` from the by-value `replacement` parameter overwrite the `string` field, so the pointer freed at 793 still appears to be in `object->string`."
     },
     {
-      "fingerprint": "d13c283c6dc8580f75f3b7608c21d06f",
       "config": "jansson",
       "id": "double-free",
       "certainty": "possible",
@@ -293,7 +120,6 @@
       "note": "FALSE POSITIVE, family B (a loop releasing distinct elements). `hashtable_do_clear` (src/hashtable.c:128) walks the ordered list of pairs and drops each pair's reference to its value once, then frees that pair; each pair owns one reference, so a value stored under two keys has a reference count of two and is deleted only by the second `json_decref`. The engine summarises the list nodes (reached through `list_to_pair`) as one object and treats `json_decref` as a release rather than a reference drop, so the second iteration reads as a second release of the same `pair->value`."
     },
     {
-      "fingerprint": "1e15cb902ccc99bcd62a4d17a268bce0",
       "config": "jansson",
       "id": "double-free",
       "certainty": "possible",
@@ -303,7 +129,6 @@
       "note": "FALSE POSITIVE, correlated conditions. In `pack_object` `value` is released at src/pack_unpack.c:267 only when `s->has_error` is set, and handed to `json_object_setn_new_nocheck` at 269 only when it is clear; nothing between the two tests writes `s->has_error` (`json_decref` does not see `s`), so exactly one of them runs per iteration, and `value` is reassigned by `pack` on the next one. `json_object_setn_new_nocheck`'s own `json == value` release is infeasible here because `object` is the fresh `json_object()` of this call and `value` comes from the caller's arguments. The engine keeps both paths, probably because it does not correlate the two loads of `s->has_error` (family C, the `json == value` guard, is the other candidate)."
     },
     {
-      "fingerprint": "cb852a5754d1c45bf8922c951e5ff5b8",
       "config": "jansson",
       "id": "double-free",
       "certainty": "possible",
@@ -313,7 +138,6 @@
       "note": "FALSE POSITIVE, correlated conditions. In `pack_array` `value` is released at src/pack_unpack.c:319 only when `s->has_error` is set, and handed to `json_array_append_new` at 321 only when it is clear; nothing between the two tests writes `s->has_error`, so exactly one of them runs per iteration, and `value` is reassigned by `pack` on the next one. `json_array_append_new`'s `json == value` release is infeasible because `array` is the fresh `json_array()` of this call. The engine keeps both paths, probably because it does not correlate the two loads of `s->has_error` (family C, the `json == value` guard, is the other candidate)."
     },
     {
-      "fingerprint": "7d47a1e46b786236447139ebdccc0acf",
       "config": "jansson",
       "id": "double-free",
       "certainty": "possible",
@@ -323,7 +147,6 @@
       "note": "FALSE POSITIVE, family B (array of owned pointers). `json_delete_array` (src/value.c:451) drops the reference held by each slot `array->table[i]`, `i < entries`, once; each slot owns one reference, so a value appended twice has a reference count of two and survives the first `json_decref`. The engine summarises the table as one cell `table[*]` and reads `json_decref` as a release, so the second iteration reads as a second release of the same object."
     },
     {
-      "fingerprint": "8a1fb94d4ecba29ad22405b556d0c233",
       "config": "jansson",
       "id": "double-free",
       "certainty": "possible",
@@ -333,197 +156,6 @@
       "note": "FALSE POSITIVE, family B (array of owned pointers). `json_array_clear` (src/value.c:607) drops the reference held by each slot `array->table[i]`, `i < entries`, once, then sets `entries = 0`; each slot owns one reference, so a value appended twice has a reference count of two and survives the first `json_decref`. The engine summarises the table as one cell `table[*]` and reads `json_decref` as a release, so the second iteration reads as a second release of the same object."
     },
     {
-      "fingerprint": "0df099f6a3709567c3f35d3cdcba4b01",
-      "config": "cJSON",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 348,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. cJSON_ReplaceItemViaPointer frees only the item it replaces; the test then compares and dereferences the neighbours, which stay in the array. The analysis cannot tell the replaced item from its siblings (the list is walked through focus objects), so each later use of a sibling may be of the freed one."
-    },
-    {
-      "fingerprint": "41aae91c843dd131a204d0250ba20366",
-      "config": "cJSON",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 354,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. cJSON_ReplaceItemViaPointer frees only the item it replaces; the test then compares and dereferences the neighbours, which stay in the array. The analysis cannot tell the replaced item from its siblings (the list is walked through focus objects), so each later use of a sibling may be of the freed one."
-    },
-    {
-      "fingerprint": "62ba13bc249fb12073ee3e1f344f6993",
-      "config": "cJSON",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 469,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. cJSON_Delete frees item->string and item->valuestring only when the type flags cJSON_StringIsConst / cJSON_IsReference are clear; the analysis does not correlate the release with the flag bits, so the strings a reference or a constant-string item shares may look released twice."
-    },
-    {
-      "fingerprint": "b8a34451b1e893da31c4d25a553754c6",
-      "config": "cJSON",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 480,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. cJSON_Delete frees item->string and item->valuestring only when the type flags cJSON_StringIsConst / cJSON_IsReference are clear; the analysis does not correlate the release with the flag bits, so the strings a reference or a constant-string item shares may look released twice."
-    },
-    {
-      "fingerprint": "ca95855bd868c081febb18e85442b90a",
-      "config": "cJSON",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 603,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. A reference item (cJSON_CreateObjectReference / ArrayReference) shares its child with the original; cJSON_Delete skips the children of an item whose type has cJSON_IsReference. The analysis does not tie the release to that flag, so deleting the original and then the reference may free the child twice."
-    },
-    {
-      "fingerprint": "bdb05eab129facd042d836c3ff749f84",
-      "config": "cJSON",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 621,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. A reference item (cJSON_CreateObjectReference / ArrayReference) shares its child with the original; cJSON_Delete skips the children of an item whose type has cJSON_IsReference. The analysis does not tie the release to that flag, so deleting the original and then the reference may free the child twice."
-    },
-    {
-      "fingerprint": "71a9d84a1f1b6de2fd59c78a082ea068",
-      "config": "cJSON",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 781,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. A reference item (cJSON_CreateObjectReference / ArrayReference) shares its child with the original; cJSON_Delete skips the children of an item whose type has cJSON_IsReference. The analysis does not tie the release to that flag, so deleting the original and then the reference may free the child twice."
-    },
-    {
-      "fingerprint": "d8b2c318507643fe41133367497c7157",
-      "config": "cJSON",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "tests/old_utils_tests.c",
-      "line": 134,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. object1/object3 and their children were built by cJSON_Create*/cJSON_AddItemToObject and are deleted once each; the earlier cJSON_Delete(object) walks a list whose items the analysis cannot tell apart from these (list-walking destructor, RFC 0031 unresolved question), so the later deletes may look like second frees."
-    },
-    {
-      "fingerprint": "4d8f26f92669010a926637b79d0a5929",
-      "config": "cJSON",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "tests/old_utils_tests.c",
-      "line": 135,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. object1/object3 and their children were built by cJSON_Create*/cJSON_AddItemToObject and are deleted once each; the earlier cJSON_Delete(object) walks a list whose items the analysis cannot tell apart from these (list-walking destructor, RFC 0031 unresolved question), so the later deletes may look like second frees."
-    },
-    {
-      "fingerprint": "4958c275e78c065ccb7054de0a65b8d4",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 344,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. cJSON_ReplaceItemViaPointer frees only the item it replaces; the test then compares and dereferences the neighbours, which stay in the array. The analysis cannot tell the replaced item from its siblings (the list is walked through focus objects), so each later use of a sibling may be of the freed one."
-    },
-    {
-      "fingerprint": "acec9f1a504193fb01b9d8b52dff84bf",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 351,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. cJSON_ReplaceItemViaPointer frees only the item it replaces; the test then compares and dereferences the neighbours, which stay in the array. The analysis cannot tell the replaced item from its siblings (the list is walked through focus objects), so each later use of a sibling may be of the freed one."
-    },
-    {
-      "fingerprint": "b8379446c2e72d72cb34f183f4ca8d2e",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 354,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. cJSON_ReplaceItemViaPointer frees only the item it replaces; the test then compares and dereferences the neighbours, which stay in the array. The analysis cannot tell the replaced item from its siblings (the list is walked through focus objects), so each later use of a sibling may be of the freed one."
-    },
-    {
-      "fingerprint": "88082110cf455480a2b50125cdfd916d",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 486,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. cJSON_Delete frees item->string and item->valuestring only when the type flags cJSON_StringIsConst / cJSON_IsReference are clear; the analysis does not correlate the release with the flag bits, so the strings a reference or a constant-string item shares may look released twice."
-    },
-    {
-      "fingerprint": "f110a0c664484e91ad163be5b3500df1",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/print_array.c",
-      "line": 61,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. The print buffer is a local array with noalloc = true: ensure() reallocates (and frees) the buffer only when noalloc is false, which the analysis does not correlate with the release, so the array read after printing may look freed."
-    },
-    {
-      "fingerprint": "62e2ada2f03c235b39709a9dd6f6b9b9",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/print_array.c",
-      "line": 65,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. The print buffer is a local array with noalloc = true: ensure() reallocates (and frees) the buffer only when noalloc is false, which the analysis does not correlate with the release, so the array read after printing may look freed."
-    },
-    {
-      "fingerprint": "c375726d1fc5c3dff3252cc3d7babede",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/print_object.c",
-      "line": 62,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. As print_array.c: a noalloc print buffer (a local array) is never reallocated, which the analysis does not correlate with ensure()'s release."
-    },
-    {
-      "fingerprint": "b88afb15ab7b700bb01a1b1163f0a02b",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/print_object.c",
-      "line": 66,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. As print_array.c: a noalloc print buffer (a local array) is never reallocated, which the analysis does not correlate with ensure()'s release."
-    },
-    {
-      "fingerprint": "05cff602a41f412cf8b02e1bed40fb40",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/print_string.c",
-      "line": 38,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. As print_array.c: a noalloc print buffer (a local array) is never reallocated, which the analysis does not correlate with ensure()'s release."
-    },
-    {
-      "fingerprint": "b95bc6ee6bdb5498627b0bacce69299d",
-      "config": "cJSON",
-      "id": "use-after-move",
-      "certainty": "possible",
-      "file": "cJSON.c",
-      "line": 1293,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, an infeasible path. print() frees buffer->buffer at 1284 and sets it to NULL at 1285 before returning at 1288; the fail: label is reached only from the goto at 1278, before either. The join of the two paths loses the = NULL and the != NULL test at 1291."
-    },
-    {
-      "fingerprint": "876d7a9e6ffb8ac59b1753e42d9412db",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -533,7 +165,6 @@
       "note": "FALSE POSITIVE. luaD_reallocstack passes the old stack pointer to correctstack, which only subtracts it from the stack slots' offsets (pointer arithmetic, relstack/correctstack); the old block is never read after the reallocation moved it."
     },
     {
-      "fingerprint": "78176fe7b33176491fdf0f6472b36bc2",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -543,7 +174,6 @@
       "note": "FALSE POSITIVE. luaD_reallocstack passes the old stack pointer to correctstack, which only subtracts it from the stack slots' offsets (pointer arithmetic, relstack/correctstack); the old block is never read after the reallocation moved it."
     },
     {
-      "fingerprint": "cf3e75b1001e8245fee204fc2b3537d7",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -553,7 +183,6 @@
       "note": "FALSE POSITIVE. luaM_realloc_ calls tryagain with the block only when firsttry returned NULL for a non-zero size: a failed reallocation, which keeps the block (l_alloc is realloc, and a zero size never reaches here). The analysis does not tie the move to the non-null result through the allocator function pointer."
     },
     {
-      "fingerprint": "ac735f1bab706c78f0015a90859612f0",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -563,7 +192,6 @@
       "note": "FALSE POSITIVE. addstr2buff reallocates buff->b only when it no longer points to the static space (buff->b == buff->space selects a fresh allocation instead), and stores the new block before any further use; the analysis joins the two arms and keeps the old value possibly moved."
     },
     {
-      "fingerprint": "f644a75a5dbbad1ebdbd8aeba0b805cc",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -573,7 +201,6 @@
       "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
     },
     {
-      "fingerprint": "0cff98c429a8c929be9327312c43aa46",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -583,7 +210,6 @@
       "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
     },
     {
-      "fingerprint": "a3d2d97d9077f6a8470dbe780935fad4",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -593,7 +219,6 @@
       "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
     },
     {
-      "fingerprint": "1778623d51088d557886f6714e57672f",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -603,7 +228,6 @@
       "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
     },
     {
-      "fingerprint": "2730531e792486393001b69a628babf9",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -613,7 +237,6 @@
       "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
     },
     {
-      "fingerprint": "4629a2030e97ca5ba791887a11138ea2",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -623,7 +246,6 @@
       "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
     },
     {
-      "fingerprint": "3a2c5f0ec794a03c3208b090dbdc830c",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -633,7 +255,6 @@
       "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
     },
     {
-      "fingerprint": "4bec1d917193b3a87ab1897fc2bb1739",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -643,7 +264,6 @@
       "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
     },
     {
-      "fingerprint": "fec91099a720fc7917c882456a75bb72",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -653,7 +273,6 @@
       "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
     },
     {
-      "fingerprint": "3938678f600e41273a79302ac80d0c6d",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -663,7 +282,6 @@
       "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
     },
     {
-      "fingerprint": "9ff458f76f3f0c1694feab5a687f39c0",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -673,7 +291,6 @@
       "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
     },
     {
-      "fingerprint": "60d09d0bad5daac927099485a1cd85ab",
       "config": "lua",
       "id": "use-after-move",
       "certainty": "possible",
@@ -683,7 +300,6 @@
       "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
     },
     {
-      "fingerprint": "368eb1d5e87dfc860ddb7a874b5211b5",
       "config": "sqlite",
       "id": "unsafe-operation",
       "certainty": "definite",
@@ -693,7 +309,6 @@
       "note": "TRUE under the model's rules. `zP4 = x.p4type==P4_INT32 ? SQLITE_INT_TO_PTR(x.p4.i) : x.p4.z;` makes `zP4` a pointer from an integer on one arm (RFC 0004 raw, `(void*)(intptr_t)X`), and `sqlite3VdbeAddOp4` hands it to `sqlite3VdbeChangeP4`, which reads through it when `n` (here `x.p4type`) is a string or blob type and only stores it back as an integer for P4_INT32. RFC 0004 (Passing to a dereferencing callee, and its drawback 'A raw pointer passed to a callee that only might dereference it'): the check is against the callee's summary, whose effects are may-effects, so the call is the dereference. At run time the P4_INT32 path never dereferences it; the finding is the RFC's documented coarseness, not a memory error."
     },
     {
-      "fingerprint": "7e3aa44178b812263e52fd0ab417f2b5",
       "config": "sqlite",
       "id": "unsafe-operation",
       "certainty": "definite",
@@ -703,7 +318,6 @@
       "note": "TRUE under the model's rules. `sqlite3VdbeChangeP4(v, -1, SQLITE_INT_TO_PTR(n), P4_INT32)` passes a pointer made from an integer (RFC 0004 raw) to a callee that reads through `zP4` for other `n` (`vdbeChangeP4Full` copies it when `n > 0`). RFC 0004 (Passing to a dereferencing callee, and its drawback 'A raw pointer passed to a callee that only might dereference it'): the check is against the callee's summary, whose effects are may-effects, so the call is the dereference. With P4_INT32 the callee only converts it back (`SQLITE_PTR_TO_INT`)."
     },
     {
-      "fingerprint": "f7748d60b9e55d8094f95c5ddb57e2b4",
       "config": "sqlite",
       "id": "unsafe-operation",
       "certainty": "definite",
@@ -711,196 +325,6 @@
       "line": 170850,
       "verdict": "true",
       "note": "TRUE under the model's rules. `sqlite3_wal_hook(db, sqlite3WalDefaultHook, SQLITE_INT_TO_PTR(nFrame))` passes a pointer made from an integer (RFC 0004 raw) as the hook's context argument; `sqlite3_wal_hook` stores it and the WAL code later passes it to the installed hook, which may dereference it (the summary follows the slot's unknown targets). RFC 0004 (Passing to a dereferencing callee, and its drawback 'A raw pointer passed to a callee that only might dereference it'): the check is against the callee's summary, whose effects are may-effects, so the call is the dereference. `sqlite3WalDefaultHook` converts it back with `SQLITE_PTR_TO_INT` and never dereferences it."
-    },
-    {
-      "fingerprint": "0c0e7454a697a5dacae3ec4b58be9c72",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/parse_array.c",
-      "line": 88,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. The test reuses the file's global `static cJSON item[1]`: `reset(item)` releases the previous child tree (`cJSON_Delete(item->child)`) and zeroes `item`, and `assert_parse_array` then parses into it again, so `item->child` is a new list. `parse_array`'s summary cannot describe the new objects (they come from `global_hooks.allocate`, a hook), so the caller's view of the new child is the unknown object, which also stands for the child `reset` released: a release of an object that stands for several is a possible one, and every later use through it a possible use after free. Closing it needs undescribed summary values that are not all one object (a per-call object was tried and introduced leak reports, RFC 0031 *Gate status*)."
-    },
-    {
-      "fingerprint": "5fe71c7ceb9097f10fd240006a5c158d",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/parse_array.c",
-      "line": 136,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. The test reuses the file's global `static cJSON item[1]`: `reset(item)` releases the previous child tree (`cJSON_Delete(item->child)`) and zeroes `item`, and `assert_parse_array` then parses into it again, so `item->child` is a new list. `parse_array`'s summary cannot describe the new objects (they come from `global_hooks.allocate`, a hook), so the caller's view of the new child is the unknown object, which also stands for the child `reset` released: a release of an object that stands for several is a possible one, and every later use through it a possible use after free. Closing it needs undescribed summary values that are not all one object (a per-call object was tried and introduced leak reports, RFC 0031 *Gate status*)."
-    },
-    {
-      "fingerprint": "ac0327381e57278e101a4ab9b1142933",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/parse_array.c",
-      "line": 138,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. The test reuses the file's global `static cJSON item[1]`: `reset(item)` releases the previous child tree (`cJSON_Delete(item->child)`) and zeroes `item`, and `assert_parse_array` then parses into it again, so `item->child` is a new list. `parse_array`'s summary cannot describe the new objects (they come from `global_hooks.allocate`, a hook), so the caller's view of the new child is the unknown object, which also stands for the child `reset` released: a release of an object that stands for several is a possible one, and every later use through it a possible use after free. Closing it needs undescribed summary values that are not all one object (a per-call object was tried and introduced leak reports, RFC 0031 *Gate status*)."
-    },
-    {
-      "fingerprint": "c4ec5c76c9434538f0c6ca4ffdb4347f",
-      "config": "redis",
-      "id": "null-dereference",
-      "certainty": "definite",
-      "file": "src/cluster_legacy.c",
-      "line": 237,
-      "verdict": "true",
-      "note": "TRUE POSITIVE, latent. auxHumanNodenameSetter (src/cluster_legacy.c:231) returns early when `n` is non-null and the name matches, or when `n` is null and `length == 0`; otherwise `if (n) {...} else if (sdslen(n->human_nodename) != 0)` reads `n->human_nodename` with `n` null whenever `length != 0` (line 237, and sdsclear at 238). The callers in the cluster bus code pass a node they looked up, so the branch is not reached in the test suite; the dereference is definite on it."
-    },
-    {
-      "fingerprint": "e45c0d7a34b9813002e8e5d68d1ed538",
-      "config": "redis",
-      "id": "null-dereference",
-      "certainty": "definite",
-      "file": "src/cluster_legacy.c",
-      "line": 238,
-      "verdict": "true",
-      "note": "TRUE POSITIVE, latent. auxHumanNodenameSetter (src/cluster_legacy.c:231) returns early when `n` is non-null and the name matches, or when `n` is null and `length == 0`; otherwise `if (n) {...} else if (sdslen(n->human_nodename) != 0)` reads `n->human_nodename` with `n` null whenever `length != 0` (line 237, and sdsclear at 238). The callers in the cluster bus code pass a node they looked up, so the branch is not reached in the test suite; the dereference is definite on it."
-    },
-    {
-      "fingerprint": "b0cd26ca6a62842ceabce58c8f63069e",
-      "config": "mbedtls",
-      "id": "use-after-free",
-      "certainty": "definite",
-      "file": "framework/tests/programs/metatest.c",
-      "line": 158,
-      "verdict": "true",
-      "note": "TRUE POSITIVE, deliberate. metatest's read_after_free (framework/tests/programs/metatest.c:151) frees `p` and then reads `*p` (comment: 'Undefined behavior (read after free)'): the program exists to check that sanitizers catch it. Lowered so the rest of the build proceeds; the test suite does not run metatest."
-    },
-    {
-      "fingerprint": "2daed3f2a8c327a83a41c73dbc92f836",
-      "config": "mbedtls",
-      "id": "double-free",
-      "certainty": "definite",
-      "file": "framework/tests/programs/metatest.c",
-      "line": 168,
-      "verdict": "true",
-      "note": "TRUE POSITIVE, deliberate. metatest's double_free (framework/tests/programs/metatest.c:161) frees `p` twice (comment: 'Undefined behavior (double free)'), to check that sanitizers catch it."
-    },
-    {
-      "fingerprint": "8aca700b1e3a6293f2cad8b0504a4423",
-      "config": "cJSON",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 466,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "4ebbd131b9f82b4ec6cd650195dfb51b",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 468,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "79c866e37712041e8c08f83acb922027",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 469,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "5078587cdf762871f2a6bcc253e6ac1a",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 470,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "523eb47bbb4a9dd717ca78af8144eb5b",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 471,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "a98d558ad06d328cc8ac0172dc61684a",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 472,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "9964befe67b6e70d9c79abc00b51f677",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 473,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "fa457b6ec27f0914aa06a07f37dd5d82",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 474,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "97636e8f5683ad107f9496c5777ac627",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 476,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "724a353f2fc50b5c59b4277f513e555c",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 477,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "7d7a2495a2bb210065a7e3f7129573a6",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 480,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
-    },
-    {
-      "fingerprint": "63c2892d00cff4efb8409a328c3576eb",
-      "config": "cJSON",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 489,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
     }
   ]
 }

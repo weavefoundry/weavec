@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Tests for the test/cases runner (RFC 0030 section 17): marker grammar,
-classification, and the build/ledger/run/ASan pipeline against fake tools."""
+"""Tests for the test/cases runner (scripts/run-cases.py, RFC 0035 section 11).
+
+Unit level: the marker grammar, case loading and discovery, flag translation,
+output parsing and the judging of synthetic evidence. The steps that start
+processes (analyse, build, run_all, run_asan) are replaced by fakes, so no
+compiler is needed."""
 import contextlib
 import importlib.util
 import io
-import json
-import os
-import stat
+import signal
 import sys
 import tempfile
 import textwrap
@@ -18,27 +20,18 @@ rc = importlib.util.module_from_spec(_SPEC)
 sys.modules["run_cases"] = rc
 _SPEC.loader.exec_module(rc)
 
-
-def ledger(source, sites, scope="unit", summary=None, root=None):
-    """A minimal weavec-ledger document with one function holding `sites`."""
-    return {
-        "schema": "weavec-ledger", "version": 2, "scope": scope, "root": root or "/",
-        "summary": summary or {"errors": 0, "warnings": 0},
-        "units": [{"source": str(source), "functions": [{"name": "f", "line": 1, "sites": sites}]}],
-        "diagnostics": [],
-    }
-
-
-def site(line, **facets):
-    return {"ordinal": 0, "kind": "deref", "line": line, "column": 3, "text": "p[0]", "facets": facets}
+TRAP = -int(signal.SIGTRAP)
+SEGV = -int(signal.SIGSEGV)
+ABRT = -int(signal.SIGABRT)
 
 
 class Workspace(unittest.TestCase):
+    """A temporary cases tree."""
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="weavec-run-cases-")
         self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name).resolve()
-        self.cases = self.root / "cases"
+        self.cases = Path(self.directory.name).resolve() / "cases"
 
     def write(self, rel, text):
         path = self.cases / rel
@@ -47,867 +40,845 @@ class Workspace(unittest.TestCase):
         return path.resolve()
 
     def case(self, rel, text):
-        path = self.write(rel, text)
-        return rc.load_case(path, self.cases)
+        return rc.load_case(self.write(rel, text), self.cases)
 
-    def diag(self, path, line, identifier="use-after-free", severity="error", column=3):
-        return rc.Diagnostic(str(path), line, column, severity, identifier, "message")
+    def errors(self, text):
+        return self.case("s/x.c", text).errors
 
 
-class MarkerGrammarTest(Workspace):
-    def test_line_and_file_markers(self):
-        case = self.case("s/a.c", """
-            // Provenance comment.
-            // FLAGS: -std=c11 -DX='a b'
-            // RUN-INPUT: 1 "two words"
-            // RUN-INPUT:
-            // ASAN
-            #include <stdlib.h>
-            int main(void) {
-              int a[2]; a[2] = 0; // BUG: out-of-bounds // TRAP: index
-              return 0; // BUG: leak possible
-            }
-            """)
-        self.assertEqual(case.errors, [])
-        self.assertEqual(case.flags, ("-std=c11", "-DX=a b"))
-        self.assertEqual([r.args for r in case.run_inputs], [("1", "two words"), ()])
-        self.assertTrue(case.asan and case.has_main and case.is_bug_case)
-        self.assertEqual([(b.line, b.value) for b in case.bugs],
-                         [(8, ("out-of-bounds", None)), (9, ("leak", "possible"))])
-        self.assertEqual([(t.line, t.value) for t in case.traps], [(8, "index")])
-        self.assertEqual(case.suite, "s")
+def markers(text):
+    return rc.parse_markers(Path("x.c"), textwrap.dedent(text).lstrip("\n"))
 
-    def test_comments_inside_literals_and_block_comments_are_not_markers(self):
-        markers = rc.parse_markers(Path("x.c"), textwrap.dedent("""
+
+def report(kind, file=None, line=0, proven=False):
+    return rc.Report(kind, None if file is None else str(file), line, 3 if file else 0, proven)
+
+
+def run(code=0, *reports, args=(), timed_out=False):
+    return rc.Run(tuple(args), code, timed_out, list(reports))
+
+
+def diag(file, line, ident, severity="error"):
+    return rc.Diagnostic(str(file), line, 3, severity, ident, "message")
+
+
+# ---------------------------------------------------------------------------
+# Marker grammar
+# ---------------------------------------------------------------------------
+
+
+class ScanTest(unittest.TestCase):
+    def test_comments_in_literals_and_block_comments_are_skipped(self):
+        scan = rc.scan_source(textwrap.dedent("""\
             const char *s = "// BUG: leak"; /* // BUG: leak */
-            char c = '/'; // CLEAN-ish prose is not a marker: NOTE: fine
+            char c = '/'; char q = '"'; // tail
             /* a block
                // BUG: leak
-            */ int x; // RFC 0017: prose // ASAN-confirmed prose // CWE-121: prose
+            */ int x;
             """))
-        self.assertEqual(markers.line_markers, [])
-        self.assertEqual(markers.file_markers, [])
-        self.assertEqual(markers.errors, [])
+        self.assertEqual([(c.line, c.body.strip(), c.code_before) for c in scan.comments],
+                         [(2, "tail", True)])
 
-    def test_placement_rules(self):
-        markers = rc.parse_markers(Path("x.c"), textwrap.dedent("""
+    def test_first_declaration_skips_directives_and_continuations(self):
+        scan = rc.scan_source("// head\n#include <x.h>\n#define M \\\n  1\n\nint x; // here\n")
+        self.assertEqual(scan.first_declaration, 6)
+        self.assertEqual([(c.line, c.code_before) for c in scan.comments], [(1, False), (6, True)])
+
+    def test_file_markers_in_a_file_without_code(self):
+        got = markers("// CLEAN\n// FLAGS: -O2\n")
+        self.assertEqual((got.errors, [m.kind for m in got.file_markers]), ([], ["CLEAN", "FLAGS"]))
+
+
+class SegmentTest(unittest.TestCase):
+    def test_prose_is_not_a_marker(self):
+        for text in ("RFC 0017: added", "NOTE: fine", "CWE-121: prose", "ASAN-confirmed prose",
+                     "lowercase: text", "", "TODO"):
+            with self.subTest(text=text):
+                self.assertIsNone(rc.parse_segment(text))
+
+    def test_keywords_and_arguments(self):
+        self.assertEqual(rc.parse_segment("CLEAN"), ("CLEAN", ""))
+        self.assertEqual(rc.parse_segment("STOP"), ("STOP", ""))
+        self.assertEqual(rc.parse_segment("TRAP"), ("TRAP", ""))
+        self.assertEqual(rc.parse_segment("GUARDED"), ("GUARDED", ""))
+        self.assertEqual(rc.parse_segment("TRAP: null-dereference"), ("TRAP", "null-dereference"))
+        self.assertEqual(rc.parse_segment("TRAP-AT: a.c:3"), ("TRAP-AT", "a.c:3"))
+        self.assertEqual(rc.parse_segment("RUN-INPUT:"), ("RUN-INPUT", ""))
+
+    def test_malformed_segments(self):
+        for text, expected in (("CLEAN please", "takes no argument"),
+                               ("CLEAN.", "takes no argument"),
+                               ("STOP: here", "takes no argument"),
+                               ("BUG leak", "needs ':'"),
+                               ("MISS", "needs ':'"),
+                               ("BUG:", "needs an argument"),
+                               ("BUGS: leak", "did you mean 'BUG'"),
+                               ("UNIT: a.c", "did you mean 'UNITS'")):
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(ValueError, expected):
+                    rc.parse_segment(text)
+
+    def test_split_segments(self):
+        self.assertEqual(rc.split_segments(" BUG: leak // MISS: why "), ["BUG: leak", "MISS: why"])
+
+
+class ArgumentTest(unittest.TestCase):
+    def parse(self, kind, argument, directory=Path(".")):
+        return rc.parse_argument(kind, argument, directory)
+
+    def test_bug(self):
+        self.assertEqual(self.parse("BUG", "leak"), ("leak", None))
+        self.assertEqual(self.parse("BUG", "use-after-free definite"), ("use-after-free", "definite"))
+        self.assertEqual(self.parse("BUG", "out-of-bounds possible"), ("out-of-bounds", "possible"))
+        with self.assertRaisesRegex(ValueError, "definite|possible"):
+            self.parse("BUG", "leak maybe")
+        with self.assertRaisesRegex(ValueError, "unknown diagnostic id"):
+            self.parse("BUG", "no-such-id")
+        with self.assertRaisesRegex(ValueError, "unknown diagnostic id"):
+            self.parse("BUG", "unresolved-operation")  # deleted with the require levels
+
+    def test_trap_kinds(self):
+        self.assertIsNone(self.parse("TRAP", ""))
+        for kind in rc.KINDS:
+            self.assertEqual(self.parse("TRAP", kind), kind)
+        for old in ("index", "nonnull", "span", "live", "violation"):
+            with self.subTest(kind=old), self.assertRaisesRegex(ValueError, "unknown report kind"):
+                self.parse("TRAP", old)
+
+    def test_ledger_reasons(self):
+        self.assertIsNone(self.parse("GUARDED", ""))
+        self.assertEqual(self.parse("GUARDED", "loop-range"), "loop-range")
+        self.assertEqual(self.parse("PROVEN", "dominated"), "dominated")
+        self.assertEqual(self.parse("UNGUARDED", "unsafe"), "unsafe")
+        for kind, reason in (("GUARDED", "in-bounds"), ("PROVEN", "access"),
+                             ("UNGUARDED", "spatial:unknown")):
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "unknown"):
+                self.parse(kind, reason)
+
+    def test_neutralised_miss_allow(self):
+        self.assertEqual(self.parse("NEUTRALISED", "zero-init"), "zero-init")
+        with self.assertRaisesRegex(ValueError, "zero-init"):
+            self.parse("NEUTRALISED", "zero")
+        self.assertEqual(self.parse("MISS", "free text, any words"), "free text, any words")
+        self.assertEqual(self.parse("ALLOW", "leak double-free"), ("leak", "double-free"))
+        with self.assertRaisesRegex(ValueError, "unknown diagnostic id 'nope'"):
+            self.parse("ALLOW", "leak nope")
+
+    def test_run_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            (directory / "in.txt").write_text("x")
+            self.assertEqual(self.parse("RUN-INPUT", '1 "two words"', directory),
+                             rc.RunInput(("1", "two words"), None))
+            self.assertEqual(self.parse("RUN-INPUT", "", directory), rc.RunInput((), None))
+            got = self.parse("RUN-INPUT", "a < in.txt", directory)
+            self.assertEqual((got.args, got.stdin), (("a",), (directory / "in.txt").resolve()))
+            with self.assertRaisesRegex(ValueError, "does not exist"):
+                self.parse("RUN-INPUT", "< missing.txt", directory)
+            with self.assertRaisesRegex(ValueError, "argv"):
+                self.parse("RUN-INPUT", "< in.txt extra", directory)
+            with self.assertRaisesRegex(ValueError, "RUN-INPUT"):
+                self.parse("RUN-INPUT", '"unclosed', directory)
+
+    def test_expect_ledger(self):
+        got = self.parse("EXPECT-LEDGER", "/summary/unguarded == 0")
+        self.assertEqual((got.pointer, got.op, got.value), ("/summary/unguarded", "==", 0))
+        self.assertEqual(self.parse("EXPECT-LEDGER", "/config/checks != trap").value, "trap")
+        self.assertEqual(self.parse("EXPECT-LEDGER", '/rows/0/reason == "access"').value, "access")
+        for bad in ("summary/guarded == 0", "/summary/guarded ~ 0", "/summary/guarded"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "json-pointer"):
+                self.parse("EXPECT-LEDGER", bad)
+
+    def test_flags_units_trap_at_detect(self):
+        self.assertEqual(self.parse("FLAGS", "-O2 -DX='a b'"), ("-O2", "-DX=a b"))
+        self.assertEqual(self.parse("UNITS", "a.c  Inputs/b.c"), ("a.c", "Inputs/b.c"))
+        self.assertEqual(self.parse("TRAP-AT", "Inputs/h.h:9"), ("Inputs/h.h", 9))
+        self.assertEqual(self.parse("TRAP-AT", "c:/x.c:9"), ("c:/x.c", 9))
+        for bad in ("a.c", "a.c:", ":9", "a.c:x"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "TRAP-AT takes"):
+                self.parse("TRAP-AT", bad)
+        self.assertEqual(self.parse("DETECT", "-DFIX -O0"), ("-DFIX", "-O0"))
+        with self.assertRaisesRegex(ValueError, "fixed twin"):
+            self.parse("DETECT", "FIX")
+
+
+class ParseMarkersTest(unittest.TestCase):
+    def test_line_and_file_markers(self):
+        got = markers("""
+            // Prose about the case.
+            // FLAGS: -O2 // ASAN
+            #include <stdlib.h>
+            int f(int *p) {
+              return p[4]; // BUG: out-of-bounds // MISS: the index is opaque
+            }
+            int g(int *p) { return *p; } // TRAP // GUARDED: access
+            """)
+        self.assertEqual(got.errors, [])
+        self.assertEqual([(m.kind, m.line) for m in got.file_markers], [("FLAGS", 2), ("ASAN", 2)])
+        self.assertEqual([(m.kind, m.line, m.value) for m in got.line_markers],
+                         [("BUG", 5, ("out-of-bounds", None)), ("MISS", 5, "the index is opaque"),
+                          ("TRAP", 7, None), ("GUARDED", 7, "access")])
+
+    def test_neutralised_on_a_bug_line(self):
+        got = markers("int f(void) { int x; return x; } // BUG: use-of-uninitialized // NEUTRALISED: zero-init\n")
+        self.assertEqual([m.kind for m in got.line_markers], ["BUG", "NEUTRALISED"])
+
+    def test_placement_errors(self):
+        got = markers("""
             // BUG: leak
             int x; // CLEAN
             // ASAN
             int y;
-            """))
-        self.assertEqual(len(markers.errors), 3, markers.errors)
-        self.assertIn("line without code", markers.errors[0])
-        self.assertIn("must be on a comment line", markers.errors[1])
-        self.assertIn("before the first declaration", markers.errors[2])
+            """)
+        self.assertEqual(len(got.errors), 3, got.errors)
+        self.assertIn("x.c:1: line marker BUG is on a line without code", got.errors[0])
+        self.assertIn("x.c:2: file marker CLEAN must be on a comment line", got.errors[1])
+        self.assertIn("x.c:3: file marker ASAN must appear before the first declaration", got.errors[2])
 
-    def test_malformed_markers_are_errors(self):
-        for text, expected in (("int x; // BUG: no-such-id", "unknown diagnostic id"),
-                               ("int x; // BUG: leak maybe", "definite|possible"),
-                               ("int x; // TRAP: bounds", "unknown trap template"),
-                               ("int x; // UNRESOLVED: spatial:whatever", "unknown unresolved reason"),
-                               ("int x; // TRUSTED: temporal:unknown-callee", "unknown trusted reason"),
-                               ("int x; // NOT-PROVEN: memory", "unknown facet"),
-                               ("int x; // NEUTRALISED: zero", "zero-init"),
-                               ("int x; // BUGS: leak", "did you mean 'BUG'"),
-                               ("// CLEAN please", "takes no argument"),
-                               ("// CLEAN.", "takes no argument"),
-                               ("int x; // MISS", "needs ':'"),
-                               ("// EXPECT-LEDGER: summary/errors == 0", "json-pointer")):
+    def test_one_bad_segment_keeps_the_others(self):
+        got = markers("int x; // BUG: leak // TRAP: bounds\n")
+        self.assertEqual([m.kind for m in got.line_markers], ["BUG"])
+        self.assertEqual(len(got.errors), 1)
+        self.assertIn("unknown report kind 'bounds'", got.errors[0])
+
+
+# ---------------------------------------------------------------------------
+# Cases and discovery
+# ---------------------------------------------------------------------------
+
+
+class LoadCaseTest(Workspace):
+    def test_case_fields(self):
+        self.write("s/in.txt", "data\n")
+        case = self.case("s/sub/a.c", """
+            // FLAGS: -std=c11
+            // FLAGS: -O2
+            // RUN-INPUT: 1
+            // RUN-INPUT: 2 < ../in.txt
+            // ASAN
+            // EXPECT-LEDGER: /summary/unguarded == 0
+            // XFAIL: one
+            // XFAIL: two
+            #include <stdlib.h>
+            int main(int argc, char **argv) {
+              int a[2]; a[argc] = 0; // BUG: out-of-bounds // TRAP: stack-buffer-overflow
+              return 0; // BUG: leak possible
+            }
+            """)
+        self.assertEqual(case.errors, [])
+        self.assertEqual((case.rel, case.suite), ("s/sub/a.c", "s"))
+        self.assertEqual(case.flags, ("-std=c11", "-O2"))
+        self.assertEqual([r.args for r in case.run_inputs], [("1",), ("2",)])
+        self.assertEqual(case.run_inputs[1].stdin, self.cases / "s" / "in.txt")
+        self.assertTrue(case.asan and case.has_main and case.is_bug_case)
+        self.assertFalse(case.clean or case.tool)
+        self.assertEqual([e.pointer for e in case.expectations], ["/summary/unguarded"])
+        self.assertEqual([(b.line, b.value) for b in case.bugs],
+                         [(11, ("out-of-bounds", None)), (12, ("leak", "possible"))])
+        self.assertEqual([(t.line, t.value) for t in case.traps], [(11, "stack-buffer-overflow")])
+        self.assertEqual(case.xfail, "one; two")
+        self.assertIsNone(case.detect)
+
+    def test_trap_at_names_a_line_of_another_file(self):
+        helper = self.write("s/Inputs/h.h", "static inline int h(int *p) { return p[9]; }\n")
+        case = self.case("s/a.c", """
+            // TRAP-AT: Inputs/h.h:1
+            #include "Inputs/h.h"
+            int main(void) { int a[2]; return h(a); }
+            """)
+        self.assertEqual(case.errors, [])
+        self.assertEqual([(t.file, t.line, t.value) for t in case.traps], [(helper, 1, None)])
+        self.assertTrue(case.is_bug_case)
+        self.assertIn("TRAP-AT file 'Inputs/nope.h' does not exist",
+                      self.errors("// TRAP-AT: Inputs/nope.h:1\nint main(void) { return 0; }\n")[0])
+
+    def test_units(self):
+        unit = self.write("s/Inputs/u.c", """
+            // FLAGS: -DU
+            int u(int *p) { return p[3]; } // TRAP
+            """)
+        plain = self.write("s/Inputs/plain.c", "// FLAGS: -fno-weavec\nint plain(void) { return 0; }\n")
+        case = self.case("s/a.c", """
+            // UNITS: Inputs/u.c Inputs/plain.c
+            // FLAGS: -O1
+            int u(int *); int plain(void);
+            int main(void) { int a[2]; return u(a) + plain(); }
+            """)
+        self.assertEqual(case.errors, [])
+        self.assertEqual(case.units, [self.cases / "s" / "a.c", unit, plain])
+        self.assertEqual(case.unit_flags, {unit: ("-DU",), plain: ("-fno-weavec",)})
+        self.assertEqual(case.flags, ("-O1",))
+        self.assertEqual([(t.file, t.line) for t in case.traps], [(unit, 2)])
+        self.assertEqual(case.analysed_units(), [self.cases / "s" / "a.c", unit])
+
+    def test_unit_errors(self):
+        self.write("s/Inputs/bad.c", "// CLEAN\nint b;\n")
+        errors = self.errors("""
+            // UNITS: Inputs/bad.c Inputs/missing.c Inputs/bad.c
+            // CLEAN
+            int x;
+            """)
+        self.assertEqual(len(errors), 3, errors)
+        self.assertIn("UNITS file 'Inputs/missing.c' does not exist", errors[0])
+        self.assertIn("UNITS file 'Inputs/bad.c' is listed twice", errors[1])
+        self.assertIn("bad.c:1: file marker CLEAN is only allowed in the case's main file", errors[2])
+        self.assertIn("cannot contain -fno-weavec",
+                      self.errors("// FLAGS: -fno-weavec\n// CLEAN\nint x;\n")[0])
+
+    def test_consistency_errors(self):
+        for text, expected in (
+                ("int x;\n", "no expectation"),
+                ("// CLEAN\nint x; // BUG: leak\n", "CLEAN contradicts"),
+                ("// CLEAN\nint x; // TRAP\n", "CLEAN contradicts"),
+                ("// ALLOW: leak\nint x; // BUG: leak\n", "ALLOW only applies to a CLEAN case"),
+                ("// TOOL\n// RUN-INPUT: 1\n// CLEAN\nint main(void) { return 0; }\n", "TOOL case is not run"),
+                ("// ASAN\nint x; // BUG: leak\n", "ASAN needs a unit that defines main"),
+                ("// RUN-INPUT: 1\n// CLEAN\nint x;\n", "RUN-INPUT needs a unit that defines main"),
+                ("int x; // STOP\n", "STOP needs a DETECT file marker")):
             with self.subTest(text=text):
-                errors = rc.parse_markers(Path("x.c"), text + "\n").errors
+                errors = self.errors(text)
                 self.assertEqual(len(errors), 1, errors)
                 self.assertIn(expected, errors[0])
 
-    def test_marker_values(self):
-        markers = rc.parse_markers(self.root / "x.c", textwrap.dedent("""
-            // EXPECT-LEDGER: /summary/unresolved <= 3
-            // EXPECT-LEDGER: /config/checks == trap
-            // EXPECT-LEDGER: /summary/overBudget == []
-            int x; // UNRESOLVED: spatial:unknown-extent // TRUSTED: temporal:concurrency
-            int y; // NOT-PROVEN: null // MISS: not modelled yet // NEUTRALISED: zero-init
-            """))
-        self.assertEqual(markers.errors, [])
-        values = [m.value for m in markers.file_markers]
-        self.assertEqual([(v.pointer, v.op, v.value) for v in values],
-                         [("/summary/unresolved", "<=", 3), ("/config/checks", "==", "trap"),
-                          ("/summary/overBudget", "==", [])])
-        self.assertEqual([(m.kind, m.value) for m in markers.line_markers],
-                         [("UNRESOLVED", ("spatial", "unknown-extent")),
-                          ("TRUSTED", ("temporal", "concurrency")), ("NOT-PROVEN", "null"),
-                          ("MISS", "not modelled yet"), ("NEUTRALISED", "zero-init")])
+    def test_tool_case_needs_no_main(self):
+        case = self.case("s/t.c", "// TOOL\nvoid f(int *p) { p[9] = 0; } // BUG: out-of-bounds\n")
+        self.assertEqual(case.errors, [])
+        self.assertTrue(case.tool)
 
-    def test_run_input_redirect(self):
-        self.write("s/input.txt", "x\n")
-        case = self.case("s/a.c", """
-            // CLEAN
-            // RUN-INPUT: -v < input.txt
-            int main(void) { return 0; }
+    def test_detection_case(self):
+        case = self.case("d/p.c", """
+            // DETECT: -DFIX
+            // RUN-INPUT: 3
+            int main(int argc, char **argv) {
+              int a[2];
+              a[argc] = 0; // STOP // MISS: not yet
+              return 0;
+            }
             """)
         self.assertEqual(case.errors, [])
-        self.assertEqual(case.run_inputs[0].args, ("-v",))
-        self.assertEqual(case.run_inputs[0].stdin, self.cases / "s" / "input.txt")
-        bad = self.case("s/b.c", """
+        self.assertEqual(case.detect, ("-DFIX",))
+
+    def test_detection_errors(self):
+        errors = self.errors("""
+            // DETECT: -DFIX
+            // DETECT: -DFIX2
             // CLEAN
-            // RUN-INPUT: < missing.txt
-            int main(void) { return 0; }
+            int x; // MISS: why
             """)
-        self.assertIn("does not exist", bad.errors[0])
-
-    def test_case_level_consistency(self):
-        for text, expected in (("// CLEAN\nint x; // BUG: leak\n", "contradicts"),
-                               ("// ALLOW: leak\nint x; // BUG: leak\n", "ALLOW only applies"),
-                               ("int x;\n", "no expectation"),
-                               ("// TOOL\n// RUN-INPUT: 1\n// CLEAN\nint x;\n", "not run"),
-                               ("// CLEAN\n// ASAN\nint x;\n", "ASAN needs"),
-                               ("// CLEAN\n// FLAGS: -fno-weavec\nint main(void) { return 0; }\n", "-fno-weavec")):
-            with self.subTest(text=text):
-                case = self.case("s/c.c", text)
-                self.assertTrue(any(expected in e for e in case.errors), case.errors)
-
-    def test_units_and_discovery(self):
-        self.write("s/Inputs/helper.h", "void helper(char *p);\n")
-        self.write("s/Inputs/helper.c", """
-            // FLAGS: -DHELPER
-            #include <stdlib.h>
-            void helper(char *p) { free(p); } // BUG: double-free
-            """)
-        self.write("s/link.c", """
-            // FLAGS: -fno-weavec
-            int shared;
-            """)
-        main = self.write("s/main.c", """
-            // UNITS: Inputs/helper.c link.c
-            // FLAGS: -O1
-            #include "Inputs/helper.h"
-            int main(void) { return 0; } // BUG: leak
-            """)
-        self.write("t/other.c", "// CLEAN\nint main(void) { return 0; }\n")
-        cases, _ = rc.discover(self.cases)
-        self.assertEqual([c.rel for c in cases], ["s/main.c", "t/other.c"])
-        case = cases[0]
-        self.assertEqual(case.errors, [])
-        self.assertEqual([u.name for u in case.units], ["main.c", "helper.c", "link.c"])
-        self.assertEqual([u.name for u in case.analysed_units()], ["main.c", "helper.c"])
-        self.assertEqual(case.unit_flags[case.units[1]], ("-DHELPER",))
-        self.assertEqual([(b.file.name, b.value[0]) for b in case.bugs],
-                         [("main.c", "leak"), ("helper.c", "double-free")])
-        self.assertEqual([c.rel for c in rc.select(cases, ["s/**"])], ["s/main.c"])
-        self.assertEqual([c.rel for c in rc.select(cases, ["t"])], ["t/other.c"])
-        self.assertEqual(rc.select(cases, ["u/**"]), [])
-        self.assertEqual(rc.legacy_command(Path("weavec"), case)[1:5],
-                         ["--whole-program", str(main), str(case.units[1]), "--"])
-
-    def test_unit_file_markers_other_than_flags_are_errors(self):
-        self.write("s/u.c", "// CLEAN\nint u;\n")
-        case = self.case("s/m.c", "// UNITS: u.c\n// CLEAN\nint main(void) { return 0; }\n")
-        self.assertTrue(any("only allowed in the case's main file" in e for e in case.errors))
+        self.assertEqual(len(errors), 6, errors)
+        for expected in ("DETECT is given more than once", "a DETECT case has no CLEAN",
+                         "DETECT needs a unit that defines main", "needs a STOP line",
+                         "MISS marks a STOP line", "CLEAN contradicts"):
+            self.assertTrue(any(expected in e for e in errors), (expected, errors))
+        errors = self.errors("// DETECT: -DFIX\nint main(void) { return 0; } // STOP // BUG: leak // TRAP\n")
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("has no BUG, TRAP markers", errors[0])
 
     def test_defines_main(self):
-        self.assertTrue(rc.defines_main("int main(int argc,\n char **argv)\n{ return 0; }"))
-        self.assertTrue(rc.defines_main("static int helper(void);\nint main() { return helper(); }"))
-        self.assertFalse(rc.defines_main("int main(void);\nint not_main(void) { return 0; }"))
+        for text, expected in (("int main(void) {", True), ("static int main(int c, char **v)\n{", True),
+                               ("void main() {", True), ("int main(void);", False),
+                               ("int domain(void) {", False)):
+            with self.subTest(text=text):
+                self.assertEqual(rc.defines_main(text), expected)
 
 
-class TranslationAndParsingTest(unittest.TestCase):
-    def test_flag_translation(self):
-        flags = ["-std=c11", "-Wno-weavec-leak", "-Werror=weavec", "-fweavec-strict",
-                 "-fweavec-checked-function=f", "-fweavec-require=checked", "-fno-weavec-zero-init",
-                 "-fweavec-checks=verify", "-fno-weavec-strict", "-Werror"]
-        legacy = rc.tool_arguments(flags, legacy=True)
-        self.assertEqual(legacy.options, ["-Wno-weavec-leak", "-Werror=weavec", "--strict-externs",
-                                          "--checked-function=f"])
-        self.assertEqual(legacy.compiler, ["-std=c11", "-Werror"])
-        self.assertEqual(legacy.dropped, ["-fweavec-require=checked", "-fno-weavec-zero-init",
-                                          "-fweavec-checks=verify", "-fno-weavec-strict"])
-        new = rc.tool_arguments(flags, legacy=False)
-        self.assertIn("--require=checked", new.options)
-        self.assertIn("--no-zero-init", new.options)
-        self.assertEqual(rc.plain_flags(flags), ["-std=c11", "-Werror"])
+class DiscoverTest(Workspace):
+    def test_discover_and_select(self):
+        self.write("a/one.c", "// UNITS: two.c\n// CLEAN\nint main(void) { return 0; }\n")
+        self.write("a/two.c", "int t;\n")
+        self.write("a/Inputs/helper.c", "int h;\n")
+        self.write("a/deep/Inputs/x.c", "int h;\n")
+        self.write("a/deep/three.c", "// CLEAN\nint x;\n")
+        self.write("b/four.c", "// CLEAN\nint x;\n")
+        self.write("b/notes.md", "// CLEAN\n")
+        cases, parsed = rc.discover(self.cases)
+        self.assertEqual([c.rel for c in cases], ["a/deep/three.c", "a/one.c", "b/four.c"])
+        self.assertIn(self.cases / "a" / "two.c", parsed)
+        self.assertEqual([c.rel for c in rc.select(cases, [])], [c.rel for c in cases])
+        self.assertEqual([c.rel for c in rc.select(cases, ["a"])], ["a/deep/three.c", "a/one.c"])
+        self.assertEqual([c.rel for c in rc.select(cases, ["a/"])], ["a/deep/three.c", "a/one.c"])
+        self.assertEqual([c.rel for c in rc.select(cases, ["a/*.c"])], ["a/deep/three.c", "a/one.c"])
+        self.assertEqual([c.rel for c in rc.select(cases, ["b/four.c", "a/deep"])],
+                         ["a/deep/three.c", "b/four.c"])
+        self.assertEqual(rc.select(cases, ["b/four"]), [])
 
-    def test_diagnostic_parsing(self):
-        output = "\n".join([
-            "/src/a.c:4:7: error: use of 'p' after it was freed [weavec::use-after-free]",
-            "/src/a.c:4:7: note: freed here",
-            "weavec-cc: warning: link input 'x.o' has no WeaveC record; calls into it are trusted "
-            "[weavec::unanalyzed-input]",
-            "rel.c:2:1: warning: 'q' is leaked [weavec::leak]",
-            "/src/a.c:9:1: error: expected ';' after expression",
-            "weavec-cc: error: unknown WeaveC flag '-fweavec-ledger=/tmp/'",
-            "ld: warning: object file was built for newer macOS version",
-            "Undefined symbols for architecture arm64:",
-            "clang: error: linker command failed with exit code 1 (use -v to see invocation)",
-        ])
-        diagnostics, clang_errors, link_errors = rc.parse_diagnostics(output, Path("/work"))
-        self.assertEqual([(Path(d.file).name if d.file else "", d.line, d.severity, d.id) for d in diagnostics],
-                         [("a.c", 4, "error", "use-after-free"), ("", 0, "warning", "unanalyzed-input"),
-                          ("rel.c", 2, "warning", "leak")])
-        self.assertTrue(diagnostics[2].file.endswith("/work/rel.c"))
-        self.assertEqual(len(clang_errors), 2)
-        self.assertEqual(len(link_errors), 2)
 
-    def test_report_and_sanitizer_parsing(self):
-        reports = rc.parse_reports("hello\nweavec: runtime check failed: span at /s/a.c:12:9\n")
-        self.assertEqual([(r.template, r.file, r.line, r.column) for r in reports],
-                         [("span", str(Path("/s/a.c").resolve()), 12, 9)])
-        asan = rc.parse_sanitizer(textwrap.dedent("""
-            =================================================================
-            ==123==ERROR: AddressSanitizer: heap-use-after-free on address 0x602 at pc 0x1
-            READ of size 1 at 0x602 thread T0
-                #0 0x100003f1c in peek b.c:5
-                #1 0x100003f80 in main /abs/src/b.c:12:10
-                #2 0x18a0 in start+0x1b4c (dyld:arm64e+0x204e0)
-            0x602 is located 0 bytes inside of 8-byte region
-            freed by thread T0 here:
-                #0 0x1 in free+0x98
-            SUMMARY: AddressSanitizer: heap-use-after-free b.c:5 in peek
-            """))
-        self.assertEqual(asan.kind, "heap-use-after-free")
-        self.assertEqual(asan.frames[:2], (("b.c", 5, "peek"), ("/abs/src/b.c", 12, "main")))
-        self.assertEqual(len(asan.in_case([Path("/elsewhere/b.c")])), 2)
-        ubsan = rc.parse_sanitizer("x.c:4:35: runtime error: index -1 out of bounds for type 'int[4]'\n"
-                                   "    #0 0x1 in lookup x.c:4\n    #1 0x2 in main x.c:7\n")
-        self.assertTrue(ubsan.kind.startswith("runtime error: index -1"))
-        self.assertEqual([f[1] for f in ubsan.frames], [4, 4, 7])
-        self.assertIsNone(rc.parse_sanitizer("all good\n"))
+# ---------------------------------------------------------------------------
+# Flags and output parsing
+# ---------------------------------------------------------------------------
 
-    def test_ledger_helpers(self):
-        document = ledger("test/a.c", [site(3, null={"outcome": "checked", "check": {"template": "nonnull"},
-                                                     "requirements": [{"outcome": "unresolved",
-                                                                       "reason": "unknown-extent"}]})],
-                          root="/repo")
-        rows = rc.ledger_rows(document)
-        self.assertEqual(rows[0].file, str(Path("/repo/test/a.c").resolve()))
-        records = rc.facet_records(rows[0], "null")
-        self.assertEqual([r["outcome"] for r in records], ["checked", "unresolved"])
-        self.assertEqual(rc.facet_records(rows[0], "spatial"), [])
-        self.assertEqual(rc.json_pointer({"a/b": {"~k": [1, 2]}}, "/a~1b/~0k/1"), 2)
+
+class FlagsTest(unittest.TestCase):
+    def test_tool_flags(self):
+        own, compiler = rc.tool_flags(["-O2", "-fno-weavec-zero-init", "-Wweavec-leak",
+                                       "-Wno-weavec", "-Werror=weavec", "-Wno-error=weavec-leak",
+                                       "-fweavec-budget=50", "-fweavec-checks=report",
+                                       "-fweavec-diagnose", "-fno-weavec", "-DX", "-Wall"])
+        self.assertEqual(own, ["--no-zero-init", "-Wweavec-leak", "-Wno-weavec", "-Werror=weavec",
+                               "-Wno-error=weavec-leak", "--budget=50"])
+        self.assertEqual(compiler, ["-O2", "-DX", "-Wall"])
+
+    def test_plain_flags(self):
+        self.assertEqual(rc.plain_flags(("-O2", "-fweavec-checks=verify", "-fno-weavec-zero-init",
+                                         "-Wweavec-leak", "-Wweavec", "-std=c11")),
+                         ["-O2", "-std=c11"])
+
+
+class ParseOutputTest(unittest.TestCase):
+    def test_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory).resolve()
+            got = rc.parse_diagnostics(textwrap.dedent("""\
+                a.c:4:7: error: use after free of 'p' [weavec::use-after-free]
+                  4 |   *p = 1;
+                /abs/b.c:9:2: warning: possible leak [weavec::leak]
+                a.c:5:1: note: released here
+                a.c:6:1: warning: unused variable 'x' [-Wunused-variable]
+                weavec: a.c: 10 sites
+                """), directory)
+            self.assertEqual(got, [
+                rc.Diagnostic(str(directory / "a.c"), 4, 7, "error", "use-after-free", "use after free of 'p'"),
+                rc.Diagnostic(str(Path("/abs/b.c").resolve()), 9, 2, "warning", "leak", "possible leak")])
+
+    def test_reports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory).resolve()
+            got = rc.parse_reports(textwrap.dedent("""\
+                weavec: heap-buffer-overflow at a.c:12:5: write of 4 bytes at 0x1000
+                weavec: 0x1000 is 0 bytes after the 16-byte heap object at 0xff0
+                weavec: weavec.proven: index-out-of-bounds at /abs/b.c:3:9: index 7
+                weavec: null-dereference at <unknown>: access at 0x0
+                weavec: invalid release of 0x7ff0: not a heap block
+                weavec: runtime: 3 allocations
+                program output at x.c:1:1: is not a report
+                """), directory)
+            self.assertEqual(got, [
+                rc.Report("heap-buffer-overflow", str(directory / "a.c"), 12, 5, False),
+                rc.Report("index-out-of-bounds", str(Path("/abs/b.c").resolve()), 3, 9, True),
+                rc.Report("null-dereference", None, 0, 0, False),
+                rc.Report("invalid-release", None, 0, 0, False)])
+        self.assertTrue(got[1].text().startswith("weavec.proven: index-out-of-bounds at "))
+        self.assertEqual(got[2].text(), "null-dereference at <no location>")
+
+
+class RunTest(unittest.TestCase):
+    def test_stop(self):
+        located = report("heap-use-after-free", "/x.c", 4)
+        self.assertEqual(run(TRAP, located).stop, located)
+        self.assertEqual(run(-int(signal.SIGILL), located).stop, located)
+        self.assertEqual(run(SEGV).stop, rc.Report("null-dereference", None, 0, 0))
+        fatal = report("invalid-release")
+        self.assertEqual(run(ABRT, fatal).stop, fatal)
+        self.assertIsNone(run(TRAP).stop)          # a trap with no report (the C library's own)
+        self.assertIsNone(run(0, located).stop)    # a report that did not stop the run
+        self.assertIsNone(run(1).stop)
+
+    def test_describe(self):
+        self.assertEqual(run(0).describe(), "exit 0")
+        self.assertEqual(run(3).describe(), "exit 3")
+        self.assertEqual(run(TRAP).describe(), "killed by SIGTRAP")
+        self.assertEqual(run(None, timed_out=True).describe(), "timed out")
+        self.assertTrue(run(SEGV).faulted and run(TRAP).trapped and not run(1).trapped)
+
+
+class LedgerHelpersTest(unittest.TestCase):
+    def test_json_pointer(self):
+        document = {"summary": {"guarded": 3}, "rows": [{"a/b": 1, "m~n": 2}]}
+        self.assertEqual(rc.json_pointer(document, "/summary/guarded"), 3)
+        self.assertEqual(rc.json_pointer(document, "/rows/0/a~1b"), 1)
+        self.assertEqual(rc.json_pointer(document, "/rows/0/m~0n"), 2)
         with self.assertRaises(KeyError):
-            rc.json_pointer({"a": 1}, "/b")
-        self.assertTrue(rc.compare(3, "<=", 3) and rc.compare("trap", "==", "trap")
-                        and rc.compare([1], "!=", [2]))
-        with self.assertRaises(TypeError):
-            rc.compare("3", "<", 4)
+            rc.json_pointer(document, "/summary/missing")
+
+    def test_compare(self):
+        self.assertTrue(rc.compare(3, "<=", 3) and rc.compare(3, ">", 2) and rc.compare("a", "!=", "b"))
+        self.assertFalse(rc.compare(3, "<", 3))
+        self.assertFalse(rc.compare("3", "<", 4))  # incomparable types never hold
 
 
-class EvaluationTest(Workspace):
-    def bug_case(self, marker="BUG: use-after-free", extra_file_markers="// A use after free."):
-        return self.case("s/p.c", f"""
-            {extra_file_markers}
-            #include <stdlib.h>
+# ---------------------------------------------------------------------------
+# Judging
+# ---------------------------------------------------------------------------
+
+
+class JudgeDiagnosticsTest(Workspace):
+    def judge(self, case, diagnostics=(), runs=None):
+        ev = rc.Evidence(diagnostics=list(diagnostics), runs=list(runs or []))
+        failures = []
+        rc.judge_diagnostics(case, ev, failures, bool(ev.runs) if runs is not None else True)
+        return failures
+
+    def bug_case(self, marker="BUG: use-after-free"):
+        return self.case("s/b.c", f"""
             int main(void) {{
-              char *p = malloc(1);
-              free(p);
-              return p[0]; // {marker}
+              return 0; // {marker}
             }}
             """)
 
-    def evidence(self, **kwargs):
-        ev = rc.Evidence(kwargs.pop("mode", "trap"))
-        for key, value in kwargs.items():
-            setattr(ev, key, value)
-        return ev
-
-    def test_bug_severity_classes(self):
-        case = self.bug_case("BUG: use-after-free definite")
-        self.assertEqual(case.bugs[0].line, 6)
-        warning = rc.evaluate(case, self.evidence(diagnostics=[self.diag(case.path, 6, severity="warning")]))
-        self.assertEqual(warning["status"], "fail")
-        self.assertEqual(warning["class"], "warning")
-        self.assertTrue(warning["bugs"][0]["reported"])
-        error = rc.evaluate(case, self.evidence(diagnostics=[self.diag(case.path, 6)]))
-        self.assertEqual((error["status"], error["class"]), ("pass", "error"))
-        either = self.bug_case()
-        self.assertEqual(rc.evaluate(either, self.evidence(
-            diagnostics=[self.diag(either.path, 6, severity="warning")]))["status"], "pass")
-
-    def test_wrong_id_or_line_and_unexpected_errors(self):
+    def test_bug_needs_its_id_on_its_line(self):
         case = self.bug_case()
-        wrong = rc.evaluate(case, self.evidence(diagnostics=[self.diag(case.path, 6, "double-free")]))
-        self.assertEqual(wrong["class"], "silent")
-        self.assertTrue(any("not satisfied (found double-free (error))" in f for f in wrong["failures"]))
-        elsewhere = rc.evaluate(case, self.evidence(diagnostics=[self.diag(case.path, 6),
-                                                                 self.diag(case.path, 5, "double-free")]))
-        self.assertTrue(any(f.startswith("unexpected error") for f in elsewhere["failures"]))
-        warned = rc.evaluate(case, self.evidence(diagnostics=[self.diag(case.path, 6),
-                                                              self.diag(case.path, 4, "leak", "warning")]))
-        self.assertEqual(warned["status"], "pass")
-        crashed = rc.evaluate(case, self.evidence(diagnostics=[self.diag(case.path, 6)],
-                                                  tool_failures=["compile p.c failed with status -11"]))
-        self.assertEqual(crashed["status"], "fail")
+        path = case.path
+        self.assertEqual(self.judge(case, [diag(path, 2, "use-after-free", "warning")]), [])
+        failures = self.judge(case, [diag(path, 2, "double-free")])
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("b.c:2: expected weavec::use-after-free from the analysis or a stop", failures[0])
+        failures = self.judge(case, [diag(path, 1, "use-after-free")])
+        self.assertTrue(any("unexpected error" in f and ":1:3:" in f for f in failures), failures)
+
+    def test_certainty(self):
+        definite = self.bug_case("BUG: use-after-free definite")
+        possible = self.case("s/p.c", "int main(void) {\n  return 0; // BUG: use-after-free possible\n}\n")
+        self.assertEqual(self.judge(definite, [diag(definite.path, 2, "use-after-free", "error")]), [])
+        self.assertIn("(definite)", self.judge(definite, [diag(definite.path, 2, "use-after-free", "warning")])[0])
+        self.assertEqual(self.judge(possible, [diag(possible.path, 2, "use-after-free", "warning")]), [])
+        self.assertIn("(possible)", self.judge(possible, [diag(possible.path, 2, "use-after-free", "error")])[0])
+
+    def test_a_stop_on_the_line_satisfies_a_stoppable_bug(self):
+        case = self.bug_case()
+        self.assertEqual(self.judge(case, runs=[run(TRAP, report("heap-use-after-free", case.path, 2))]), [])
+        self.assertTrue(self.judge(case, runs=[run(TRAP, report("heap-use-after-free", case.path, 1))]))
+        self.assertTrue(self.judge(case, runs=[run(0)]))
+
+    def test_a_stop_does_not_satisfy_a_bug_it_cannot_stop(self):
+        case = self.bug_case("BUG: leak")
+        self.assertTrue(self.judge(case, runs=[run(TRAP, report("heap-use-after-free", case.path, 2))]))
+
+    def test_an_unlocated_stop_of_the_same_kind(self):
+        release = self.bug_case("BUG: invalid-release")
+        self.assertEqual(self.judge(release, runs=[run(ABRT, report("invalid-release"))]), [])
+        null = self.case("s/n.c", "int main(void) {\n  return 0; // BUG: null-dereference\n}\n")
+        self.assertEqual(self.judge(null, runs=[run(SEGV)]), [])
+        self.assertTrue(self.judge(release, runs=[run(SEGV)]))
+
+    def test_without_a_run_a_stoppable_bug_is_not_required(self):
+        case = self.bug_case()
+        self.assertEqual(self.judge(case, runs=[]), [])
+        self.assertTrue(self.judge(self.bug_case("BUG: leak"), runs=[]))
+
+    def test_miss_and_neutralised(self):
+        for marker in ("BUG: use-after-free // MISS: aliased through a global",
+                       "BUG: use-of-uninitialized // NEUTRALISED: zero-init"):
+            with self.subTest(marker=marker):
+                case = self.bug_case(marker)
+                self.assertEqual(self.judge(case, runs=[run(0)]), [])
+                # A report on the line is not unexpected either.
+                self.assertEqual(self.judge(case, [diag(case.path, 2, "leak")], runs=[run(0)]), [])
 
     def test_clean_and_allow(self):
         case = self.case("s/c.c", "// CLEAN\n// ALLOW: leak\nint main(void) { return 0; }\n")
-        leak = rc.evaluate(case, self.evidence(diagnostics=[self.diag(case.path, 3, "leak", "warning")]))
-        self.assertEqual(leak["status"], "pass")
-        other = rc.evaluate(case, self.evidence(diagnostics=[self.diag(case.path, 3, "double-free", "warning")]))
-        self.assertEqual(other["status"], "fail")
-        trapped = rc.evaluate(case, self.evidence(runs=[rc.Run((), -5)], ran=True, built=True))
-        self.assertEqual(trapped["status"], "fail")
-        segv = rc.evaluate(case, self.evidence(runs=[rc.Run(("x",), -11)], ran=True, built=True))
-        self.assertTrue(any("SIGSEGV" in f for f in segv["failures"]))
-        self.assertTrue(rc.evaluate(case, self.evidence())["cleanBuild"])
+        self.assertEqual(self.judge(case, [diag(case.path, 3, "leak", "warning")]), [])
+        failures = self.judge(case, [diag(case.path, 3, "double-free", "warning")])
+        self.assertIn("unexpected diagnostic in a CLEAN case", failures[0])
+        # ALLOW excuses warnings only.
+        self.assertTrue(self.judge(case, [diag(case.path, 3, "leak", "error")]))
 
-    def test_traps_and_reports(self):
-        case = self.case("s/t.c", """
-            int main(int argc, char **argv) {
-              int a[4] = {0};
-              return a[argc + 3]; // BUG: out-of-bounds // TRAP: index
-            }
-            """)
-        at = str(case.path)
-        good = rc.evaluate(case, self.evidence(built=True, ran=True, runs=[rc.Run((), -5)],
-                                               reports=[rc.CheckReport("index", at, 3, 10)]))
-        self.assertEqual((good["status"], good["class"]), ("pass", "trap"))
-        self.assertEqual(good["bugs"][0]["satisfiedBy"], "trap")
-        wrong_template = rc.evaluate(case, self.evidence(built=True, ran=True, runs=[rc.Run((), -4)],
-                                                         reports=[rc.CheckReport("span", at, 3, 10)]))
-        self.assertTrue(any("TRAP index not reported" in f for f in wrong_template["failures"]))
-        self.assertTrue(any("unexpected runtime check failure: span" in f for f in wrong_template["failures"]))
-        no_trap = rc.evaluate(case, self.evidence(built=True, ran=True, runs=[rc.Run((), 0)],
-                                                  reports=[rc.CheckReport("index", at, 3, 10)]))
-        self.assertTrue(any("but the case has TRAP markers" in f for f in no_trap["failures"]))
-        unobserved = rc.evaluate(case, self.evidence())
-        self.assertTrue(any("no executable was built" in f for f in unobserved["failures"]))
-        stopped = rc.evaluate(case, self.evidence(diagnostics=[self.diag(case.path, 3, "out-of-bounds")]))
-        self.assertEqual((stopped["status"], stopped["class"]), ("pass", "error"))
-
-    def test_temporal_bug_is_satisfied_only_by_a_violation_trap(self):
-        case = self.bug_case("BUG: use-after-free // TRAP: violation")
-        at = str(case.path)
-        result = rc.evaluate(case, self.evidence(built=True, ran=True, runs=[rc.Run((), -5)],
-                                                 reports=[rc.CheckReport("violation", at, 6, 3)]))
-        self.assertEqual((result["status"], result["class"]), ("pass", "trap"))
-        index_trap = self.bug_case("BUG: use-after-free // TRAP: index")
-        result = rc.evaluate(index_trap, self.evidence(built=True, ran=True, runs=[rc.Run((), -5)],
-                                                       reports=[rc.CheckReport("index", at, 6, 3)]))
-        self.assertTrue(any("BUG use-after-free not satisfied" in f for f in result["failures"]))
-
-    def test_ledger_markers_and_rows(self):
-        case = self.case("s/l.c", """
-            int f(int *p) {
-              return p[1]; // UNRESOLVED: spatial:unknown-extent // TRUSTED: temporal:caller-contract // NOT-PROVEN: null
-            }
-            """)
-        facets = {"spatial": {"outcome": "unresolved", "reason": "unknown-extent"},
-                  "temporal": {"outcome": "trusted", "reason": "caller-contract"},
-                  "null": {"outcome": "checked", "check": {"template": "nonnull"}}}
-        good = rc.evaluate(case, self.evidence(ledgers=[ledger(case.path, [site(2, **facets)])],
-                                               ledger_expected=True))
-        self.assertEqual(good["status"], "pass", good["failures"])
-        proven = dict(facets, null={"outcome": "proven"}, spatial={"outcome": "unresolved", "reason": "budget"})
-        bad = rc.evaluate(case, self.evidence(ledgers=[ledger(case.path, [site(2, **proven)])],
-                                              ledger_expected=True))
-        self.assertTrue(any("NOT-PROVEN null: the facet is proven" in f for f in bad["failures"]))
-        self.assertTrue(any("found unresolved(budget)" in f for f in bad["failures"]))
-        missing = rc.evaluate(case, self.evidence(ledger_expected=True))
-        self.assertTrue(any("wrote no ledger" in f for f in missing["failures"]))
-        empty = rc.evaluate(case, self.evidence(ledgers=[ledger(case.path, [])], ledger_expected=True))
-        self.assertTrue(any("no ledger row with a null facet" in f for f in empty["failures"]))
-        legacy = rc.evaluate(case, self.evidence(mode="legacy"))
-        self.assertEqual(legacy["status"], "pass")
-
-    def test_requirement_records_match_ledger_markers(self):
-        case = self.case("s/r.c", "void g(char *d, char *s, int n) { f(d, s, n); } // UNRESOLVED: spatial:unknown-extent\n")
-        facets = {"spatial": {"outcome": "checked", "requirements": [
-            {"arg": 0, "outcome": "checked", "check": {"template": "len"}},
-            {"arg": 1, "outcome": "unresolved", "reason": "unknown-extent"}]}}
-        result = rc.evaluate(case, self.evidence(ledgers=[ledger(case.path, [site(1, **facets)])],
-                                                 ledger_expected=True))
-        self.assertEqual(result["status"], "pass", result["failures"])
-
-    def test_bug_with_row_marker_is_satisfied_by_the_row(self):
-        case = self.bug_case("BUG: use-after-free // NOT-PROVEN: temporal")
-        row = ledger(case.path, [site(6, temporal={"outcome": "unresolved", "reason": "dangling-escape"})])
-        result = rc.evaluate(case, self.evidence(ledgers=[row], ledger_expected=True))
-        self.assertEqual((result["status"], result["class"]), ("pass", "row"))
-        plain = self.bug_case()
-        result = rc.evaluate(plain, self.evidence(ledgers=[ledger(plain.path, [site(6, temporal={
-            "outcome": "unresolved", "reason": "dangling-escape"})])], ledger_expected=True))
-        self.assertEqual((result["status"], result["class"]), ("fail", "row"))
-
-    def test_not_proven_ignores_a_function_exit_on_the_line(self):
-        # `return p[0];`: the exit's temporal facet is about the boundary (section 9.4),
-        # the access's is what the marker means; an exit alone on the line still counts.
-        case = self.bug_case("BUG: use-after-free // NOT-PROVEN: temporal")
-        exit_row = dict(site(6, temporal={"outcome": "proven"}), kind="call", boundary="exit")
-        access = site(6, temporal={"outcome": "unresolved", "reason": "unknown-callee"})
-        result = rc.evaluate(case, self.evidence(ledgers=[ledger(case.path, [exit_row, access])],
-                                                 ledger_expected=True))
-        self.assertEqual((result["status"], result["class"]), ("pass", "row"), result["failures"])
-        alone = rc.evaluate(case, self.evidence(ledgers=[ledger(case.path, [exit_row])], ledger_expected=True))
-        self.assertTrue(any("NOT-PROVEN temporal: the facet is proven" in f for f in alone["failures"]))
-
-    def test_no_emission_uses_checked_facets_and_neutralisation_counts_as_miss(self):
-        case = self.case("s/n.c", """
-            int main(int argc, char **argv) {
-              int a[4] = {0}, i;
-              if (argc > 5) i = 1;
-              return a[argc + 3] + a[i]; // BUG: out-of-bounds // NEUTRALISED: zero-init
-            }
-            """)
-        row = ledger(case.path, [site(4, spatial={"outcome": "checked", "check": {"template": "index"}})])
-        result = rc.evaluate(case, self.evidence(ledgers=[row], ledger_expected=True, no_emission=True))
-        self.assertEqual((result["status"], result["bugs"][0]["satisfiedBy"]), ("pass", "checked"))
-        self.assertTrue(result["bugs"][0]["reported"])
-        other = self.case("s/z.c", """
-            int main(int argc, char **argv) {
-              int t[4] = {0}, i;
-              return t[i]; // BUG: use-of-uninitialized // NEUTRALISED: zero-init
-            }
-            """)
-        on = rc.evaluate(other, self.evidence(zero_init=True, built=True, ran=True, runs=[rc.Run((), 0)]))
-        self.assertEqual((on["status"], on["class"]), ("pass", "neutralised"))
-        off = rc.evaluate(other, self.evidence(no_emission=True))
-        self.assertEqual((off["status"], off["class"]), ("pass", "miss"))
-
-    def test_miss_is_expected_silent(self):
-        case = self.bug_case("BUG: use-after-free // MISS: aliasing through a union is not modelled")
-        silent = rc.evaluate(case, self.evidence())
-        self.assertEqual((silent["status"], silent["class"]), ("pass", "miss"))
-        caught = rc.evaluate(case, self.evidence(diagnostics=[self.diag(case.path, 6)]))
-        self.assertEqual((caught["status"], caught["class"]), ("pass", "error"))
-        self.assertTrue(any("now reported" in n for n in caught["notes"]))
-
-    def test_expect_ledger_prefers_the_program_ledger(self):
-        case = self.case("s/e.c", """
-            // EXPECT-LEDGER: /summary/errors == 2
-            // EXPECT-LEDGER: /summary/warnings <= 0
-            // EXPECT-LEDGER: /summary/missing == 1
-            int main(void) { return 0; }
-            """)
-        unit = ledger(case.path, [], summary={"errors": 2, "warnings": 0})
-        program = ledger(case.path, [], scope="program", summary={"errors": 1, "warnings": 0})
-        only_unit = rc.evaluate(case, self.evidence(ledgers=[unit], ledger_expected=True))
-        self.assertEqual(only_unit["failures"], ["EXPECT-LEDGER /summary/missing == 1: pointer not found"])
-        both = rc.evaluate(case, self.evidence(ledgers=[unit, program], ledger_expected=True))
-        self.assertIn("EXPECT-LEDGER /summary/errors == 2: actual 1", both["failures"])
-
-    def test_verify_mode_failures(self):
-        case = self.case("s/v.c", "// CLEAN\nint main(void) { return 0; }\n")
-        result = rc.evaluate(case, self.evidence(mode="verify", proven_traps=["run x: weavec.proven trap"]))
-        self.assertIn("run x: weavec.proven trap", result["failures"])
-
-    def test_asan_oracle(self):
-        clean = self.case("s/ok.c", "// CLEAN\n// ASAN\nint main(void) { return 0; }\n")
-        report = rc.SanitizerReport("heap-use-after-free", (("ok.c", 3, "main"),))
-        result = rc.evaluate(clean, self.evidence(asan_ran=True, asan=report))
-        self.assertTrue(any("in a CLEAN case" in f for f in result["failures"]))
-        case = self.bug_case(extra_file_markers="// ASAN")
-        silent = rc.evaluate(case, self.evidence(asan_ran=True, diagnostics=[self.diag(case.path, 7)]))
-        self.assertTrue(any("did not report the bug" in f for f in silent["failures"]))
-        proven = ledger(case.path, [site(7, temporal={"outcome": "proven"})])
-        g4 = rc.evaluate(case, self.evidence(
-            asan_ran=True, asan=rc.SanitizerReport("heap-use-after-free", (("p.c", 7, "main"),)),
-            diagnostics=[self.diag(case.path, 7)], ledgers=[proven], ledger_expected=True))
-        self.assertTrue(any(f.startswith("G4: the temporal facet is proven") for f in g4["failures"]))
-        self.assertEqual(g4["asan"]["site"], "p.c:7")
-
-    def test_asan_site_proven_by_a_checked_call(self):
-        case = self.case("s/call.c", """
-            // ASAN
-            static int get(int *p) { return p[10]; }
-            int main(void) {
-              int a[4] = {0};
-              return get(a); // BUG: out-of-bounds
-            }
-            """)
-        rows = ledger(case.path, [site(2, spatial={"outcome": "proven"}),
-                                  site(5, spatial={"outcome": "violation"})])
-        report = rc.SanitizerReport("stack-buffer-overflow", (("call.c", 2, "get"), ("call.c", 5, "main")))
-        result = rc.evaluate(case, self.evidence(asan_ran=True, asan=report, ledgers=[rows], ledger_expected=True,
-                                                 diagnostics=[self.diag(case.path, 5, "out-of-bounds")]))
-        self.assertEqual(result["status"], "pass", result["failures"])
-
-    def test_legacy_classes(self):
+    def test_a_bug_case_tolerates_warnings_elsewhere_but_not_errors(self):
         case = self.bug_case()
-        classes = {
-            "CAUGHT": [self.diag(case.path, 6), self.diag(case.path, 4, "leak", "warning")],
-            "MISLABEL": [self.diag(case.path, 6, "use-of-uninitialized"),
-                         self.diag(case.path, 2, "analysis-incomplete", "warning")],
-            "SIGNAL": [self.diag(case.path, 3, "annotation-required", "warning"),
-                       self.diag(case.path, 4, "leak", "warning")],
-            "LEAK-ONLY": [self.diag(case.path, 4, "leak", "warning")],
-            "SILENT": [],
-        }
-        for expected, diagnostics in classes.items():
-            with self.subTest(expected=expected):
-                result = rc.evaluate(case, self.evidence(mode="legacy", diagnostics=diagnostics))
-                self.assertEqual(result["legacyClass"], expected)
-        wrong_line = rc.evaluate(case, self.evidence(mode="legacy", diagnostics=[self.diag(case.path, 5)]))
-        self.assertEqual(wrong_line["legacyClass"], "MISLABEL")
-
-    def test_marker_errors_make_an_error_status_and_summary(self):
-        broken = self.case("s/b.c", "int x; // BUG: nonsense\n")
-        good = self.case("s/g.c", "// CLEAN\nint main(void) { return 0; }\n")
-        bug = self.bug_case()
-        results = [rc.evaluate(broken, self.evidence()), rc.evaluate(good, self.evidence()),
-                   rc.evaluate(bug, self.evidence(diagnostics=[self.diag(bug.path, 6)]))]
-        self.assertEqual([r["status"] for r in results], ["error", "pass", "pass"])
-        suite = rc.summarize(results)["suites"]["s"]
-        self.assertEqual((suite["cases"], suite["passed"], suite["errors"]), (3, 2, 1))
-        self.assertEqual((suite["cleanCases"], suite["cleanPassed"], suite["bugCases"]), (1, 1, 1))
-        self.assertEqual((suite["pins"], suite["pinsSatisfied"], suite["classes"]["error"]), (1, 1, 1))
+        ok = diag(case.path, 2, "use-after-free")
+        self.assertEqual(self.judge(case, [ok, diag(case.path, 1, "leak", "warning")]), [])
+        self.assertIn("unexpected error", self.judge(case, [ok, diag(case.path, 1, "leak")])[0])
 
 
-class DetectionTest(Workspace):
-    """RFC 0034 section 9: DETECT cases (gate F4) and XFAIL."""
+class JudgeRunsTest(Workspace):
+    def judge(self, case, *runs):
+        failures = []
+        rc.judge_runs(case, rc.Evidence(runs=list(runs)), failures, [])
+        return failures
 
-    def detect_case(self, stop_line="return p[n]; // STOP", file_markers="// DETECT: -DFIX"):
-        return self.case("detection/d/prog.c", f"""
-            // A heap overflow and its fixed twin.
-            {file_markers}
-            // RUN-INPUT: 4
-            #include <stdlib.h>
-            int main(int argc, char **argv) {{
-              int n = atoi(argv[1]);
-              char *p = malloc(4);
-              {stop_line}
+    def trap_case(self, marker="TRAP: heap-buffer-overflow"):
+        return self.case("s/t.c", f"""
+            // RUN-INPUT: 1
+            // RUN-INPUT: 2
+            int main(void) {{
+              return 0; // {marker}
             }}
             """)
 
-    def evidence(self, **kwargs):
-        ev = rc.Evidence("trap")
-        for key, value in kwargs.items():
-            setattr(ev, key, value)
-        return ev
+    def test_expected_stop(self):
+        case = self.trap_case()
+        hit = run(TRAP, report("heap-buffer-overflow", case.path, 4))
+        self.assertEqual(self.judge(case, hit), [])
+        self.assertEqual(self.judge(case, run(0, args=("1",)), hit), [])  # any run may hit it
 
-    def report(self, path, line, template="object"):
-        return rc.CheckReport(template, str(path), line, 10)
+    def test_bare_trap_matches_any_kind(self):
+        case = self.trap_case("TRAP")
+        self.assertEqual(self.judge(case, run(TRAP, report("stack-use-after-scope", case.path, 4))), [])
 
-    def ran(self, path, line=None, trapped=True, template="object"):
-        reports = [self.report(path, line, template)] if line else []
-        return dict(built=True, ran=True, runs=[rc.Run(("4",), -5 if trapped else 0)],
-                    report_runs=[reports], reports=list(reports))
+    def test_wrong_kind_or_line(self):
+        case = self.trap_case()
+        for stop in (report("heap-use-after-free", case.path, 4), report("heap-buffer-overflow", case.path, 3)):
+            with self.subTest(stop=stop):
+                failures = self.judge(case, run(TRAP, stop))
+                self.assertEqual(len(failures), 2, failures)
+                self.assertIn("unexpected stop", failures[0])
+                self.assertIn("t.c:4: expected a stop (heap-buffer-overflow); killed by SIGTRAP", failures[1])
 
-    def test_grammar(self):
-        case = self.detect_case()
-        self.assertEqual(case.errors, [])
-        self.assertEqual(case.detect, ("-DFIX",))
-        self.assertEqual([m.line for m in case.line_markers("STOP")], [8])
-        both = self.detect_case("return p[n]; // STOP // MISS: not caught yet")
-        self.assertEqual(both.errors, [])
-        cases = [
-            ("return p[n]; // STOP: here", "", "marker 'STOP' takes no argument"),
-            ("return p[n]; // STOP", "// DETECT: FIX", "DETECT takes the flags"),
-            ("return p[n]; // STOP", "// DETECT: -DFIX\n// CLEAN", "a DETECT case has no CLEAN markers"),
-            ("return p[n]; // BUG: out-of-bounds", "// DETECT: -DFIX", "a DETECT case has no BUG markers"),
-            ("return p[n]; // MISS: x", "// DETECT: -DFIX", "needs a STOP line"),
-            ("return p[n]; // STOP", "// RFC 0034.", "STOP needs a DETECT file marker"),
-            ("return p[n]; // STOP", "// DETECT: -DFIX\n// DETECT: -DFIX", "DETECT is given more than once"),
-        ]
-        for line, markers, message in cases:
-            broken = self.detect_case(line, markers)
-            self.assertTrue(any(message in e for e in broken.errors), (line, markers, broken.errors))
-        no_main = self.case("detection/e/x.c", "// DETECT: -DFIX\nint f(int *p) { return *p; } // STOP\n")
-        self.assertTrue(any("needs a unit that defines main" in e for e in no_main.errors))
+    def test_trap_not_reached(self):
+        failures = self.judge(self.trap_case(), run(0, args=("1",)), run(2, args=("2",)))
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("expected a stop (heap-buffer-overflow); exit 0; exit 2", failures[0])
 
-    def test_stops(self):
-        case = self.detect_case()
-        clean_twin = self.evidence(built=True, ran=True, runs=[rc.Run(("4",), 0)], report_runs=[[]])
-        # A trap whose report-mode check is on the STOP line stops the bug.
-        result = rc.evaluate_detection(case, self.evidence(**self.ran(case.path, 8)), clean_twin)
-        self.assertEqual((result["status"], result["class"]), ("pass", "run"))
-        self.assertEqual(result["detection"]["where"], "object at " + rc.relative(case.path) + ":8:10")
-        # A WeaveC error stops it at compile time, wherever it is (noted when not on a STOP line).
-        error = rc.evaluate_detection(case, self.evidence(diagnostics=[self.diag(case.path, 7, "out-of-bounds")]),
-                                      clean_twin)
-        self.assertEqual((error["status"], error["class"]), ("pass", "compile"))
-        self.assertTrue(any("on no STOP line" in n for n in error["notes"]))
-        # Not stops: a check after the bug, a trap the report-mode run does not
-        # attribute (the C library's own), a run that does not trap.
-        for evidence, why in ((self.ran(case.path, 9), "on no STOP line"),
-                              (self.ran(case.path, None), "names no failed check"),
-                              (self.ran(case.path, 8, trapped=False), "but the trap-mode run was exit 0")):
-            missed = rc.evaluate_detection(case, self.evidence(**evidence), clean_twin)
-            self.assertEqual((missed["status"], missed["class"]), ("fail", "miss"))
-            self.assertTrue(any(why in f for f in missed["failures"]), missed["failures"])
-        # A known miss passes silent, and is flagged when it stops.
-        known = self.detect_case("return p[n]; // STOP // MISS: not caught yet")
-        silent = rc.evaluate_detection(known, self.evidence(**self.ran(known.path, None, trapped=False)), clean_twin)
-        self.assertEqual((silent["status"], silent["detection"]["knownMiss"]), ("pass", True))
-        flipped = rc.evaluate_detection(known, self.evidence(**self.ran(known.path, 8)), clean_twin)
-        self.assertEqual((flipped["status"], flipped["detection"]["flip"]), ("pass", True))
-        self.assertTrue(any("remove its MISS marker" in n for n in flipped["notes"]))
-        # The verify build's proven traps fail it (F4: no bug runs past a proven facet).
-        proven = self.evidence(**self.ran(case.path, 8))
-        proven.proven_traps = ["run 4: weavec.proven trap"]
-        self.assertEqual(rc.evaluate_detection(case, proven, clean_twin)["status"], "fail")
+    def test_unlocated_stops(self):
+        null = self.trap_case("TRAP: null-dereference")
+        self.assertEqual(self.judge(null, run(SEGV)), [])
+        self.assertEqual(self.judge(self.trap_case("TRAP"), run(SEGV)), [])
+        self.assertIn("unexpected stop: null-dereference at <no location>",
+                      self.judge(self.trap_case(), run(SEGV))[0])
 
-    def test_twin_must_not_stop(self):
-        case = self.detect_case()
-        bug = self.evidence(**self.ran(case.path, 8))
-        for twin, why in ((self.evidence(built=False, diagnostics=[self.diag(case.path, 8, "out-of-bounds")]),
-                           "error:"),
-                          (self.evidence(built=True, ran=True, runs=[rc.Run(("4",), -5)], report_runs=[[]]),
-                           "killed by"),
-                          (self.evidence(**self.ran(case.path, 8, trapped=False)), "failed check object"),
-                          (self.evidence(built=False), "no executable was built")):
-            result = rc.evaluate_detection(case, bug, twin)
-            self.assertEqual(result["status"], "fail", why)
-            self.assertFalse(result["detection"]["twinClean"])
-            self.assertTrue(any(f.startswith("the fixed twin (-DFIX) stops") and why in f
-                                for f in result["failures"]), result["failures"])
+    def test_stop_on_a_bug_line(self):
+        case = self.case("s/b.c", "int main(void) {\n  return 0; // BUG: out-of-bounds\n}\n")
+        self.assertEqual(self.judge(case, run(TRAP, report("heap-buffer-overflow", case.path, 2))), [])
+        self.assertEqual(self.judge(case, run(ABRT, report("invalid-release"))), [])
+        self.assertIn("unexpected stop", self.judge(case, run(TRAP, report("heap-buffer-overflow", case.path, 1)))[0])
 
-    def test_summary_and_xfail(self):
-        case = self.detect_case()
-        clean_twin = self.evidence(built=True, ran=True, runs=[rc.Run(("4",), 0)], report_runs=[[]])
-        stop = rc.evaluate_detection(case, self.evidence(**self.ran(case.path, 8)), clean_twin)
-        known = self.detect_case("return p[n]; // STOP // MISS: later")
-        miss = rc.evaluate_detection(known, self.evidence(**self.ran(known.path, None, trapped=False)), clean_twin)
-        summary = rc.summarize([stop, miss])
-        detection = summary["suites"]["detection"]["detection"]
-        self.assertEqual((detection["cases"], detection["stops"], detection["runStops"], detection["knownMisses"],
-                          detection["twinsClean"]), (2, 1, 1, 1, 2))
-        self.assertEqual((summary["total"]["detectionCases"], summary["total"]["detectionStops"]), (2, 1))
-        xfail = self.case("s/x.c", "// CLEAN\n// XFAIL: a false error today\nint main(void) { return 0; }\n")
-        self.assertEqual(xfail.xfail, "a false error today")
-        failing = rc.apply_xfail(xfail, rc.evaluate(xfail, rc.Evidence("trap", diagnostics=[
-            self.diag(xfail.path, 3, "double-free")])))
-        self.assertEqual(failing["status"], "xfail")
-        self.assertEqual(failing["notes"][0], "expected failure: a false error today")
-        passing = rc.apply_xfail(xfail, rc.evaluate(xfail, rc.Evidence("trap")))
-        self.assertEqual(passing["status"], "xpass")
-        counts = rc.summarize([failing, passing])["suites"]["s"]
-        self.assertEqual((counts["xfailed"], counts["xpassed"], counts["failed"]), (1, 1, 0))
-        self.assertTrue(all(r["status"] in rc.PASSING_STATUSES for r in (failing, passing)))
+    def test_stop_in_a_shared_helper(self):
+        helper = self.write("s/Inputs/h.c", "int h(int *p) {\n  return p[9];\n}\n")
+        case = self.case("s/a.c", "// UNITS: Inputs/h.c\n// TRAP-AT: Inputs/h.c:2\nint main(void) { return 0; }\n")
+        self.assertEqual(self.judge(case, run(TRAP, report("stack-buffer-overflow", helper, 2))), [])
+        self.assertTrue(self.judge(case, run(0)))
+
+    def test_bad_runs(self):
+        case = self.case("s/c.c", "// CLEAN\nint main(void) { return 0; }\n")
+        self.assertIn("timed out", self.judge(case, run(None, timed_out=True))[0])
+        self.assertIn("killed by SIGTRAP with no report", self.judge(case, run(TRAP))[0])
+        self.assertIn("reported heap-buffer-overflow at", self.judge(
+            case, run(0, report("heap-buffer-overflow", case.path, 2)))[0])
+        self.assertEqual(self.judge(case, run(0), run(1)), [])
+
+    def test_a_proven_report_is_a_wrong_proof(self):
+        case = self.trap_case("TRAP")
+        failures = self.judge(case, run(TRAP, report("heap-buffer-overflow", case.path, 4, proven=True)))
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("a proof was wrong: weavec.proven: heap-buffer-overflow", failures[0])
 
 
-FAKE_CC = r'''#!{python}
-"""A stand-in weavec-cc driven by <source>.fake.json next to each case file."""
-import json, os, signal, sys
-args = sys.argv[1:]
-out = args[args.index("-o") + 1] if "-o" in args else "a.out"
-sources = [a for a in args if a.endswith(".c")]
-objects = [a for a in args if a.endswith(".o") and a != out]
-ledger_dir = next((a.split("=", 1)[1] for a in args if a.startswith("-fweavec-ledger=")), None)
-checks = next((a.split("=", 1)[1] for a in args if a.startswith("-fweavec-checks=")), "trap")
-with open(os.environ["FAKE_LOG"], "a") as log:
-    log.write(" ".join(args) + "\n")
-def spec_of(source):
-    try:
-        return json.load(open(source + ".fake.json"))
-    except OSError:
-        return {}
-def emit(part, source):
-    text = part.get("stderr", "").replace("{file}", source)
-    sys.stderr.write(text)
-    if ledger_dir and "ledger" in part:
-        document = json.loads(json.dumps(part["ledger"]).replace("{file}", source))
-        with open(os.path.join(ledger_dir, os.path.basename(out) + ".ledger.json"), "w") as f:
-            json.dump(document, f)
-    return part.get("rc", 0)
-if "-fno-weavec" in args and "-c" not in args:
-    spec = spec_of(sources[0])
-    body = "import sys\nsys.stderr.write(%r)\nsys.exit(1 if %r else 0)\n" % (
-        spec.get("asan", {}).get("stderr", "").replace("{file}", sources[0]), bool(spec.get("asan")))
-elif "-c" in args:
-    code = emit(spec_of(sources[0]).get("compile", {}), sources[0])
-    if code == 0:
-        open(out, "w").write(sources[0])
-    sys.exit(code)
-else:
-    main = open(objects[0]).read()
-    spec = spec_of(main)
-    code = emit(spec.get("link", {}), main)
-    if code:
-        sys.exit(code)
-    run = spec.get("run", {})
-    if checks == "report":
-        lines = "".join("weavec: runtime check failed: %s\n" % r.replace("{file}", main)
-                        for r in run.get("report", []))
-        body = "import sys\nsys.stderr.write(%r)\n" % lines
-        if run.get("report-trap", False):
-            body += "import os, signal\nos.kill(os.getpid(), signal.SIGTRAP)\n"
-    else:
-        trap = run.get("verify-trap" if checks == "verify" else "trap", run.get("trap", False))
-        body = ("import os, signal\nos.kill(os.getpid(), signal.SIGTRAP)\n" if trap else "pass\n")
-open(out, "w").write("#!" + sys.executable + "\n" + body)
-os.chmod(out, 0o755)
-'''
+class JudgeLedgerTest(Workspace):
+    def ledger(self, path, rows, version=3, summary=None):
+        return {"schema": "weavec-ledger", "version": version, "units": [{
+            "source": str(path), "config": {"checks": "trap", "zeroInit": True},
+            "summary": summary or {"accesses": len(rows), "proven": 0, "guarded": len(rows), "unguarded": 0},
+            "rows": [{"function": "main", "file": str(path), "line": line, "column": 3,
+                      "operation": "load", "bytes": 4, "outcome": outcome, "reason": reason}
+                     for line, outcome, reason in rows]}]}
 
-FAKE_WEAVEC = r'''#!{python}
-"""A stand-in weavec: prints <source>.fake.json's '{key}' stderr for the first source."""
-import json, sys
-args = sys.argv[1:]
-if "--strict-externs" in args and {reject}:
-    sys.stderr.write("weavec: Unknown command line argument '--strict-externs'.\n")
-    sys.exit(1)
-sources = [a for a in args[:args.index("--")] if a.endswith(".c")]
-try:
-    spec = json.load(open(sources[0] + ".fake.json"))
-except OSError:
-    spec = {{}}
-part = spec.get("{key}", {{}})
-sys.stderr.write(part.get("stderr", "").replace("{{file}}", sources[0]))
-sys.exit(part.get("rc", 0))
-'''
+    def judge(self, case, ledger):
+        failures = []
+        rc.judge_ledger(case, rc.Evidence(ledger=ledger), failures)
+        return failures
+
+    def test_rows(self):
+        case = self.case("s/l.c", """
+            int main(int c, char **v) {
+              int a[4]; a[c] = 0; // GUARDED: access
+              return a[0]; // PROVEN // UNGUARDED: unsafe
+            }
+            """)
+        rows = [(2, "guarded", "access"), (3, "proven", "in-bounds"), (3, "unguarded", "unsafe")]
+        self.assertEqual(self.judge(case, self.ledger(case.path, rows)), [])
+        failures = self.judge(case, self.ledger(case.path, [(2, "guarded", "range"), (3, "proven", "dominated")]))
+        where = rc.relative(case.path)
+        self.assertEqual(failures, [f"{where}:2: expected a guarded ledger row (access)",
+                                    f"{where}:3: expected a unguarded ledger row (unsafe)"])
+
+    def test_missing_or_old_ledger(self):
+        case = self.case("s/l.c", "int main(void) { return 0; } // GUARDED\n")
+        self.assertEqual(self.judge(case, None), ["no enforcement ledger was written"])
+        self.assertEqual(self.judge(case, self.ledger(case.path, [], version=2)),
+                         ["ledger version 2, expected 3"])
+        plain = self.case("s/p.c", "int main(void) { return 0; } // TRAP\n")
+        self.assertEqual(self.judge(plain, None), [])  # no ledger marker, no ledger needed
+
+    def test_expect_ledger(self):
+        case = self.case("s/e.c", """
+            // EXPECT-LEDGER: /summary/unguarded == 0
+            // EXPECT-LEDGER: /summary/guarded >= 2
+            // EXPECT-LEDGER: /config/checks == trap
+            // EXPECT-LEDGER: /summary/missing == 0
+            int main(void) { return 0; }
+            """)
+        failures = self.judge(case, self.ledger(case.path, [(5, "guarded", "access")]))
+        self.assertEqual(failures, ["EXPECT-LEDGER /summary/guarded >= 2: actual 1",
+                                    "EXPECT-LEDGER /summary/missing == 0: no such value"])
 
 
-class PipelineTest(Workspace):
+class Fakes(Workspace):
+    """Replace the steps that start processes with ones that return canned evidence."""
+
     def setUp(self):
         super().setUp()
-        self.bin = self.root / "bin"
-        self.bin.mkdir()
-        self.log = self.root / "log.txt"
-        self.log.write_text("")
-        os.environ["FAKE_LOG"] = str(self.log)
-        self.addCleanup(os.environ.pop, "FAKE_LOG", None)
-        self.cc = self.tool("weavec-cc", FAKE_CC.replace("{python}", sys.executable))
-        self.weavec = self.tool("weavec", FAKE_WEAVEC.format(python=sys.executable, key="legacy", reject=False))
-        self.golden = self.tool("golden/weavec", FAKE_WEAVEC.format(python=sys.executable, key="golden",
-                                                                    reject=False))
-        self.strict = self.tool("strict/weavec", FAKE_WEAVEC.format(python=sys.executable, key="legacy",
-                                                                    reject=True))
+        self.scratch = Path(self.directory.name).resolve() / "scratch"
+        self.scratch.mkdir()
+        self.runs = {"build": [], "bug": [], "twin": []}
+        self.diagnostics = []
+        self.ledger = None
+        self.asan = None
+        self.builds = []
+        fakes = {"analyse": self.fake_analyse, "build": self.fake_build, "run_all": self.fake_run_all,
+                 "run_asan": self.fake_run_asan}
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        for name, fake in fakes.items():
+            original = getattr(rc, name)
+            setattr(rc, name, fake)
+            stack.callback(setattr, rc, name, original)
 
-    def tool(self, name, text):
-        path = self.bin / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-        path.chmod(path.stat().st_mode | stat.S_IXUSR)
-        return path
+    def config(self, **overrides):
+        values = dict(weavec=Path("weavec"), weavec_cc=Path("weavec-cc"), clang="clang", checks="trap",
+                      asan=False, no_run=False, keep=False, compile_timeout=1.0, run_timeout=1.0,
+                      scratch=self.scratch)
+        values.update(overrides)
+        return rc.Config(**values)
 
-    def spec(self, source, **parts):
-        (Path(str(source) + ".fake.json")).write_text(json.dumps(parts))
+    def fake_analyse(self, case, cfg, ev, directory):
+        ev.diagnostics = list(self.diagnostics)
 
-    def run_main(self, *args):
-        out = self.root / "results.json"
-        with contextlib.redirect_stdout(io.StringIO()):
-            code = rc.main(["--cases", str(self.cases), "--weavec", str(self.weavec), "--weavec-cc",
-                            str(self.cc), "--json", str(out), "--jobs", "2", *args])
-        return code, json.loads(out.read_text())
+    def fake_build(self, case, cfg, ev, directory, extra, ledger):
+        self.builds.append((directory.name, tuple(extra), ledger))
+        ev.ledger = self.ledger if ledger else None
+        ev.built = True
+        return directory / "a.out" if case.has_main else None
 
-    def test_trap_mode_pipeline(self):
-        trap = self.write("s/trap.c", """
-            // RUN-INPUT: 1
-            // ASAN
-            int main(int argc, char **argv) {
-              int a[4] = {0};
-              return a[argc + 3]; // BUG: out-of-bounds // TRAP: index
-            }
+    def fake_run_all(self, case, cfg, ev, exe, directory):
+        ev.runs.extend(self.runs[directory.name])
+
+    def fake_run_asan(self, case, cfg, ev, directory):
+        ev.asan_ran = True
+        ev.asan_report = self.asan
+
+
+class RunMarkersTest(Fakes):
+    def test_bug_case_passes_on_its_stop(self):
+        case = self.case("s/b.c", "// ASAN\nint main(void) {\n  return 0; // BUG: out-of-bounds // TRAP\n}\n")
+        self.runs["build"] = [run(TRAP, report("heap-buffer-overflow", case.path, 3))]
+        self.asan = "heap-buffer-overflow"
+        result = rc.run_case(case, self.config())
+        self.assertEqual((result["status"], result["failures"]), ("pass", []))
+        self.assertEqual(self.builds, [("build", (), False)])
+        self.asan = None
+        self.assertEqual(rc.run_case(case, self.config())["failures"], ["ASan reported nothing"])
+
+    def test_clean_case_fails_on_a_stop_and_an_asan_report(self):
+        case = self.case("s/c.c", "// CLEAN\nint main(void) { return 0; }\n")
+        self.runs["build"] = [run(TRAP, report("heap-buffer-overflow", case.path, 2))]
+        self.asan = "heap-buffer-overflow"
+        failures = rc.run_case(case, self.config(asan=True))["failures"]
+        self.assertTrue(any("unexpected stop" in f for f in failures), failures)
+        self.assertTrue(any("in a CLEAN case" in f for f in failures), failures)
+        self.assertTrue(any("ASan reported heap-buffer-overflow in a case without a bug" in f
+                            for f in failures), failures)
+
+    def test_ledger_is_requested_only_when_read(self):
+        case = self.case("s/l.c", "int main(void) { return 0; } // GUARDED\n")
+        self.ledger = {"version": 3, "units": [{"rows": [{"file": str(case.path), "line": 1,
+                                                          "outcome": "guarded", "reason": "access"}]}]}
+        self.assertEqual(rc.run_case(case, self.config())["status"], "pass")
+        self.assertEqual(self.builds, [("build", (), True)])
+
+    def test_no_run_and_tool(self):
+        case = self.case("s/b.c", "int main(void) {\n  return 0; // TRAP\n}\n")
+        self.assertEqual(rc.run_case(case, self.config(no_run=True))["status"], "pass")
+        tool = self.case("s/t.c", "// TOOL\nvoid f(int *p) { p[9] = 0; } // BUG: out-of-bounds\n")
+        self.builds.clear()
+        self.diagnostics = [diag(tool.path, 2, "out-of-bounds", "warning")]
+        self.assertEqual(rc.run_case(tool, self.config())["status"], "pass")
+        self.assertEqual(self.builds, [])
+
+    def test_marker_errors_and_xfail(self):
+        bad = self.case("s/e.c", "int x;\n")
+        self.assertEqual(rc.run_case(bad, self.config())["status"], "error")
+        xfail = self.case("s/x.c", "// XFAIL: not yet\nint main(void) {\n  return 0; // TRAP\n}\n")
+        self.runs["build"] = [run(0)]
+        result = rc.run_case(xfail, self.config())
+        self.assertEqual(result["status"], "xfail")
+        self.assertIn("expected to fail: not yet", result["notes"])
+        self.runs["build"] = [run(TRAP, report("heap-buffer-overflow", xfail.path, 3))]
+        result = rc.run_case(xfail, self.config())
+        self.assertEqual(result["status"], "xpass")
+        self.assertIn("passes now: remove XFAIL (not yet)", result["notes"])
+
+
+class RunDetectionTest(Fakes):
+    def detection(self, stop_marker="STOP"):
+        return self.case("d/p.c", f"""
+            // DETECT: -DFIX
+            int main(void) {{
+              return 0; // {stop_marker}
+            }}
             """)
-        unit_ledger = ledger("{file}", [site(5, spatial={"outcome": "checked", "check": {"template": "index"}})])
-        self.spec(trap, compile={"ledger": unit_ledger},
-                  run={"trap": True, "report": ["index at {file}:5:10"]},
-                  asan={"stderr": "==1==ERROR: AddressSanitizer: stack-buffer-overflow on address 0x1\n"
-                                  "    #0 0x1 in main trap.c:5\n"})
-        clean = self.write("s/clean.c", "// CLEAN\n// RUN-INPUT: a\n// RUN-INPUT: b\nint main(void) { return 0; }\n")
-        self.spec(clean, compile={"ledger": ledger("{file}", [])})
-        rogue = self.write("s/rogue.c", "// CLEAN\nint main(void) { return 0; }\n")
-        self.spec(rogue, run={"trap": True, "report": ["nonnull at {file}:2:1"]})
-        code, results = self.run_main("--filter", "s/**")
-        self.assertEqual(code, 1)
-        by_case = {r["case"]: r for r in results["cases"]}
-        self.assertEqual(by_case["s/trap.c"]["status"], "pass", by_case["s/trap.c"]["failures"])
-        self.assertEqual(by_case["s/trap.c"]["class"], "trap")
-        self.assertEqual(by_case["s/trap.c"]["asan"]["site"], "trap.c:5")
-        self.assertEqual(by_case["s/clean.c"]["status"], "pass", by_case["s/clean.c"]["failures"])
-        self.assertEqual(len(by_case["s/clean.c"]["runs"]), 2)
-        self.assertEqual(by_case["s/rogue.c"]["status"], "fail")
-        self.assertTrue(any("unexpected runtime check failure: nonnull" in f
-                            for f in by_case["s/rogue.c"]["failures"]))
-        log = self.log.read_text()
-        self.assertIn("-fweavec-checks=trap", log)
-        self.assertIn("-fweavec-checks=report", log)
-        self.assertIn("-fweavec-ledger=", log)
-        self.assertIn("-fno-weavec -fsanitize=address", log)
-        suite = results["summary"]["suites"]["s"]
-        self.assertEqual((suite["cases"], suite["passed"], suite["classes"]["trap"]), (3, 2, 1))
 
-    def test_no_emission_and_require(self):
-        case = self.write("s/n.c", """
-            int main(int argc, char **argv) {
-              int a[4] = {0};
-              return a[argc + 3]; // BUG: out-of-bounds
-            }
-            """)
-        self.spec(case, compile={"ledger": ledger("{file}", [site(3, spatial={"outcome": "checked"})])})
-        code, results = self.run_main("--no-emission", "--require", "checked")
-        self.assertEqual(code, 0, results["failures"])
-        log = self.log.read_text()
-        self.assertNotIn("-fweavec-checks=", log)
-        self.assertIn("-fweavec-require=checked", log)
+    def test_the_bug_stops_and_the_twin_runs_clean(self):
+        case = self.detection()
+        self.runs["bug"] = [run(TRAP, report("heap-use-after-free", case.path, 3))]
+        self.runs["twin"] = [run(0)]
+        result = rc.run_case(case, self.config())
+        self.assertEqual((result["status"], result["failures"]), ("pass", []))
+        self.assertEqual(result["detection"]["stop"], "run")
+        self.assertEqual(self.builds, [("bug", (), False), ("twin", ("-DFIX",), False)])
 
-    def test_verify_mode_flags_a_proven_trap(self):
-        case = self.write("s/v.c", "// CLEAN\nint main(void) { return 0; }\n")
-        self.spec(case, run={"verify-trap": True, "trap": False, "report": []})
-        code, results = self.run_main("--checks", "verify")
-        self.assertEqual(code, 1)
-        failures = results["cases"][0]["failures"]
-        self.assertTrue(any("weavec.proven trap" in f for f in failures), failures)
+    def test_a_fault_or_an_allocator_stop_counts(self):
+        case = self.detection()
+        for stop in (run(SEGV), run(ABRT, report("invalid-release"))):
+            self.runs["bug"] = [stop]
+            result = rc.run_case(case, self.config())
+            self.assertEqual((result["status"], result["detection"]["stop"]), ("pass", "fault"))
 
-    def test_verify_mode_does_not_blame_the_programs_own_trap(self):
-        # macOS's libmalloc and _FORTIFY_SOURCE raise SIGTRAP on a real bug.
-        # With no verify check in the ledger, or with the report-mode run
-        # trapping the same way, the trap is not a weavec.proven one.
-        no_check = self.write("s/malloc.c", "// CLEAN\nint main(void) { return 0; }\n")
-        self.spec(no_check,
-                  compile={"ledger": ledger("{file}", [], summary={
-                      "errors": 0, "warnings": 0, "verifyChecks": 0})},
-                  run={"verify-trap": True, "trap": True, "report": []})
-        both = self.write("s/fortify.c", "// CLEAN\nint main(void) { return 0; }\n")
-        self.spec(both,
-                  compile={"ledger": ledger("{file}", [], summary={
-                      "errors": 0, "warnings": 0, "verifyChecks": 3})},
-                  run={"verify-trap": True, "trap": True, "report": [], "report-trap": True})
-        code, results = self.run_main("--checks", "verify")
-        for case in results["cases"]:
-            self.assertFalse([f for f in case["failures"] if "weavec.proven" in f],
-                             case["failures"])
-            self.assertTrue(any("the program's own trap" in n for n in case["notes"]),
-                            case["notes"])
-        # Step 4 already treats a trap without a failed check as the program's
-        # own, so both cases pass.
-        self.assertEqual(code, 0, results["failures"])
+    def test_a_stop_elsewhere_or_none_fails(self):
+        case = self.detection()
+        self.runs["bug"] = [run(TRAP, report("heap-use-after-free", case.path, 2))]
+        result = rc.run_case(case, self.config())
+        self.assertEqual(result["status"], "fail")
+        self.assertIn("on no STOP line", result["failures"][0])
+        self.runs["bug"] = [run(0)]
+        self.assertEqual(rc.run_case(case, self.config())["failures"],
+                         ["the bug did not stop: the run did not stop"])
 
-    def test_legacy_and_compare_golden(self):
-        bug = self.write("s/bug.c", """
-            #include <stdlib.h>
-            int main(void) { char *p = malloc(1); free(p); return p[0]; } // BUG: use-after-free
-            """)
-        line = "{file}:2:52: error: use of 'p' after it was freed [weavec::use-after-free]\n"
-        self.spec(bug, legacy={"stderr": line, "rc": 1}, golden={"stderr": line, "rc": 1})
-        silent = self.write("s/silent.c", """
-            // FLAGS: -fweavec-strict
-            #include <stdlib.h>
-            int main(void) { char *p = malloc(1); free(p); return p[0]; } // BUG: use-after-free
-            """)
-        self.spec(silent, legacy={"stderr": "{file}:3:1: warning: 'p' is leaked [weavec::leak]\n"},
-                  golden={"stderr": ""})
-        code, results = self.run_main("--legacy")
-        self.assertEqual(code, 1)
-        classes = {r["case"]: r["legacyClass"] for r in results["cases"]}
-        self.assertEqual(classes, {"s/bug.c": "CAUGHT", "s/silent.c": "LEAK-ONLY"})
-        self.assertEqual(results["summary"]["suites"]["s"]["legacyClasses"]["CAUGHT"], 1)
-        code, results = self.run_main("--compare-golden", "--golden-dir", str(self.golden.parent))
-        self.assertEqual(code, 1)
-        by_case = {r["case"]: r for r in results["cases"]}
-        self.assertEqual(by_case["s/bug.c"]["status"], "pass")
-        self.assertEqual(by_case["s/silent.c"]["status"], "fail")
-        self.assertTrue(by_case["s/silent.c"]["failures"][0].startswith("+ tested: "))
-        code, results = self.run_main("--compare-golden", "--golden-dir", str(self.golden.parent),
-                                      "--weavec", str(self.strict))
-        statuses = {r["case"]: r["status"] for r in results["cases"]}
-        self.assertEqual(statuses, {"s/bug.c": "pass", "s/silent.c": "skip"})
-        self.assertEqual(code, 0)
+    def test_known_miss(self):
+        case = self.detection("STOP // MISS: through a global")
+        self.runs["bug"] = [run(0)]
+        result = rc.run_case(case, self.config())
+        self.assertEqual(result["status"], "pass")
+        self.assertIn("known miss (through a global)", result["notes"][0])
+        self.runs["bug"] = [run(TRAP, report("heap-use-after-free", case.path, 3))]
+        result = rc.run_case(case, self.config())
+        self.assertEqual(result["status"], "pass")
+        self.assertTrue(result["detection"]["flip"])
+        self.assertIn("remove its MISS marker", result["notes"][0])
 
-    def test_compare_golden_counts_repeated_diagnostics(self):
-        case = self.write("s/dup.c", """
-            #include <stdlib.h>
-            int main(void) { char *p = malloc(1); free(p); return p[0]; } // BUG: use-after-free
-            """)
-        line = "{file}:2:52: error: use of 'p' after it was freed [weavec::use-after-free]\n"
-        self.spec(case, legacy={"stderr": line * 2, "rc": 1}, golden={"stderr": line, "rc": 1})
-        code, results = self.run_main("--compare-golden", "--golden-dir", str(self.golden.parent))
-        self.assertEqual(code, 1)
-        self.assertEqual(len(results["cases"][0]["failures"]), 1)
-        self.assertTrue(results["cases"][0]["failures"][0].startswith("+ tested: "))
+    def test_the_twin_must_not_stop(self):
+        case = self.detection()
+        self.runs["bug"] = [run(TRAP, report("heap-use-after-free", case.path, 3))]
+        self.runs["twin"] = [run(TRAP, report("heap-use-after-free", case.path, 3))]
+        failures = rc.run_case(case, self.config())["failures"]
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("the fixed twin (-DFIX) stops: run (no arguments): killed by SIGTRAP", failures[0])
 
-    def test_marker_errors_fail_the_run(self):
-        self.write("s/bad.c", "int x; // TRAP: bounds\n")
-        code, results = self.run_main()
-        self.assertEqual(code, 1)
-        self.assertEqual(results["cases"][0]["status"], "error")
+    def test_a_proven_report_fails(self):
+        case = self.detection()
+        self.runs["bug"] = [run(TRAP, report("heap-use-after-free", case.path, 3, proven=True))]
+        failures = rc.run_case(case, self.config(checks="verify"))["failures"]
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("a proof was wrong", failures[0])
+
+    def test_summary(self):
+        case = self.detection()
+        self.runs["bug"] = [run(TRAP, report("heap-use-after-free", case.path, 3))]
+        stopped = rc.run_case(case, self.config())
+        self.runs["bug"] = [run(0)]
+        missed = rc.run_case(case, self.config())
+        error = rc.run_case(self.case("s/e.c", "int x;\n"), self.config())
+        summary = rc.summarize([stopped, missed, error])
+        self.assertEqual(summary["suites"], {"d": {"pass": 1, "fail": 1}, "s": {"error": 1}})
+        self.assertEqual(summary["totals"], {"pass": 1, "fail": 1, "error": 1})
+        self.assertEqual(summary["detection"], {"cases": 2, "stops": 1, "asan": 0})
+
+
+class MainTest(Workspace):
+    def test_missing_binaries(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = rc.main(["--build-dir", str(Path(self.directory.name) / "nowhere")])
+        self.assertEqual(code, 2)
+        self.assertIn("does not exist; build it first", stderr.getvalue())
 
 
 if __name__ == "__main__":

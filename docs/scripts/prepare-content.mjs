@@ -158,7 +158,7 @@ for (const line of diagnosticRows) {
 diagnosticPage.body =
   '<span id="diagnostics"></span>\n\nEvery WeaveC diagnostic ends with a stable identifier such as `[weavec::use-after-free]`. Open an entry for its exact meaning, conditions, and resolution guidance.\n\n| Diagnostic | Default severity |\n| --- | --- |\n' +
   diagnosticIndex.join('\n') +
-  '\n\nSeverity follows certainty: a finding that holds on every path is an error, and a temporal finding that holds on some paths only is a warning, which an enforcing build with the runtime prints only where no guard covers the operation (`-Wweavec-possible` prints it anyway). A null dereference or out-of-bounds access that is only possible is not reported; `weavec-cc` checks or guards it at run time instead, and the [ledger](/reference/cli/#ledger-and-summary-line) records it. Start with the first diagnostic and follow its source notes. See [diagnostic controls](/reference/diagnostic-controls/) and the [safety guarantees](/reference/guarantees/).';
+  '\n\nThese diagnostics come from the advisory analysis: the `weavec` tool, and `weavec-cc -fweavec-diagnose`, which prints every finding as a warning. In `weavec`, severity follows certainty: a finding that holds on every path is an error, and a temporal finding that holds on some paths only is a warning. A null dereference or out-of-bounds access that is only possible is not reported; the guards of a `weavec-cc` build stop it at run time if it happens. Run-time reports are not diagnostics and have no identifier; see [check modes](/reference/cli/#check-modes). Start with the first diagnostic and follow its source notes. See [diagnostic controls](/reference/diagnostic-controls/) and the [safety guarantees](/reference/guarantees/).';
 
 try {
   await whole('CHANGELOG.md', 'project/releases');
@@ -225,7 +225,7 @@ for (const page of pages) {
     content = rewriteMarkdown(raw, page.source, routes);
   } else {
     const lastUpdated = commitDate(page.source);
-    const description = `${page.title} — WeaveC documentation for inferred ownership, borrowing, and runtime-checked memory safety in C.`;
+    const description = `${page.title} — WeaveC documentation for run-time memory safety and ownership analysis in C.`;
     const frontmatter = {
       title: page.title,
       description,

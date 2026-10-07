@@ -14,11 +14,11 @@
 //                                       program; RFC 0005)
 //
 // Warning control follows the compiler's spelling: -Wno-weavec-<id>,
-// -Werror=weavec-<id>, -Wno-error=weavec. RFC 0030 §16: the ledger
-// (--ledger, --ledger-format), the require level (--require), the budget
-// (--budget) and --no-zero-init model a `weavec-cc` build with the default
-// checks, and the summary line is always printed. The drop-in compiler
-// driver is `weavec-cc`.
+// -Werror=weavec-<id>, -Wno-error=weavec. RFC 0035 §8: the analysis is
+// advisory; the tool prints its diagnostics and one summary line per unit
+// (and per program), and the budget (--budget) and --no-zero-init model
+// the analysis of a `weavec-cc -fweavec-diagnose` build. The drop-in
+// compiler driver is `weavec-cc`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,15 +31,12 @@
 #include "weavec/Core/Ledger.h"
 #include "weavec/Core/LibrarySpec.h"
 #include "weavec/Frontend/AnalysisStats.h"
+#include "weavec/Frontend/AnalysisSummary.h"
 #include "weavec/Frontend/DiagnosticControl.h"
 #include "weavec/Frontend/FrontendAction.h"
-#include "weavec/Frontend/LedgerOutput.h"
-#include "weavec/Frontend/LedgerWriter.h"
-#include "weavec/Frontend/LinkStep.h"
 #include "weavec/Frontend/ProgramAnalysis.h"
-#include "weavec/Frontend/RecordPayload.h"
+#include "weavec/Frontend/ProgramChecks.h"
 #include "weavec/Frontend/ResourceDir.h"
-#include "weavec/Frontend/UnitRecord.h"
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
@@ -78,47 +75,12 @@ cl::opt<std::string>
                       cl::desc("Write analysis work statistics JSON"),
                       cl::cat(weavecCategory));
 
-cl::opt<std::string> ledgerPath(
-    "ledger",
-    cl::desc("Write the ledger of every outcome: to this file, or, for a "
-             "directory (a value ending in '/'), one <source>.ledger.json "
-             "per source"),
-    cl::value_desc("path"), cl::cat(weavecCategory));
-
-cl::opt<weavec::frontend::LedgerFormat>
-    ledgerFormat("ledger-format", cl::desc("The ledger's format"),
-                 cl::values(clEnumValN(weavec::frontend::LedgerFormat::Json,
-                                       "json", "weavec-ledger JSON (default)"),
-                            clEnumValN(weavec::frontend::LedgerFormat::Sarif,
-                                       "sarif", "SARIF 2.1.0")),
-                 cl::init(weavec::frontend::LedgerFormat::Json),
-                 cl::cat(weavecCategory));
-
-cl::opt<weavec::core::RequireLevel> requireLevel(
-    "require",
-    cl::desc("Make facets that are not proven errors (unresolved-operation, "
-             "unchecked-operation)"),
-    cl::values(clEnumValN(weavec::core::RequireLevel::None, "none",
-                          "no requirement (default)"),
-               clEnumValN(weavec::core::RequireLevel::Guarded, "guarded",
-                          "every facet proven, checkable or guardable"),
-               clEnumValN(weavec::core::RequireLevel::Checked, "checked",
-                          "every facet proven or checkable"),
-               clEnumValN(weavec::core::RequireLevel::Proven, "proven",
-                          "every facet proven")),
-    cl::init(weavec::core::RequireLevel::None), cl::cat(weavecCategory));
-
 cl::opt<std::uint64_t>
     budget("budget",
            cl::desc("Work per function before its analysis stops: the sizes "
                     "of the states it transfers and joins (default: 20000000; "
                     "0: unlimited)"),
            cl::init(weavec::core::DefaultBudget), cl::cat(weavecCategory));
-
-cl::opt<bool> noRuntime("no-runtime",
-                        cl::desc("Model a build without the runtime "
-                                 "(-fno-weavec-runtime): nothing is guarded"),
-                        cl::init(false), cl::cat(weavecCategory));
 
 cl::opt<bool> noZeroInit("no-zero-init",
                          cl::desc("Model a build without zero-initialisation "
@@ -139,13 +101,6 @@ cl::opt<bool> dumpKinds(
              "function-pointer slots to stdout instead of analysing "
              "(debugging aid; format unstable)"),
     cl::init(false), cl::cat(weavecCategory));
-
-cl::opt<std::string> dumpRecord(
-    "dump-record",
-    cl::desc("Print the WeaveC unit record at <path> (an <object>.weavec that "
-             "weavec-cc wrote) as JSON and exit; a stale record is an error "
-             "that says why (debugging aid)"),
-    cl::value_desc("path"), cl::cat(weavecCategory));
 
 cl::opt<bool> wholeProgram(
     "whole-program",
@@ -211,28 +166,6 @@ protected:
 
 } // namespace
 
-/// `--dump-record`: the record at `path` as JSON, or why it is stale.
-static int printRecord(llvm::StringRef path) {
-  std::string reason;
-  const std::optional<weavec::frontend::record::UnitRecord> record =
-      weavec::frontend::record::readRecord(path, reason);
-  if (!record) {
-    llvm::errs() << "weavec: error: '" << path << "' is a stale WeaveC record ("
-                 << reason << ")\n";
-    return 1;
-  }
-  // The payload is read as the link step reads it, so what it rejects is
-  // stale here too.
-  if (!weavec::frontend::record::payloadFromJson(
-          record->payload, record->header.source, reason)) {
-    llvm::errs() << "weavec: error: '" << path << "' is a stale WeaveC record ("
-                 << reason << ")\n";
-    return 1;
-  }
-  llvm::outs() << weavec::frontend::record::renderRecord(*record);
-  return 0;
-}
-
 static std::string currentDirectory() {
   llvm::SmallString<256> cwd;
   if (llvm::sys::fs::current_path(cwd))
@@ -240,9 +173,22 @@ static std::string currentDirectory() {
   return cwd.str().str();
 }
 
-/// RFC 0030 §13.2 in `weavec --whole-program`: the declarations verified
-/// against their definitions and the program ledger, from the units' last
-/// runs. False after an error.
+/// The ledger diagnostic of a diagnostic the program check reported, for
+/// the program's summary line.
+static weavec::core::LedgerDiagnostic
+ledgerDiagnosticOf(const weavec::core::Diagnostic &diagnostic) {
+  weavec::core::LedgerDiagnostic entry;
+  entry.id = std::string(diagnostic.id);
+  entry.severity = diagnostic.severity;
+  entry.certainty = diagnostic.certainty;
+  entry.message = diagnostic.message;
+  entry.location = diagnostic.location;
+  return entry;
+}
+
+/// RFC 0035 §8 in `weavec --whole-program`: the declarations verified
+/// against their definitions, and the program's summary line from the
+/// units' last runs. False after an error.
 static bool
 finishProgram(const weavec::frontend::ProgramAnalysis &program,
               const clang::tooling::CompilationDatabase &compilations,
@@ -251,7 +197,7 @@ finishProgram(const weavec::frontend::ProgramAnalysis &program,
   namespace frontend = weavec::frontend;
   const std::string cwd = currentDirectory();
   std::vector<frontend::ProgramMember> members;
-  std::vector<const weavec::core::Ledger *> runs;
+  weavec::core::Ledger ledger;
   std::string programName = "program";
   for (std::size_t i = 0; i < program.unitCount(); ++i) {
     const weavec::analysis::UnitExports *exports = program.exportsOf(i);
@@ -264,57 +210,41 @@ finishProgram(const weavec::frontend::ProgramAnalysis &program,
       if (!commands.empty())
         member.cwd = commands.front().Directory;
     }
-    member.payload.exports = *exports;
+    member.exports = *exports;
     if (const auto *facts = program.interfaceOf(i))
-      member.payload.facts = *facts;
-    const weavec::core::Ledger *ledger = program.ledgerOf(i);
-    if (ledger != nullptr && !ledger->units.empty()) {
-      member.payload.sites = frontend::record::siteRows(ledger->units.front());
-      member.payload.a5 = ledger->units.front().a5;
-      if (llvm::any_of(ledger->units.front().functions,
+      member.facts = *facts;
+    const weavec::core::Ledger *run = program.ledgerOf(i);
+    if (run != nullptr && !run->units.empty()) {
+      if (llvm::any_of(run->units.front().functions,
                        [](const weavec::core::FunctionLedger &function) {
                          return function.name == "main";
                        }))
         programName = llvm::sys::path::stem(member.source).str();
+      // The unit's rows and diagnostics, its facets' links moved past the
+      // diagnostics of the units before it.
+      const auto base = static_cast<std::uint32_t>(ledger.diagnostics.size());
+      weavec::core::UnitLedger rows = run->units.front();
+      for (weavec::core::FunctionLedger &function : rows.functions)
+        for (weavec::core::Site &site : function.sites)
+          for (auto &record : site.facets)
+            if (record && record->diagnostic)
+              *record->diagnostic += base;
+      ledger.units.push_back(std::move(rows));
+      ledger.diagnostics.insert(ledger.diagnostics.end(),
+                                run->diagnostics.begin(),
+                                run->diagnostics.end());
     }
-    member.payload.reported = program.reportedOf(i);
     members.push_back(std::move(member));
-    runs.push_back(ledger);
   }
-  const frontend::DeclarationCheck declarations =
-      frontend::verifyDeclarations(members, cwd);
-  frontend::LinkDiagnosticPrinter printer("weavec");
+  frontend::ProgramDiagnosticPrinter printer("weavec");
   frontend::FilteringSink sink(printer, options.control);
-  for (const weavec::core::Diagnostic &diagnostic : declarations.diagnostics)
+  for (const weavec::core::Diagnostic &diagnostic :
+       frontend::verifyDeclarations(members, cwd)) {
     sink.report(diagnostic);
-  // §13.2 step 5: the exported requirements decided at the callers in the
-  // other units.
-  frontend::LinkShape shape;
-  shape.executable =
-      llvm::any_of(members, [](const frontend::ProgramMember &member) {
-        return member.payload.facts.slots.defined.contains("main");
-      });
-  const frontend::RequirementCheck requirements =
-      frontend::verifyRequirements(members, shape);
-  weavec::core::Ledger ledger = frontend::composeProgramLedger(
-      frontend::ProgramLedgerInput{.members = members,
-                                   .runs = runs,
-                                   .copyRecordRows = false,
-                                   .declarations = &declarations,
-                                   .requirements = &requirements,
-                                   .shape = shape,
-                                   .linkDiagnostics = {},
-                                   .cwd = cwd});
-  frontend::applyDiagnosticControl(ledger, options.control);
-  frontend::LedgerOutputOptions output = options.ledgerOutput;
-  output.path = ledgerPath.getValue();
-  std::string error;
-  if (!frontend::emitProgramLedger(ledger, programName, cwd, options.config,
-                                   output, llvm::errs(), &error)) {
-    llvm::errs() << "weavec: error: cannot write the program ledger: " << error
-                 << '\n';
-    return false;
+    ledger.diagnostics.push_back(ledgerDiagnosticOf(diagnostic));
   }
+  frontend::printProgramSummary(std::move(ledger), programName,
+                                options.control);
   return sink.errors() == 0;
 }
 
@@ -483,8 +413,6 @@ int main(int argc, const char **argv) {
     return 1;
   }
   clang::tooling::CommonOptionsParser &parser = *expectedParser;
-  if (!dumpRecord.empty())
-    return printRecord(dumpRecord);
 
   // Without a source the parser loads no database (and has none to give
   // unless `--` built the fixed one): `--whole-program -p <dir>` loads it
@@ -514,14 +442,13 @@ int main(int argc, const char **argv) {
 
   // RFC 0030 §16: the tool's runs build their SourceManager before Clang
   // attaches a SARIF document writer to its printer, so Clang's SARIF
-  // output would crash them. WeaveC's own SARIF is the ledger's.
+  // output would crash them.
   for (const std::string &source : sources) {
     for (const clang::tooling::CompileCommand &command :
          compilations.getCompileCommands(source)) {
       if (asksForSarif(command.CommandLine)) {
         llvm::errs() << "weavec: error: -fdiagnostics-format=sarif is not "
-                        "supported; write the ledger as SARIF with "
-                        "--ledger=<path> --ledger-format=sarif\n";
+                        "supported\n";
         return 1;
       }
     }
@@ -529,15 +456,6 @@ int main(int argc, const char **argv) {
 
   if (analysisStatsPath.getNumOccurrences() && analysisStatsPath.empty()) {
     llvm::errs() << "weavec: error: analysis statistics require a path\n";
-    return 1;
-  }
-  // §16: one file receives one ledger; a directory one per source.
-  if (!wholeProgram && sources.size() > 1 && !ledgerPath.empty() &&
-      !weavec::frontend::isLedgerDirectory(ledgerPath)) {
-    llvm::errs() << "weavec: error: '--ledger=" << ledgerPath
-                 << "' would receive " << sources.size()
-                 << " ledgers; name a directory (ending in '/') to get one "
-                    "ledger per source\n";
     return 1;
   }
   weavec::core::AnalysisStats stats;
@@ -549,32 +467,15 @@ int main(int argc, const char **argv) {
   options.engine.zeroInit = !noZeroInit;
   options.engine.budget = budget;
   options.control = control;
-  // §16: the ledger models a `weavec-cc` build with the default checks, and
-  // the summary line, always printed, says they are not enforced.
-  options.config = weavec::core::LedgerConfig{
-      .checks = weavec::core::ChecksMode::Trap,
-      // RFC 0032 §6: and with the runtime, unless --no-runtime.
-      .runtime = noRuntime ? weavec::core::RuntimeUse::Off
-                           : weavec::core::RuntimeUse::On,
-      .zeroInit = !noZeroInit,
-      .require = requireLevel,
-      .budget = budget,
-  };
-  // With --whole-program, --ledger names the program ledger, which the
-  // program analysis writes (`emitProgramLedger`), not a ledger per unit.
-  options.ledgerOutput = weavec::frontend::LedgerOutputOptions{
-      .path = wholeProgram ? std::string() : ledgerPath.getValue(),
-      .format = ledgerFormat,
-      .summary = true,
-      .checksEnforced = false,
-  };
+  // RFC 0035 §8: the summary line is always printed.
+  options.summary = true;
 
   const std::vector<clang::tooling::ArgumentsAdjuster> adjusters =
       makeAdjusters(argv[0]);
 
   if (wholeProgram) {
     weavec::frontend::ProgramAnalysis program(options);
-    // RFC 0030 §13.2: `weavec --whole-program` runs the link step's checks.
+    // RFC 0035 §8: the program's slots, boundaries and declarations.
     program.collectInterfaces(true);
     for (const std::string &source : sources) {
       program.addUnit(

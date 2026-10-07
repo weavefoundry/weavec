@@ -40,7 +40,6 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -91,7 +90,6 @@ struct ExtentPath {
 
   /// `param <index>` or `.<field>`.
   [[nodiscard]] std::string toString() const;
-  [[nodiscard]] static std::optional<ExtentPath> parse(std::string_view text);
 
   friend bool operator==(const ExtentPath &, const ExtentPath &) = default;
   friend std::strong_ordering operator<=>(const ExtentPath &,
@@ -193,50 +191,6 @@ struct JoinFacts {
 [[nodiscard]] PointerKind join(const PointerKind &a, const PointerKind &b,
                                const JoinFacts &facts = {});
 
-/// §7.1: requirements on one pointer combine by conjunction, and every one
-/// of them is checked. The canonical form keeps one nullability (nonnull if
-/// any requirement says so) and the distinct shape requirements, dropping
-/// `unknown`, keeping the larger of two constant terms of the same shape,
-/// and keeping the stronger source of two equal requirements (a declared
-/// requirement is enforced at every call site, §7.5).
-class KindRequirements {
-public:
-  KindRequirements() = default;
-  explicit KindRequirements(const PointerKind &requirement) {
-    add(requirement);
-  }
-
-  void add(const PointerKind &requirement);
-  void add(const KindRequirements &other);
-
-  [[nodiscard]] Nullability nullability() const noexcept { return required; }
-  /// The shape requirements; each carries the conjunction's nullability.
-  [[nodiscard]] std::span<const PointerKind> shapes() const noexcept {
-    return entries;
-  }
-  /// Nothing is required.
-  [[nodiscard]] bool empty() const noexcept {
-    return entries.empty() && required == Nullability::Nullable;
-  }
-
-  /// The requirements spelled by `PointerKind::toString`, joined by ` & `;
-  /// `unknown <nullability>` when there is no shape requirement.
-  [[nodiscard]] std::string toString() const;
-  [[nodiscard]] static std::optional<KindRequirements>
-  parse(std::string_view text, KindSource source = KindSource::Default);
-
-  friend bool operator==(const KindRequirements &,
-                         const KindRequirements &) = default;
-
-private:
-  Nullability required = Nullability::Nullable;
-  std::vector<PointerKind> entries;
-};
-
-/// The conjunction of two requirement sets.
-[[nodiscard]] KindRequirements conjoin(const KindRequirements &a,
-                                       const KindRequirements &b);
-
 /// §7.1: what a check may compare against. An *exact* extent (the type of
 /// an array or VLA object, an allocation size in scope, a surviving §7.6
 /// invariant) and a *declared* kind may be check operands; a *lower bound*
@@ -259,12 +213,6 @@ extentClassOf(const PointerKind &kind) noexcept;
 /// Exact extents and declared kinds may be compared against by a check.
 [[nodiscard]] constexpr bool isCheckOperand(ExtentClass extentClass) noexcept {
   return extentClass != ExtentClass::LowerBound;
-}
-
-/// Only an exact extent can make an access a violation (§3.3).
-[[nodiscard]] constexpr bool
-canProveViolation(ExtentClass extentClass) noexcept {
-  return extentClass == ExtentClass::Exact;
 }
 
 } // namespace weavec::core

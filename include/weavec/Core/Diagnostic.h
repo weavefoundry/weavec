@@ -34,8 +34,6 @@ enum class Severity : std::uint8_t {
   Error,
 };
 
-[[nodiscard]] std::string_view toString(Severity severity) noexcept;
-
 /// RFC 0030 §3: every diagnostic is definite (a violation on every path the
 /// analysis considers) or possible. The default severity of most ids
 /// depends on it (`diag::defaultSeverity`). Its JSON spelling and parser are
@@ -62,7 +60,7 @@ inline constexpr std::string_view Leak = "leak";
 inline constexpr std::string_view MismatchedRelease = "mismatched-release";
 /// RFC 0008: a dereference of a pointer that is null; or such a pointer
 /// passed to a callee that dereferences its parameter. RFC 0030 §3.2: only
-/// definite; a pointer that may be null gets a checked null facet instead.
+/// definite (a pointer that may be null is left to the guards).
 inline constexpr std::string_view NullDereference = "null-dereference";
 /// RFC 0008: a read of a pointer variable or a pointer field of a local
 /// record before any assignment reaches it.
@@ -74,7 +72,7 @@ inline constexpr std::string_view InvalidRelease = "invalid-release";
 /// RFC 0011: an access through a pointer, or a library call over a buffer,
 /// that reaches past the extent of the object the pointer points into on
 /// every value the facts allow. RFC 0030 §3.3: only definite, against an
-/// exact extent; the `may` forms are checked facets.
+/// exact extent (the `may` forms are left to the guards).
 inline constexpr std::string_view OutOfBounds = "out-of-bounds";
 /// RFC 0017: a definitely invalid operation in the target integer type.
 inline constexpr std::string_view InvalidIntegerOperation =
@@ -85,15 +83,6 @@ inline constexpr std::string_view ContradictedAssumption =
 /// RFC 0030 §3.2, §8.4: an allocation's result used without a null test.
 /// The only id that is off by default (`-Wweavec-allocation-failure`).
 inline constexpr std::string_view AllocationFailure = "allocation-failure";
-/// RFC 0030 §6.3: under `-fweavec-require=checked|proven` or
-/// `WEAVEC_REQUIRE_SAFE`, a facet that is neither proven nor checkable.
-inline constexpr std::string_view UnresolvedOperation = "unresolved-operation";
-/// RFC 0030 §6.3: under `-fweavec-require=proven`, a facet that relies on a
-/// runtime check.
-inline constexpr std::string_view UncheckedOperation = "unchecked-operation";
-/// RFC 0030 §13.2: the link inputs without a valid WeaveC record, named in
-/// one warning per link.
-inline constexpr std::string_view UnanalyzedInput = "unanalyzed-input";
 
 /// Every id, for validating user input (`-Wweavec-<id>`).
 inline constexpr std::array All{
@@ -102,8 +91,7 @@ inline constexpr std::array All{
     AnnotationMismatch,     InvalidAnnotation, Leak,
     MismatchedRelease,      NullDereference,   UseOfUninitialized,
     InvalidRelease,         OutOfBounds,       InvalidIntegerOperation,
-    ContradictedAssumption, AllocationFailure, UnresolvedOperation,
-    UncheckedOperation,     UnanalyzedInput,
+    ContradictedAssumption, AllocationFailure,
 };
 
 [[nodiscard]] constexpr bool isKnown(std::string_view id) noexcept {
@@ -111,16 +99,20 @@ inline constexpr std::array All{
       All, [id](const std::string_view known) { return known == id; });
 }
 
-/// Ids RFC 0030 removed (*Diagnostics*). A `-W` flag naming one is an error,
-/// `unknown WeaveC diagnostic '<id>' (removed by RFC 0030)`; no alias is
-/// kept. `analysis-incomplete` became `unresolved(unanalysed | budget | ...)`
-/// ledger rows, `annotation-required` became `unresolved(unknown-callee)`
-/// rows with fix-its (§5.1).
+/// Ids an RFC removed (*Diagnostics*). A `-W` flag naming one is an error,
+/// `unknown WeaveC diagnostic '<id>' (removed by RFC 00NN)`; no alias is
+/// kept. RFC 0030 removed checked mode's ids, `analysis-incomplete`
+/// (unresolved facets) and `annotation-required`; RFC 0035 the require
+/// levels' `unresolved-operation` and `unchecked-operation`, and
+/// `unanalyzed-input` with the link step.
 inline constexpr std::array Removed{
     std::string_view("analysis-incomplete"),
     std::string_view("annotation-required"),
     std::string_view("checking-incomplete"),
     std::string_view("checking-failed"),
+    std::string_view("unresolved-operation"),
+    std::string_view("unchecked-operation"),
+    std::string_view("unanalyzed-input"),
 };
 
 [[nodiscard]] constexpr bool isRemoved(std::string_view id) noexcept {
@@ -128,23 +120,30 @@ inline constexpr std::array Removed{
       Removed, [id](const std::string_view removed) { return removed == id; });
 }
 
+/// The RFC that removed `id`, one of `Removed`.
+[[nodiscard]] constexpr std::string_view
+removedBy(std::string_view id) noexcept {
+  return id == "unresolved-operation" || id == "unchecked-operation" ||
+                 id == "unanalyzed-input"
+             ? "RFC 0035"
+             : "RFC 0030";
+}
+
 /// The severity `id` has unless the user overrides it (RFC 0030,
 /// *Diagnostics*): an error when definite and a warning when possible,
 /// except that
-///   - `leak`, `invalid-annotation`, `allocation-failure` and
-///     `unanalyzed-input` are always warnings, and
+///   - `leak`, `invalid-annotation` and `allocation-failure` are always
+///     warnings, and
 ///   - `null-dereference`, `use-of-uninitialized` and `out-of-bounds`
 ///     (reported only when definite), `unsafe-operation`,
-///     `annotation-mismatch`, `invalid-integer-operation`,
-///     `contradicted-assumption`, `unresolved-operation` and
-///     `unchecked-operation` are always errors, as is an unknown id.
+///     `annotation-mismatch`, `invalid-integer-operation` and
+///     `contradicted-assumption` are always errors, as is an unknown id.
 [[nodiscard]] constexpr Severity defaultSeverity(std::string_view id,
                                                  Certainty certainty) noexcept {
   constexpr std::array AlwaysWarnings{
       Leak,
       InvalidAnnotation,
       AllocationFailure,
-      UnanalyzedInput,
   };
   constexpr std::array ByCertainty{
       UseAfterFree,     DoubleFree,        UseAfterMove,   ConflictingBorrow,
@@ -189,8 +188,6 @@ struct Diagnostic {
 
   /// Fluent helper for attaching a note.
   Diagnostic &addNote(std::string noteMessage, SourceLocation noteLocation);
-  /// Fluent helper for attaching an insertion fix-it.
-  Diagnostic &addFixIt(SourceLocation at, std::string insertion);
 };
 
 /// Receives diagnostics produced by the analyses.
@@ -220,10 +217,6 @@ public:
   }
   [[nodiscard]] bool empty() const noexcept { return items.empty(); }
   [[nodiscard]] std::size_t size() const noexcept { return items.size(); }
-  [[nodiscard]] std::size_t count(Severity severity) const noexcept;
-  [[nodiscard]] bool hasErrors() const noexcept {
-    return count(Severity::Error) != 0;
-  }
   void clear() noexcept { items.clear(); }
 
 private:

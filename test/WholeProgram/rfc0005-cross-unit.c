@@ -10,7 +10,7 @@
 // RUN: not %weavec --whole-program %S/Inputs/node.c %s -- -I%S/Inputs 2>&1 | FileCheck %s
 //
 // Without --whole-program the same file is its own program and the calls
-// are into unknown code (RFC 0030 §5.1): ledger rows, and nothing is
+// are into unknown code (RFC 0030 §5.1): not proven, and nothing is
 // reported.
 // RUN: %weavec %s -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=ALONE %s
 #include "../Inputs/prelude.h"

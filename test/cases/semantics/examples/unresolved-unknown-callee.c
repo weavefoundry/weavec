@@ -11,6 +11,6 @@ void consume(char *p);
 int f(void) {
   char *p = malloc(8);
   if (!p) return 0;
-  consume(p); // UNRESOLVED: temporal:unknown-callee
-  return p[0]; // UNRESOLVED: temporal:unknown-callee
+  consume(p);
+  return p[0];
 }

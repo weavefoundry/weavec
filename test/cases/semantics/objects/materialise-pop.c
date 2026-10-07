@@ -3,12 +3,10 @@
 // All nodes come from one allocation site in a loop. Popping the head ('n = l.head;
 // l.head = n->next; free(n)') releases the materialised head only, so the new head, loaded
 // from its owning slot 'next' (D6), is live and its use is proven.
-// The destructor loop after it is not (test/cases/KNOWN-DIFFERENCES.md, *Cases*):
+// The destructor loop after it is not (the retired golden comparison of RFC 0030, *Cases*):
 // 'l.head->next' and 'free(l.head)' stay may-alias-released, never proven.
 // CLEAN
 // ASAN
-// EXPECT-LEDGER: /summary/facets/temporal/guarded == 2
-// EXPECT-LEDGER: /summary/guardedReasons/may-alias-released == 2
 #include <stdlib.h>
 struct node { struct node *next; int v; };
 struct list { struct node *head; };
