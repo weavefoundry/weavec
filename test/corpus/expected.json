@@ -14,16 +14,16 @@
   "platforms": {
     "darwin-arm64": {
       "machine": "darwin-arm64 Apple M3 x8",
-      "producer": "weavec-cc version 0.15.0-dev (9fb1dc1231cf-dirty)",
+      "producer": "weavec-cc version 0.15.0-dev (90dcdf8665ea-dirty)",
       "updated": "2026-10-06",
       "configs": {
         "cJSON": {
           "ledger": {
-            "accesses": 731,
-            "proven": 400,
-            "guarded": 331,
+            "accesses": 734,
+            "proven": 398,
+            "guarded": 336,
             "unguarded": 0,
-            "provenShare": 0.5472
+            "provenShare": 0.5422
           },
           "analysis": {
             "sites": 1221,
@@ -38,11 +38,11 @@
         },
         "cJSON-program": {
           "ledger": {
-            "accesses": 975,
-            "proven": 475,
-            "guarded": 500,
+            "accesses": 988,
+            "proven": 463,
+            "guarded": 525,
             "unguarded": 0,
-            "provenShare": 0.4872
+            "provenShare": 0.4686
           },
           "analysis": {
             "sites": 1745,
@@ -52,6 +52,82 @@
             "trusted": 2,
             "errors": 0,
             "warnings": 10,
+            "overBudget": 0
+          }
+        },
+        "jansson": {
+          "ledger": {
+            "accesses": 841,
+            "proven": 350,
+            "guarded": 491,
+            "unguarded": 0,
+            "provenShare": 0.4162
+          },
+          "analysis": {
+            "sites": 2391,
+            "proven": 1400,
+            "notProven": 987,
+            "violations": 0,
+            "trusted": 4,
+            "errors": 0,
+            "warnings": 33,
+            "overBudget": 0
+          }
+        },
+        "jsmn": {
+          "ledger": {
+            "accesses": 305,
+            "proven": 213,
+            "guarded": 92,
+            "unguarded": 0,
+            "provenShare": 0.6984
+          },
+          "analysis": {
+            "sites": 384,
+            "proven": 239,
+            "notProven": 145,
+            "violations": 0,
+            "trusted": 0,
+            "errors": 0,
+            "warnings": 4,
+            "overBudget": 0
+          }
+        },
+        "linenoise": {
+          "ledger": {
+            "accesses": 656,
+            "proven": 317,
+            "guarded": 339,
+            "unguarded": 0,
+            "provenShare": 0.4832
+          },
+          "analysis": {
+            "sites": 1121,
+            "proven": 748,
+            "notProven": 371,
+            "violations": 0,
+            "trusted": 2,
+            "errors": 0,
+            "warnings": 6,
+            "overBudget": 0
+          }
+        },
+        "linenoise-program": {
+          "ledger": {
+            "accesses": 693,
+            "proven": 332,
+            "guarded": 361,
+            "unguarded": 0,
+            "provenShare": 0.4791
+          },
+          "analysis": {
+            "sites": 1181,
+            "proven": 781,
+            "notProven": 398,
+            "violations": 0,
+            "trusted": 2,
+            "errors": 0,
+            "warnings": 6,
             "overBudget": 0
           }
         },
@@ -74,13 +150,51 @@
             "overBudget": 0
           }
         },
+        "lua": {
+          "ledger": {
+            "accesses": 7493,
+            "proven": 2752,
+            "guarded": 4741,
+            "unguarded": 0,
+            "provenShare": 0.3673
+          },
+          "analysis": {
+            "sites": 14578,
+            "proven": 6451,
+            "notProven": 8123,
+            "violations": 0,
+            "trusted": 4,
+            "errors": 0,
+            "warnings": 79,
+            "overBudget": 0
+          }
+        },
+        "printf": {
+          "ledger": {
+            "accesses": 62,
+            "proven": 27,
+            "guarded": 35,
+            "unguarded": 0,
+            "provenShare": 0.4355
+          },
+          "analysis": {
+            "sites": 148,
+            "proven": 59,
+            "notProven": 89,
+            "violations": 0,
+            "trusted": 0,
+            "errors": 0,
+            "warnings": 0,
+            "overBudget": 0
+          }
+        },
         "sds": {
           "ledger": {
-            "accesses": 210,
-            "proven": 61,
-            "guarded": 149,
+            "accesses": 212,
+            "proven": 59,
+            "guarded": 153,
             "unguarded": 0,
-            "provenShare": 0.2905
+            "provenShare": 0.2783
           },
           "analysis": {
             "sites": 464,
@@ -90,6 +204,25 @@
             "trusted": 0,
             "errors": 0,
             "warnings": 11,
+            "overBudget": 0
+          }
+        },
+        "zlib": {
+          "ledger": {
+            "accesses": 4241,
+            "proven": 2181,
+            "guarded": 2060,
+            "unguarded": 0,
+            "provenShare": 0.5143
+          },
+          "analysis": {
+            "sites": 4880,
+            "proven": 2538,
+            "notProven": 2342,
+            "violations": 0,
+            "trusted": 0,
+            "errors": 0,
+            "warnings": 6,
             "overBudget": 0
           }
         }
