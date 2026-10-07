@@ -4,7 +4,7 @@
 // heap block traps.
 // STAGE: S8
 // FLAGS: -O1
-// TRAP-AT: Inputs/inline-fortify.h:9
+// TRAP-AT: Inputs/inline-fortify.h:11
 // RUN-INPUT: 64
 #include "Inputs/inline-fortify.h"
 #include <stdlib.h>

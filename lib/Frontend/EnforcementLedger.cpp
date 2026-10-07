@@ -80,14 +80,14 @@ const char *outcomeName(LedgerRow::Outcome outcome) {
 
 static llvm::json::Value rowJson(const LedgerRow &row) {
   return llvm::json::Object{
-      {"function", row.function},
-      {"file", row.file},
-      {"line", row.line},
-      {"column", row.column},
-      {"operation", row.operation},
-      {"bytes", static_cast<std::int64_t>(row.bytes)},
-      {"outcome", outcomeName(row.outcome)},
-      {"reason", row.reason},
+      {.K = "function", .V = row.function},
+      {.K = "file", .V = row.file},
+      {.K = "line", .V = row.line},
+      {.K = "column", .V = row.column},
+      {.K = "operation", .V = row.operation},
+      {.K = "bytes", .V = static_cast<std::int64_t>(row.bytes)},
+      {.K = "outcome", .V = outcomeName(row.outcome)},
+      {.K = "reason", .V = row.reason},
   };
 }
 
@@ -151,25 +151,33 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
   for (const LedgerRow &row : ledger.rows)
     rows.push_back(rowJson(row));
   llvm::json::Object document{
-      {"schema", "weavec-ledger"},
-      {"version", EnforcementLedgerVersion},
-      {"producer", llvm::json::Object{{"name", "weavec-cc"},
-                                      {"version", WEAVEC_VERSION_STRING}}},
-      {"units",
-       llvm::json::Array{llvm::json::Object{
-           {"source", unit.source},
-           {"object", unit.object},
-           {"target", unit.target},
-           {"config", llvm::json::Object{{"checks", unit.checks},
-                                         {"zeroInit", unit.zeroInit}}},
-           {"summary",
-            llvm::json::Object{
-                {"accesses", static_cast<std::int64_t>(ledger.accesses())},
-                {"proven", static_cast<std::int64_t>(ledger.proven)},
-                {"guarded", static_cast<std::int64_t>(ledger.guarded)},
-                {"unguarded", static_cast<std::int64_t>(ledger.unguarded)}}},
-           {"rows", std::move(rows)},
-       }}},
+      {.K = "schema", .V = "weavec-ledger"},
+      {.K = "version", .V = EnforcementLedgerVersion},
+      {.K = "producer",
+       .V = llvm::json::Object{{.K = "name", .V = "weavec-cc"},
+                               {.K = "version", .V = WEAVEC_VERSION_STRING}}},
+      {.K = "units",
+       .V =
+           llvm::json::Array{llvm::json::Object{
+               {.K = "source", .V = unit.source},
+               {.K = "object", .V = unit.object},
+               {.K = "target", .V = unit.target},
+               {.K = "config",
+                .V = llvm::json::Object{{.K = "checks", .V = unit.checks},
+                                        {.K = "zeroInit", .V = unit.zeroInit}}},
+               {.K = "summary",
+                .V =
+                    llvm::json::Object{
+                        {.K = "accesses",
+                         .V = static_cast<std::int64_t>(ledger.accesses())},
+                        {.K = "proven",
+                         .V = static_cast<std::int64_t>(ledger.proven)},
+                        {.K = "guarded",
+                         .V = static_cast<std::int64_t>(ledger.guarded)},
+                        {.K = "unguarded",
+                         .V = static_cast<std::int64_t>(ledger.unguarded)}}},
+               {.K = "rows", .V = std::move(rows)},
+           }}},
   };
   std::string text;
   llvm::raw_string_ostream os(text);

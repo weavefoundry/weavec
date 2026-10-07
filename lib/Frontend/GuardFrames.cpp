@@ -69,9 +69,10 @@ static bool canLayOut(const llvm::Function &function) {
       if (const auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction)) {
         if (call->isMustTailCall())
           return false;
-        if (const auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(call))
-          if (intrinsic->getIntrinsicID() == llvm::Intrinsic::localescape)
-            return false;
+        if (const auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(call);
+            intrinsic &&
+            (intrinsic->getIntrinsicID() == llvm::Intrinsic::localescape))
+          return false;
       }
     }
   return true;
@@ -104,7 +105,7 @@ exitsOf(llvm::Function &function) {
 static void layoutStatic(FunctionContext &context,
                          llvm::ArrayRef<llvm::AllocaInst *> allocas,
                          llvm::DenseMap<llvm::Value *, llvm::Value *> &moved) {
-  ModuleContext &module = context.module;
+  const ModuleContext &module = context.module;
   llvm::Function &function = context.function;
   std::vector<FrameObject> objects;
   std::uint64_t alignment = FrameAlign;
@@ -148,7 +149,7 @@ static void layoutStatic(FunctionContext &context,
     objectBytes(object.size, bytes);
     const bool scoped = !object.starts.empty();
     for (std::size_t i = 0; i < bytes.size(); ++i)
-      entry[object.offset / 16 + i] = scoped ? ShadowScope : bytes[i];
+      entry[(object.offset / 16) + i] = scoped ? ShadowScope : bytes[i];
   }
   {
     const FrameObject &last = *std::ranges::max_element(
@@ -166,7 +167,7 @@ static void layoutStatic(FunctionContext &context,
   frame->setAlignment(llvm::Align(alignment));
   // Every object's address first: writing a scope's shadow splits blocks.
   std::vector<llvm::Value *> addresses;
-  for (FrameObject &object : objects) {
+  for (const FrameObject &object : objects) {
     llvm::Value *at = builder.CreateConstInBoundsGEP1_64(
         module.i8, frame, object.offset, object.alloca->getName() + ".weavec");
     if (auto *instruction = llvm::dyn_cast<llvm::Instruction>(at))
@@ -261,12 +262,13 @@ static void layoutDynamic(FunctionContext &context,
   };
   for (llvm::BasicBlock &block : function)
     for (llvm::Instruction &instruction : llvm::make_early_inc_range(block))
-      if (auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction))
-        if (intrinsic->getIntrinsicID() == llvm::Intrinsic::stackrestore) {
-          llvm::IRBuilder<> at(intrinsic);
-          clearTo(intrinsic,
-                  at.CreatePtrToInt(intrinsic->getArgOperand(0), module.i64));
-        }
+      if (auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction);
+          intrinsic &&
+          (intrinsic->getIntrinsicID() == llvm::Intrinsic::stackrestore)) {
+        llvm::IRBuilder<> at(intrinsic);
+        clearTo(intrinsic,
+                at.CreatePtrToInt(intrinsic->getArgOperand(0), module.i64));
+      }
   for (llvm::Instruction *exit : exitsOf(function))
     clearTo(exit, top);
 }
@@ -309,10 +311,10 @@ void unpoisonBeforeNoReturn(FunctionContext &context) {
       if (call == nullptr || !call->doesNotReturn() ||
           llvm::isa<llvm::IntrinsicInst>(call))
         continue;
-      if (const llvm::Function *callee = call->getCalledFunction())
-        if (ModuleContext::isRuntimeName(callee->getName()) ||
-            endsProcess(callee->getName()))
-          continue;
+      if (const llvm::Function *callee = call->getCalledFunction();
+          callee && (ModuleContext::isRuntimeName(callee->getName()) ||
+                     endsProcess(callee->getName())))
+        continue;
       calls.push_back(call);
     }
   if (calls.empty())

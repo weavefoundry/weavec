@@ -46,6 +46,8 @@
 
 #if defined(__APPLE__)
 #include <malloc/malloc.h>
+#else
+#include <dlfcn.h>
 #endif
 
 #ifndef MAP_ANONYMOUS
@@ -424,6 +426,16 @@ int weavecRtInitialise(void) {
   return ok;
 }
 
+#if !defined(__APPLE__)
+/* Before the program's own code: a function reads the shadow descriptor
+ * once on entry, so `main` would otherwise keep the empty one, and pass
+ * every guard, when its first allocation reserves the shadow. On Darwin
+ * weavec_owner.c does this once it has found the owner. */
+__attribute__((constructor(101))) static void initialiseEarly(void) {
+  (void)weavecRtInitialise();
+}
+#endif
+
 /*===-- Slots ---------------------------------------------------------------===*/
 
 /* Makes [committed, end) of a range accessible, in chunks; `limit` is the
@@ -799,6 +811,7 @@ static size_t nextSize(const void *p) {
 extern void __libc_free(void *) __attribute__((weak));
 extern void *__libc_realloc(void *, size_t) __attribute__((weak));
 extern void *dlsym(void *, const char *) __attribute__((weak));
+extern int dladdr(const void *, Dl_info *) __attribute__((weak));
 
 #ifndef RTLD_NEXT
 #define RTLD_NEXT ((void *)-1L)
@@ -808,8 +821,23 @@ static void *nextSymbol(const char *name) {
   return dlsym != NULL ? dlsym(RTLD_NEXT, name) : NULL;
 }
 
+/* Whether `p`, which none of this runtime's blocks holds, is known not to
+ * be the C library's either: it lies on the calling thread's stack or in a
+ * loaded image (a global). The C library need not notice. */
+static int notLibraryBlock(const void *p) {
+  const uintptr_t address = (uintptr_t)p;
+  const uintptr_t top = weavecRtStackTop();
+  Dl_info info;
+  if (top != 0 && address < top &&
+      address >= (uintptr_t)__builtin_frame_address(0))
+    return 1;
+  return dladdr != NULL && dladdr(p, &info) != 0;
+}
+
 static void nextFree(void *p) {
   void (*release)(void *) = __libc_free;
+  if (notLibraryBlock(p))
+    __weavec_rt_fatal("invalid release", p, "not a heap block");
   if (release == NULL)
     release = (void (*)(void *))nextSymbol("free");
   /* Without a next allocator the block is nobody's this runtime knows. */
@@ -820,6 +848,8 @@ static void nextFree(void *p) {
 
 static void *nextRealloc(void *p, size_t size) {
   void *(*resize)(void *, size_t) = __libc_realloc;
+  if (notLibraryBlock(p))
+    __weavec_rt_fatal("invalid release", p, "not a heap block");
   if (resize == NULL)
     resize = (void *(*)(void *, size_t))nextSymbol("realloc");
   if (resize == NULL)

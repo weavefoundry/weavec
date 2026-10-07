@@ -125,7 +125,8 @@ private:
 };
 
 /// Adds the passes to every pipeline `codegen` configures.
-void registerGuardPasses(clang::CodeGenOptions &codegen, GuardOptions options);
+void registerGuardPasses(clang::CodeGenOptions &codegen,
+                         const GuardOptions &options);
 
 } // namespace weavec::frontend
 

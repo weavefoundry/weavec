@@ -76,7 +76,7 @@ inline constexpr unsigned MarkerNullOk = 4;
 inline constexpr unsigned MarkerAlignShift = 8;
 /// A guard the loop ranges of rule 6.4 keep (the guarded copy of a
 /// versioned loop's).
-inline constexpr unsigned MarkerKeep = 1U << 16;
+inline constexpr unsigned MarkerKeep = 1U << 16U;
 
 /// The redzone between a frame's objects and after a global (section 3.2,
 /// section 4): at least 16 bytes, one eighth of the object up to 4 KiB, so
@@ -161,9 +161,9 @@ public:
 
   /// A call of a slow path (`guardFunction`, `nullFunction`) with its
   /// calling convention.
-  llvm::CallInst *callSlow(llvm::IRBuilder<> &builder,
-                           llvm::FunctionCallee callee,
-                           llvm::ArrayRef<llvm::Value *> args);
+  static llvm::CallInst *callSlow(llvm::IRBuilder<> &builder,
+                                  llvm::FunctionCallee callee,
+                                  llvm::ArrayRef<llvm::Value *> args);
 
   /// `__weavec_rt_<name>` with the given type, declared once.
   llvm::FunctionCallee runtime(llvm::StringRef name, llvm::FunctionType *type);
@@ -294,7 +294,8 @@ void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
                        bool late);
 
 /// Section 2.6: disables the `array-bounds` checks in unsafe regions.
-void dropUnsafeBoundsChecks(ModuleContext &module, llvm::Function &function);
+void dropUnsafeBoundsChecks(const ModuleContext &module,
+                            llvm::Function &function);
 
 /// Section 3: lays out the tracked static allocas in one frame with
 /// redzones, tracks their scopes, poisons the dynamic ones, and clears the
@@ -302,12 +303,12 @@ void dropUnsafeBoundsChecks(ModuleContext &module, llvm::Function &function);
 /// to track. Runs before any guard is expanded; returns what replaced each
 /// alloca.
 llvm::DenseMap<llvm::Value *, llvm::Value *>
-layoutFrame(FunctionContext &function,
+layoutFrame(FunctionContext &context,
             llvm::ArrayRef<llvm::AllocaInst *> tracked);
 
 /// Section 3.5: clears the stack's shadow before each call that does not
 /// return.
-void unpoisonBeforeNoReturn(FunctionContext &function);
+void unpoisonBeforeNoReturn(FunctionContext &context);
 
 /// Section 4: gives the module's globals redzones and registers them.
 void instrumentGlobals(ModuleContext &module);
@@ -318,7 +319,7 @@ void pruneGuards(ModuleContext &module, llvm::Function &function);
 /// Rule 6.4: versions the loops whose guards one range per access covers;
 /// whether it changed the function.
 bool versionLoops(ModuleContext &module, llvm::Function &function,
-                  llvm::FunctionAnalysisManager &analyses);
+                  llvm::FunctionAnalysisManager &manager);
 /// Whether `instruction` may end an object's lifetime (a call that may
 /// free, a lifetime marker, a stack restore), so that no guard before it
 /// covers an access after it.

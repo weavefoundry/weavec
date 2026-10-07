@@ -372,8 +372,7 @@ private:
 
   /// `beyond`: the index is above `INT64_MAX` for every value, so the
   /// access lies past the end of any object (RFC 0017).
-  void spatialOf(core::Sym pointer, std::int64_t width,
-                 std::optional<std::int64_t> skip, bool beyond = false);
+  void spatialOf(core::Sym pointer, std::int64_t width, bool beyond = false);
   bool writesLiteral(core::Sym pointer, const Expr &operand);
   bool memberBound(std::int64_t width);
   std::string indexText(const Expr &index);
@@ -634,8 +633,7 @@ void Decider::temporalOf(core::Sym pointer, const Expr &operand,
   }
 }
 
-void Decider::spatialOf(core::Sym pointer, std::int64_t width,
-                        std::optional<std::int64_t> skip, bool beyond) {
+void Decider::spatialOf(core::Sym pointer, std::int64_t width, bool beyond) {
   if (!applies(core::Facet::Spatial))
     return;
   if (site.provenByType) {
@@ -997,11 +995,7 @@ void Decider::access() {
                                        core::UnresolvedReason::UnknownExtent));
       return;
     }
-    const core::SymInfo &value = heap.info(state, pointer);
-    std::optional<std::int64_t> skip;
-    if (value.targets.size() == 1 && value.targets[0].offset.isConstant())
-      skip = value.targets[0].offset.constant;
-    spatialOf(pointer, *width, skip);
+    spatialOf(pointer, *width);
     return;
   }
   // A variable-length array whose byte size may not be representable (or
@@ -1036,25 +1030,6 @@ void Decider::access() {
                                      core::UnresolvedReason::Unanalysed));
     return;
   }
-  // The constant part of the element's offset, when the index accounts
-  // for the rest.
-  std::optional<std::int64_t> skip;
-  if (site.index != nullptr && address.targets.size() == 1) {
-    core::Term offset = address.targets[0].offset;
-    core::Term index = transfer.termOf(transfer.valueOf(*site.index));
-    if (offset.known && index.known) {
-      core::Term scaled = index;
-      scaled.scale *= *width;
-      scaled.constant *= *width;
-      if (scaled.isConstant())
-        scaled.scale = 0;
-      core::Term negated = scaled;
-      negated.scale = -negated.scale;
-      negated.constant = -negated.constant;
-      if (auto rest = offset.plus(negated); rest && rest->isConstant())
-        skip = rest->constant;
-    }
-  }
   // RFC 0017: an unsigned index above `INT64_MAX` for every value reaches
   // past the end of any object (the zone's bounds cannot say so).
   bool beyond = false;
@@ -1067,7 +1042,7 @@ void Decider::access() {
   }
   if (!beyond && memberBound(*width))
     return;
-  spatialOf(at, *width, skip, beyond);
+  spatialOf(at, *width, beyond);
 }
 
 bool Decider::memberBound(std::int64_t width) {

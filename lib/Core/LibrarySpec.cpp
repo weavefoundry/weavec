@@ -1045,12 +1045,14 @@ bool LibrarySpecParser::parseResultFlag(LibraryResult &result,
 bool LibrarySpecParser::parseClause(LibraryEntry &entry,
                                     const std::string &clause) {
   if (clause == "exits" || clause == "returns-twice" || clause == "wide") {
-    bool &flag = clause == "exits"  ? entry.exits
-                 : clause == "wide" ? entry.wide
-                                    : entry.returnsTwice;
-    if (flag)
+    bool *flag = &entry.returnsTwice;
+    if (clause == "exits")
+      flag = &entry.exits;
+    else if (clause == "wide")
+      flag = &entry.wide;
+    if (*flag)
       return fail("duplicate clause '" + clause + "'");
-    flag = true;
+    *flag = true;
   } else if (clause == "invalidates" || clause == "reads") {
     auto state = parenthesisedName(clause, "a state slot");
     if (!state)

@@ -12,6 +12,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+// C11 removed gets; glibc no longer declares it.
+char *gets(char *);
+
 int main(int argc, char **argv) {
   const char *what = argv[argc - 1];
   char *small = malloc(8);

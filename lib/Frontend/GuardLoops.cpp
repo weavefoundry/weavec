@@ -71,7 +71,8 @@ static constexpr unsigned MinTrip = 16;
 /// The range of the bytes `marker` guards over the trip of `loop`, whose
 /// backedge is taken `count` times (an i64); none when its address is
 /// neither invariant nor affine with a constant step.
-static std::optional<Ranged> rangeOf(llvm::CallInst &marker, llvm::Loop &loop,
+static std::optional<Ranged> rangeOf(llvm::CallInst &marker,
+                                     const llvm::Loop &loop,
                                      llvm::ScalarEvolution &evolution,
                                      const llvm::SCEV *count) {
   const std::optional<llvm::StringRef> name = ModuleContext::markerOf(marker);
@@ -97,7 +98,10 @@ static std::optional<Ranged> rangeOf(llvm::CallInst &marker, llvm::Loop &loop,
     return std::nullopt;
   const llvm::SCEV *at = evolution.getSCEV(marker.getArgOperand(0));
   if (evolution.isLoopInvariant(at, &loop))
-    return Ranged{&marker, at, evolution.getAddExpr(at, bytes), nullBase};
+    return Ranged{.marker = &marker,
+                  .low = at,
+                  .high = evolution.getAddExpr(at, bytes),
+                  .nullBase = nullBase};
   const auto *recurrence = llvm::dyn_cast<llvm::SCEVAddRecExpr>(at);
   if (recurrence == nullptr || recurrence->getLoop() != &loop ||
       !recurrence->isAffine())
@@ -112,7 +116,10 @@ static std::optional<Ranged> rangeOf(llvm::CallInst &marker, llvm::Loop &loop,
                                   count));
   if (step->getAPInt().isNegative())
     std::swap(first, last);
-  return Ranged{&marker, first, evolution.getAddExpr(last, bytes), nullBase};
+  return Ranged{.marker = &marker,
+                .low = first,
+                .high = evolution.getAddExpr(last, bytes),
+                .nullBase = nullBase};
 }
 
 /// The most iterations, and the most instructions over all of them, of a
@@ -164,7 +171,8 @@ static bool unrollSmall(llvm::Loop &loop, LoopAnalyses &analyses,
 
 /// Whether `loop` can be versioned: one preheader and one exit block, a
 /// computable trip count, nothing that ends a lifetime, and not too big.
-static bool versionable(llvm::Loop &loop, llvm::ScalarEvolution &evolution) {
+static bool versionable(const llvm::Loop &loop,
+                        llvm::ScalarEvolution &evolution) {
   if (loop.getLoopPreheader() == nullptr || loop.getExitBlock() == nullptr ||
       !loop.hasDedicatedExits() || loop.getNumBlocks() > MaxBlocks)
     return false;
@@ -180,9 +188,9 @@ static bool versionable(llvm::Loop &loop, llvm::ScalarEvolution &evolution) {
     for (llvm::Instruction &instruction : *block) {
       if (++instructions > MaxInstructions || killsGuards(instruction))
         return false;
-      if (const auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction))
-        if (ModuleContext::isScope(*call))
-          return false;
+      if (const auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
+          call && ModuleContext::isScope(*call))
+        return false;
       // A value the loop defines and its exit does not take through a phi
       // (not in LCSSA form).
       for (const llvm::User *user : instruction.users())
@@ -260,7 +268,7 @@ static void versionLoop(ModuleContext &module, llvm::Loop &loop,
                        &analyses.loops, nullptr, "weavec.ranged");
   llvm::ValueToValueMapTy map;
   llvm::SmallVector<llvm::BasicBlock *, 16> blocks;
-  llvm::Loop *guarded = llvm::cloneLoopWithPreheader(
+  const llvm::Loop *guarded = llvm::cloneLoopWithPreheader(
       preheader, test, &loop, map, ".guarded", &analyses.loops,
       &analyses.dominators, blocks);
   llvm::remapInstructionsInBlocks(blocks, map);
@@ -278,7 +286,7 @@ static void versionLoop(ModuleContext &module, llvm::Loop &loop,
   for (llvm::PHINode &phi : exit->phis()) {
     const unsigned incoming = phi.getNumIncomingValues();
     for (unsigned at = 0; at < incoming; ++at) {
-      llvm::BasicBlock *from = phi.getIncomingBlock(at);
+      const llvm::BasicBlock *from = phi.getIncomingBlock(at);
       if (!loop.contains(from))
         continue;
       llvm::Value *value = phi.getIncomingValue(at);
@@ -307,10 +315,10 @@ static void versionLoop(ModuleContext &module, llvm::Loop &loop,
 bool versionLoops(ModuleContext &module, llvm::Function &function,
                   llvm::FunctionAnalysisManager &manager) {
   LoopAnalyses analyses{
-      manager.getResult<llvm::DominatorTreeAnalysis>(function),
-      manager.getResult<llvm::LoopAnalysis>(function),
-      manager.getResult<llvm::ScalarEvolutionAnalysis>(function),
-      manager.getResult<llvm::AssumptionAnalysis>(function)};
+      .dominators = manager.getResult<llvm::DominatorTreeAnalysis>(function),
+      .loops = manager.getResult<llvm::LoopAnalysis>(function),
+      .evolution = manager.getResult<llvm::ScalarEvolutionAnalysis>(function),
+      .assumptions = manager.getResult<llvm::AssumptionAnalysis>(function)};
   std::vector<llvm::Loop *> innermost;
   for (llvm::Loop *loop : analyses.loops.getLoopsInPreorder())
     if (loop->isInnermost())

@@ -26,6 +26,7 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace weavec::frontend {
 
@@ -62,7 +63,7 @@ std::optional<std::uint64_t> exactSize(const llvm::Value *object,
 bool insideAt(const llvm::Value *object, std::int64_t offset,
               std::uint64_t width, const llvm::DataLayout &layout) {
   const std::optional<std::uint64_t> size = exactSize(object, layout);
-  return size && offset >= 0 && static_cast<std::uint64_t>(offset) <= *size &&
+  return size && offset >= 0 && std::cmp_less_equal(offset, *size) &&
          width <= *size - static_cast<std::uint64_t>(offset);
 }
 
@@ -94,9 +95,9 @@ bool Scopes::mayBeOutOfScope(const llvm::AllocaInst &alloca,
       return state;
     };
     for (const llvm::User *user : alloca.users())
-      if (const auto *instruction = llvm::dyn_cast<llvm::Instruction>(user))
-        if (markerFor(*instruction, alloca) < 0)
-          work.push_back(instruction->getParent());
+      if (const auto *instruction = llvm::dyn_cast<llvm::Instruction>(user);
+          instruction && (markerFor(*instruction, alloca) < 0))
+        work.push_back(instruction->getParent());
     llvm::DenseSet<const llvm::BasicBlock *> leftDead;
     while (!work.empty()) {
       const llvm::BasicBlock *block = work.pop_back_val();
@@ -276,7 +277,7 @@ static void slowPath(llvm::FunctionCallee callee, const llvm::Module &module) {
   if (function == nullptr)
     return;
   function->addFnAttr(llvm::Attribute::Cold);
-  const llvm::Triple triple(module.getTargetTriple());
+  const llvm::Triple &triple(module.getTargetTriple());
   if (triple.isAArch64() || triple.getArch() == llvm::Triple::x86_64)
     function->setCallingConv(llvm::CallingConv::PreserveAll);
 }
@@ -285,7 +286,7 @@ llvm::CallInst *ModuleContext::callSlow(llvm::IRBuilder<> &builder,
                                         llvm::FunctionCallee callee,
                                         llvm::ArrayRef<llvm::Value *> args) {
   llvm::CallInst *call = builder.CreateCall(callee, args);
-  if (auto *function = llvm::dyn_cast<llvm::Function>(callee.getCallee()))
+  if (const auto *function = llvm::dyn_cast<llvm::Function>(callee.getCallee()))
     call->setCallingConv(function->getCallingConv());
   return call;
 }
@@ -325,9 +326,21 @@ llvm::GlobalVariable *ModuleContext::shadowDescriptor() {
   if (descriptor != nullptr)
     return descriptor;
   auto *type = llvm::StructType::get(context, {i64, i64, i32});
-  descriptor = llvm::dyn_cast<llvm::GlobalVariable>(
-      module.getOrInsertGlobal("__weavec_rt_shadow", type));
+  descriptor = module.getOrInsertGlobal("__weavec_rt_shadow", type);
   return descriptor;
+}
+
+/// Where a report names `location`: past the frames inlined from artificial
+/// functions (`__attribute__((artificial))`, as the C library's fortified
+/// wrappers are), at their call site.
+static const llvm::DILocation *reportedAt(const llvm::DILocation *at) {
+  while (at->getInlinedAt() != nullptr) {
+    const llvm::DISubprogram *function = at->getScope()->getSubprogram();
+    if (function == nullptr || !function->isArtificial())
+      break;
+    at = at->getInlinedAt();
+  }
+  return at;
 }
 
 ModuleContext::Position
@@ -335,7 +348,7 @@ ModuleContext::positionOf(const llvm::DebugLoc &location) {
   Position position;
   if (!location)
     return position;
-  const llvm::DILocation *at = location.get();
+  const llvm::DILocation *at = reportedAt(location.get());
   position.file =
       UnsafeRegions::normalise(at->getFilename(), at->getDirectory());
   position.line = at->getLine();
@@ -359,7 +372,7 @@ llvm::Constant *ModuleContext::site(const llvm::DebugLoc &location,
   unsigned line = 0;
   unsigned column = 0;
   if (location) {
-    const llvm::DILocation *at = location.get();
+    const llvm::DILocation *at = reportedAt(location.get());
     line = at->getLine();
     column = at->getColumn();
     llvm::StringRef name = at->getFilename();
@@ -445,7 +458,7 @@ FunctionContext::FunctionContext(ModuleContext &module,
   auto *mask = builder.CreateLoad(module.i64,
                                   builder.CreateStructGEP(type, descriptor, 1),
                                   "weavec.shadow.mask");
-  loaded = {base, mask};
+  loaded = {.base = base, .mask = mask};
   anchor = mask;
 }
 
@@ -483,14 +496,15 @@ void FunctionContext::slowGuard(llvm::IRBuilder<> &builder,
                                 llvm::Constant *site,
                                 llvm::ArrayRef<Member> members) {
   if (members.empty()) {
-    module.callSlow(builder, module.guardFunction(), {address, width, site});
+    ModuleContext::callSlow(builder, module.guardFunction(),
+                            {address, width, site});
     return;
   }
   for (const Member &member : members)
-    module.callSlow(builder, module.guardFunction(),
-                    {builder.CreatePtrToInt(member.pointer, module.i64),
-                     llvm::ConstantInt::get(module.i64, member.width),
-                     member.site});
+    ModuleContext::callSlow(builder, module.guardFunction(),
+                            {builder.CreatePtrToInt(member.pointer, module.i64),
+                             llvm::ConstantInt::get(module.i64, member.width),
+                             member.site});
 }
 
 void FunctionContext::emitGuard(llvm::Instruction *before, llvm::Value *pointer,
@@ -536,7 +550,7 @@ void FunctionContext::emitGuard(llvm::Instruction *before, llvm::Value *pointer,
       llvm::Instruction *null = llvm::SplitBlockAndInsertIfThen(
           nullTest, check, false, unlikely(context));
       llvm::IRBuilder<> atNull(null);
-      module.callSlow(atNull, module.nullFunction(), {address, site});
+      ModuleContext::callSlow(atNull, module.nullFunction(), {address, site});
       builder.SetInsertPoint(check);
     }
     llvm::Value *last = builder.CreateTrunc(
@@ -587,7 +601,7 @@ void FunctionContext::emitGuard(llvm::Instruction *before, llvm::Value *pointer,
       llvm::Instruction *null = llvm::SplitBlockAndInsertIfThen(
           nullTest, check, false, unlikely(context));
       llvm::IRBuilder<> atNull(null);
-      module.callSlow(atNull, module.nullFunction(), {address, site});
+      ModuleContext::callSlow(atNull, module.nullFunction(), {address, site});
       builder.SetInsertPoint(check);
     }
     llvm::Value *crosses = builder.CreateICmpNE(
@@ -649,7 +663,8 @@ void FunctionContext::chunkCheck(llvm::Instruction *before,
     const std::uint64_t reach = (15 + constant->getZExtValue() + 15) / 16;
     llvm::Value *fast = nullptr;
     if (reach <= 2) {
-      llvm::Type *type = llvm::Type::getIntNTy(context, 8 * unsigned(reach));
+      llvm::Type *type =
+          llvm::Type::getIntNTy(context, 8 * static_cast<unsigned>(reach));
       fast = builder.CreateICmpNE(
           builder.CreateAlignedLoad(type, shadowAt, llvm::Align(1)),
           llvm::ConstantInt::get(type, 0));
@@ -695,7 +710,7 @@ void FunctionContext::chunkCheck(llvm::Instruction *before,
     llvm::Instruction *null = llvm::SplitBlockAndInsertIfThen(
         nullTest, check, false, unlikely(context));
     llvm::IRBuilder<> atNull(null);
-    module.callSlow(atNull, module.nullFunction(), {address, site});
+    ModuleContext::callSlow(atNull, module.nullFunction(), {address, site});
     builder.SetInsertPoint(check);
   }
   llvm::Value *lastByte =
@@ -839,7 +854,8 @@ GuardExpandPass::run(llvm::Module &module,
   return llvm::PreservedAnalyses::none();
 }
 
-void registerGuardPasses(clang::CodeGenOptions &codegen, GuardOptions options) {
+void registerGuardPasses(clang::CodeGenOptions &codegen,
+                         const GuardOptions &options) {
   codegen.PassBuilderCallbacks.emplace_back(
       [options](llvm::PassBuilder &builder) {
         builder.registerPipelineStartEPCallback(

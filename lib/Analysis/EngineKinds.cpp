@@ -381,7 +381,7 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
         row.argument = i;
         row.need = core::Term::of(*bytes);
         row.rowOnly = true;
-        requirements.push_back(std::move(row));
+        requirements.push_back(row);
       }
     // §7.2: a declared `ended-by(q)`.
     if (param->hasDeclaredShape() && !param->shapeFromSystemHeader() &&
@@ -395,7 +395,7 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
           std::int64_t bytes = *span + (param->kind.extent.offset * *unit);
           out.need = core::Term::of(bytes);
         }
-      requirements.push_back(std::move(out));
+      requirements.push_back(out);
       continue;
     }
     bool enforced =
@@ -415,7 +415,7 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
           requirement.guard ? holds(*requirement.guard) : std::optional(true);
       if (guarded == false) {
         out.need = core::Term::of(0);
-        requirements.push_back(std::move(out));
+        requirements.push_back(out);
         continue;
       }
       out.guarded = !guarded;
@@ -452,7 +452,7 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
       case core::PointerShape::Unknown:
         continue;
       }
-      requirements.push_back(std::move(out));
+      requirements.push_back(out);
     }
     if (!enforced)
       continue;
@@ -507,7 +507,7 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
     if (kind.shape == core::PointerShape::NulTerminated) {
       requirement.kind = ArgRequirement::Kind::String;
       requirement.argvElement = isArgvElement(*call.getArg(shape.argument));
-      requirements.push_back(std::move(requirement));
+      requirements.push_back(requirement);
       continue;
     }
     core::Term count = core::Term::unknown();
@@ -540,7 +540,7 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
     default:
       continue;
     }
-    requirements.push_back(std::move(requirement));
+    requirements.push_back(requirement);
   }
   if (!requirements.empty())
     decideArguments(call, site, requirements, args, /*library=*/false);

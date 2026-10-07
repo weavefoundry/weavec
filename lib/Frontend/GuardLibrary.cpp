@@ -295,7 +295,7 @@ void LibraryCall::guardArguments() const {
 }
 
 void LibraryCall::guardFormat(const core::LibFormat &format) const {
-  llvm::Value *formatArgument = argument(format.format);
+  const llvm::Value *formatArgument = argument(format.format);
   llvm::StringRef text;
   if (formatArgument == nullptr ||
       !llvm::getConstantStringInfo(formatArgument, text))
@@ -304,7 +304,7 @@ void LibraryCall::guardFormat(const core::LibFormat &format) const {
   if (first < 0)
     return;
   const bool scanf = format.kind == core::LibFormat::Kind::Scanf;
-  unsigned next = static_cast<unsigned>(first);
+  auto next = static_cast<unsigned>(first);
   auto take = [&]() -> llvm::Value * {
     return next < call.arg_size() ? call.getArgOperand(next++) : nullptr;
   };
@@ -330,7 +330,7 @@ void LibraryCall::guardFormat(const core::LibFormat &format) const {
       std::uint64_t digits = 0;
       bool any = false;
       while (at < text.size() && text[at] >= '0' && text[at] <= '9') {
-        digits = digits * 10 + static_cast<std::uint64_t>(text[at] - '0');
+        digits = (digits * 10) + static_cast<std::uint64_t>(text[at] - '0');
         any = true;
         ++at;
       }
@@ -350,7 +350,7 @@ void LibraryCall::guardFormat(const core::LibFormat &format) const {
       } else {
         std::uint64_t digits = 0;
         while (at < text.size() && text[at] >= '0' && text[at] <= '9') {
-          digits = digits * 10 + static_cast<std::uint64_t>(text[at] - '0');
+          digits = (digits * 10) + static_cast<std::uint64_t>(text[at] - '0');
           ++at;
         }
         precision = digits;
@@ -427,7 +427,7 @@ static bool cheapToGuard(const LibraryCall &call) {
       return false;
     checked = true;
     llvm::StringRef literal;
-    if (llvm::Value *pointer = call.argument(index);
+    if (const llvm::Value *pointer = call.argument(index);
         pointer != nullptr && llvm::getConstantStringInfo(pointer, literal))
       continue;
     const std::optional<core::LibTerm> &term =
@@ -529,10 +529,10 @@ void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
   for (llvm::BasicBlock &block : function)
     for (llvm::Instruction &instruction : block)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction))
-        if (const llvm::Function *callee = call->getCalledFunction())
-          if (callee->isDeclaration() && !callee->isIntrinsic() &&
-              !ModuleContext::isRuntimeName(callee->getName()))
-            calls.push_back(call);
+        if (const llvm::Function *callee = call->getCalledFunction();
+            callee && (callee->isDeclaration() && !callee->isIntrinsic() &&
+                       !ModuleContext::isRuntimeName(callee->getName())))
+          calls.push_back(call);
   for (llvm::CallInst *call : calls) {
     const llvm::StringRef name = cName(call->getCalledFunction()->getName());
     if (module.isUnsafe(call->getDebugLoc()))
@@ -540,7 +540,11 @@ void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
     const std::optional<core::LibraryMatch> match = spec.lookup(name);
     if (!match || match->entry == nullptr)
       continue;
-    LibraryCall library{module, function, *call, *match, match->entry->name};
+    LibraryCall library{.context = module,
+                        .function = function,
+                        .call = *call,
+                        .match = *match,
+                        .name = match->entry->name};
     // A read-only call with a wrapper is the late pass's (GuardExpand, after
     // the optimiser), which redirects it or guards it inline; the late pass
     // touches nothing else.
@@ -585,19 +589,21 @@ void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
   }
 }
 
-void dropUnsafeBoundsChecks(ModuleContext &module, llvm::Function &function) {
+void dropUnsafeBoundsChecks(const ModuleContext &module,
+                            llvm::Function &function) {
   if (!module.options.unsafe || module.options.unsafe->empty())
     return;
   std::vector<llvm::BasicBlock *> handlers;
   for (llvm::BasicBlock &block : function)
     for (llvm::Instruction &instruction : block)
       if (const auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction))
-        if (const llvm::Function *callee = call->getCalledFunction())
-          if (callee->getName().starts_with("__ubsan_handle_out_of_bounds") &&
-              module.isUnsafe(call->getDebugLoc())) {
-            handlers.push_back(&block);
-            break;
-          }
+        if (const llvm::Function *callee = call->getCalledFunction();
+            callee &&
+            callee->getName().starts_with("__ubsan_handle_out_of_bounds") &&
+            module.isUnsafe(call->getDebugLoc())) {
+          handlers.push_back(&block);
+          break;
+        }
   for (llvm::BasicBlock *handler : handlers) {
     for (llvm::BasicBlock *predecessor :
          llvm::to_vector(llvm::predecessors(handler))) {
@@ -611,8 +617,11 @@ void dropUnsafeBoundsChecks(ModuleContext &module, llvm::Function &function) {
       if (other == handler)
         continue;
       handler->removePredecessor(predecessor);
+      // The block owns the branch it is inserted in.
+      // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
       llvm::UncondBrInst::Create(other, branch->getIterator());
       branch->eraseFromParent();
+      // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
     }
     if (llvm::pred_empty(handler))
       llvm::DeleteDeadBlock(handler);

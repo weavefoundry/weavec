@@ -661,9 +661,10 @@ static LocalValue valueOf(const SlotKey &key,
       value = found->second;
     return value;
   }
-  if (key.kind == SlotKind::CallResult) {
+  if (const auto calleeKey = key.callee();
+      calleeKey && key.kind == SlotKind::CallResult) {
     // A call through a local calls every callee the local holds.
-    const LocalValue callee = valueOf(*key.callee(), values);
+    const LocalValue callee = valueOf(*calleeKey, values);
     for (const SlotKey &slot : callee.slots)
       value.slots.insert(SlotKey::callResult(slot));
     for (const std::string &function : callee.functions)
@@ -681,8 +682,9 @@ sinksOf(const SlotKey &key, const std::map<SlotKey, LocalValue> &values) {
   if (!key.isLocal())
     return {key};
   std::vector<SlotKey> sinks;
-  if (key.kind == SlotKind::CallParam) {
-    const LocalValue callee = valueOf(*key.callee(), values);
+  if (const auto calleeKey = key.callee();
+      calleeKey && key.kind == SlotKind::CallParam) {
+    const LocalValue callee = valueOf(*calleeKey, values);
     for (const SlotKey &slot : callee.slots)
       sinks.push_back(SlotKey::callParam(slot, key.index));
     for (const std::string &function : callee.functions)

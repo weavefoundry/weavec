@@ -2,7 +2,7 @@
 // aligned to 32, and registered by a constructor; string literals are not.
 // RUN: %weavec_cc -O2 -S -emit-llvm %s -o - | FileCheck %s
 
-// CHECK: @table = global { [4 x i32], [{{[0-9]+}} x i8] } {{.*}}align 32
+// CHECK: @table = {{(dso_local )?}}global { [4 x i32], [{{[0-9]+}} x i8] } {{.*}}align 32
 int table[4] = {1, 2, 3, 4};
 // CHECK: @llvm.global_ctors = appending global {{.*}}@__weavec.globals.register
 // CHECK-NOT: @.str = {{.*}}{ [

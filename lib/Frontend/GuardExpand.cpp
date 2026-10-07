@@ -69,7 +69,7 @@ struct Access {
   /// Merged: the access whose guard covers this one.
   std::size_t leader = 0;
   /// The object `pointer` is based on, if one is known.
-  const llvm::Value *object = nullptr;
+  llvm::Value *object = nullptr;
 
   [[nodiscard]] bool constant() const {
     return kind != Kind::String && length == nullptr;
@@ -91,7 +91,7 @@ static std::optional<Access> accessOf(llvm::CallInst &call,
   access.write = (bits & MarkerWrite) != 0;
   access.pruned = (bits & MarkerProven) != 0;
   access.alignment =
-      llvm::Align(std::uint64_t{1} << ((bits >> MarkerAlignShift) & 63));
+      llvm::Align(std::uint64_t{1} << ((bits >> MarkerAlignShift) & 63U));
   const unsigned rowArgument = marker == MarkerGuard ? 4 : 3;
   if (const auto *row =
           llvm::dyn_cast<llvm::ConstantInt>(call.getArgOperand(rowArgument)))
@@ -137,8 +137,7 @@ static bool inBounds(const Access &access, llvm::ScalarEvolution &evolution,
   if (!evolution.isSCEVable(access.pointer->getType()))
     return false;
   const llvm::SCEV *pointer = evolution.getSCEV(access.pointer);
-  const llvm::SCEV *object =
-      evolution.getSCEV(const_cast<llvm::Value *>(access.object));
+  const llvm::SCEV *object = evolution.getSCEV(access.object);
   const llvm::SCEV *offset = evolution.getMinusSCEV(pointer, object);
   if (llvm::isa<llvm::SCEVCouldNotCompute>(offset) ||
       !offset->getType()->isIntegerTy())
@@ -185,9 +184,9 @@ bool killsGuards(const llvm::Instruction &instruction) {
       return !intrinsic->hasFnAttr(llvm::Attribute::NoFree);
     }
   }
-  if (const llvm::Function *callee = call->getCalledFunction())
-    if (ModuleContext::isRuntimeName(callee->getName()))
-      return false;
+  if (const llvm::Function *callee = call->getCalledFunction();
+      callee && ModuleContext::isRuntimeName(callee->getName()))
+    return false;
   return !call->hasFnAttr(llvm::Attribute::NoFree);
 }
 
@@ -220,7 +219,7 @@ static void removeDominated(llvm::Function &function,
   const auto n = static_cast<unsigned>(candidates.size());
   llvm::DenseMap<const llvm::BasicBlock *, llvm::BitVector> out;
   llvm::ReversePostOrderTraversal<llvm::Function *> order(&function);
-  for (llvm::BasicBlock *block : order)
+  for (const llvm::BasicBlock *block : order)
     out[block] = llvm::BitVector(n, block != &function.getEntryBlock());
   auto covered = [&](const llvm::BitVector &available, unsigned candidate) {
     const Access &access = accesses[candidates[candidate]];
@@ -237,7 +236,7 @@ static void removeDominated(llvm::Function &function,
   };
   auto transfer = [&](llvm::BasicBlock &block, llvm::BitVector set,
                       bool decide) {
-    for (llvm::Instruction &instruction : block) {
+    for (const llvm::Instruction &instruction : block) {
       if (killsGuards(instruction))
         set.reset();
       const auto found = byMarker.find(&instruction);
@@ -254,7 +253,7 @@ static void removeDominated(llvm::Function &function,
       return llvm::BitVector(n, false);
     llvm::BitVector set(n, true);
     bool any = false;
-    for (llvm::BasicBlock *predecessor : llvm::predecessors(block)) {
+    for (const llvm::BasicBlock *predecessor : llvm::predecessors(block)) {
       const auto found = out.find(predecessor);
       if (found == out.end())
         continue;
@@ -319,7 +318,7 @@ static void mergeInBlocks(llvm::Function &function,
       }
       const auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
       if (killsGuards(instruction) ||
-          (!(call != nullptr && ModuleContext::markerOf(*call)) &&
+          ((call == nullptr || !ModuleContext::markerOf(*call)) &&
            !llvm::isa<llvm::LoadInst, llvm::StoreInst>(instruction) &&
            !llvm::isGuaranteedToTransferExecutionToSuccessor(&instruction)))
         open.clear();
@@ -364,12 +363,13 @@ static bool escapes(const llvm::AllocaInst &alloca) {
       if (const auto *call = llvm::dyn_cast<llvm::CallBase>(user)) {
         if (ModuleContext::markerOf(*call))
           continue;
-        if (const auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(call))
-          if (intrinsic->isLifetimeStartOrEnd() ||
-              intrinsic->isDebugOrPseudoInst() ||
-              llvm::isa<llvm::MemIntrinsic>(intrinsic) ||
-              intrinsic->getIntrinsicID() == llvm::Intrinsic::assume)
-            continue;
+        if (const auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(call);
+            intrinsic &&
+            (intrinsic->isLifetimeStartOrEnd() ||
+             intrinsic->isDebugOrPseudoInst() ||
+             llvm::isa<llvm::MemIntrinsic>(intrinsic) ||
+             intrinsic->getIntrinsicID() == llvm::Intrinsic::assume))
+          continue;
         return true;
       }
       return true;
@@ -492,10 +492,41 @@ static void expandDisjoint(ModuleContext &module, llvm::CallInst &marker) {
   marker.eraseFromParent();
 }
 
+/// A site made before inlining names the line of the function it was in;
+/// a call inlined from an artificial function (section 5.3, amendment 14)
+/// gets the site of its call site instead.
+static void resiteInlinedCalls(ModuleContext &module,
+                               llvm::Function &function) {
+  for (llvm::BasicBlock &block : function)
+    for (llvm::Instruction &instruction : block) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
+      if (call == nullptr || !call->getDebugLoc() ||
+          call->getDebugLoc()->getInlinedAt() == nullptr)
+        continue;
+      for (llvm::Use &argument : call->args()) {
+        auto *site = llvm::dyn_cast<llvm::GlobalVariable>(argument.get());
+        if (site == nullptr || !site->getName().starts_with("__weavec.site") ||
+            !site->hasInitializer())
+          continue;
+        const auto *record =
+            llvm::dyn_cast<llvm::ConstantStruct>(site->getInitializer());
+        const auto *flags =
+            record != nullptr && record->getNumOperands() == 4
+                ? llvm::dyn_cast<llvm::ConstantInt>(record->getOperand(3))
+                : nullptr;
+        if (flags != nullptr)
+          argument.set(
+              module.site(call->getDebugLoc(),
+                          static_cast<unsigned>(flags->getZExtValue())));
+      }
+    }
+}
+
 void expandGuards(ModuleContext &module, llvm::Function &function,
                   llvm::FunctionAnalysisManager &analyses) {
   const llvm::DataLayout &layout = module.layout;
   dropScopes(function, /*orphansOnly=*/false);
+  resiteInlinedCalls(module, function);
   // The read-only library calls the optimiser left (section 2.5).
   guardLibraryCalls(module, function, /*late=*/true);
   std::vector<Access> accesses;
@@ -511,7 +542,8 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
             accesses.push_back(*access);
         }
 
-  auto &dominators = analyses.getResult<llvm::DominatorTreeAnalysis>(function);
+  const auto &dominators =
+      analyses.getResult<llvm::DominatorTreeAnalysis>(function);
   auto &evolution = analyses.getResult<llvm::ScalarEvolutionAnalysis>(function);
   auto &assumptions = analyses.getResult<llvm::AssumptionAnalysis>(function);
   Scopes scopes;
@@ -527,9 +559,7 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
     else
       access.base = nullptr;
     access.object = llvm::getUnderlyingObject(access.pointer, 0);
-    if (access.pruned)
-      access.state = Access::State::InBounds;
-    else if (inBounds(access, evolution, layout, scopes))
+    if (access.pruned || inBounds(access, evolution, layout, scopes))
       access.state = Access::State::InBounds;
     // Section 2.4: a base known not to be null needs no test.
     if (access.nullBase != nullptr &&
@@ -552,14 +582,18 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
     llvm::SmallVector<const llvm::Value *, 4> objects;
     llvm::getUnderlyingObjects(access.pointer, objects);
     for (const llvm::Value *object : objects)
-      if (const auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(object))
+      if (const auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(object)) {
+        // getUnderlyingObjects yields only const values; the alloca is this
+        // function's own.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
         tracked.insert(const_cast<llvm::AllocaInst *>(alloca));
+      }
   }
   for (llvm::BasicBlock &block : function)
     for (llvm::Instruction &instruction : block)
-      if (auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(&instruction))
-        if (!tracked.contains(alloca) && escapes(*alloca))
-          tracked.insert(alloca);
+      if (auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(&instruction);
+          alloca && !tracked.contains(alloca) && escapes(*alloca))
+        tracked.insert(alloca);
 
   for (const Access &access : accesses)
     if (access.kind != Access::Kind::String)
@@ -596,12 +630,12 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
     auto member = [&](const Access &covered) {
       llvm::IRBuilder<> builder(accesses[access.leader].marker);
       return FunctionContext::Member{
-          builder.CreateConstGEP1_64(
+          .pointer = builder.CreateConstGEP1_64(
               module.i8, covered.base,
               static_cast<std::uint64_t>(covered.offset)),
-          covered.width,
-          module.site(covered.marker->getDebugLoc(),
-                      covered.write ? SiteWrite : 0)};
+          .width = covered.width,
+          .site = module.site(covered.marker->getDebugLoc(),
+                              covered.write ? SiteWrite : 0)};
     };
     if (list.empty())
       list.push_back(member(accesses[access.leader]));

@@ -920,6 +920,16 @@ override the body.
     call-site checks reported; the guard now stops in the callee). The
     file marker `TRAP-AT: <unit>:<line>` expects a stop in a unit other
     cases share. The ASan oracle builds with `-fsanitize=address,array-bounds`.
+14. **Linux (§5), found by CI after the gates.** The runtime reserves its
+    shadow in a constructor on every target, not only Darwin's: a
+    function reads the shadow descriptor once on entry, so `main` kept
+    the empty one, and passed every guard, when its first allocation
+    reserved the shadow. A release the arena does not hold is an
+    `invalid release` before it reaches the C library when it lies on
+    the calling thread's stack or in a loaded image, as Darwin's zone
+    lookup already found. A report's location skips the frames inlined
+    from functions declared `artificial`, as glibc's fortified wrappers
+    are, and names their call site (§5.3).
 
 ### Measured gates
 

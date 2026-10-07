@@ -259,8 +259,7 @@ uint64_t __weavec_rt_strlen(const char *s, uint64_t max,
 
 /*===-- Frames (section 3) -------------------------------------------------===*/
 
-/* The calling thread's stack top (its highest address), or 0. */
-static uintptr_t stackTop(void) {
+uintptr_t weavecRtStackTop(void) {
   static __thread uintptr_t top;
   if (top == 0) {
     pthread_t self = pthread_self();
@@ -284,7 +283,7 @@ static uintptr_t stackTop(void) {
 
 void __weavec_rt_unpoison_stack(void) {
   const uintptr_t low = (uintptr_t)__builtin_frame_address(0);
-  const uintptr_t top = stackTop();
+  const uintptr_t top = weavecRtStackTop();
   weavecRtCount(WeavecRtStatStackUnpoisons);
   /* A stack the thread runs on that is not its own (a coroutine's, an
    * alternate signal stack) is left alone: its extent is not known. */

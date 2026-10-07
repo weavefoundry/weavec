@@ -130,19 +130,19 @@ static void collect(llvm::Instruction &instruction,
           transfer->getSourceAlign(), false, "copy");
     return;
   }
-  if (auto *set = llvm::dyn_cast<llvm::MemSetInst>(&instruction)) {
+  if (const auto *set = llvm::dyn_cast<llvm::MemSetInst>(&instruction)) {
     range(set->getRawDest(), set->getLength(), set->getDestAlign(), true,
           "set");
     return;
   }
-  auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction);
+  const auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction);
   if (intrinsic == nullptr)
     return;
   // A lane is a range of its element's bytes, of length 0 when its mask bit
   // is clear.
   auto lanes = [&](llvm::Value *pointer, llvm::Value *pointers,
                    llvm::Value *mask, llvm::Type *vectorType, bool write) {
-    auto *vector = llvm::dyn_cast<llvm::FixedVectorType>(vectorType);
+    const auto *vector = llvm::dyn_cast<llvm::FixedVectorType>(vectorType);
     if (vector == nullptr)
       return;
     const llvm::TypeSize size =
@@ -269,9 +269,9 @@ void addScopes(ModuleContext &module, llvm::Function &function) {
   std::vector<llvm::IntrinsicInst *> lifetimes;
   for (llvm::BasicBlock &block : function)
     for (llvm::Instruction &instruction : block)
-      if (auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction))
-        if (intrinsic->isLifetimeStartOrEnd())
-          lifetimes.push_back(intrinsic);
+      if (auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction);
+          intrinsic && intrinsic->isLifetimeStartOrEnd())
+        lifetimes.push_back(intrinsic);
   auto isScope = [](const llvm::Instruction *instruction) {
     const auto *call = llvm::dyn_cast_or_null<llvm::CallInst>(instruction);
     return call != nullptr && ModuleContext::isScope(*call);
@@ -301,9 +301,9 @@ void dropScopes(llvm::Function &function, bool orphansOnly) {
     if (lifetimes)
       continue;
     for (llvm::Instruction &instruction : block)
-      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction))
-        if (ModuleContext::isScope(*call))
-          scopes.push_back(call);
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction);
+          call && ModuleContext::isScope(*call))
+        scopes.push_back(call);
   }
   for (llvm::CallInst *call : scopes)
     call->eraseFromParent();
@@ -317,9 +317,9 @@ void pruneGuards(ModuleContext &module, llvm::Function &function) {
   std::vector<llvm::CallInst *> markers;
   for (llvm::BasicBlock &block : function)
     for (llvm::Instruction &instruction : block)
-      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction))
-        if (ModuleContext::markerOf(*call) == MarkerGuard)
-          markers.push_back(call);
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction);
+          call && (ModuleContext::markerOf(*call) == MarkerGuard))
+        markers.push_back(call);
   Scopes scopes;
   for (llvm::CallInst *call : markers) {
     const auto *width =

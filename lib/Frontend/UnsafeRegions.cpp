@@ -77,9 +77,9 @@ public:
                     const clang::MacroDefinition & /*definition*/,
                     clang::SourceRange /*range*/,
                     const clang::MacroArgs * /*arguments*/) override {
-    if (const clang::IdentifierInfo *identifier = name.getIdentifierInfo())
-      if (identifier->getName() == "WEAVEC_UNSAFE")
-        *seen = true;
+    if (const clang::IdentifierInfo *identifier = name.getIdentifierInfo();
+        identifier && (identifier->getName() == "WEAVEC_UNSAFE"))
+      *seen = true;
   }
 
 private:
@@ -92,7 +92,8 @@ public:
                 UnsafeRegions &out)
       : sources(sources), directory(std::move(directory)), out(out) {}
 
-  // NOLINTNEXTLINE(readability-identifier-naming): RecursiveASTVisitor's name
+  // RecursiveASTVisitor's name.
+  // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
   bool VisitFunctionDecl(clang::FunctionDecl *function) {
     if (function->doesThisDeclarationHaveABody() &&
         isUnsafe(function->specific_attrs<clang::AnnotateAttr>()))
@@ -100,12 +101,13 @@ public:
     return true;
   }
 
-  // NOLINTNEXTLINE(readability-identifier-naming): RecursiveASTVisitor's name
+  // RecursiveASTVisitor's name.
+  // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
   bool VisitAttributedStmt(clang::AttributedStmt *statement) {
     for (const clang::Attr *attribute : statement->getAttrs())
-      if (const auto *annotate = llvm::dyn_cast<clang::AnnotateAttr>(attribute))
-        if (annotate->getAnnotation() == analysis::spelling::Unsafe)
-          add(statement->getSubStmt()->getSourceRange());
+      if (const auto *annotate = llvm::dyn_cast<clang::AnnotateAttr>(attribute);
+          annotate && annotate->getAnnotation() == analysis::spelling::Unsafe)
+        add(statement->getSubStmt()->getSourceRange());
     return true;
   }
 

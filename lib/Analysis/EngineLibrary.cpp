@@ -484,7 +484,7 @@ void Transfer::decideLibraryCall(const CallExpr &call, const SiteInfo &site,
         requirement.bound = ArgRequirement::Bound::AtMost;
       else if (bound == TermBound::AtLeast)
         requirement.bound = ArgRequirement::Bound::AtLeast;
-      requirements.push_back(std::move(requirement));
+      requirements.push_back(requirement);
     }
     if (param->string) {
       ArgRequirement requirement;
@@ -493,7 +493,7 @@ void Transfer::decideLibraryCall(const CallExpr &call, const SiteInfo &site,
       requirement.writes = writes;
       requirement.memberBound = stringRow && writes;
       requirement.argvElement = isArgvElement(argument);
-      requirements.push_back(std::move(requirement));
+      requirements.push_back(requirement);
     }
   }
   // A literal `printf` format: each `%s` argument is a string the call
@@ -510,7 +510,7 @@ void Transfer::decideLibraryCall(const CallExpr &call, const SiteInfo &site,
       requirement.kind = ArgRequirement::Kind::String;
       requirement.argvElement = isArgvElement(*call.getArg(argument));
       requirement.formatArgument = true;
-      requirements.push_back(std::move(requirement));
+      requirements.push_back(requirement);
     }
     // A `%.Ns` argument: at most N bytes, no terminator needed. Its record
     // states no need, but names it for the call's liveness guard.

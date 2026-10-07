@@ -56,7 +56,7 @@ std::string displayPath(llvm::StringRef path, llvm::StringRef base,
                         llvm::StringRef cwd) {
   if (path.empty())
     return {};
-  const std::string absolute = absoluteFrom(path, base);
+  std::string absolute = absoluteFrom(path, base);
   llvm::SmallString<256> directory(cwd);
   if (directory.empty())
     std::ignore = llvm::sys::fs::current_path(directory);

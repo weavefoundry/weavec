@@ -122,6 +122,9 @@ void weavecRtShadowObject(uintptr_t base, size_t size, unsigned char tail);
  * pages of it by mapping them afresh. */
 void weavecRtShadowClear(uintptr_t low, uintptr_t high);
 
+/* The calling thread's stack top (its highest address), or 0. */
+uintptr_t weavecRtStackTop(void);
+
 /*===-- The arena (sections 5.1) -------------------------------------------===*/
 
 enum {
