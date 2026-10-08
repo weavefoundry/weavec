@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v0.16.0 (2026-10-08)
+
+### Features
+
+- Guard every access by default ([#46](https://github.com/weavefoundry/weavec/pull/46),
+  [`0f0d226`](https://github.com/weavefoundry/weavec/commit/0f0d2263aec1591fa55e52a322166a9ac07eed89))
+
+
 ## v0.15.0 (2026-10-06)
 
 ### Features
