@@ -483,8 +483,6 @@ static void scanMappings(void) {
 
 #else
 
-/*===-- Linux#else
-
 /*===-- Linux ---------------------------------------------------------------===*/
 
 static int stopSignal;

@@ -22,14 +22,14 @@ A function excluded from AddressSanitizer (`__attribute__((no_sanitize("address"
 
 A byte is addressable unless the runtime knows it is not:
 
-| Bytes                                               | Not addressable                                                                                                                |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Bytes                                               | Not addressable                                                                                                               |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | A heap object's slot in the runtime's allocator     | the bytes after the object's requested size; the whole slot once the object is released, until a sweep finds no pointer to it |
-| A tracked local (in its function's frame)           | its redzones, always; the local before its scope begins and after it ends                                                      |
-| An `alloca` block or a variable-length array        | its redzone                                                                                                                    |
-| A global the unit defines (a _tracked_ global)      | its redzone                                                                                                                    |
-| Bytes the program poisoned through ASan's interface | until the program unpoisons them                                                                                               |
-| Low memory                                          | the lowest 64 KiB                                                                                                              |
+| A tracked local (in its function's frame)           | its redzones, always; the local before its scope begins and after it ends                                                     |
+| An `alloca` block or a variable-length array        | its redzone                                                                                                                   |
+| A global the unit defines (a _tracked_ global)      | its redzone                                                                                                                   |
+| Bytes the program poisoned through ASan's interface | until the program unpoisons them                                                                                              |
+| Low memory                                          | the lowest 64 KiB                                                                                                             |
 
 Every other byte is addressable: memory the runtime does not track (other allocators, `mmap`, string literals, locals no guard can reach, frames and globals of code built without WeaveC), the bytes of live tracked objects, and a local's bytes after its function returned.
 
@@ -67,15 +67,15 @@ On Darwin the runtime's allocator also serves the C library's own allocations (`
 
 ## Assumptions
 
-|        | Assumption                                                                                                                                                                                                                                                                       |
-| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **A1** | An access to bytes the runtime does not track (memory from another allocator that the program does not poison through ASan's interface, `mmap`, string literals, code built without WeaveC) is to a live object it stays inside.                                                 |
-| **A2** | A function in the library table accesses only what its row says. A function outside it is not checked at the call.                                                                                                                                                               |
-| **A3** | No other thread releases memory between a guard and its access: the guard and the access are not atomic together.                                                                                                                                                                |
-| **A4** | The program does not write the runtime's shadow or metadata except through guarded accesses.                                                                                                                                                                                     |
-| **A5** | A frame left by `longjmp`, `pthread_exit` or another call that does not return leaves no poison behind: the stack's shadow below the caller is cleared before the call. A frame left by an exception unwinding through C frames keeps its poison until the stack is reused.      |
-| **A6** | A pointer to a heap block is kept, while the program may still use it, as a whole aligned pointer in memory the sweep scans (any readable and writable mapping) or in a register.                                                                                                |
-| **A7** | On Linux every thread accepts the sweep's signal within a second. A thread that blocks it holds up the reuse of released memory (nothing is reused until it accepts), never safety.                                                                                              |
+|        | Assumption                                                                                                                                                                                                                                                                  |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A1** | An access to bytes the runtime does not track (memory from another allocator that the program does not poison through ASan's interface, `mmap`, string literals, code built without WeaveC) is to a live object it stays inside.                                            |
+| **A2** | A function in the library table accesses only what its row says. A function outside it is not checked at the call.                                                                                                                                                          |
+| **A3** | No other thread releases memory between a guard and its access: the guard and the access are not atomic together.                                                                                                                                                           |
+| **A4** | The program does not write the runtime's shadow or metadata except through guarded accesses.                                                                                                                                                                                |
+| **A5** | A frame left by `longjmp`, `pthread_exit` or another call that does not return leaves no poison behind: the stack's shadow below the caller is cleared before the call. A frame left by an exception unwinding through C frames keeps its poison until the stack is reused. |
+| **A6** | A pointer to a heap block is kept, while the program may still use it, as a whole aligned pointer in memory the sweep scans (any readable and writable mapping) or in a register.                                                                                           |
+| **A7** | On Linux every thread accepts the sweep's signal within a second. A thread that blocks it holds up the reuse of released memory (nothing is reused until it accepts), never safety.                                                                                         |
 
 No guard is removed because of what another function does, so nothing is assumed about callers, callees or the rest of the heap. The rules that remove guards are local to a function (an access inside a local or global at a known offset, an access a dominating guard on the same pointer covered with nothing between that may free, guards merged in a block, a loop whose whole range was found addressable before it ran), and `-fweavec-checks=verify` monitors them: it keeps every removed guard as a monitor that reports `weavec.proven` if it would have failed.
 

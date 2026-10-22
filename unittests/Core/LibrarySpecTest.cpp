@@ -98,6 +98,7 @@ static std::string renderResult(const LibraryEntry &entry) {
 
 static std::string renderClauses(const LibraryEntry &entry) {
   std::vector<std::string> clauses;
+  clauses.reserve(entry.disjoint.size());
   for (const LibDisjoint &d : entry.disjoint)
     clauses.push_back("disjoint=" + std::to_string(d.first) + "/" +
                       std::to_string(d.second) + "/" + d.length.str());
@@ -114,11 +115,12 @@ static std::string renderClauses(const LibraryEntry &entry) {
   for (const LibraryChk &alias : entry.chk) {
     std::string text = "chk=" + alias.name + ":";
     for (std::size_t i = 0; i < alias.argumentOf.size(); ++i) {
-      text += i != 0 ? "/" : "";
+      if (i != 0)
+        text += '/';
       if (std::cmp_equal(i, alias.sizeArgument))
         text += "size";
       else if (alias.argumentOf[i] < 0)
-        text += "_";
+        text += '_';
       else
         text += std::to_string(alias.argumentOf[i]);
     }

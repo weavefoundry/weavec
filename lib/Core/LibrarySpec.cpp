@@ -542,7 +542,7 @@ private:
   std::optional<LibraryParam> parseParam();
   bool parseResult(LibraryEntry &entry);
   bool parseClause(LibraryEntry &entry, const std::string &clause);
-  bool validateTerm(const LibraryEntry &entry, const LibTerm &term,
+  bool validateTerm(const LibraryEntry &entry, const LibTerm &value,
                     std::string_view where);
   bool validateEntry(const LibraryEntry &entry);
 };
@@ -563,15 +563,15 @@ std::optional<LibraryParam> LibrarySpecParser::parseParam() {
     return param;
   }
   param.type = LibraryParam::Type::Pointer;
-  if (head == "r")
+  if (head == "r") {
     param.access = LibraryParam::Access::Read;
-  else if (head == "w")
+  } else if (head == "w") {
     param.access = LibraryParam::Access::Write;
-  else if (head == "rw")
+  } else if (head == "rw") {
     param.access = LibraryParam::Access::ReadWrite;
-  else if (head == "none")
+  } else if (head == "none") {
     param.access = LibraryParam::Access::None;
-  else {
+  } else {
     fail("expected a parameter, found '" + head + "'");
     return std::nullopt;
   }
