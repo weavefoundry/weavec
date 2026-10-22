@@ -1,0 +1,10 @@
+# clang-tidy configuration for the unit tests: the repository's, but for
+# modernize-use-designated-initializers. The tests' expectation tables
+# (LibrarySpecTest.cpp) are rows of four strings in a fixed order, one row
+# per line; naming every field would quadruple each row's width and split
+# it over several lines without saying more.
+---
+InheritParentConfig: true
+Checks: >
+  -modernize-use-designated-initializers
+...

@@ -4,7 +4,6 @@
 // a free a later iteration may repeat is a possible finding, so a warning (§3.1,
 // as in repros/arrloop.c). Before S7 the call was unresolved and the release was
 // of unknown origin, which is never diagnosed.
-// ALLOW: double-free
 // ASAN
 #include <stdlib.h>
 typedef void (*hook_fn)(void *);

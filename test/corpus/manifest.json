@@ -4,9 +4,8 @@
   "_comment": [
     "The corpus of RFC 0035, section 11, read by scripts/corpus-gate.py; test/corpus/README.md",
     "documents every field and gate. Each project is pinned to a 40-hex `sha` and checked out once",
-    "into <workdir>/<project>. Each config names the files --quick analyses with weavec (per file,",
-    "or as one program when `wholeProgram` is true) and compiles with weavec-cc -c -O2 into",
-    "enforcement ledgers (`compile`; `{support}` in its arguments expands to",
+    "into <workdir>/<project>. Each config names the files --quick compiles with weavec-cc -c -O2",
+    "into enforcement ledgers (`compile`; `{support}` in its arguments expands to",
     "test/corpus/support/<project>). `build`, `test` and `bench` commands run under /bin/sh in a",
     "fresh copy of the checkout with CC set to the compiler (a wrapper around weavec-cc or the",
     "reference compiler), JOBS to the parallelism, SUPPORT to test/corpus/support/<project>, BENCH",
@@ -72,12 +71,6 @@
             "command": "./cjson-bench 30",
             "repeat": 7
           }
-        },
-        {
-          "name": "cJSON-program",
-          "notes": "cJSON_Utils.c calls into cJSON.c (cJSON_free, cJSON_Delete, cJSON_Duplicate, ...); analysed as one program. Built and tested with the cJSON config.",
-          "compile": {"files": ["cJSON.c", "cJSON_Utils.c"], "args": ["-std=c89", "-I."]},
-          "wholeProgram": true
         }
       ]
     },
@@ -137,7 +130,6 @@
           "name": "linenoise-program",
           "notes": "example.c installs the completion and hints callbacks linenoise.c calls through pointers, and frees what linenoise() returns. The build is the project's Makefile (linenoise-example); the test is its pseudo-terminal harness linenoise-test, which drives linenoise-example (102 checks, about 20 s).",
           "compile": {"files": ["linenoise.c", "example.c"], "args": ["-std=c99", "-I.", "-D_GNU_SOURCE"]},
-          "wholeProgram": true,
           "build": ["make linenoise-example CC=\"$CC\""],
           "test": ["make test CC=\"$CC\""],
           "testTimeout": 300
@@ -157,7 +149,6 @@
             "files": ["adler32.c", "compress.c", "crc32.c", "deflate.c", "infback.c", "inffast.c", "inflate.c", "inftrees.c", "trees.c", "uncompr.c", "zutil.c", "gzclose.c", "gzlib.c", "gzread.c", "gzwrite.c"],
             "args": ["-std=c99", "-I.", "-DHAVE_UNISTD_H", "-DHAVE_STDARG_H"]
           },
-          "wholeProgram": true,
           "build": ["CC=\"$CC\" ./configure", "make -j8"],
           "test": ["make test"],
           "bench": {
@@ -181,7 +172,6 @@
           "name": "lua",
           "notes": "A garbage-collected VM. realloc through the l_alloc function pointer, a 968-block interpreter loop with computed goto (luaV_execute), linked stacks of locals in the parser. The build is the developer makefile with POSIX and dlopen (as LUA_USE_LINUX, which also suits macOS) and without the Linux-only -Wl,-E; the test is the named testes subset below, run by support/lua/subset.lua in user mode. Left out: files.lua (needs /dev/full, missing on macOS), main.lua (stand-alone interpreter tests, skipped in user mode anyway), big.lua and heavy.lua (long), and the T-library tests (need a build with ltests.h).",
           "compile": {"files": ["l*.c"], "args": ["-std=c99", "-I.", "-DLUA_USE_POSIX"]},
-          "wholeProgram": true,
           "build": ["make -j\"$JOBS\" CC=\"$CC\" MYCFLAGS=\"-std=c99 -DLUA_USE_POSIX -DLUA_USE_DLOPEN\" MYLDFLAGS= MYLIBS=-ldl"],
           "test": ["cd testes && ../lua \"$SUPPORT/subset.lua\" gc.lua db.lua calls.lua strings.lua literals.lua tpack.lua attrib.lua gengc.lua locals.lua constructs.lua code.lua cstack.lua nextvar.lua pm.lua utf8.lua api.lua memerr.lua events.lua vararg.lua closure.lua coroutine.lua goto.lua errors.lua math.lua sort.lua bitwise.lua verybig.lua"],
           "bench": {
@@ -206,7 +196,6 @@
             "files": ["src/dump.c", "src/error.c", "src/hashtable.c", "src/hashtable_seed.c", "src/load.c", "src/memory.c", "src/pack_unpack.c", "src/strbuffer.c", "src/strconv.c", "src/utf.c", "src/value.c", "src/version.c"],
             "args": ["-std=c99", "-Isrc", "-I{support}", "-DHAVE_CONFIG_H"]
           },
-          "wholeProgram": true,
           "build": [
             "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DJANSSON_BUILD_DOCS=OFF -DJANSSON_EXAMPLES=OFF",
             "cmake --build out -j \"$JOBS\""
@@ -238,7 +227,6 @@
             ],
             "args": ["-I.", "-I{support}", "-D_FILE_OFFSET_BITS=64", "-DBZ_UNIX=1", "-DBZ_LCCWIN32=0"]
           },
-          "wholeProgram": true,
           "build": [
             "cp \"$SUPPORT/bzip2.mk\" Makefile.gate",
             "make -j\"$JOBS\" -f Makefile.gate CC=\"$CC\" all"
@@ -261,7 +249,6 @@
             "files": ["alloc.c", "async.c", "hiredis.c", "net.c", "read.c", "sds.c", "sockcompat.c", "test.c"],
             "args": ["-std=c99", "-I."]
           },
-          "wholeProgram": true,
           "build": ["make -j\"$JOBS\" CC=\"$CC\" USE_SSL=0 static hiredis-test"],
           "test": ["sh \"$SUPPORT/run-tests.sh\""],
           "testTimeout": 600
@@ -279,7 +266,6 @@
           "heldOut": true,
           "notes": "A callback-driven HTTP parser over caller buffers; the tests keep global pointers to the current message and settings (current_pause_parser points to a local of parse_pause). The build is the project's Makefile (test_g: strict, -O0; test_fast: -O3; bench), -Werror as shipped; the test runs test_g and test_fast (bench is built, not run: about 25 s of throughput measurement).",
           "compile": {"files": ["http_parser.c", "test.c"], "args": ["-I.", "-DHTTP_PARSER_STRICT=0"]},
-          "wholeProgram": true,
           "build": ["make -j\"$JOBS\" CC=\"$CC\" test_g test_fast bench"],
           "test": ["./test_g", "./test_fast"]
         }
@@ -296,7 +282,6 @@
           "heldOut": true,
           "notes": "INI parser: a line buffer on the stack or the heap (INI_USE_STACK, INI_ALLOW_REALLOC), callbacks per name/value pair. The build compiles ini.c; the test is tests/unittest.sh, which builds and runs 15 configurations of the unit tests and writes their output over the tracked baselines, which must then be unchanged.",
           "compile": {"files": ["ini.c", "tests/unittest.c"], "args": ["-I."]},
-          "wholeProgram": true,
           "build": ["\"$CC\" -Wall -c ini.c -o ini.o"],
           "test": ["cd tests && CC=\"$CC\" bash ./unittest.sh && git diff --exit-code -- ."]
         }
@@ -316,7 +301,6 @@
             "files": ["src/*.c"],
             "args": ["-Iinclude", "-I{support}", "-DHAVE_CONFIG_H", "-DYAML_DECLARE_STATIC"]
           },
-          "wholeProgram": true,
           "build": [
             "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON",
             "cmake --build out -j \"$JOBS\""
@@ -429,7 +413,6 @@
           "heldOut": true,
           "notes": "An expression parser and evaluator: te_expr trees with an anonymous union of value, bound variable and function, parameters in a trailing array, freed recursively. The build is the project's Makefile (smoke and smoke_pr run themselves as they are built, the examples and repl); the test reruns the smoke tests and the examples and evaluates one expression in repl (bench is left out: about 10 s).",
           "compile": {"files": ["tinyexpr.c", "smoke.c"], "args": ["-I."]},
-          "wholeProgram": true,
           "build": ["make -j\"$JOBS\" CC=\"$CC\" smoke smoke_pr example example2 example3 repl"],
           "test": [
             "./smoke",
@@ -794,7 +777,7 @@
           "name": "quickjs",
           "heldOut": true,
           "set": "fresh34",
-          "notes": "A JavaScript engine: reference-counted JSValues (tagged structs) over objects with shapes and property arrays, a cycle-collecting GC over intrusive list.h lists (container_of), atoms, strings and ropes, a bytecode compiler and interpreter with its own value stack, a regexp engine and Unicode tables (libregexp, libunicode), dtoa, allocation through JSMallocFunctions, and quickjs-libc's std/os modules with workers (threads). The build is the project's Makefile (-O2) with explicit targets: qjs, qjsc, run-test262, libquickjs.a and the three examples (hello, test_fib, hello_module, which qjsc compiles with $CC). quickjs.check.o (the Makefile's CONFIG_CHECK_JSVALUE build, compile-only by the project's own account; JS_GetOpaque always returns null in it) is left out of the build: WeaveC's definite null dereferences there are true but vacuous (RFC 0034, gate F1), and lowering them would need one triage entry per finding and would lower null-dereference errors across the whole build. The default target `all` builds it (and qjs.check.o), so the build names the targets; `make test` depends only on qjs on Darwin (the bjson and point shared-library tests are off there), so it builds no check object. The test is `make test` (tests/test_*.js: closures, language, builtins, loops, BigInt, cyclic imports, a worker, std/os, rw handlers) and the three examples against their expected output; run-test262 is built but not run (test262 is a separate checkout of the conformance suite). The per-file compiles are the six library sources with the Makefile's defines (-D_GNU_SOURCE, CONFIG_VERSION from VERSION) and its -funsigned-char -fwrapv.",
+          "notes": "A JavaScript engine: reference-counted JSValues (tagged structs) over objects with shapes and property arrays, a cycle-collecting GC over intrusive list.h lists (container_of), atoms, strings and ropes, a bytecode compiler and interpreter with its own value stack, a regexp engine and Unicode tables (libregexp, libunicode), dtoa, allocation through JSMallocFunctions, and quickjs-libc's std/os modules with workers (threads). The build is the project's Makefile (-O2) with explicit targets: qjs, qjsc, run-test262, libquickjs.a and the three examples (hello, test_fib, hello_module, which qjsc compiles with $CC). quickjs.check.o (the Makefile's CONFIG_CHECK_JSVALUE build, compile-only by the project's own account; JS_GetOpaque always returns null in it) is left out of the build. The default target `all` builds it (and qjs.check.o), so the build names the targets; `make test` depends only on qjs on Darwin (the bjson and point shared-library tests are off there), so it builds no check object. The test is `make test` (tests/test_*.js: closures, language, builtins, loops, BigInt, cyclic imports, a worker, std/os, rw handlers) and the three examples against their expected output; run-test262 is built but not run (test262 is a separate checkout of the conformance suite). The per-file compiles are the six library sources with the Makefile's defines (-D_GNU_SOURCE, CONFIG_VERSION from VERSION) and its -funsigned-char -fwrapv.",
           "compile": {
             "files": ["quickjs.c", "libregexp.c", "libunicode.c", "cutils.c", "dtoa.c", "quickjs-libc.c"],
             "args": ["-D_GNU_SOURCE", "-DCONFIG_VERSION=\"2026-06-04\"", "-funsigned-char", "-fwrapv"]

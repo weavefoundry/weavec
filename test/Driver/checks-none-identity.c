@@ -18,14 +18,7 @@
 // RUN: mv %t/unit.o %t/weavec.o
 // RUN: %clang -isysroot %t/sdk -O2 -flto=thin -c %s -o %t/unit.o -isystem %resource_dir -D__WEAVEC__=1
 // RUN: cmp %t/unit.o %t/weavec.o
-//
-// The analysis (-fweavec-diagnose, RFC 0035 §8) runs beside the code
-// generator, and its error, raised by -Werror=weavec, drops the object.
-// RUN: not %weavec_cc -fweavec-diagnose -Werror=weavec -isysroot %t/sdk -DBUG -O2 -c %s -o %t/bug.o 2>&1 | FileCheck --check-prefix=BUG %s
-// RUN: not ls %t/bug.o
-//
-// Actions that emit no code keep the analysis beside Clang's own consumer.
-// RUN: not %weavec_cc -fweavec-diagnose -Werror=weavec -isysroot %t/sdk -DBUG -fsyntax-only %s 2>&1 | FileCheck --check-prefix=BUG %s
+
 
 // A struct used through a pointer before its definition (debug info).
 struct node;
@@ -78,17 +71,3 @@ int classify(int x) {
     return counter + table[0];
   }
 }
-
-#ifdef BUG
-void *malloc(unsigned long);
-void free(void *);
-int bug(void) {
-  int *p = malloc(sizeof *p);
-  if (!p)
-    return 0;
-  *p = 1;
-  free(p);
-  // BUG: checks-none-identity.c:[[@LINE+1]]:11: error: use of 'p' after it was freed [weavec::use-after-free]
-  return *p;
-}
-#endif

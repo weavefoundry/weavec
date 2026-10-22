@@ -11,7 +11,9 @@
 |* itself computes (a string copy, a formatted write), which computes them
 |* before the call writes; a search or comparison, which checks the bytes it
 |* read up to where it stopped; and the mapping calls, which clear the
-|* shadow of what they map or unmap.
+|* shadow of what they map or unmap. RFC 0036 section 6: a writing call is
+|* also checked against the object size of its fortified form (`limit`), and
+|* the number parsers check what they read after the call.
 |*
 \*===----------------------------------------------------------------------===*/
 
@@ -22,7 +24,9 @@
 #include "weavec_rt.h"
 
 #include <ctype.h>
+#include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -30,8 +34,17 @@
 /* A range guard, inline when one shadow load decides it. */
 static inline void checkRange(uintptr_t address, uint64_t n,
                               const struct __weavec_rt_site *site) {
+  if (n == 0)
+    return;
   if (!weavecRtQuickOk(address, n))
     __weavec_rt_range(address, n, site);
+}
+
+/* A fortified call's object size: no more than `limit` bytes at d. */
+static inline void checkLimit(const char *d, uint64_t n, size_t limit,
+                              const struct __weavec_rt_site *write) {
+  if (n > limit)
+    __weavec_rt_limit_fail((uintptr_t)d, n, limit, write);
 }
 
 /* The site of a write: the pass marks the site of the call as a read. */
@@ -45,11 +58,13 @@ static struct __weavec_rt_site writeSite(const struct __weavec_rt_site *site) {
 }
 
 /* Copies the string at s and its terminator to d, checked; its length. */
-static uint64_t copyString(char *d, const char *s,
+static uint64_t copyString(char *d, const char *s, size_t limit,
                            const struct __weavec_rt_site *site) {
   const uint64_t n = __weavec_rt_strlen(s, ~(uint64_t)0, site);
   const struct __weavec_rt_site write = writeSite(site);
+  checkRange((uintptr_t)s, n + 1, site);
   checkRange((uintptr_t)d, n + 1, &write);
+  checkLimit(d, n + 1, limit, &write);
   if (d != s && (uintptr_t)d < (uintptr_t)s + n + 1 &&
       (uintptr_t)s < (uintptr_t)d + n + 1)
     __weavec_rt_overlap((uintptr_t)d, (uintptr_t)s, n + 1, &write);
@@ -57,23 +72,24 @@ static uint64_t copyString(char *d, const char *s,
   return n;
 }
 
-char *__weavec_rt_strcpy(char *d, const char *s,
+char *__weavec_rt_strcpy(char *d, const char *s, size_t limit,
                          const struct __weavec_rt_site *site) {
-  (void)copyString(d, s, site);
+  (void)copyString(d, s, limit, site);
   return d;
 }
 
-char *__weavec_rt_stpcpy(char *d, const char *s,
+char *__weavec_rt_stpcpy(char *d, const char *s, size_t limit,
                          const struct __weavec_rt_site *site) {
-  return d + copyString(d, s, site);
+  return d + copyString(d, s, limit, site);
 }
 
-char *__weavec_rt_strcat(char *d, const char *s,
+char *__weavec_rt_strcat(char *d, const char *s, size_t limit,
                          const struct __weavec_rt_site *site) {
   const uint64_t at = __weavec_rt_strlen(d, ~(uint64_t)0, site);
   const uint64_t n = __weavec_rt_strlen(s, ~(uint64_t)0, site);
   const struct __weavec_rt_site write = writeSite(site);
-  checkRange((uintptr_t)d + at, n + 1, &write);
+  checkRange((uintptr_t)d, at + n + 1, &write);
+  checkLimit(d, at + n + 1, limit, &write);
   memcpy(d + at, s, (size_t)n + 1);
   return d;
 }
@@ -472,13 +488,13 @@ int __weavec_rt_scanf(const struct __weavec_rt_site *site, const char *format,
 }
 
 int __weavec_rt_vsnprintf(char *d, size_t n, const char *format,
-                          va_list arguments,
+                          va_list arguments, size_t limit,
                           const struct __weavec_rt_site *site) {
   checkFormat(format, arguments, site);
-  /* A destination of n addressable bytes takes whatever the call writes,
-   * in one formatting pass; otherwise the length the call would write is
-   * computed first, and what it writes checked. */
-  if (n != 0 && !__weavec_rt_range_ok((uintptr_t)d, n)) {
+  /* A destination of n addressable bytes within its limit takes whatever
+   * the call writes, in one formatting pass; otherwise the length the call
+   * would write is computed first, and what it writes checked. */
+  if (n != 0 && (!__weavec_rt_range_ok((uintptr_t)d, n) || n > limit)) {
     va_list copy;
     int length;
     va_copy(copy, arguments);
@@ -489,23 +505,24 @@ int __weavec_rt_vsnprintf(char *d, size_t n, const char *format,
           (uint64_t)length + 1 < n ? (uint64_t)length + 1 : n;
       const struct __weavec_rt_site write = writeSite(site);
       checkRange((uintptr_t)d, written, &write);
+      checkLimit(d, written, limit, &write);
     }
   }
   return vsnprintf(d, n, format, arguments);
 }
 
-int __weavec_rt_snprintf(const struct __weavec_rt_site *site, char *d,
-                         size_t n, const char *format, ...) {
+int __weavec_rt_snprintf(const struct __weavec_rt_site *site, size_t limit,
+                         char *d, size_t n, const char *format, ...) {
   va_list arguments;
   int result;
   va_start(arguments, format);
-  result = __weavec_rt_vsnprintf(d, n, format, arguments, site);
+  result = __weavec_rt_vsnprintf(d, n, format, arguments, limit, site);
   va_end(arguments);
   return result;
 }
 
 int __weavec_rt_vsprintf(char *d, const char *format, va_list arguments,
-                         const struct __weavec_rt_site *site) {
+                         size_t limit, const struct __weavec_rt_site *site) {
   va_list copy;
   int length;
   checkFormat(format, arguments, site);
@@ -517,33 +534,39 @@ int __weavec_rt_vsprintf(char *d, const char *format, va_list arguments,
   {
     const struct __weavec_rt_site write = writeSite(site);
     checkRange((uintptr_t)d, (uint64_t)length + 1, &write);
+    checkLimit(d, (uint64_t)length + 1, limit, &write);
   }
   return vsnprintf(d, (size_t)length + 1, format, arguments);
 }
 
-int __weavec_rt_sprintf(const struct __weavec_rt_site *site, char *d,
-                        const char *format, ...) {
+int __weavec_rt_sprintf(const struct __weavec_rt_site *site, size_t limit,
+                        char *d, const char *format, ...) {
   va_list arguments;
   int result;
   va_start(arguments, format);
-  result = __weavec_rt_vsprintf(d, format, arguments, site);
+  result = __weavec_rt_vsprintf(d, format, arguments, limit, site);
   va_end(arguments);
   return result;
 }
 
 /* gets, which no length bounds: each byte is checked before it is
  * written. */
-char *__weavec_rt_gets(char *d, const struct __weavec_rt_site *site) {
+char *__weavec_rt_gets(char *d, size_t limit,
+                       const struct __weavec_rt_site *site) {
   const struct __weavec_rt_site write = writeSite(site);
   uint64_t n = 0;
   int c;
+  /* Byte by byte, each next to the last: the first that is not addressable
+   * is the report's. */
   while ((c = getchar()) != EOF && c != '\n') {
     checkRange((uintptr_t)d + n, 1, &write);
+    checkLimit(d, n + 1, limit, &write);
     d[n++] = (char)c;
   }
   if (c == EOF && (n == 0 || ferror(stdin)))
     return NULL;
   checkRange((uintptr_t)d + n, 1, &write);
+  checkLimit(d, n + 1, limit, &write);
   d[n] = 0;
   return d;
 }
@@ -641,4 +664,81 @@ int __weavec_rt_munmap(void *address, size_t length,
   if (result == 0)
     weavecRtShadowClear((uintptr_t)address, (uintptr_t)address + length);
   return result;
+}
+
+/*===-- Number parsing (RFC 0036 section 6) --------------------------------===*/
+
+/* Checks the bytes a number parser read from s, which stopped at end, and
+ * stores end through the caller's end pointer. */
+static void parsed(const char *s, char *end, char **out,
+                   const struct __weavec_rt_site *site) {
+  uint64_t read;
+  if (end != s) {
+    read = (uint64_t)(end - s) + 1;
+  } else {
+    /* Nothing converted: the white space and sign skipped, and the
+     * character that refused. */
+    const char *at = s;
+    while (isspace((unsigned char)*at))
+      ++at;
+    if (*at == '+' || *at == '-')
+      ++at;
+    read = (uint64_t)(at - s) + 1;
+  }
+  checkRange((uintptr_t)s, read, site);
+  if (out != NULL) {
+    const struct __weavec_rt_site write = writeSite(site);
+    checkRange((uintptr_t)out, sizeof *out, &write);
+    *out = end;
+  }
+}
+
+#define WEAVEC_RT_PARSER(type, name, call)                                     \
+  type __weavec_rt_##name(const char *s, char **end, int base,                 \
+                          const struct __weavec_rt_site *site) {               \
+    char *stop = (char *)s;                                                    \
+    type value;                                                                \
+    readsNull(s, 1, site);                                                     \
+    value = call(s, &stop, base);                                              \
+    parsed(s, stop, end, site);                                                \
+    return value;                                                              \
+  }
+
+WEAVEC_RT_PARSER(long, strtol, strtol)
+WEAVEC_RT_PARSER(long long, strtoll, strtoll)
+WEAVEC_RT_PARSER(unsigned long, strtoul, strtoul)
+WEAVEC_RT_PARSER(unsigned long long, strtoull, strtoull)
+WEAVEC_RT_PARSER(intmax_t, strtoimax, strtoimax)
+WEAVEC_RT_PARSER(uintmax_t, strtoumax, strtoumax)
+
+#define WEAVEC_RT_FLOAT_PARSER(type, name, call)                               \
+  type __weavec_rt_##name(const char *s, char **end,                           \
+                          const struct __weavec_rt_site *site) {               \
+    char *stop = (char *)s;                                                    \
+    type value;                                                                \
+    readsNull(s, 1, site);                                                     \
+    value = call(s, &stop);                                                    \
+    parsed(s, stop, end, site);                                                \
+    return value;                                                              \
+  }
+
+WEAVEC_RT_FLOAT_PARSER(double, strtod, strtod)
+WEAVEC_RT_FLOAT_PARSER(float, strtof, strtof)
+WEAVEC_RT_FLOAT_PARSER(long double, strtold, strtold)
+
+int __weavec_rt_atoi(const char *s, const struct __weavec_rt_site *site) {
+  return (int)__weavec_rt_strtol(s, NULL, 10, site);
+}
+
+long __weavec_rt_atol(const char *s, const struct __weavec_rt_site *site) {
+  return __weavec_rt_strtol(s, NULL, 10, site);
+}
+
+long long __weavec_rt_atoll(const char *s,
+                            const struct __weavec_rt_site *site) {
+  return __weavec_rt_strtoll(s, NULL, 10, site);
+}
+
+double __weavec_rt_atof(const char *s, const struct __weavec_rt_site *site) {
+  return __weavec_rt_strtod(s, NULL, site);
 }

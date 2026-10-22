@@ -5,73 +5,33 @@
     "The corpus ratchet (RFC 0035, section 11), written by scripts/corpus-gate.py --update (or",
     "--update-from a results file measured elsewhere, for example by CI). For each platform,",
     "configs.<config> records what --quick measured: `ledger`, the enforcement ledgers of the",
-    "per-file weavec-cc -c -O2 compiles (accesses, proven, guarded, unguarded, provenShare), and",
-    "`analysis`, the summary lines of the weavec analysis (sites, proven, notProven, violations,",
-    "trusted, errors, warnings, overBudget). provenShare must not drop, and unguarded, errors and",
-    "warnings must not rise; a better value and a change of the other counts are reported until",
-    "--update records them. test/corpus/README.md documents the gate."
+    "per-file weavec-cc -c -O2 compiles (accesses, proven, guarded, unguarded, provenShare).",
+    "provenShare must not drop and unguarded must not rise; a better value and a change of the",
+    "other counts are reported until --update records them. test/corpus/README.md documents the",
+    "gate."
   ],
   "platforms": {
     "darwin-arm64": {
       "machine": "darwin-arm64 Apple M3 x8",
-      "producer": "weavec-cc version 0.15.0-dev (90dcdf8665ea-dirty)",
-      "updated": "2026-10-06",
+      "producer": "weavec-cc version 0.16.0-dev (1cb608f40912-dirty)",
+      "updated": "2026-10-08",
       "configs": {
         "cJSON": {
           "ledger": {
-            "accesses": 734,
-            "proven": 398,
+            "accesses": 733,
+            "proven": 397,
             "guarded": 336,
             "unguarded": 0,
-            "provenShare": 0.5422
-          },
-          "analysis": {
-            "sites": 1221,
-            "proven": 858,
-            "notProven": 361,
-            "violations": 0,
-            "trusted": 2,
-            "errors": 0,
-            "warnings": 4,
-            "overBudget": 0
-          }
-        },
-        "cJSON-program": {
-          "ledger": {
-            "accesses": 988,
-            "proven": 463,
-            "guarded": 525,
-            "unguarded": 0,
-            "provenShare": 0.4686
-          },
-          "analysis": {
-            "sites": 1745,
-            "proven": 1109,
-            "notProven": 634,
-            "violations": 0,
-            "trusted": 2,
-            "errors": 0,
-            "warnings": 10,
-            "overBudget": 0
+            "provenShare": 0.5416
           }
         },
         "jansson": {
           "ledger": {
-            "accesses": 841,
-            "proven": 350,
-            "guarded": 491,
+            "accesses": 839,
+            "proven": 347,
+            "guarded": 492,
             "unguarded": 0,
-            "provenShare": 0.4162
-          },
-          "analysis": {
-            "sites": 2391,
-            "proven": 1400,
-            "notProven": 987,
-            "violations": 0,
-            "trusted": 4,
-            "errors": 0,
-            "warnings": 33,
-            "overBudget": 0
+            "provenShare": 0.4136
           }
         },
         "jsmn": {
@@ -81,54 +41,24 @@
             "guarded": 92,
             "unguarded": 0,
             "provenShare": 0.6984
-          },
-          "analysis": {
-            "sites": 384,
-            "proven": 239,
-            "notProven": 145,
-            "violations": 0,
-            "trusted": 0,
-            "errors": 0,
-            "warnings": 4,
-            "overBudget": 0
           }
         },
         "linenoise": {
           "ledger": {
-            "accesses": 656,
-            "proven": 317,
-            "guarded": 339,
+            "accesses": 657,
+            "proven": 316,
+            "guarded": 341,
             "unguarded": 0,
-            "provenShare": 0.4832
-          },
-          "analysis": {
-            "sites": 1121,
-            "proven": 748,
-            "notProven": 371,
-            "violations": 0,
-            "trusted": 2,
-            "errors": 0,
-            "warnings": 6,
-            "overBudget": 0
+            "provenShare": 0.481
           }
         },
         "linenoise-program": {
           "ledger": {
-            "accesses": 693,
-            "proven": 332,
-            "guarded": 361,
+            "accesses": 695,
+            "proven": 330,
+            "guarded": 365,
             "unguarded": 0,
-            "provenShare": 0.4791
-          },
-          "analysis": {
-            "sites": 1181,
-            "proven": 781,
-            "notProven": 398,
-            "violations": 0,
-            "trusted": 2,
-            "errors": 0,
-            "warnings": 6,
-            "overBudget": 0
+            "provenShare": 0.4748
           }
         },
         "log.c": {
@@ -138,35 +68,15 @@
             "guarded": 22,
             "unguarded": 0,
             "provenShare": 0.6271
-          },
-          "analysis": {
-            "sites": 74,
-            "proven": 50,
-            "notProven": 23,
-            "violations": 0,
-            "trusted": 1,
-            "errors": 0,
-            "warnings": 0,
-            "overBudget": 0
           }
         },
         "lua": {
           "ledger": {
-            "accesses": 7493,
-            "proven": 2752,
+            "accesses": 7491,
+            "proven": 2750,
             "guarded": 4741,
             "unguarded": 0,
-            "provenShare": 0.3673
-          },
-          "analysis": {
-            "sites": 14578,
-            "proven": 6451,
-            "notProven": 8123,
-            "violations": 0,
-            "trusted": 4,
-            "errors": 0,
-            "warnings": 79,
-            "overBudget": 0
+            "provenShare": 0.3671
           }
         },
         "printf": {
@@ -176,16 +86,6 @@
             "guarded": 35,
             "unguarded": 0,
             "provenShare": 0.4355
-          },
-          "analysis": {
-            "sites": 148,
-            "proven": 59,
-            "notProven": 89,
-            "violations": 0,
-            "trusted": 0,
-            "errors": 0,
-            "warnings": 0,
-            "overBudget": 0
           }
         },
         "sds": {
@@ -195,16 +95,6 @@
             "guarded": 153,
             "unguarded": 0,
             "provenShare": 0.2783
-          },
-          "analysis": {
-            "sites": 464,
-            "proven": 208,
-            "notProven": 256,
-            "violations": 0,
-            "trusted": 0,
-            "errors": 0,
-            "warnings": 11,
-            "overBudget": 0
           }
         },
         "zlib": {
@@ -214,16 +104,6 @@
             "guarded": 2060,
             "unguarded": 0,
             "provenShare": 0.5143
-          },
-          "analysis": {
-            "sites": 4880,
-            "proven": 2538,
-            "notProven": 2342,
-            "violations": 0,
-            "trusted": 0,
-            "errors": 0,
-            "warnings": 6,
-            "overBudget": 0
           }
         }
       }

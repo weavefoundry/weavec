@@ -21,7 +21,7 @@ static void add(cb_t cb, void *arg) {
 static void fire(void) {
   for (int i = 0; i < ntimers; i++) timers[i].cb(timers[i].arg);
 }
-static void show(void *p) { seen += *(int *)p; } // BUG: use-after-free // TRAP
+static void show(void *p) { seen += *(int *)p; } // TRAP
 int main(void) {
   int *x = malloc(sizeof *x);
   if (!x) return 1;

@@ -6,7 +6,6 @@
 // The callee is in another unit. An unconfirmed candidate may remain a
 // warning (RFC 0034, Diagnostics).
 // CLEAN
-// ALLOW: use-of-uninitialized
 // UNITS: const-shallow-callback-callee.c
 #include <stdio.h>
 #include <stdlib.h>

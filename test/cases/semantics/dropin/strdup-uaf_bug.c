@@ -14,5 +14,5 @@ int main(int argc, char **argv) {
   char *path = strdup("/tmp/weavec");
   if (path == NULL) return 1;
   drop(path, atoi(argv[1]));
-  return read_at(path, 1); // BUG: use-after-free possible
+  return read_at(path, 1);
 }

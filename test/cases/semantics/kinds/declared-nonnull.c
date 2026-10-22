@@ -1,4 +1,4 @@
-// RFC 0030 §7.2 (WEAVEC_NONNULL on a parameter): a possibly-null argument is checked at the call.
+// RFC 0030 §7.2 ( on a parameter): a possibly-null argument is checked at the call.
 // STAGE: S6
 // The declaration makes 'p' non-null: the dereference inside 'get' is proven, and a call
 // whose argument has unknown nullness wraps it in the nonnull check instead of reporting it
@@ -6,12 +6,11 @@
 // RUN-INPUT:
 // ASAN
 #include <stddef.h>
-#include <weavec.h>
 
-int get(const int *WEAVEC_NONNULL p) { return *p; } // TRAP
+int get(const int * p) { return *p; } // TRAP
 
 int main(int argc, char **argv) {
   static const int x = 7;
   (void)argv;
-  return get(argc > 1 ? &x : NULL); // BUG: null-dereference // MISS: the analysis does not report a call's argument against the callee's requirement (RFC 0035 §8); the guard stops in the callee
+  return get(argc > 1 ? &x : NULL);
 }

@@ -6,5 +6,5 @@ int main(void) {
   if (!p) return 1;
   p[0] = 1;
   free(p);
-  return peek(p); // BUG: use-after-free
+  return peek(p);
 }

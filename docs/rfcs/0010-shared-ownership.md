@@ -1,20 +1,24 @@
 # RFC 0010: Shared ownership: reference counts, ownership by outcome and per-outcome facts
 
-- **Status**: Accepted
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-04
 - **Accepted**: 2026-09-04
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: amends the RFC 0001 rule that every
-  owned resource has exactly one owner (*Ownership kinds*) by adding
-  *shares*; amends RFC 0002's alias relation (an edge now records whether
-  its ends hold the same share); amends RFC 0007's leak rule for a holder
-  that took a reference; resolves the RFC 0007 *Unresolved questions* items
-  *Reference counting* and *Family annotations* and its *Future work* item
-  *Per-outcome stores*; resolves the RFC 0009 *Future work* item *Facts
+- **Supersedes / superseded by**: Superseded by RFC 0036; amends the RFC 0001
+  rule that every owned resource has exactly one owner (*Ownership kinds*) by
+  adding *shares*; amends RFC 0002's alias relation (an edge now records
+  whether its ends hold the same share); amends RFC 0007's leak rule for a
+  holder that took a reference; resolves the RFC 0007 *Unresolved questions*
+  items *Reference counting* and *Family annotations* and its *Future work*
+  item *Per-outcome stores*; resolves the RFC 0009 *Future work* item *Facts
   about call results kept as scalars* for integer memory the callee writes.
-  Bumps the summary text format (RFC 0003) and the sidecar format (RFC
-  0005) from 5 to 6.
+  Bumps the summary text format (RFC 0003) and the sidecar format (RFC 0005)
+  from 5 to 6.
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Accepted
+> until then; it is kept as a record of the design.
 
 ## Summary
 

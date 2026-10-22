@@ -13,6 +13,6 @@ int a4(void) {             /* heap cell, alias assigned before store */
   struct n **alias = slot;
   *slot = o;
   free(o);
-  return (*alias)->v; // BUG: use-after-free
+  return (*alias)->v; // TRAP: heap-use-after-free
 }
 int main(void) { return a4() == 12345; }

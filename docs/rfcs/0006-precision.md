@@ -1,19 +1,23 @@
 # RFC 0006: Precision: non-lexical loans, condition facts, element places and outcome-conditional summaries
 
-- **Status**: Accepted
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-02
 - **Accepted**: 2026-09-02
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: supersedes RFC 0002 *Loans and lifetimes*
-  (loans now end at the holder's last use), the *Borrow rules* paragraph of
-  RFC 0001 *The model* as the default behaviour (exclusive borrowing becomes
-  opt-in), RFC 0002 *`realloc` and the null edge* (subsumed by
-  outcome-conditional summaries), the RFC 0002 rule that `a[i]` and `a[j]`
+- **Supersedes / superseded by**: Superseded by RFC 0036; supersedes RFC 0002
+  *Loans and lifetimes* (loans now end at the holder's last use), the *Borrow
+  rules* paragraph of RFC 0001 *The model* as the default behaviour (exclusive
+  borrowing becomes opt-in), RFC 0002 *`realloc` and the null edge* (subsumed
+  by outcome-conditional summaries), the RFC 0002 rule that `a[i]` and `a[j]`
   are indistinguishable for moves (element witnesses), and the RFC 0003
-  summary text format version 1 (bumped to 2). Resolves the two follow-ups
-  the roadmap lists under Milestone 2 (*may-moves for `a[*]` element
-  places*, *pointer-equality guards*).
+  summary text format version 1 (bumped to 2). Resolves the two follow-ups the
+  roadmap lists under Milestone 2 (*may-moves for `a[*]` element places*,
+  *pointer-equality guards*).
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Accepted
+> until then; it is kept as a record of the design.
 
 ## Summary
 

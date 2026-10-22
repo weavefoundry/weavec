@@ -1,13 +1,17 @@
 # RFC 0016: Compositional call checking under caller alias relationships
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-07
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Amends RFC 0003's call summaries, RFC 0005's
-  program dependencies and sidecars, RFC 0009's heap-fact branch pruning,
-  RFC 0013's input/output identities,
-  RFC 0014's bounded specialization, and RFC 0015's selected-element interfaces.
+- **Supersedes / superseded by**: Superseded by RFC 0036; amends RFC 0003's
+  call summaries, RFC 0005's program dependencies and sidecars, RFC 0009's
+  heap-fact branch pruning, RFC 0013's input/output identities, RFC 0014's
+  bounded specialization, and RFC 0015's selected-element interfaces.
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Implemented
+> until then; it is kept as a record of the design.
 
 ## Summary
 

@@ -1,5 +1,5 @@
 name: Feature request
-description: Propose an analysis, annotation, diagnostic, or tooling improvement
+description: Propose a guard, runtime, driver, or tooling improvement
 title: "[feature]: "
 labels: [enhancement, needs-triage]
 body:
@@ -16,8 +16,8 @@ body:
     attributes:
       label: Proposal
       description: >
-        How should WeaveC behave? Include example C code and the diagnostics or
-        inference results you would expect.
+        How should WeaveC behave? Include example C code and what you would
+        expect `weavec-cc` and the program it builds to do.
     validations:
       required: true
 
@@ -31,8 +31,8 @@ body:
     attributes:
       label: Affected areas
       options:
-        - label: Core ownership / borrow / lifetime model (`lib/Core`)
-        - label: Inference or checkers (`lib/Analysis`)
-        - label: Clang integration or driver (`lib/Frontend`, `tools/`)
-        - label: Annotations (`weavec.h`)
+        - label: Guard passes (`lib/Frontend/Guard*.cpp`)
+        - label: Library table (`lib/Core/LibrarySpec.txt`)
+        - label: Runtime (`runtime/`)
+        - label: Driver (`lib/Frontend/Driver.cpp`, `tools/weavec-cc`)
         - label: Build, CI, or documentation

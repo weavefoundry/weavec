@@ -14,7 +14,7 @@ int b1(void) {
   bp->a = o;
   struct box *q = bp;
   free(o);
-  int r = q->a->v; // BUG: use-after-free
+  int r = q->a->v; // TRAP: heap-use-after-free
   free(bp);
   return r;
 }

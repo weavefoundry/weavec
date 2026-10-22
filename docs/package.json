@@ -14,8 +14,8 @@
     "check": "npm run prepare:content && astro check",
     "test": "node --test scripts/*.test.mjs",
     "test:browser": "playwright test",
-    "format": "prettier --write \"{src,pages,scripts,tests}/**/*.{astro,css,mjs,ts,md,mdx}\" \"*.{mjs,json,ts}\" \"data/*.json\"",
-    "format:check": "prettier --check \"{src,pages,scripts,tests}/**/*.{astro,css,mjs,ts,md,mdx}\" \"*.{mjs,json,ts}\" \"data/*.json\""
+    "format": "prettier --write \"{src,pages,scripts,tests}/**/*.{astro,css,mjs,ts,md,mdx}\" \"*.{mjs,json,ts}\"",
+    "format:check": "prettier --check \"{src,pages,scripts,tests}/**/*.{astro,css,mjs,ts,md,mdx}\" \"*.{mjs,json,ts}\""
   },
   "dependencies": {
     "@astrojs/markdown-satteri": "0.4.1",

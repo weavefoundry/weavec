@@ -8,7 +8,7 @@ int main(void) {
   struct small *s = malloc(sizeof *s);
   if (!s) return 1;
   s->x = 1;
-  int r = read_big(s); // BUG: out-of-bounds
+  int r = read_big(s);
   free(s);
   return r;
 }

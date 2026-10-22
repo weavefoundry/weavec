@@ -11,23 +11,23 @@ Small, focused PRs are much easier to review than large ones.
 
 <!--
 Anything a reviewer should know: alternatives considered, trade-offs,
-interactions with the ownership model, follow-up work. Changes to Core,
-checker rules, annotations or diagnostic ids must link the RFC in docs/rfcs/
-that specifies them.
+what it costs at run time or build time, follow-up work. Changes to the
+library table, the guard passes, the runtime, the annotation or the
+run-time report kinds must link the RFC in docs/rfcs/ that specifies them.
 Delete this section if not applicable.
 -->
 
 ## Test plan
 
-<!-- How was this verified? New lit/unit tests? Manual runs? -->
+<!-- How was this verified? New lit/unit tests, cases, corpus runs? -->
 
-- [ ] Unit tests added/updated (`unittests/`)
-- [ ] Integration tests added/updated (`test/`)
-- [ ] `ninja check-weavec` passes locally
+- [ ] Unit tests added/updated (`unittests/`, `runtime/test/rt_test.c`)
+- [ ] Integration tests added/updated (`test/Guards`, `test/Driver`, `test/cases`)
+- [ ] `ctest --preset dev` passes locally (a runtime change: on Darwin and Linux)
 
 ## Checklist
 
 - [ ] Code is formatted (`scripts/format.sh`) and passes clang-tidy
 - [ ] Public headers and behaviour changes are documented
 - [ ] Conventional Commit PR title and user-visible changes documented (changelog is generated)
-- [ ] No new dependencies on Clang/LLVM introduced into `lib/Core`
+- [ ] `scripts/check-hygiene.py` passes (no Clang/LLVM in `lib/Core`, runtime entry points declared in `weavec_rt.h`, line budgets)

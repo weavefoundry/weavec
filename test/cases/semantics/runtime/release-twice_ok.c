@@ -3,7 +3,6 @@
 // The possible double free is still reported at the call: a boundary facet is not guarded
 // (RFC 0032, Bugs deliberately not caught), so the case allows the warning.
 // CLEAN
-// ALLOW: double-free
 // RUN-INPUT:
 // ASAN
 #include <stdio.h>

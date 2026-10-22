@@ -8,7 +8,6 @@
 // points: a possible finding. The header `snew` writes before its result is
 // not described either, so the caller reads it as unknown, not as zeros.
 // CLEAN
-// ALLOW: invalid-release
 // ASAN
 // RUN-INPUT:
 #include <stdlib.h>

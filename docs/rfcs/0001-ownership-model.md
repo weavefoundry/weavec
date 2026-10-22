@@ -1,10 +1,14 @@
 # RFC 0001: Ownership, borrowing and lifetimes for C
 
-- **Status**: Accepted
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-01
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: —
+- **Supersedes / superseded by**: Superseded by RFC 0036.
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Accepted
+> until then; it is kept as a record of the design.
 
 > The guarantee statement in *Soundness* is replaced by
 > [RFC 0030](0030-prove-or-trap.md#soundness), *Soundness*. The model this

@@ -89,7 +89,7 @@ set(WEAVEC_LIT_JOBS
 add_custom_target(
   check-weavec-lit
   COMMAND "${WEAVEC_LIT}" ${WEAVEC_LIT_ARGS} "${CMAKE_CURRENT_BINARY_DIR}"
-  DEPENDS weavec weavec-cc weavec_rt weavec_alloc
+  DEPENDS weavec-cc weavec_rt weavec_alloc
   COMMENT "Running WeaveC lit tests"
   USES_TERMINAL)
 add_dependencies(check-weavec check-weavec-lit)

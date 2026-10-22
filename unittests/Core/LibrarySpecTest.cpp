@@ -1,4 +1,4 @@
-//===- LibrarySpecTest.cpp - The declarative C library table --------------===//
+//===- LibrarySpecTest.cpp - The C library table of the guards ------------===//
 //
 // Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -6,11 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// RFC 0030 §8.3: every row of LibrarySpec.txt is checked against an
+// RFC 0036 §6: every row of LibrarySpec.txt is checked against an
 // independent expectation table, written from the C standard, POSIX and the
 // platform manuals in a notation of its own (`render` below), so that a
-// wrong row fails. The other tests cover terms, parser errors, aliases and
-// the fortified forms, the §8.3 model fixes and the §5.2 header list.
+// wrong row fails. The other tests cover terms, parser errors, names,
+// overloads and the fortified forms with their object-size argument.
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,86 +31,6 @@ namespace weavec::core {
 // The expectation notation
 //===----------------------------------------------------------------------===//
 
-static std::string joined(const std::vector<std::uint8_t> &values) {
-  std::string text;
-  for (const std::uint8_t value : values)
-    text += (text.empty() ? "" : "/") + std::to_string(value);
-  return text;
-}
-
-static std::string renderCallback(const LibCallback &callback) {
-  switch (callback.kind) {
-  case LibCallback::Kind::Sync:
-    return "sync=" +
-           (callback.arguments.empty() ? "none" : joined(callback.arguments));
-  case LibCallback::Kind::Entry:
-    return "entry=" +
-           (callback.arguments.empty() ? "none" : joined(callback.arguments));
-  case LibCallback::Kind::AtExit:
-    return "atexit";
-  }
-  return "?";
-}
-
-static std::string renderValue(const LibraryResult &value, bool noreturn) {
-  using Kind = LibraryResult::Kind;
-  std::string text;
-  switch (value.kind) {
-  case Kind::Void:
-    return noreturn ? "noreturn" : "void";
-  case Kind::Int:
-    return value.value ? "int value=" + value.value->str() : "int";
-  case Kind::Fresh:
-    text = "fresh=" + value.family;
-    break;
-  case Kind::Static:
-    text = "static=" + value.state;
-    break;
-  case Kind::Arg:
-    text = "arg=" + std::to_string(value.arg);
-    break;
-  case Kind::Interior:
-    text = "interior=" + std::to_string(value.arg);
-    break;
-  case Kind::InteriorState:
-    text = "interior-state=" + value.state;
-    break;
-  case Kind::Unknown:
-    text = "ptr";
-    break;
-  }
-  switch (value.null) {
-  case LibraryResult::Null::Never:
-    text += " nonnull";
-    break;
-  case LibraryResult::Null::OnFailure:
-    text += " null-on-failure";
-    break;
-  case LibraryResult::Null::May:
-    text += " nullable";
-    break;
-  }
-  if (value.extent)
-    text += " extent=" + value.extent->str();
-  if (value.offset)
-    text += " offset=" + value.offset->str();
-  if (value.kind == Kind::Arg && !value.family.empty())
-    text += " else-fresh=" + value.family;
-  if (value.kind == Kind::Arg && !value.state.empty())
-    text += " else-static=" + value.state;
-  if (value.zeroInit)
-    text += " zeroed";
-  else if (value.family == "free")
-    text += " unzeroed";
-  if (value.zeroFilled)
-    text += " zero-filled";
-  if (value.string)
-    text += " str";
-  if (value.replaces)
-    text += " replaces";
-  return text;
-}
-
 static std::string renderParam(const LibraryParam &param) {
   using Access = LibraryParam::Access;
   std::string text;
@@ -120,10 +40,7 @@ static std::string renderParam(const LibraryParam &param) {
   case LibraryParam::Type::Other:
     return "other";
   case LibraryParam::Type::Function:
-    text = param.null == LibraryParam::Null::Allowed ? "fn?" : "fn";
-    if (param.callback)
-      text += " " + renderCallback(*param.callback);
-    return text;
+    return "fn";
   case LibraryParam::Type::Pointer:
     break;
   }
@@ -151,34 +68,10 @@ static std::string renderParam(const LibraryParam &param) {
     text += " nullable";
   if (param.null == LibraryParam::Null::AllowedIfZero)
     text += " nullable-if=" + (param.zeroTerm ? param.zeroTerm->str() : "?");
-  switch (param.effect) {
-  case LibraryParam::Effect::Borrow:
-    break;
-  case LibraryParam::Effect::Release:
-    text += " releases=" + param.family;
-    break;
-  case LibraryParam::Effect::Realloc:
-    text += " reallocs=" + param.family;
-    break;
-  case LibraryParam::Effect::Retain:
-    text += " retains=" + param.state;
-    break;
-  case LibraryParam::Effect::Escape:
-    text += " escapes";
-    break;
-  case LibraryParam::Effect::Init:
-    text += " inits=" + param.family;
-    break;
-  case LibraryParam::Effect::Fini:
-    text += " finis=" + param.family;
-    break;
-  }
-  if (param.range)
-    text += " range=" + param.range->str();
-  if (param.callback)
-    text += " " + renderCallback(*param.callback);
-  if (param.out)
-    text += " out=(" + renderValue(*param.out, false) + ")";
+  if (param.effect == LibraryParam::Effect::Release)
+    text += " releases";
+  if (param.effect == LibraryParam::Effect::Realloc)
+    text += " reallocs";
   return text;
 }
 
@@ -191,30 +84,24 @@ static std::string renderParams(const LibraryEntry &entry) {
   return text;
 }
 
+static std::string renderResult(const LibraryEntry &entry) {
+  switch (entry.result) {
+  case LibraryEntry::Result::Void:
+    return "void";
+  case LibraryEntry::Result::Int:
+    return entry.value ? "int value=" + entry.value->str() : "int";
+  case LibraryEntry::Result::Pointer:
+    return "ptr";
+  }
+  return "?";
+}
+
 static std::string renderClauses(const LibraryEntry &entry) {
   std::vector<std::string> clauses;
-  clauses.reserve(entry.disjoint.size() + entry.invalidates.size() +
-                  entry.reads.size() + entry.chk.size() + 3);
+  clauses.reserve(entry.disjoint.size());
   for (const LibDisjoint &d : entry.disjoint)
     clauses.push_back("disjoint=" + std::to_string(d.first) + "/" +
                       std::to_string(d.second) + "/" + d.length.str());
-  for (const LibCopy &copy : entry.copies)
-    clauses.push_back("copies=" + std::to_string(copy.dst) + "/" +
-                      std::to_string(copy.src) + "/" + copy.length.str());
-  for (const LibFill &fill : entry.fills)
-    clauses.push_back("fills=" + std::to_string(fill.dst) + "/" +
-                      fill.value.str() + "/" + fill.length.str());
-  for (const LibStringWrite &write : entry.writesString)
-    clauses.push_back("writes-str=" + std::to_string(write.dst) +
-                      (write.length ? "/" + write.length->str() : ""));
-  for (const std::string &state : entry.invalidates)
-    clauses.push_back("invalidates=" + state);
-  for (const std::string &state : entry.reads)
-    clauses.push_back("reads=" + state);
-  if (entry.exits)
-    clauses.emplace_back("exits");
-  if (entry.returnsTwice)
-    clauses.emplace_back("returns-twice");
   if (entry.wide)
     clauses.emplace_back("wide");
   if (entry.format)
@@ -227,8 +114,16 @@ static std::string renderClauses(const LibraryEntry &entry) {
     clauses.push_back("wrapper=" + entry.wrapper->name);
   for (const LibraryChk &alias : entry.chk) {
     std::string text = "chk=" + alias.name + ":";
-    for (std::size_t i = 0; i < alias.argumentOf.size(); ++i)
-      text += (i != 0 ? "/" : "") + std::to_string(alias.argumentOf[i]);
+    for (std::size_t i = 0; i < alias.argumentOf.size(); ++i) {
+      if (i != 0)
+        text += '/';
+      if (std::cmp_equal(i, alias.sizeArgument))
+        text += "size";
+      else if (alias.argumentOf[i] < 0)
+        text += '_';
+      else
+        text += std::to_string(alias.argumentOf[i]);
+    }
     clauses.push_back(text);
   }
   std::string text;
@@ -266,17 +161,6 @@ static LibrarySpec parseOk(std::string_view text) {
   return spec ? std::move(*spec) : LibrarySpec{};
 }
 
-static const LibraryEntry &row(std::string_view name) {
-  const LibraryEntry *entry = LibrarySpec::shipped().find(name);
-  EXPECT_NE(entry, nullptr) << name;
-  static const LibraryEntry Missing = [] {
-    LibraryEntry entry;
-    entry.name = "<missing>";
-    return entry;
-  }();
-  return entry != nullptr ? *entry : Missing;
-}
-
 //===----------------------------------------------------------------------===//
 // The shipped table and the syntax
 //===----------------------------------------------------------------------===//
@@ -286,26 +170,19 @@ TEST(LibrarySpecTest, ShippedTableParses) {
   EXPECT_TRUE(LibrarySpec::parse(LibrarySpec::shippedText(), error)) << error;
   EXPECT_TRUE(LibrarySpec::shippedText().starts_with("# LibrarySpec.txt"));
   EXPECT_GE(LibrarySpec::shipped().entries().size(), 600U);
-  EXPECT_GE(LibrarySpec::shipped().headers().size(), 180U);
 }
 
-TEST(LibrarySpecTest, DirectivesContinuationsAndComments) {
+TEST(LibrarySpecTest, ContinuationsAndComments) {
   const LibrarySpec spec = parseOk("# a comment\n"
-                                   "header bits/*;\n"
-                                   "header a.h;   # trailing comment\n"
                                    "f (r:str, \\\n"
-                                   "   int) -> int;\n"
-                                   "builtins;\n"
-                                   "__builtin_g (int) -> int;\n"
-                                   "header a.h;\n"
-                                   "h () -> void;\n");
-  ASSERT_EQ(spec.entries().size(), 3U);
-  EXPECT_EQ(spec.entries()[0].header, "a.h");
-  EXPECT_EQ(spec.entries()[0].line, 4U);
+                                   "   int) -> int;   # trailing comment\n"
+                                   "\n"
+                                   "g (w:bytes(a1), int) -> void;\n");
+  ASSERT_EQ(spec.entries().size(), 2U);
+  EXPECT_EQ(spec.entries()[0].name, "f");
   EXPECT_EQ(spec.entries()[0].params.size(), 2U);
-  EXPECT_TRUE(spec.entries()[1].header.empty());
-  EXPECT_EQ(spec.entries()[2].header, "a.h");
-  EXPECT_EQ(spec.headers(), (std::vector<std::string>{"bits/*", "a.h"}));
+  EXPECT_EQ(spec.entries()[0].line, 2U);
+  EXPECT_EQ(spec.entries()[1].line, 5U);
 }
 
 TEST(LibrarySpecTest, TermsParsePrintAndEvaluate) {
@@ -319,10 +196,7 @@ TEST(LibrarySpecTest, TermsParsePrintAndEvaluate) {
   EXPECT_EQ(roundTrip("a0 + a1 * a2"), "a0+a1*a2");
   EXPECT_EQ(roundTrip("(a0+a1)*a2"), "(a0+a1)*a2");
   EXPECT_EQ(roundTrip("min(a2, strlen(a1)+1)"), "min(a2,strlen(a1)+1)");
-  EXPECT_EQ(roundTrip("fmtlen(a1)+1"), "fmtlen(a1)+1");
   EXPECT_EQ(roundTrip("a3-1"), "a3-1");
-  EXPECT_EQ(roundTrip("L_tmpnam"), "L_tmpnam");
-  // RFC 0033 §3: a quotient by a positive constant, rounded down.
   EXPECT_EQ(roundTrip("(a0+7)/8"), "(a0+7)/8");
   EXPECT_EQ(roundTrip("a0*4/3"), "a0*4/3");
   std::string error;
@@ -331,19 +205,16 @@ TEST(LibrarySpecTest, TermsParsePrintAndEvaluate) {
   EXPECT_EQ(sum->kind, LibTerm::Kind::Sum);
   EXPECT_EQ(sum->operands[1].kind, LibTerm::Kind::Product);
   for (const char *bad :
-       {"", "a", "a0+", "min(a0)", "a0 a1", "a256", "strlen(x)", "fmtlen(a1",
-        "a1-b", "x0", "a0/0", "a0/a1", "a0/-2"})
+       {"", "a", "a0+", "min(a0)", "a0 a1", "a256", "strlen(x)", "fmtlen(a1)",
+        "BUFSIZ", "a1-b", "x0", "a0/0", "a0/a1", "a0/-2"})
     EXPECT_FALSE(LibTerm::parse(bad, error).has_value()) << bad;
 
   const LibTerm::Values values{
       .argument = [](unsigned i) -> std::optional<std::int64_t> {
         return i < 3 ? std::optional<std::int64_t>(10 * (i + 1)) : std::nullopt;
       },
-      .stringLength = [](unsigned) -> std::optional<std::int64_t> { return 5; },
-      .formatLength = {},
-      .macro = [](std::string_view name) -> std::optional<std::int64_t> {
-        return name == "BUFSIZ" ? std::optional<std::int64_t>(1024)
-                                : std::nullopt;
+      .stringLength = [](unsigned) -> std::optional<std::int64_t> {
+        return 5;
       }};
   const auto eval = [&](std::string_view text) {
     std::string why;
@@ -352,12 +223,9 @@ TEST(LibrarySpecTest, TermsParsePrintAndEvaluate) {
   EXPECT_EQ(eval("a0*a1+1"), 201);
   EXPECT_EQ(eval("min(a2,strlen(a1)+1)"), 6);
   EXPECT_EQ(eval("a2-31"), -1);
-  EXPECT_EQ(eval("BUFSIZ"), 1024);
   EXPECT_EQ(eval("(a0+7)/8"), 2);
   EXPECT_EQ(eval("(a0-17)/8"), -1);
-  EXPECT_EQ(eval("PATH_MAX"), std::nullopt);
   EXPECT_EQ(eval("a3"), std::nullopt);
-  EXPECT_EQ(eval("fmtlen(a1)"), std::nullopt);
   EXPECT_EQ(eval("9223372036854775807+a0"), std::nullopt);
   EXPECT_EQ(eval("4611686018427387904*a1"), std::nullopt);
 }
@@ -368,121 +236,62 @@ TEST(LibrarySpecTest, ParserErrorsNameTheLineAndTheProblem) {
     const char *error;
   };
   const std::vector<Case> cases = {
-      {"f () -> int;",
-       "LibrarySpec.txt:1: 'f': an entry must follow a 'header' or "
-       "'builtins' line"},
-      {"header bits/*;\nf () -> int;",
-       "LibrarySpec.txt:2: 'f': an entry must follow a concrete 'header', "
-       "not a pattern"},
-      {"header /usr/include/stdio.h;",
-       "LibrarySpec.txt:1: invalid header name '/usr/include/stdio.h'"},
-      {"header a.h;\nf (int -> int;",
-       "LibrarySpec.txt:2: 'f': expected ')' after the parameters"},
-      {"header a.h;\nf (int, \\\n   bogus) -> int;",
-       "LibrarySpec.txt:3: 'f': unknown parameter type 'bogus'"},
-      {"header a.h;\nf (r:bytez(a0)) -> int;",
-       "LibrarySpec.txt:2: 'f': unknown parameter flag 'bytez'"},
-      {"header a.h;\nf (r:null-ok:null-if-zero(a1), int) -> int;",
-       "conflicting null flags ('null-if-zero')"},
-      {"header a.h;\nf (none:range(a1), int) -> int;",
-       "parameter 0: 'range' needs 'release'"},
-      {"header a.h;\nf (w:bytes(a3), int) -> int;",
-       "'a3' in parameter 0 names a missing parameter"},
-      {"header a.h;\nf (w:bytes(fmtlen(a1)), r:str, ...) -> int;",
-       "'fmtlen(a1)' needs a 'printf(1, …)' clause"},
-      {"header a.h;\nf (int) -> fresh(free);",
-       "a 'fresh(free)' value needs 'zero-init' or 'no-zero-init' (§11)"},
-      {"header a.h;\nf (r) -> arg(0):zero-init;",
-       "'zero-init' and 'no-zero-init' apply only to fresh results"},
-      {"header a.h;\nf () -> int exits;", "'exits' needs a 'noreturn' result"},
-      {"header a.h;\nf () -> void returns-twice;",
-       "'returns-twice' needs an 'int' result"},
-      // RFC 0035 §2.5: a wrapper names the runtime's checked version.
-      {"header a.h;\nf (w:bytes(a1), int) -> void wrapper(f,room);",
+      {"f (int -> int;", "LibrarySpec.txt:1: 'f': expected ')' after the "
+                         "parameters"},
+      {"f (int, \\\n   bogus) -> int;",
+       "LibrarySpec.txt:2: 'f': expected a parameter, found 'bogus'"},
+      {"f (r:bytez(a0)) -> int;", "unknown parameter flag 'bytez'"},
+      {"f (r:null-ok:null-if-zero(a1), int) -> int;",
+       "'null-ok' and 'null-if-zero' exclude each other"},
+      {"f (w:bytes(a3), int) -> int;",
+       "argument a3 of parameter 0 is past the row's parameters"},
+      {"f (w:bytes(a1):count(a1), int) -> int wide;",
+       "'bytes' and 'count' exclude each other"},
+      {"f (w:count(a1), int) -> int;", "'count' needs a wide row"},
+      {"f (w:str) -> int;", "'str' needs 'r' or 'rw'"},
+      {"f (r:str:str) -> int;", "duplicate flag 'str'"},
+      {"f (int) -> fresh(free);", "expected 'void', 'int' or 'ptr'"},
+      {"f (r) -> int:extent(1);", "expected 'value(…)' after 'int:'"},
+      {"f (r) -> int:value(a3);",
+       "argument a3 of the result is past the row's parameters"},
+      {"f (w:bytes(a1), int) -> void wrapper(f,room);",
        "after the wrapper name"},
-      {"header a.h;\nf (r:str) -> int wrapper(g);",
-       "'wrapper(g)' must name the row's own function, 'f'"},
-      {"header a.h;\nf (w:bytes(a1), int) -> void wrapper(f) wrapper(f);",
+      {"f (r:str) -> int wrapper(g);", "'wrapper(g)' must name the row"},
+      {"f (w:bytes(a1), int) -> void wrapper(f) wrapper(f);",
        "duplicate clause 'wrapper'"},
-      {"header a.h;\nf () -> int", "expected ';' at the end of the entry"},
-      {"header a.h;\nf () -> int; g () -> int;",
-       "unexpected text after ';' (one entry per line)"},
-      {"header a.h;\nf (r, int) -> int chk(__f_chk: 0,0,-1);",
-       "alias '__f_chk' must map argument 0 exactly once"},
-      {"header a.h;\nf (r, int) -> int chk(__f_chk: 0,-1);",
-       "alias '__f_chk' must map argument 1 exactly once"},
-      {"header a.h;\nf (r, int) -> int chk(__f_chk: 0,5);",
-       "alias '__f_chk' maps to missing argument 5"},
-      {"header a.h;\nf (int) -> int chk(__f: -2);", "only -1 may be negative"},
-      {"header a.h;\nf (int) -> int;\nf (int) -> int;",
-       "LibrarySpec.txt:3: 'f': defined again with the same signature (first "
-       "on line 2)"},
-      {"header a.h;\nf (int) -> int chk(g: 0);\ng (int) -> int;",
-       "LibrarySpec.txt:2: 'f': alias 'g' is also an entry name"},
-      {"header a.h;\nf (r, ...) -> int printf(0,1);",
-       "the format argument must be an 'r:str' parameter"},
-      {"header a.h;\nf (r:str, ...) -> int printf(0,2);",
-       "the first variadic argument is 1, not 2"},
-      {"header a.h;\nf (r:str, int) -> int printf(0,1);",
-       "a 'v…' function's va_list argument must be 'other'"},
-      {"header a.h;\nf (w:str) -> int;",
-       "parameter 0: 'str' needs read access ('r' or 'rw')"},
-      {"header a.h;\nf (int) -> interior(0);",
-       "the result names argument 0, which is not a pointer"},
-      {"header a.h;\nf (w) -> arg(0):or-fresh(free):zero-init;",
-       "'or-fresh'/'or-static' need argument 0 to be 'null-ok'"},
-      {"header a.h;\nf (fn:entry(0,1)) -> int;",
-       "'entry(…)' takes at most one argument"},
-      {"header a.h;\nf (fn:bytes(1)) -> int;",
-       "'bytes' is not a flag of 'fn' parameters"},
-      {"header a.h;\nf (int:null-ok) -> int;",
-       "'int' parameters take no flags"},
-      {"header a.h;\nf (w:out(ptr:replaces)) -> int;",
-       "'replaces' applies only to a fresh 'out' value"},
-      {"header a.h;\nf (w:out(int)) -> int;",
-       "an 'out' value must be a pointer, not 'int'"},
-      {"header a.h;\nf (w, r) -> int disjoint(0,0,1);",
-       "'disjoint' needs two different pointer parameters"},
-      {"header a.h;\nf () -> int frobnicate;", "unknown clause 'frobnicate'"},
-      {"header a.h;\nf (r:release(free):escape) -> int;",
-       "conflicting effect flags ('escape')"},
-      {"header a.h;\nf (r:str:str) -> int;", "duplicate flag 'str'"},
-      {"header a.h;\nf (int) -> static(s):extent(a0):nonnull:null-ok;",
-       "conflicting null flags ('null-ok')"},
-      {"header a.h;\nf (int) -> arg(0);",
-       "the result names argument 0, which is not a pointer"},
-      {"header a.h;\nf (r, w) -> int copies(0,1,a2);",
-       "'copies' needs a written and a different read pointer parameter"},
-      {"header a.h;\nf (w) -> int fills(0,0);", "expected ',' in 'fills(…)'"},
-      {"header a.h;\nf (r:str) -> int writes-str(0);",
-       "'writes-str' needs a written pointer parameter"},
-      {"header a.h;\nf (w, int) -> int writes-str(0,a3);",
-       "'a3' in 'writes-str' names a missing parameter"},
-      {"header a.h;\nf (r) -> int:extent(1);",
-       "the only flag of an 'int' result is 'value(…)'"},
-      {"header a.h;\nf (r) -> int:value(a3);",
-       "'a3' in the result names a missing parameter"},
-      {"header a.h;\nf (r) -> ptr:offset(1);",
-       "'offset' applies only to 'interior(N)' results"},
-      {"header a.h;\nf (int) -> fresh(x):zero-filled;",
-       "'zero-filled' applies only to fresh results with an extent"},
+      {"f () -> int", "expected ';' at the end of the entry"},
+      {"f () -> int; g () -> int;", "unexpected text after ';'"},
+      {"f (r, int) -> int chk(__f_chk:0,5);",
+       "alias '__f_chk' names an argument past the row's parameters"},
+      {"f (r, int) -> int chk(__f_chk:0,1,size,size);",
+       "an alias has at most one 'size' argument"},
+      {"f (int) -> int chk(g:0);\ng (int) -> int;",
+       "alias 'g' is already a row or an alias"},
+      {"f (r:str, ...) -> int printf(0,1) scanf(0,1);",
+       "a row has at most one format clause"},
+      {"f (w, r) -> int disjoint(0,5,1);",
+       "'disjoint' names an argument past the row's parameters"},
+      {"f () -> int frobnicate;", "unknown clause 'frobnicate'"},
   };
-  for (const Case &c : cases)
-    EXPECT_NE(parseError(c.text).find(c.error), std::string::npos)
-        << c.text << "\n  gave: " << parseError(c.text);
+  for (const Case &c : cases) {
+    const std::string error = parseError(c.text);
+    EXPECT_NE(error.find(c.error), std::string::npos)
+        << c.text << "\n  gave: " << error;
+  }
 }
 
 //===----------------------------------------------------------------------===//
-// Names, aliases and fortified forms (§8, "Which calls a row governs")
+// Names, aliases and fortified forms
 //===----------------------------------------------------------------------===//
 
-/// The row arguments that call arguments 0..count-1 become.
+/// The row arguments that call arguments 0..count-1 become ('size' -2).
 static std::vector<int> remap(std::string_view callee, unsigned count) {
   const auto match = LibrarySpec::shipped().lookup(callee);
   EXPECT_TRUE(match.has_value()) << callee;
   std::vector<int> rows;
   for (unsigned i = 0; match && i < count; ++i)
-    rows.push_back(match->rowArgument(i));
+    rows.push_back(
+        std::cmp_equal(i, match->sizeArgument()) ? -2 : match->rowArgument(i));
   return rows;
 }
 
@@ -496,433 +305,200 @@ TEST(LibrarySpecTest, NamesResolveDirectlyAndBehindBuiltinPrefix) {
   EXPECT_EQ(resolvedName("memcpy"), "memcpy");
   EXPECT_EQ(resolvedName("__builtin_memcpy"), "memcpy");
   EXPECT_EQ(resolvedName("__builtin_strlen"), "strlen");
-  EXPECT_EQ(resolvedName("__builtin_alloca"), "alloca");
-  EXPECT_EQ(resolvedName("__builtin_fabs"), "fabs");
-  EXPECT_EQ(resolvedName("__builtin_setjmp"), "setjmp");
-  EXPECT_EQ(resolvedName("__builtin_expect"), "__builtin_expect");
   EXPECT_EQ(resolvedName("json_decref"), "<none>");
   EXPECT_EQ(resolvedName("__builtin_json_decref"), "<none>");
   EXPECT_EQ(spec.find("__builtin_memcpy"), nullptr);
   const auto plain = spec.lookup("__builtin_memcpy");
   ASSERT_TRUE(plain.has_value());
   EXPECT_EQ(plain->alias, nullptr);
+  EXPECT_EQ(plain->sizeArgument(), -1);
   EXPECT_EQ(plain->rowArgument(2), 2);
   EXPECT_EQ(plain->callArgument(1), 1);
 }
 
-TEST(LibrarySpecTest, MacOSFortifiedSpellingsRemapArguments) {
+TEST(LibrarySpecTest, MacOSFortifiedSpellingsCarryTheObjectSize) {
   // secure/_string.h: __builtin___X_chk(dst, ..., __darwin_obsz(dst)).
   EXPECT_EQ(remap("__builtin___memcpy_chk", 4),
-            (std::vector<int>{0, 1, 2, -1}));
-  EXPECT_EQ(remap("__builtin___memmove_chk", 4),
-            (std::vector<int>{0, 1, 2, -1}));
+            (std::vector<int>{0, 1, 2, -2}));
   EXPECT_EQ(remap("__builtin___memset_chk", 4),
-            (std::vector<int>{0, 1, 2, -1}));
-  EXPECT_EQ(remap("__builtin___strcpy_chk", 3), (std::vector<int>{0, 1, -1}));
-  EXPECT_EQ(remap("__builtin___stpcpy_chk", 3), (std::vector<int>{0, 1, -1}));
-  EXPECT_EQ(remap("__builtin___strcat_chk", 3), (std::vector<int>{0, 1, -1}));
+            (std::vector<int>{0, 1, 2, -2}));
+  EXPECT_EQ(remap("__builtin___strcpy_chk", 3), (std::vector<int>{0, 1, -2}));
+  EXPECT_EQ(remap("__builtin___stpcpy_chk", 3), (std::vector<int>{0, 1, -2}));
+  EXPECT_EQ(remap("__builtin___strcat_chk", 3), (std::vector<int>{0, 1, -2}));
   EXPECT_EQ(remap("__builtin___strncpy_chk", 4),
-            (std::vector<int>{0, 1, 2, -1}));
-  EXPECT_EQ(remap("__builtin___stpncpy_chk", 4),
-            (std::vector<int>{0, 1, 2, -1}));
-  EXPECT_EQ(remap("__builtin___strncat_chk", 4),
-            (std::vector<int>{0, 1, 2, -1}));
+            (std::vector<int>{0, 1, 2, -2}));
   EXPECT_EQ(remap("__builtin___strlcpy_chk", 4),
-            (std::vector<int>{0, 1, 2, -1}));
-  EXPECT_EQ(remap("__builtin___strlcat_chk", 4),
-            (std::vector<int>{0, 1, 2, -1}));
+            (std::vector<int>{0, 1, 2, -2}));
   EXPECT_EQ(remap("__builtin___memccpy_chk", 5),
-            (std::vector<int>{0, 1, 2, 3, -1}));
+            (std::vector<int>{0, 1, 2, 3, -2}));
   // secure/_stdio.h: the flag and the object size precede the format.
   EXPECT_EQ(remap("__builtin___sprintf_chk", 6),
-            (std::vector<int>{0, -1, -1, 1, 2, 3}));
+            (std::vector<int>{0, -1, -2, 1, 2, 3}));
   EXPECT_EQ(remap("__builtin___snprintf_chk", 7),
-            (std::vector<int>{0, 1, -1, -1, 2, 3, 4}));
+            (std::vector<int>{0, 1, -1, -2, 2, 3, 4}));
   EXPECT_EQ(remap("__builtin___vsprintf_chk", 5),
-            (std::vector<int>{0, -1, -1, 1, 2}));
+            (std::vector<int>{0, -1, -2, 1, 2}));
   EXPECT_EQ(remap("__builtin___vsnprintf_chk", 6),
-            (std::vector<int>{0, 1, -1, -1, 2, 3}));
+            (std::vector<int>{0, 1, -1, -2, 2, 3}));
   EXPECT_EQ(resolvedName("__builtin___sprintf_chk"), "sprintf");
-  EXPECT_EQ(resolvedName("__builtin___vsnprintf_chk"), "vsnprintf");
-  // macOS declares the functions the builtins lower to.
-  EXPECT_EQ(remap("__snprintf_chk", 6), (std::vector<int>{0, 1, -1, -1, 2, 3}));
-  EXPECT_EQ(remap("__sprintf_chk", 5), (std::vector<int>{0, -1, -1, 1, 2}));
+  EXPECT_EQ(remap("__snprintf_chk", 6), (std::vector<int>{0, 1, -1, -2, 2, 3}));
   const auto sprintfChk =
       LibrarySpec::shipped().lookup("__builtin___sprintf_chk");
   ASSERT_TRUE(sprintfChk.has_value());
   EXPECT_EQ(sprintfChk->callArgument(1), 3);
   EXPECT_EQ(sprintfChk->callArgument(2), 4);
-  ASSERT_NE(sprintfChk->param(3), nullptr);
-  EXPECT_TRUE(sprintfChk->param(3)->string);
-  EXPECT_EQ(sprintfChk->param(1), nullptr);
-  EXPECT_EQ(sprintfChk->param(4), nullptr);
+  EXPECT_EQ(sprintfChk->sizeArgument(), 2);
 }
 
-TEST(LibrarySpecTest, GlibcFortifiedSpellingsRemapArguments) {
-  // bits/string_fortified.h and the functions the builtins call.
-  EXPECT_EQ(remap("__memcpy_chk", 4), (std::vector<int>{0, 1, 2, -1}));
-  EXPECT_EQ(remap("__mempcpy_chk", 4), (std::vector<int>{0, 1, 2, -1}));
-  EXPECT_EQ(remap("__strcpy_chk", 3), (std::vector<int>{0, 1, -1}));
-  EXPECT_EQ(remap("__explicit_bzero_chk", 3), (std::vector<int>{0, 1, -1}));
-  // bits/stdio2.h: the flag precedes the format.
+TEST(LibrarySpecTest, GlibcFortifiedSpellingsCarryTheObjectSize) {
+  EXPECT_EQ(remap("__memcpy_chk", 4), (std::vector<int>{0, 1, 2, -2}));
+  EXPECT_EQ(remap("__strcpy_chk", 3), (std::vector<int>{0, 1, -2}));
+  EXPECT_EQ(remap("__explicit_bzero_chk", 3), (std::vector<int>{0, 1, -2}));
+  // bits/stdio2.h: a flag, not a size, precedes the format.
   EXPECT_EQ(remap("__printf_chk", 3), (std::vector<int>{-1, 0, 1}));
   EXPECT_EQ(remap("__fprintf_chk", 4), (std::vector<int>{0, -1, 1, 2}));
-  EXPECT_EQ(remap("__vfprintf_chk", 4), (std::vector<int>{0, -1, 1, 2}));
   EXPECT_EQ(remap("__asprintf_chk", 4), (std::vector<int>{0, -1, 1, 2}));
   EXPECT_EQ(remap("__syslog_chk", 4), (std::vector<int>{0, -1, 1, 2}));
-  EXPECT_EQ(remap("__fgets_chk", 4), (std::vector<int>{0, -1, 1, 2}));
-  EXPECT_EQ(remap("__fread_chk", 5), (std::vector<int>{0, -1, 1, 2, 3}));
-  // bits/unistd.h, bits/socket2.h, bits/wchar2.h.
-  EXPECT_EQ(remap("__read_chk", 4), (std::vector<int>{0, 1, 2, -1}));
-  EXPECT_EQ(remap("__pread64_chk", 5), (std::vector<int>{0, 1, 2, 3, -1}));
-  EXPECT_EQ(remap("__readlink_chk", 4), (std::vector<int>{0, 1, 2, -1}));
-  EXPECT_EQ(remap("__getcwd_chk", 3), (std::vector<int>{0, 1, -1}));
-  EXPECT_EQ(remap("__recv_chk", 5), (std::vector<int>{0, 1, 2, -1, 3}));
-  EXPECT_EQ(remap("__wmemcpy_chk", 4), (std::vector<int>{0, 1, 2, -1}));
+  EXPECT_EQ(remap("__fgets_chk", 4), (std::vector<int>{0, -2, 1, 2}));
+  EXPECT_EQ(remap("__fread_chk", 5), (std::vector<int>{0, -2, 1, 2, 3}));
+  EXPECT_EQ(remap("__read_chk", 4), (std::vector<int>{0, 1, 2, -2}));
+  EXPECT_EQ(remap("__pread64_chk", 5), (std::vector<int>{0, 1, 2, 3, -2}));
+  EXPECT_EQ(remap("__getcwd_chk", 3), (std::vector<int>{0, 1, -2}));
+  EXPECT_EQ(remap("__recv_chk", 5), (std::vector<int>{0, 1, 2, -2, 3}));
+  EXPECT_EQ(remap("__wmemcpy_chk", 4), (std::vector<int>{0, 1, 2, -2}));
+  // __mbstowcs_chk's size counts wide characters the row's bytes do not.
+  EXPECT_EQ(remap("__mbstowcs_chk", 4), (std::vector<int>{0, 1, 2, -1}));
   EXPECT_EQ(remap("__open_2", 2), (std::vector<int>{0, 1}));
   // Renames rather than fortified forms.
   EXPECT_EQ(resolvedName("__isoc99_sscanf"), "sscanf");
   EXPECT_EQ(resolvedName("__isoc23_strtol"), "strtol");
   EXPECT_EQ(resolvedName("__xpg_basename"), "basename");
-  EXPECT_EQ(resolvedName("__sigsetjmp"), "sigsetjmp");
-  EXPECT_EQ(resolvedName("__longjmp_chk"), "longjmp");
-  EXPECT_EQ(resolvedName("__sync_fetch_and_add_4"), "__sync_fetch_and_add");
   EXPECT_EQ(remap("__isoc99_fscanf", 4), (std::vector<int>{0, 1, 2, 3}));
 }
 
-TEST(LibrarySpecTest, OverloadsFollowTheDeclaration) {
-  using Type = LibraryParam::Type;
+TEST(LibrarySpecTest, OverloadsFollowTheArity) {
   const LibrarySpec &spec = LibrarySpec::shipped();
-  const LibSignature glibc{.params = {Type::Pointer, Type::Int, Type::Int,
-                                      Type::Function, Type::Pointer}};
-  const LibSignature bsd{.params = {Type::Pointer, Type::Int, Type::Int,
-                                    Type::Pointer, Type::Function}};
-  const auto gnu = spec.lookup("qsort_r", glibc);
-  ASSERT_TRUE(gnu.has_value());
-  ASSERT_TRUE(gnu->entry->params[3].callback.has_value());
-  EXPECT_EQ(gnu->entry->params[3].callback->arguments,
-            (std::vector<std::uint8_t>{0, 0, 4}));
-  const auto apple = spec.lookup("qsort_r", bsd);
-  ASSERT_TRUE(apple.has_value());
-  ASSERT_TRUE(apple->entry->params[4].callback.has_value());
-  EXPECT_EQ(apple->entry->params[4].callback->arguments,
-            (std::vector<std::uint8_t>{3, 0, 0}));
-  const LibSignature xsi{.params = {Type::Int, Type::Pointer, Type::Int}};
-  LibSignature gnuMessage = xsi;
-  gnuMessage.pointerResult = true;
-  EXPECT_EQ(spec.lookup("strerror_r", xsi)->entry->result.kind,
-            LibraryResult::Kind::Int);
-  EXPECT_EQ(spec.lookup("strerror_r", gnuMessage)->entry->result.kind,
-            LibraryResult::Kind::Unknown);
-  // A declaration that does not fit the row does not use it.
-  const LibSignature twoArgs{.params = {Type::Pointer, Type::Pointer},
-                             .pointerResult = true};
-  EXPECT_FALSE(spec.lookup("memcpy", twoArgs).has_value());
-  // `other` accepts a pointer: va_list is one on some targets.
-  const LibSignature pointerList{.params = {Type::Pointer, Type::Pointer}};
-  EXPECT_TRUE(spec.lookup("vprintf", pointerList).has_value());
+  // glibc's pthread_setname_np(thread, name); macOS's pthread_setname_np(name).
+  const auto glibc = spec.lookup("pthread_setname_np", 2);
+  ASSERT_TRUE(glibc.has_value());
+  EXPECT_EQ(glibc->entry->params.size(), 2U);
+  EXPECT_TRUE(glibc->entry->params[1].string);
+  const auto darwin = spec.lookup("pthread_setname_np", 1);
+  ASSERT_TRUE(darwin.has_value());
+  EXPECT_EQ(darwin->entry->params.size(), 1U);
+  EXPECT_TRUE(darwin->entry->params[0].string);
+  // An arity no row has takes the first; a variadic row takes more.
+  EXPECT_EQ(spec.lookup("pthread_setname_np", 3)->entry, glibc->entry);
+  EXPECT_EQ(spec.lookup("printf", 5)->entry->name, "printf");
+}
+
+TEST(LibrarySpecTest, NumberParsersHaveWrappers) {
+  for (const char *name :
+       {"atoi", "atol", "atoll", "atof", "strtol", "strtoll", "strtoul",
+        "strtoull", "strtod", "strtof", "strtold", "strtoimax", "strtoumax"}) {
+    const LibraryEntry *entry = LibrarySpec::shipped().find(name);
+    ASSERT_NE(entry, nullptr) << name;
+    ASSERT_TRUE(entry->wrapper.has_value()) << name;
+    EXPECT_EQ(entry->wrapper->name, name);
+  }
 }
 
 //===----------------------------------------------------------------------===//
-// The model fixes of §8.3
+// Every row, independently
 //===----------------------------------------------------------------------===//
-
-TEST(LibrarySpecTest, ModelFixesOfSection83) {
-  using Null = LibraryParam::Null;
-  using Effect = LibraryParam::Effect;
-  using Kind = LibraryResult::Kind;
-  // system(NULL) is allowed.
-  EXPECT_EQ(row("system").params[0].null, Null::Allowed);
-  // Zero-length calls accept null, with the length as the zero term.
-  const auto zeroLength = [](std::string_view name, unsigned param,
-                             std::string_view length) {
-    const LibraryParam &p = row(name).params.at(param);
-    EXPECT_EQ(p.null, Null::AllowedIfZero) << name << " " << param;
-    EXPECT_EQ(p.zeroTerm ? p.zeroTerm->str() : "", length) << name;
-  };
-  zeroLength("read", 1, "a2");
-  zeroLength("write", 1, "a2");
-  zeroLength("memcpy", 0, "a2");
-  zeroLength("memcpy", 1, "a2");
-  zeroLength("memmove", 0, "a2");
-  zeroLength("memmove", 1, "a2");
-  zeroLength("memset", 0, "a2");
-  zeroLength("memcmp", 0, "a2");
-  zeroLength("memcmp", 1, "a2");
-  zeroLength("snprintf", 0, "a1");
-  zeroLength("strncpy", 0, "a2");
-  zeroLength("strncpy", 1, "a2");
-  // RFC 0031 §5.4 *Zero-length arguments*: every row whose length may be
-  // zero.
-  zeroLength("fread", 0, "a1*a2");
-  zeroLength("fread_unlocked", 0, "a1*a2");
-  zeroLength("fwrite", 0, "a1*a2");
-  zeroLength("fwrite_unlocked", 0, "a1*a2");
-  zeroLength("strncmp", 0, "a2");
-  zeroLength("strncmp", 1, "a2");
-  zeroLength("strncasecmp", 0, "a2");
-  zeroLength("strncasecmp", 1, "a2");
-  zeroLength("strncasecmp_l", 0, "a2");
-  zeroLength("strncasecmp_l", 1, "a2");
-  zeroLength("strncat", 1, "a2");
-  zeroLength("strnlen", 0, "a1");
-  zeroLength("memchr", 0, "a2");
-  zeroLength("memrchr", 0, "a2");
-  zeroLength("vsnprintf", 0, "a1");
-  // Static storage with the right lifetime.
-  EXPECT_EQ(row("getenv").result.kind, Kind::Static);
-  EXPECT_EQ(row("getenv").result.state, "environ");
-  EXPECT_EQ(row("localtime").result.kind, Kind::Static);
-  EXPECT_EQ(row("strerror").result.kind, Kind::Static);
-  EXPECT_EQ(row("getpwnam").result.kind, Kind::Static);
-  EXPECT_EQ(row("strtok").result.kind, Kind::InteriorState);
-  EXPECT_EQ(row("strtok").params[0].effect, Effect::Retain);
-  EXPECT_EQ(row("strtok").reads, (std::vector<std::string>{"strtok"}));
-  EXPECT_EQ(row("setenv").invalidates, (std::vector<std::string>{"environ"}));
-  EXPECT_EQ(row("putenv").params[0].effect, Effect::Retain);
-  // longjmp does not return, and does not end the process.
-  EXPECT_TRUE(row("longjmp").noreturn);
-  EXPECT_FALSE(row("longjmp").exits);
-  EXPECT_TRUE(row("siglongjmp").noreturn);
-  EXPECT_TRUE(row("exit").exits);
-  EXPECT_TRUE(row("abort").exits);
-  // realloc(p, 0) may release p on the null class: the size is the extent.
-  EXPECT_EQ(row("realloc").params[0].effect, Effect::Realloc);
-  EXPECT_EQ(row("realloc").result.extent->str(), "a1");
-  // The releasers, and what they release.
-  EXPECT_EQ(row("freeifaddrs").params[0].effect, Effect::Release);
-  EXPECT_EQ(row("freeaddrinfo").params[0].effect, Effect::Release);
-  EXPECT_EQ(row("getifaddrs").params[0].out->family, "freeifaddrs");
-  EXPECT_EQ(row("getaddrinfo").params[3].out->family, "freeaddrinfo");
-  EXPECT_EQ(row("globfree").params[0].effect, Effect::Fini);
-  EXPECT_EQ(row("glob").params[3].effect, Effect::Init);
-  EXPECT_EQ(row("regfree").params[0].effect, Effect::Fini);
-  EXPECT_EQ(row("regcomp").params[0].effect, Effect::Init);
-}
-
-//===----------------------------------------------------------------------===//
-// The header list (§5.2) and the accessors
-//===----------------------------------------------------------------------===//
-
-TEST(LibrarySpecTest, HeaderListNamesThePlatformHeadersOnly) {
-  const LibrarySpec &spec = LibrarySpec::shipped();
-  for (const char *header :
-       {"stdio.h", "stdlib.h", "string.h", "pthread.h", "sys/ioctl.h",
-        "sys/socket.h", "arpa/inet.h", "netdb.h", "dirent.h", "regex.h",
-        "bits/stdio2.h", "bits/types/struct_FILE.h", "linux/if.h",
-        "netinet/ip6.h", "./stdio.h", "sys\\socket.h", "execinfo.h"})
-    EXPECT_TRUE(spec.isPlatformHeader(header, false)) << header;
-  for (const char *header :
-       {"jansson.h", "sqlite3.h", "zlib.h", "curl/curl.h", "openssl/ssl.h",
-        "readline/readline.h", "ncurses.h", "sys/capability.h", "bits",
-        "stdio.hpp", "my/stdio.h", ""})
-    EXPECT_FALSE(spec.isPlatformHeader(header, false)) << header;
-  // On Darwin every header of the SDK counts.
-  EXPECT_TRUE(spec.isPlatformHeader("jansson.h", true));
-  // Every entry's header is in the list.
-  for (const LibraryEntry &entry : spec.entries())
-    if (!entry.header.empty())
-      EXPECT_TRUE(spec.isPlatformHeader(entry.header, false)) << entry.name;
-}
-
-TEST(LibrarySpecTest, AccessorsDescribeTheRow) {
-  EXPECT_TRUE(row("malloc").allocates());
-  EXPECT_FALSE(row("malloc").releases());
-  EXPECT_TRUE(row("free").releases());
-  EXPECT_TRUE(row("realloc").releases());
-  EXPECT_TRUE(row("getline").allocates());
-  EXPECT_TRUE(row("realpath").allocates());
-  EXPECT_FALSE(row("strlen").allocates());
-  EXPECT_TRUE(row("qsort").hasCallback());
-  EXPECT_TRUE(row("sigaction").hasCallback());
-  EXPECT_FALSE(row("memcpy").hasCallback());
-  EXPECT_FALSE(row("exit").knownToReturn());
-  EXPECT_FALSE(row("longjmp").knownToReturn());
-  EXPECT_TRUE(row("strlen").knownToReturn());
-  // RFC 0034 §6.3: a `none` argument without an effect is used as a value.
-  EXPECT_TRUE(row("mmap").usesValueOnly(0));
-  EXPECT_TRUE(row("mprotect").usesValueOnly(0));
-  EXPECT_FALSE(row("mmap").usesValueOnly(1));
-  EXPECT_FALSE(row("munmap").usesValueOnly(0));
-  EXPECT_FALSE(row("free").usesValueOnly(0));
-  EXPECT_FALSE(row("memcpy").usesValueOnly(0));
-  EXPECT_FALSE(row("pthread_create").usesValueOnly(3));
-  EXPECT_FALSE(row("tfind").usesValueOnly(0));
-  EXPECT_TRUE(row("munmap").params[0].range.has_value());
-  EXPECT_FALSE(row("free").params[0].range.has_value());
-  EXPECT_TRUE(row("getenv").trustsLibrarySpec());
-  EXPECT_TRUE(row("strtok").trustsLibrarySpec());
-  EXPECT_TRUE(row("tmpnam").trustsLibrarySpec());
-  EXPECT_TRUE(row("pthread_create").trustsLibrarySpec());
-  EXPECT_FALSE(row("memcpy").trustsLibrarySpec());
-  EXPECT_TRUE(row("__builtin_object_size").header.empty());
-  EXPECT_FALSE(row("memcpy").header.empty());
-  EXPECT_EQ(row("memcpy").param(3), nullptr);
-  EXPECT_EQ(row("printf").param(1), nullptr);
-  const LibSignature allocator = row("malloc").signature();
-  EXPECT_EQ(allocator.params,
-            (std::vector<LibraryParam::Type>{LibraryParam::Type::Int}));
-  EXPECT_TRUE(allocator.pointerResult);
-  EXPECT_TRUE(row("malloc").accepts(allocator));
-  EXPECT_EQ(row("memcpy").header, "string.h");
-  EXPECT_GT(row("memcpy").line, 0U);
-}
-
-//===----------------------------------------------------------------------===//
-// The independent expectation table
-//===----------------------------------------------------------------------===//
-//
-// One expectation per row, written from the C standard, POSIX and the glibc,
-// BSD and macOS manuals, in the notation of `renderParam`, `renderValue` and
-// `renderClauses`: parameters are `int`, `other`, `fn[?]` or an access (`none`,
-// `R`, `W`, `RW`) with `str`, `bytes=`, `count=`, `nullable[-if=]`, an effect
-// (`releases=` [`range=`], `reallocs=`, `retains=`, `escapes`, `inits=`,
-// `finis=`), a
-// callback (`sync=`, `entry=`, `atexit`) and `out=(…)`; results name their
-// kind and always their nullability.
 
 // Heap allocation: every heap result may fail, is released by free, and
 // carries its §11 zero-initialisation decision.
 static constexpr auto HeapExpectations = std::to_array<Expectation>({
-    {"malloc", "int", "fresh=free null-on-failure extent=a0 zeroed", ""},
-    {"calloc", "int, int",
-     "fresh=free null-on-failure extent=a0*a1 zeroed zero-filled", ""},
-    {"realloc", "RW nullable reallocs=free, int",
-     "fresh=free null-on-failure extent=a1 zeroed", ""},
-    {"reallocarray", "RW nullable reallocs=free, int, int",
-     "fresh=free null-on-failure extent=a1*a2 zeroed", ""},
-    {"reallocf", "RW nullable releases=free, int",
-     "fresh=free null-on-failure extent=a1 unzeroed", ""},
-    {"aligned_alloc", "int, int", "fresh=free null-on-failure extent=a1 zeroed",
-     ""},
-    {"posix_memalign",
-     "W out=(fresh=free null-on-failure extent=a2 zeroed), int, int", "int",
-     ""},
-    {"valloc", "int", "fresh=free null-on-failure extent=a0 zeroed", ""},
-    {"free", "none nullable releases=free", "void", ""},
-    {"free_sized", "none nullable releases=free, int", "void", ""},
-    {"free_aligned_sized", "none nullable releases=free, int, int", "void", ""},
-    {"canonicalize_file_name", "R str nullable",
-     "fresh=free null-on-failure zeroed str", ""},
-    {"realpath", "R str nullable, W bytes=PATH_MAX nullable",
-     "arg=1 null-on-failure else-fresh=free zeroed str",
-     "chk=__realpath_chk:0/1/-1"},
-    {"memalign", "int, int", "fresh=free null-on-failure extent=a1 zeroed", ""},
-    {"pvalloc", "int", "fresh=free null-on-failure extent=a0 zeroed", ""},
-    {"malloc_usable_size", "none nullable", "int", ""},
-    {"malloc_size", "none nullable", "int", ""},
-    {"malloc_good_size", "int", "int", ""},
-    {"alloca", "int", "fresh=stack nonnull extent=a0 zeroed", ""},
-    {"strdup", "R str",
-     "fresh=free null-on-failure extent=strlen(a0)+1 zeroed str", ""},
-    {"strndup", "R bytes=min(a1,strlen(a0)+1) nullable-if=a1, int",
-     "fresh=free null-on-failure extent=min(a1,strlen(a0))+1 zeroed str", ""},
-    {"wcsdup", "R str", "fresh=free null-on-failure zeroed str", "wide"},
-    {"asprintf",
-     "W out=(fresh=free null-on-failure extent=fmtlen(a1)+1 zeroed str), "
-     "R str, ...",
-     "int", "printf=1/2 chk=__asprintf_chk:0/-1/1/2"},
-    {"vasprintf",
-     "W out=(fresh=free null-on-failure extent=fmtlen(a1)+1 zeroed str), "
-     "R str, other",
-     "int", "printf=1/2 chk=__vasprintf_chk:0/-1/1/2"},
-    {"getline",
-     "RW nullable out=(fresh=free nullable zeroed str replaces), RW nullable, "
-     "RW",
-     "int", ""},
-    {"getdelim",
-     "RW nullable out=(fresh=free nullable zeroed str replaces), RW nullable, "
-     "int, RW",
-     "int", ""},
-    {"tempnam", "R str nullable, R str nullable",
-     "fresh=free null-on-failure zeroed str", "reads=environ"},
-    {"getcwd", "W bytes=a1 nullable, int",
-     "arg=0 null-on-failure else-fresh=free zeroed str",
-     "chk=__getcwd_chk:0/1/-1"},
-    {"get_current_dir_name", "", "fresh=free null-on-failure zeroed str",
-     "reads=environ"},
-    {"backtrace", "W count=a1, int", "int", ""},
-    {"backtrace_symbols", "R count=a1, int",
-     "fresh=free null-on-failure unzeroed", ""},
-    {"backtrace_symbols_fd", "R count=a1, int, int", "void", ""},
+    {"posix_memalign", "W bytes=8, int, int", "int", ""},
+    {"canonicalize_file_name", "R str nullable", "ptr", ""},
+    {"realpath", "R str nullable, W nullable", "ptr",
+     "chk=__realpath_chk:0/1/size"},
+    {"strdup", "R str", "ptr", ""},
+    {"strndup", "R bytes=min(a1,strlen(a0)+1) nullable-if=a1, int", "ptr", ""},
+    {"wcsdup", "R str", "ptr", "wide"},
+    {"asprintf", "W bytes=8, R str, ...", "int",
+     "printf=1/2 chk=__asprintf_chk:0/_/1/2"},
+    {"vasprintf", "W bytes=8, R str, other", "int",
+     "printf=1/2 chk=__vasprintf_chk:0/_/1/2"},
+    {"getline", "RW bytes=8 nullable, RW nullable, RW", "int", ""},
+    {"getdelim", "RW bytes=8 nullable, RW nullable, int, RW", "int", ""},
+    {"tempnam", "R str nullable, R str nullable", "ptr", ""},
+    {"getcwd", "W bytes=a1 nullable, int", "ptr", "chk=__getcwd_chk:0/1/size"},
+    {"backtrace", "W bytes=a1*8, int", "int", ""},
+    {"backtrace_symbols", "R bytes=a1*8, int", "ptr", ""},
+    {"backtrace_symbols_fd", "R bytes=a1*8, int, int", "void", ""},
 });
 
 // <string.h>, <strings.h>: C17 7.24, POSIX, glibc and BSD extensions.
 static constexpr auto StringExpectations = std::to_array<Expectation>({
     {"memcpy", "W bytes=a2 nullable-if=a2, R bytes=a2 nullable-if=a2, int",
-     "arg=0 nonnull",
-     "disjoint=0/1/a2 copies=0/1/a2 chk=__builtin___memcpy_chk:0/1/2/-1 "
-     "chk=__memcpy_chk:0/1/2/-1"},
+     "ptr",
+     "disjoint=0/1/a2 chk=__builtin___memcpy_chk:0/1/2/size "
+     "chk=__memcpy_chk:0/1/2/size"},
     {"memmove", "W bytes=a2 nullable-if=a2, R bytes=a2 nullable-if=a2, int",
-     "arg=0 nonnull",
-     "copies=0/1/a2 chk=__builtin___memmove_chk:0/1/2/-1 "
-     "chk=__memmove_chk:0/1/2/-1"},
-    {"memset", "W bytes=a2 nullable-if=a2, int, int", "arg=0 nonnull",
-     "fills=0/a1/a2 chk=__builtin___memset_chk:0/1/2/-1 "
-     "chk=__memset_chk:0/1/2/-1"},
-    {"memset_explicit", "W bytes=a2 nullable-if=a2, int, int", "arg=0 nonnull",
-     "fills=0/a1/a2"},
+     "ptr",
+     "chk=__builtin___memmove_chk:0/1/2/size chk=__memmove_chk:0/1/2/size"},
+    {"memset", "W bytes=a2 nullable-if=a2, int, int", "ptr",
+     "chk=__builtin___memset_chk:0/1/2/size chk=__memset_chk:0/1/2/size"},
+    {"memset_explicit", "W bytes=a2 nullable-if=a2, int, int", "ptr", ""},
     {"memcmp", "R bytes=a2 nullable-if=a2, R bytes=a2 nullable-if=a2, int",
      "int", ""},
-    {"memchr", "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, int, int",
-     "interior=0 nullable", "wrapper=memchr"},
-    {"memrchr", "R bytes=a2 nullable-if=a2, int, int", "interior=0 nullable",
-     ""},
-    {"rawmemchr", "R bytes=__WEAVEC_UNBOUNDED, int", "interior=0 nonnull", ""},
+    {"memchr", "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, int, int", "ptr",
+     "wrapper=memchr"},
+    {"memrchr", "R bytes=a2 nullable-if=a2, int, int", "ptr", ""},
+    {"rawmemchr", "R, int", "ptr", ""},
     {"memmem", "R bytes=a1 nullable-if=a1, int, R bytes=a3 nullable-if=a3, int",
-     "interior=0 nullable", ""},
+     "ptr", ""},
     {"mempcpy", "W bytes=a2 nullable-if=a2, R bytes=a2 nullable-if=a2, int",
-     "interior=0 nonnull offset=a2",
-     "disjoint=0/1/a2 copies=0/1/a2 chk=__builtin___mempcpy_chk:0/1/2/-1 "
-     "chk=__mempcpy_chk:0/1/2/-1"},
+     "ptr",
+     "disjoint=0/1/a2 chk=__builtin___mempcpy_chk:0/1/2/size "
+     "chk=__mempcpy_chk:0/1/2/size"},
     {"memccpy",
-     "W bytes=min(a3,strlen(a1)+1) nullable-if=a3, "
-     "R bytes=min(a3,strlen(a1)+1) nullable-if=a3, int, int",
-     "interior=0 nullable",
+     "W bytes=min(a3,strlen(a1)+1) nullable-if=a3, R "
+     "bytes=min(a3,strlen(a1)+1) nullable-if=a3, int, int",
+     "ptr",
      "disjoint=0/1/min(a3,strlen(a1)+1) "
-     "chk=__builtin___memccpy_chk:0/1/2/3/-1"},
-    {"strcpy", "W bytes=strlen(a1)+1, R str", "arg=0 nonnull",
-     "disjoint=0/1/strlen(a1)+1 writes-str=0/strlen(a1) wrapper=strcpy "
-     "chk=__builtin___strcpy_chk:0/1/-1 chk=__strcpy_chk:0/1/-1"},
+     "chk=__builtin___memccpy_chk:0/1/2/3/size"},
+    {"strcpy", "W bytes=strlen(a1)+1, R str", "ptr",
+     "disjoint=0/1/strlen(a1)+1 wrapper=strcpy "
+     "chk=__builtin___strcpy_chk:0/1/size chk=__strcpy_chk:0/1/size"},
     {"strncpy",
-     "W bytes=a2 nullable-if=a2, R bytes=min(a2,strlen(a1)+1) "
-     "nullable-if=a2, int",
-     "arg=0 nonnull",
-     "disjoint=0/1/min(a2,strlen(a1)+1) copies=0/1/min(a2,strlen(a1)+1) "
-     "chk=__builtin___strncpy_chk:0/1/2/-1 chk=__strncpy_chk:0/1/2/-1"},
-    {"stpcpy", "W bytes=strlen(a1)+1, R str",
-     "interior=0 nonnull offset=strlen(a1)",
-     "disjoint=0/1/strlen(a1)+1 writes-str=0/strlen(a1) wrapper=stpcpy "
-     "chk=__builtin___stpcpy_chk:0/1/-1 chk=__stpcpy_chk:0/1/-1"},
+     "W bytes=a2 nullable-if=a2, R bytes=min(a2,strlen(a1)+1) nullable-if=a2, "
+     "int",
+     "ptr",
+     "disjoint=0/1/min(a2,strlen(a1)+1) chk=__builtin___strncpy_chk:0/1/2/size "
+     "chk=__strncpy_chk:0/1/2/size"},
+    {"stpcpy", "W bytes=strlen(a1)+1, R str", "ptr",
+     "disjoint=0/1/strlen(a1)+1 wrapper=stpcpy "
+     "chk=__builtin___stpcpy_chk:0/1/size chk=__stpcpy_chk:0/1/size"},
     {"stpncpy",
      "W bytes=a2 nullable-if=a2, R bytes=min(a2,strlen(a1)+1) nullable-if=a2, "
      "int",
-     "interior=0 nonnull offset=min(a2,strlen(a1))",
-     "disjoint=0/1/min(a2,strlen(a1)+1) copies=0/1/min(a2,strlen(a1)+1) "
-     "chk=__builtin___stpncpy_chk:0/1/2/-1 chk=__stpncpy_chk:0/1/2/-1"},
-    {"strcat", "RW str bytes=strlen(a0)+strlen(a1)+1, R str", "arg=0 nonnull",
-     "disjoint=0/1/strlen(a0)+strlen(a1)+1 writes-str=0/strlen(a0)+strlen(a1) "
-     "wrapper=strcat chk=__builtin___strcat_chk:0/1/-1 "
-     "chk=__strcat_chk:0/1/-1"},
+     "ptr",
+     "disjoint=0/1/min(a2,strlen(a1)+1) chk=__builtin___stpncpy_chk:0/1/2/size "
+     "chk=__stpncpy_chk:0/1/2/size"},
+    {"strcat", "RW str bytes=strlen(a0)+strlen(a1)+1, R str", "ptr",
+     "disjoint=0/1/strlen(a0)+strlen(a1)+1 wrapper=strcat "
+     "chk=__builtin___strcat_chk:0/1/size chk=__strcat_chk:0/1/size"},
     {"strncat",
-     "RW str bytes=strlen(a0)+min(a2,strlen(a1))+1, "
-     "R bytes=min(a2,strlen(a1)+1) nullable-if=a2, int",
-     "arg=0 nonnull",
+     "RW str bytes=strlen(a0)+min(a2,strlen(a1))+1, R "
+     "bytes=min(a2,strlen(a1)+1) nullable-if=a2, int",
+     "ptr",
      "disjoint=0/1/strlen(a0)+min(a2,strlen(a1))+1 "
-     "writes-str=0/strlen(a0)+min(a2,strlen(a1)) "
-     "chk=__builtin___strncat_chk:0/1/2/-1 chk=__strncat_chk:0/1/2/-1"},
+     "chk=__builtin___strncat_chk:0/1/2/size chk=__strncat_chk:0/1/2/size"},
     {"strlcpy", "W bytes=a2 nullable-if=a2, R str, int", "int value=strlen(a1)",
-     "disjoint=0/1/min(a2,strlen(a1)+1) writes-str=0/min(a2-1,strlen(a1)) "
-     "chk=__builtin___strlcpy_chk:0/1/2/-1 chk=__strlcpy_chk:0/1/2/-1"},
+     "disjoint=0/1/min(a2,strlen(a1)+1) chk=__builtin___strlcpy_chk:0/1/2/size "
+     "chk=__strlcpy_chk:0/1/2/size"},
     {"strlcat", "RW bytes=a2 nullable-if=a2, R str, int", "int",
-     "chk=__builtin___strlcat_chk:0/1/2/-1 chk=__strlcat_chk:0/1/2/-1"},
+     "chk=__builtin___strlcat_chk:0/1/2/size chk=__strlcat_chk:0/1/2/size"},
     {"strlen", "R str", "int value=strlen(a0)", ""},
     {"strnlen", "R bytes=min(a1,strlen(a0)+1) nullable-if=a1, int",
      "int value=min(a1,strlen(a0))", ""},
     {"strcmp", "R str, R str", "int", "wrapper=strcmp"},
     {"strncmp",
-     "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, "
-     "R bytes=min(a2,strlen(a1)+1) nullable-if=a2, int",
+     "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, R "
+     "bytes=min(a2,strlen(a1)+1) nullable-if=a2, int",
      "int", "wrapper=strncmp"},
     {"strcoll", "R str, R str", "int", ""},
     {"strcoll_l", "R str, R str, none nullable", "int", ""},
@@ -930,72 +506,55 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
     {"strxfrm_l", "W bytes=a2 nullable-if=a2, R str, int, none nullable", "int",
      ""},
     {"strverscmp", "R str, R str", "int", ""},
-    {"strchr", "R str, int", "interior=0 nullable", "wrapper=strchr"},
-    {"strrchr", "R str, int", "interior=0 nullable", ""},
-    {"strchrnul", "R str, int", "interior=0 nonnull", ""},
-    {"strstr", "R str, R str", "interior=0 nullable", ""},
-    {"strcasestr", "R str, R str", "interior=0 nullable", ""},
-    {"strpbrk", "R str, R str", "interior=0 nullable", ""},
+    {"strchr", "R str, int", "ptr", "wrapper=strchr"},
+    {"strrchr", "R str, int", "ptr", ""},
+    {"strchrnul", "R str, int", "ptr", ""},
+    {"strstr", "R str, R str", "ptr", ""},
+    {"strcasestr", "R str, R str", "ptr", ""},
+    {"strpbrk", "R str, R str", "ptr", ""},
     {"strspn", "R str, R str", "int", ""},
     {"strcspn", "R str, R str", "int", ""},
-    {"strtok", "RW str nullable retains=strtok, R str",
-     "interior-state=strtok nullable", "reads=strtok"},
-    {"strtok_r", "RW str nullable, R str, RW out=(interior=0 nullable)",
-     "interior=0 nullable", ""},
-    {"strsep", "RW, R str", "ptr nullable str", ""},
-    {"strerror", "int", "static=strerror nonnull str", ""},
-    {"strerror_l", "int, none", "static=strerror nonnull str", ""},
-    {"strerror_r", "int, W bytes=a2 nullable-if=a2, int", "ptr nonnull str",
-     ""},
+    {"strtok", "RW str nullable, R str", "ptr", ""},
+    {"strtok_r", "RW str nullable, R str, RW bytes=8", "ptr", ""},
+    {"strsep", "RW, R str", "ptr", ""},
+    {"strerror_r", "int, W bytes=a2 nullable-if=a2, int", "ptr", ""},
     {"strerror_r#2", "int, W bytes=a2 nullable-if=a2, int", "int", ""},
-    {"strsignal", "int", "static=strsignal nullable str", ""},
     {"explicit_bzero", "W bytes=a1 nullable-if=a1, int", "void",
-     "fills=0/0/a1 chk=__explicit_bzero_chk:0/1/-1"},
-    {"memset_s", "W bytes=min(a1,a3) nullable, int, int, int", "int",
-     "fills=0/a2/min(a1,a3)"},
-    {"bzero", "W bytes=a1 nullable-if=a1, int", "void", "fills=0/0/a1"},
+     "chk=__explicit_bzero_chk:0/1/size"},
+    {"memset_s", "W bytes=min(a1,a3) nullable, int, int, int", "int", ""},
+    {"bzero", "W bytes=a1 nullable-if=a1, int", "void", ""},
     {"bcopy", "R bytes=a2 nullable-if=a2, W bytes=a2 nullable-if=a2, int",
-     "void", "copies=1/0/a2"},
+     "void", ""},
     {"bcmp", "R bytes=a2 nullable-if=a2, R bytes=a2 nullable-if=a2, int", "int",
      ""},
-    {"index", "R str, int", "interior=0 nullable", ""},
-    {"rindex", "R str, int", "interior=0 nullable", ""},
+    {"index", "R str, int", "ptr", ""},
+    {"rindex", "R str, int", "ptr", ""},
     {"strcasecmp", "R str, R str", "int", "wrapper=strcasecmp"},
     {"strncasecmp",
-     "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, "
-     "R bytes=min(a2,strlen(a1)+1) nullable-if=a2, int",
+     "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, R "
+     "bytes=min(a2,strlen(a1)+1) nullable-if=a2, int",
      "int", "wrapper=strncasecmp"},
     {"strcasecmp_l", "R str, R str, none nullable", "int", ""},
     {"strncasecmp_l",
-     "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, "
-     "R bytes=min(a2,strlen(a1)+1) nullable-if=a2, int, none nullable",
+     "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, R "
+     "bytes=min(a2,strlen(a1)+1) nullable-if=a2, int, none nullable",
      "int", ""},
-    {"ffs", "int", "int", ""},
-    {"ffsl", "int", "int", ""},
-    {"ffsll", "int", "int", ""},
 });
 
 // <stdio.h>: C17 7.21, POSIX and glibc/BSD extensions. Streams are read and
 // written by every operation except the pure queries.
 static constexpr auto StdioExpectations = std::to_array<Expectation>({
-    {"fopen", "R str, R str", "fresh=fclose null-on-failure", ""},
-    {"fdopen", "int, R str", "fresh=fclose null-on-failure", ""},
-    {"freopen", "R str nullable, R str, RW", "arg=2 null-on-failure", ""},
-    {"tmpfile", "", "fresh=fclose null-on-failure", ""},
-    {"fmemopen", "W bytes=a1 nullable escapes, int, R str",
-     "fresh=fclose null-on-failure", ""},
-    {"open_memstream",
-     "W nullable escapes out=(fresh=free null-on-failure unzeroed), "
-     "W nullable escapes",
-     "fresh=fclose null-on-failure", ""},
-    {"fclose", "RW releases=fclose", "int", ""},
-    {"popen", "R str, R str", "fresh=pclose null-on-failure", "reads=environ"},
-    {"pclose", "RW releases=pclose", "int", ""},
+    {"fopen", "R str, R str", "ptr", ""},
+    {"fdopen", "int, R str", "ptr", ""},
+    {"freopen", "R str nullable, R str, RW", "ptr", ""},
+    {"fmemopen", "W bytes=a1 nullable, int, R str", "ptr", ""},
+    {"open_memstream", "W bytes=8 nullable, W nullable", "ptr", ""},
+    {"popen", "R str, R str", "ptr", ""},
     {"fflush", "RW nullable", "int", ""},
     {"fpurge", "RW", "int", ""},
-    {"setvbuf", "RW, W bytes=a3 nullable escapes, int, int", "int", ""},
-    {"setbuf", "RW, W bytes=BUFSIZ nullable escapes", "void", ""},
-    {"setbuffer", "RW, W bytes=a2 nullable escapes, int", "void", ""},
+    {"setvbuf", "RW, W bytes=a3 nullable, int, int", "int", ""},
+    {"setbuf", "RW, W nullable", "void", ""},
+    {"setbuffer", "RW, W bytes=a2 nullable, int", "void", ""},
     {"setlinebuf", "RW", "void", ""},
     {"fileno", "R", "int", ""},
     {"fileno_unlocked", "R", "int", ""},
@@ -1015,23 +574,18 @@ static constexpr auto StdioExpectations = std::to_array<Expectation>({
     {"fgetc", "RW", "int", ""},
     {"getc", "RW", "int", ""},
     {"getc_unlocked", "RW", "int", ""},
-    {"getchar", "", "int", ""},
-    {"getchar_unlocked", "", "int", ""},
     {"ungetc", "int, RW", "int", ""},
     {"fputc", "int, RW", "int", ""},
     {"putc", "int, RW", "int", ""},
     {"putc_unlocked", "int, RW", "int", ""},
-    {"putchar", "int", "int", ""},
-    {"putchar_unlocked", "int", "int", ""},
-    {"fgets", "W bytes=a1 nullable-if=a1, int, RW", "arg=0 nullable",
-     "writes-str=0 chk=__fgets_chk:0/-1/1/2"},
-    {"gets", "W bytes=__WEAVEC_UNBOUNDED", "arg=0 nullable",
-     "wrapper=gets chk=__gets_chk:0/-1"},
-    {"fgetln", "RW, W", "interior=0 nullable", ""},
+    {"fgets", "W bytes=a1 nullable-if=a1, int, RW", "ptr",
+     "chk=__fgets_chk:0/size/1/2"},
+    {"gets", "W", "ptr", "wrapper=gets chk=__gets_chk:0/size"},
+    {"fgetln", "RW, W", "ptr", ""},
     {"fread", "W bytes=a1*a2 nullable-if=a1*a2, int, int, RW", "int",
-     "chk=__fread_chk:0/-1/1/2/3"},
+     "chk=__fread_chk:0/size/1/2/3"},
     {"fread_unlocked", "W bytes=a1*a2 nullable-if=a1*a2, int, int, RW", "int",
-     "chk=__fread_unlocked_chk:0/-1/1/2/3"},
+     "chk=__fread_unlocked_chk:0/size/1/2/3"},
     {"fwrite", "R bytes=a1*a2 nullable-if=a1*a2, int, int, RW", "int", ""},
     {"fwrite_unlocked", "R bytes=a1*a2 nullable-if=a1*a2, int, int, RW", "int",
      ""},
@@ -1039,35 +593,32 @@ static constexpr auto StdioExpectations = std::to_array<Expectation>({
     {"fputs", "R str nullable, RW", "int", ""},
     {"perror", "R str nullable", "void", ""},
     {"printf", "R str, ...", "int",
-     "printf=0/1 chk=__builtin___printf_chk:-1/0/1 chk=__printf_chk:-1/0/1"},
+     "printf=0/1 chk=__builtin___printf_chk:_/0/1 chk=__printf_chk:_/0/1"},
     {"fprintf", "RW, R str, ...", "int",
-     "printf=1/2 chk=__builtin___fprintf_chk:0/-1/1/2 "
-     "chk=__fprintf_chk:0/-1/1/2"},
+     "printf=1/2 chk=__builtin___fprintf_chk:0/_/1/2 "
+     "chk=__fprintf_chk:0/_/1/2"},
     {"dprintf", "int, R str, ...", "int",
-     "printf=1/2 chk=__dprintf_chk:0/-1/1/2"},
-    {"sprintf", "W bytes=fmtlen(a1)+1, R str, ...", "int value=fmtlen(a1)",
-     "writes-str=0/fmtlen(a1) printf=1/2 wrapper=sprintf "
-     "chk=__builtin___sprintf_chk:0/-1/-1/1/2 chk=__sprintf_chk:0/-1/-1/1/2"},
-    {"snprintf", "W bytes=a1 nullable-if=a1, int, R str, ...",
-     "int value=fmtlen(a2)",
-     "writes-str=0/min(a1-1,fmtlen(a2)) printf=2/3 wrapper=snprintf "
-     "chk=__builtin___snprintf_chk:0/1/-1/-1/2/3 "
-     "chk=__snprintf_chk:0/1/-1/-1/2/3"},
+     "printf=1/2 chk=__dprintf_chk:0/_/1/2"},
+    {"sprintf", "W, R str, ...", "int",
+     "printf=1/2 wrapper=sprintf chk=__builtin___sprintf_chk:0/_/size/1/2 "
+     "chk=__sprintf_chk:0/_/size/1/2"},
+    {"snprintf", "W bytes=a1 nullable-if=a1, int, R str, ...", "int",
+     "printf=2/3 wrapper=snprintf chk=__builtin___snprintf_chk:0/1/_/size/2/3 "
+     "chk=__snprintf_chk:0/1/_/size/2/3"},
     {"vprintf", "R str, other", "int",
-     "printf=0/1 chk=__builtin___vprintf_chk:-1/0/1 chk=__vprintf_chk:-1/0/1"},
+     "printf=0/1 chk=__builtin___vprintf_chk:_/0/1 chk=__vprintf_chk:_/0/1"},
     {"vfprintf", "RW, R str, other", "int",
-     "printf=1/2 chk=__builtin___vfprintf_chk:0/-1/1/2 "
-     "chk=__vfprintf_chk:0/-1/1/2"},
+     "printf=1/2 chk=__builtin___vfprintf_chk:0/_/1/2 "
+     "chk=__vfprintf_chk:0/_/1/2"},
     {"vdprintf", "int, R str, other", "int",
-     "printf=1/2 chk=__vdprintf_chk:0/-1/1/2"},
-    {"vsprintf", "W bytes=fmtlen(a1)+1, R str, other", "int value=fmtlen(a1)",
-     "writes-str=0/fmtlen(a1) printf=1/2 wrapper=vsprintf "
-     "chk=__builtin___vsprintf_chk:0/-1/-1/1/2 chk=__vsprintf_chk:0/-1/-1/1/2"},
-    {"vsnprintf", "W bytes=a1 nullable-if=a1, int, R str, other",
-     "int value=fmtlen(a2)",
-     "writes-str=0/min(a1-1,fmtlen(a2)) printf=2/3 wrapper=vsnprintf "
-     "chk=__builtin___vsnprintf_chk:0/1/-1/-1/2/3 "
-     "chk=__vsnprintf_chk:0/1/-1/-1/2/3"},
+     "printf=1/2 chk=__vdprintf_chk:0/_/1/2"},
+    {"vsprintf", "W, R str, other", "int",
+     "printf=1/2 wrapper=vsprintf chk=__builtin___vsprintf_chk:0/_/size/1/2 "
+     "chk=__vsprintf_chk:0/_/size/1/2"},
+    {"vsnprintf", "W bytes=a1 nullable-if=a1, int, R str, other", "int",
+     "printf=2/3 wrapper=vsnprintf "
+     "chk=__builtin___vsnprintf_chk:0/1/_/size/2/3 "
+     "chk=__vsnprintf_chk:0/1/_/size/2/3"},
     {"scanf", "R str, ...", "int",
      "scanf=0/1 wrapper=scanf chk=__isoc99_scanf:0/1 chk=__isoc23_scanf:0/1"},
     {"fscanf", "RW, R str, ...", "int",
@@ -1088,206 +639,140 @@ static constexpr auto StdioExpectations = std::to_array<Expectation>({
     {"remove", "R str", "int", ""},
     {"rename", "R str, R str", "int", ""},
     {"renameat", "int, R str, int, R str", "int", ""},
-    {"tmpnam", "W bytes=L_tmpnam nullable",
-     "arg=0 null-on-failure else-static=tmpnam str", ""},
-    {"ctermid", "W bytes=L_ctermid nullable",
-     "arg=0 nonnull else-static=ctermid str", ""},
+    {"tmpnam", "W nullable", "ptr", ""},
+    {"ctermid", "W nullable", "ptr", ""},
 });
 
 // <stdlib.h>, <inttypes.h>: conversions, environment, sorting and exit.
 static constexpr auto StdlibExpectations = std::to_array<Expectation>({
-    {"atoi", "R str", "int", ""},
-    {"atol", "R str", "int", ""},
-    {"atoll", "R str", "int", ""},
-    {"atof", "R str", "int", ""},
-    {"strtol", "R str, W nullable out=(interior=0 nonnull), int", "int",
-     "chk=__isoc23_strtol:0/1/2"},
-    {"strtoll", "R str, W nullable out=(interior=0 nonnull), int", "int",
-     "chk=__isoc23_strtoll:0/1/2"},
-    {"strtoul", "R str, W nullable out=(interior=0 nonnull), int", "int",
-     "chk=__isoc23_strtoul:0/1/2"},
-    {"strtoull", "R str, W nullable out=(interior=0 nonnull), int", "int",
-     "chk=__isoc23_strtoull:0/1/2"},
-    {"strtod", "R str, W nullable out=(interior=0 nonnull)", "int", ""},
-    {"strtof", "R str, W nullable out=(interior=0 nonnull)", "int", ""},
-    {"strtold", "R str, W nullable out=(interior=0 nonnull)", "int", ""},
-    {"strtoimax", "R str, W nullable out=(interior=0 nonnull), int", "int",
-     "chk=__isoc23_strtoimax:0/1/2"},
-    {"strtoumax", "R str, W nullable out=(interior=0 nonnull), int", "int",
-     "chk=__isoc23_strtoumax:0/1/2"},
-    {"getenv", "R str nullable", "static=environ nullable str",
-     "reads=environ"},
-    {"secure_getenv", "R str", "static=environ nullable str", "reads=environ"},
-    {"setenv", "R str nullable, R str, int", "int",
-     "invalidates=environ reads=environ"},
-    {"unsetenv", "R str nullable", "int", "invalidates=environ reads=environ"},
-    {"putenv", "R str nullable retains=environ", "int",
-     "invalidates=environ reads=environ"},
-    {"clearenv", "", "int", "invalidates=environ"},
-    {"system", "R str nullable", "int", "reads=environ"},
-    {"qsort", "RW bytes=a1*a2 nullable-if=a1*a2, int, int, fn sync=0/0", "void",
-     ""},
-    {"qsort_r",
-     "RW bytes=a1*a2 nullable-if=a1*a2, int, int, fn sync=0/0/4, "
-     "none nullable",
+    {"atoi", "R str", "int", "wrapper=atoi"},
+    {"atol", "R str", "int", "wrapper=atol"},
+    {"atoll", "R str", "int", "wrapper=atoll"},
+    {"atof", "R str", "int", "wrapper=atof"},
+    {"strtol", "R str, W bytes=8 nullable, int", "int",
+     "wrapper=strtol chk=__isoc23_strtol:0/1/2"},
+    {"strtoll", "R str, W bytes=8 nullable, int", "int",
+     "wrapper=strtoll chk=__isoc23_strtoll:0/1/2"},
+    {"strtoul", "R str, W bytes=8 nullable, int", "int",
+     "wrapper=strtoul chk=__isoc23_strtoul:0/1/2"},
+    {"strtoull", "R str, W bytes=8 nullable, int", "int",
+     "wrapper=strtoull chk=__isoc23_strtoull:0/1/2"},
+    {"strtod", "R str, W bytes=8 nullable", "int", "wrapper=strtod"},
+    {"strtof", "R str, W bytes=8 nullable", "int", "wrapper=strtof"},
+    {"strtold", "R str, W bytes=8 nullable", "int", "wrapper=strtold"},
+    {"strtoimax", "R str, W bytes=8 nullable, int", "int",
+     "wrapper=strtoimax chk=__isoc23_strtoimax:0/1/2"},
+    {"strtoumax", "R str, W bytes=8 nullable, int", "int",
+     "wrapper=strtoumax chk=__isoc23_strtoumax:0/1/2"},
+    {"getenv", "R str nullable", "ptr", ""},
+    {"secure_getenv", "R str", "ptr", ""},
+    {"setenv", "R str nullable, R str, int", "int", ""},
+    {"unsetenv", "R str nullable", "int", ""},
+    {"putenv", "R str nullable", "int", ""},
+    {"system", "R str nullable", "int", ""},
+    {"qsort", "RW bytes=a1*a2 nullable-if=a1*a2, int, int, fn", "void", ""},
+    {"qsort_r", "RW bytes=a1*a2 nullable-if=a1*a2, int, int, fn, none nullable",
      "void", ""},
     {"qsort_r#2",
-     "RW bytes=a1*a2 nullable-if=a1*a2, int, int, none nullable, "
-     "fn sync=3/0/0",
-     "void", ""},
-    {"bsearch",
-     "none nullable, R bytes=a2*a3 nullable-if=a2*a3, int, int, fn sync=0/1",
-     "interior=1 nullable", ""},
-    {"exit", "int", "noreturn", "exits"},
-    {"_Exit", "int", "noreturn", "exits"},
-    {"quick_exit", "int", "noreturn", "exits"},
-    {"abort", "", "noreturn", "exits"},
-    {"atexit", "fn atexit", "int", ""},
-    {"at_quick_exit", "fn atexit", "int", ""},
-    {"on_exit", "fn atexit, none nullable escapes", "int", ""},
+     "RW bytes=a1*a2 nullable-if=a1*a2, int, int, none nullable, fn", "void",
+     ""},
+    {"bsearch", "none nullable, R bytes=a2*a3 nullable-if=a2*a3, int, int, fn",
+     "ptr", ""},
     {"mblen", "R bytes=min(a1,strlen(a0)+1) nullable, int", "int", ""},
     {"mbtowc", "W nullable, R bytes=min(a2,strlen(a1)+1) nullable, int", "int",
      ""},
-    {"wctomb", "W bytes=MB_CUR_MAX nullable, int", "int",
-     "chk=__wctomb_chk:0/1/-1"},
-    {"mbstowcs", "W count=a2 nullable, R str, int", "int",
-     "chk=__mbstowcs_chk:0/1/2/-1"},
+    {"wctomb", "W nullable, int", "int", "chk=__wctomb_chk:0/1/size"},
+    {"mbstowcs", "W bytes=a2*4 nullable, R str, int", "int",
+     "chk=__mbstowcs_chk:0/1/2/_"},
     {"wcstombs", "W bytes=a2 nullable, R str, int", "int",
-     "chk=__wcstombs_chk:0/1/2/-1"},
+     "chk=__wcstombs_chk:0/1/2/size"},
     {"mkstemp", "RW str", "int", ""},
     {"mkostemp", "RW str, int", "int", ""},
     {"mkstemps", "RW str, int", "int", ""},
-    {"mkdtemp", "RW str", "arg=0 null-on-failure", ""},
-    {"mktemp", "RW str", "arg=0 nonnull", ""},
-    {"rand", "", "int", ""},
-    {"srand", "int", "void", ""},
+    {"mkdtemp", "RW str", "ptr", ""},
+    {"mktemp", "RW str", "ptr", ""},
     {"rand_r", "RW", "int", ""},
-    {"random", "", "int", ""},
-    {"srandom", "int", "void", ""},
-    {"initstate", "int, W bytes=a2 escapes, int", "ptr nullable", ""},
-    {"setstate", "RW escapes", "ptr nullable", ""},
-    {"drand48", "", "int", ""},
-    {"erand48", "RW count=3", "int", ""},
-    {"lrand48", "", "int", ""},
-    {"nrand48", "RW count=3", "int", ""},
-    {"mrand48", "", "int", ""},
-    {"jrand48", "RW count=3", "int", ""},
-    {"srand48", "int", "void", ""},
-    {"seed48", "R count=3", "static=seed48 nonnull", ""},
-    {"lcong48", "R count=7", "void", ""},
-    {"arc4random", "", "int", ""},
-    {"arc4random_uniform", "int", "int", ""},
+    {"initstate", "int, W bytes=a2, int", "ptr", ""},
+    {"setstate", "RW", "ptr", ""},
+    {"erand48", "RW bytes=6", "int", ""},
+    {"nrand48", "RW bytes=6", "int", ""},
+    {"jrand48", "RW bytes=6", "int", ""},
+    {"seed48", "R bytes=6", "ptr", ""},
+    {"lcong48", "R bytes=14", "void", ""},
     {"arc4random_buf", "W bytes=a1, int", "void", ""},
-    {"getsubopt", "RW, R, W out=(ptr nullable)", "int", ""},
+    {"getsubopt", "RW, R, W bytes=8", "int", ""},
     {"a64l", "R str", "int", ""},
-    {"l64a", "int", "static=l64a nonnull str", ""},
-    {"getloadavg", "W count=min(a1,3) nullable-if=a1, int", "int", ""},
-    {"getprogname", "", "interior-state=progname nonnull str",
-     "reads=progname"},
-    {"setprogname", "R str retains=progname", "void", ""},
-    {"ptsname", "int", "static=ptsname null-on-failure str", ""},
+    {"getloadavg", "W bytes=min(a1,3)*8 nullable-if=a1, int", "int", ""},
+    {"setprogname", "R str", "void", ""},
     {"ptsname_r", "int, W bytes=a2 nullable, int", "int", ""},
-    {"posix_openpt", "int", "int", ""},
-    {"grantpt", "int", "int", ""},
-    {"unlockpt", "int", "int", ""},
 });
 
 // <unistd.h>, <fcntl.h>, <sys/stat.h> and friends: POSIX.1-2024.
 static constexpr auto UnistdExpectations = std::to_array<Expectation>({
     {"read", "int, W bytes=a2 nullable-if=a2, int", "int",
-     "chk=__read_chk:0/1/2/-1"},
+     "chk=__read_chk:0/1/2/size"},
     {"write", "int, R bytes=a2 nullable-if=a2, int", "int", ""},
     {"pread", "int, W bytes=a2 nullable-if=a2, int, int", "int",
-     "chk=__pread_chk:0/1/2/3/-1 chk=__pread64_chk:0/1/2/3/-1"},
+     "chk=__pread_chk:0/1/2/3/size chk=__pread64_chk:0/1/2/3/size"},
     {"pwrite", "int, R bytes=a2 nullable-if=a2, int, int", "int", ""},
-    {"close", "int", "int", ""},
-    {"pipe", "W count=2", "int", ""},
-    {"pipe2", "W count=2, int", "int", ""},
-    {"dup", "int", "int", ""},
-    {"dup2", "int, int", "int", ""},
-    {"dup3", "int, int, int", "int", ""},
-    {"lseek", "int, int, int", "int", ""},
+    {"pipe", "W bytes=8", "int", ""},
+    {"pipe2", "W bytes=8, int", "int", ""},
     {"access", "R str, int", "int", ""},
     {"faccessat", "int, R str, int, int", "int", ""},
     {"unlink", "R str", "int", ""},
     {"unlinkat", "int, R str, int", "int", ""},
     {"rmdir", "R str", "int", ""},
     {"chdir", "R str", "int", ""},
-    {"fchdir", "int", "int", ""},
-    {"getwd", "W bytes=PATH_MAX", "arg=0 null-on-failure", ""},
+    {"getwd", "W", "ptr", ""},
     {"readlink", "R str, W bytes=a2 nullable-if=a2, int", "int",
-     "chk=__readlink_chk:0/1/2/-1"},
+     "chk=__readlink_chk:0/1/2/size"},
     {"readlinkat", "int, R str, W bytes=a3 nullable-if=a3, int", "int",
-     "chk=__readlinkat_chk:0/1/2/3/-1"},
+     "chk=__readlinkat_chk:0/1/2/3/size"},
     {"symlink", "R str, R str", "int", ""},
     {"symlinkat", "R str, int, R str", "int", ""},
     {"link", "R str, R str", "int", ""},
     {"linkat", "int, R str, int, R str, int", "int", ""},
     {"chown", "R str, int, int", "int", ""},
-    {"fchown", "int, int, int", "int", ""},
     {"lchown", "R str, int, int", "int", ""},
     {"fchownat", "int, R str, int, int, int", "int", ""},
     {"truncate", "R str, int", "int", ""},
-    {"ftruncate", "int, int", "int", ""},
-    {"fsync", "int", "int", ""},
-    {"fdatasync", "int", "int", ""},
-    {"sync", "", "void", ""},
-    {"isatty", "int", "int", ""},
-    {"ttyname", "int", "static=ttyname null-on-failure str", ""},
     {"ttyname_r", "int, W bytes=a2 nullable, int", "int",
-     "chk=__ttyname_r_chk:0/1/2/-1"},
-    {"gethostname", "W bytes=a1, int", "int", "chk=__gethostname_chk:0/1/-1"},
+     "chk=__ttyname_r_chk:0/1/2/size"},
+    {"gethostname", "W bytes=a1, int", "int", "chk=__gethostname_chk:0/1/size"},
     {"sethostname", "R bytes=a1, int", "int", ""},
     {"getdomainname", "W bytes=a1, int", "int",
-     "chk=__getdomainname_chk:0/1/-1"},
-    {"getlogin", "", "static=getlogin null-on-failure str", ""},
-    {"getlogin_r", "W bytes=a1, int", "int", "chk=__getlogin_r_chk:0/1/-1"},
-    {"getopt", "int, RW count=a0, R str", "int", ""},
-    {"execv", "R str, R nullable", "int", "reads=environ"},
+     "chk=__getdomainname_chk:0/1/size"},
+    {"getlogin_r", "W bytes=a1, int", "int", "chk=__getlogin_r_chk:0/1/size"},
+    {"getopt", "int, RW bytes=a0*8, R str", "int", ""},
+    {"execv", "R str, R nullable", "int", ""},
     {"execve", "R str, R nullable, R nullable", "int", ""},
-    {"execvp", "R str, R nullable", "int", "reads=environ"},
-    {"execvpe", "R str, R nullable, R nullable", "int", "reads=environ"},
-    {"execl", "R str, R str nullable, ...", "int", "reads=environ"},
-    {"execlp", "R str, R str nullable, ...", "int", "reads=environ"},
+    {"execvp", "R str, R nullable", "int", ""},
+    {"execvpe", "R str, R nullable, R nullable", "int", ""},
+    {"execl", "R str, R str nullable, ...", "int", ""},
+    {"execlp", "R str, R str nullable, ...", "int", ""},
     {"execle", "R str, R str nullable, ...", "int", ""},
     {"fexecve", "int, R nullable, R nullable", "int", ""},
-    {"fork", "", "int", ""},
-    {"vfork", "", "int", "returns-twice"},
-    {"_exit", "int", "noreturn", "exits"},
-    {"alarm", "int", "int", ""},
-    {"pause", "", "int", ""},
-    {"sleep", "int", "int", ""},
-    {"usleep", "int", "int", ""},
-    {"getpid", "", "int", ""},
-    {"getppid", "", "int", ""},
-    {"sysconf", "int", "int", ""},
     {"pathconf", "R str, int", "int", ""},
-    {"fpathconf", "int, int", "int", ""},
     {"confstr", "int, W bytes=a2 nullable-if=a2, int", "int",
-     "chk=__confstr_chk:0/1/2/-1"},
+     "chk=__confstr_chk:0/1/2/size"},
     {"chroot", "R str", "int", ""},
-    {"nice", "int", "int", ""},
     {"getentropy", "W bytes=a1 nullable-if=a1, int", "int", ""},
-    {"getgroups", "int, W count=a0 nullable-if=a0", "int",
-     "chk=__getgroups_chk:0/1/-1"},
+    {"getgroups", "int, W bytes=a0*4 nullable-if=a0", "int",
+     "chk=__getgroups_chk:0/1/size"},
     {"swab", "R bytes=a2 nullable-if=a2, W bytes=a2 nullable-if=a2, int",
      "void", "disjoint=0/1/a2"},
-    {"getopt_long", "int, RW count=a0, R str, R nullable, W nullable", "int",
+    {"getopt_long", "int, RW bytes=a0*8, R str, R nullable, W nullable", "int",
      ""},
-    {"getopt_long_only", "int, RW count=a0, R str, R nullable, W nullable",
+    {"getopt_long_only", "int, RW bytes=a0*8, R str, R nullable, W nullable",
      "int", ""},
     {"open", "R str, int, ...", "int", "chk=__open_2:0/1"},
     {"openat", "int, R str, int, ...", "int", "chk=__openat_2:0/1/2"},
     {"creat", "R str, int", "int", ""},
-    {"fcntl", "int, int, ...", "int", ""},
-    {"posix_fadvise", "int, int, int, int", "int", ""},
-    {"posix_fallocate", "int, int, int", "int", ""},
     {"stat", "R str, W", "int", ""},
     {"fstat", "int, W", "int", ""},
     {"lstat", "R str, W", "int", ""},
     {"fstatat", "int, R str, W, int", "int", ""},
     {"chmod", "R str, int", "int", ""},
-    {"fchmod", "int, int", "int", ""},
     {"fchmodat", "int, R str, int, int", "int", ""},
     {"mkdir", "R str, int", "int", ""},
     {"mkdirat", "int, R str, int", "int", ""},
@@ -1295,17 +780,16 @@ static constexpr auto UnistdExpectations = std::to_array<Expectation>({
     {"mkfifoat", "int, R str, int", "int", ""},
     {"mknod", "R str, int, int", "int", ""},
     {"mknodat", "int, R str, int, int", "int", ""},
-    {"umask", "int", "int", ""},
-    {"utimensat", "int, R str nullable, R count=2 nullable, int", "int", ""},
-    {"futimens", "int, R count=2 nullable", "int", ""},
+    {"utimensat", "int, R str nullable, R bytes=32 nullable, int", "int", ""},
+    {"futimens", "int, R bytes=32 nullable", "int", ""},
     {"statvfs", "R str, W", "int", ""},
     {"fstatvfs", "int, W", "int", ""},
     {"statfs", "R str, W", "int", ""},
     {"fstatfs", "int, W", "int", ""},
     {"utime", "R str, R nullable", "int", ""},
-    {"utimes", "R str, R count=2 nullable", "int", ""},
-    {"futimes", "int, R count=2 nullable", "int", ""},
-    {"lutimes", "R str, R count=2 nullable", "int", ""},
+    {"utimes", "R str, R bytes=32 nullable", "int", ""},
+    {"futimes", "int, R bytes=32 nullable", "int", ""},
+    {"lutimes", "R str, R bytes=32 nullable", "int", ""},
     {"gettimeofday", "W nullable, W nullable", "int", ""},
     {"settimeofday", "R nullable, R nullable", "int", ""},
     {"getitimer", "int, W", "int", ""},
@@ -1314,40 +798,31 @@ static constexpr auto UnistdExpectations = std::to_array<Expectation>({
 
 // <dirent.h>, <time.h>, <sys/mman.h>, <dlfcn.h>.
 static constexpr auto SystemExpectations = std::to_array<Expectation>({
-    {"opendir", "R str", "fresh=closedir null-on-failure", ""},
-    {"fdopendir", "int", "fresh=closedir null-on-failure", ""},
-    {"closedir", "RW releases=closedir", "int", ""},
-    {"readdir", "RW", "interior=0 nullable", ""},
-    {"readdir_r", "RW, W, W out=(arg=1 nullable)", "int", ""},
+    {"opendir", "R str", "ptr", ""},
+    {"readdir", "RW", "ptr", ""},
+    {"readdir_r", "RW, W, W bytes=8", "int", ""},
     {"rewinddir", "RW", "void", ""},
     {"seekdir", "RW, int", "void", ""},
     {"telldir", "R", "int", ""},
     {"dirfd", "R", "int", ""},
-    {"scandir",
-     "R str, W out=(fresh=free null-on-failure unzeroed), fn? sync=none, "
-     "fn? sync=none",
-     "int", ""},
+    {"scandir", "R str, W bytes=8, fn, fn", "int", ""},
     {"alphasort", "R, R", "int", ""},
     {"versionsort", "R, R", "int", ""},
     {"time", "W nullable", "int", ""},
-    {"clock", "", "int", ""},
-    {"difftime", "int, int", "int", ""},
-    {"mktime", "RW", "int", "reads=environ"},
+    {"mktime", "RW", "int", ""},
     {"timegm", "RW", "int", ""},
-    {"asctime", "R", "static=asctime null-on-failure str", ""},
-    {"ctime", "R", "static=asctime null-on-failure str", "reads=environ"},
-    {"gmtime", "R", "static=tm null-on-failure", ""},
-    {"localtime", "R", "static=tm null-on-failure", "reads=environ"},
-    {"asctime_r", "R, W bytes=26", "arg=1 null-on-failure str", ""},
-    {"ctime_r", "R, W bytes=26", "arg=1 null-on-failure str", "reads=environ"},
-    {"gmtime_r", "R, W", "arg=1 null-on-failure", ""},
-    {"localtime_r", "R, W", "arg=1 null-on-failure", "reads=environ"},
-    {"strftime", "W bytes=a1 nullable-if=a1, int, R str, R", "int",
-     "reads=environ"},
+    {"asctime", "R", "ptr", ""},
+    {"ctime", "R", "ptr", ""},
+    {"gmtime", "R", "ptr", ""},
+    {"localtime", "R", "ptr", ""},
+    {"asctime_r", "R, W bytes=26", "ptr", ""},
+    {"ctime_r", "R, W bytes=26", "ptr", ""},
+    {"gmtime_r", "R, W", "ptr", ""},
+    {"localtime_r", "R, W", "ptr", ""},
+    {"strftime", "W bytes=a1 nullable-if=a1, int, R str, R", "int", ""},
     {"strftime_l", "W bytes=a1 nullable-if=a1, int, R str, R, none nullable",
      "int", ""},
-    {"strptime", "R str, R str, W", "interior=0 nullable", ""},
-    {"tzset", "", "void", "reads=environ"},
+    {"strptime", "R str, R str, W", "ptr", ""},
     {"timespec_get", "W, int", "int", ""},
     {"timespec_getres", "W nullable, int", "int", ""},
     {"clock_gettime", "int, W", "int", ""},
@@ -1355,85 +830,50 @@ static constexpr auto SystemExpectations = std::to_array<Expectation>({
     {"clock_settime", "int, R", "int", ""},
     {"clock_nanosleep", "int, int, R, W nullable", "int", ""},
     {"nanosleep", "R, W nullable", "int", ""},
-    {"timer_create", "int, R nullable entry=none, W", "int", ""},
+    {"timer_create", "int, R nullable, W", "int", ""},
     {"timer_settime", "none nullable, int, R, W nullable", "int", ""},
     {"timer_gettime", "none nullable, W", "int", ""},
-    {"timer_getoverrun", "none nullable", "int", ""},
-    {"timer_delete", "none nullable", "int", ""},
-    {"mmap", "none nullable, int, int, int, int, int",
-     "fresh=munmap nonnull extent=a1", "wrapper=mmap"},
-    {"munmap", "none nullable releases=munmap range=a1, int", "int",
-     "wrapper=munmap"},
-    {"mprotect", "none nullable, int, int", "int", ""},
-    {"msync", "none nullable, int, int", "int", ""},
-    {"madvise", "none nullable, int, int", "int", ""},
-    {"posix_madvise", "none nullable, int, int", "int", ""},
-    {"mlock", "none nullable, int", "int", ""},
-    {"munlock", "none nullable, int", "int", ""},
+    {"mmap", "none nullable, int, int, int, int, int", "ptr", "wrapper=mmap"},
+    {"munmap", "none nullable releases, int", "int", "wrapper=munmap"},
     {"mincore", "none nullable, int, W nullable-if=a1", "int", ""},
     {"shm_open", "R str, int, int", "int", ""},
     {"shm_unlink", "R str", "int", ""},
     {"memfd_create", "R str, int", "int", ""},
-    {"dlopen", "R str nullable, int", "fresh=dlclose null-on-failure", ""},
-    {"dlclose", "none nullable releases=dlclose", "int", ""},
-    {"dlsym", "none nullable, R str", "ptr nullable", ""},
-    {"dlerror", "", "static=dlerror nullable str", ""},
+    {"dlopen", "R str nullable, int", "ptr", ""},
+    {"dlsym", "none nullable, R str", "ptr", ""},
     {"dladdr", "none nullable, W", "int", ""},
 });
 
 // Users and groups, locales, iconv, paths, patterns and messages.
 static constexpr auto UsersExpectations = std::to_array<Expectation>({
-    {"getpwnam", "R str", "static=passwd nullable", "invalidates=passwd"},
-    {"getpwuid", "int", "static=passwd nullable", "invalidates=passwd"},
-    {"getpwent", "", "static=passwd nullable", "invalidates=passwd"},
-    {"setpwent", "", "void", ""},
-    {"endpwent", "", "void", ""},
-    {"getpwnam_r", "R str, W, W bytes=a3, int, W out=(arg=1 nullable)", "int",
-     ""},
-    {"getpwuid_r", "int, W, W bytes=a3, int, W out=(arg=1 nullable)", "int",
-     ""},
-    {"getgrnam", "R str", "static=group nullable", "invalidates=group"},
-    {"getgrgid", "int", "static=group nullable", "invalidates=group"},
-    {"getgrent", "", "static=group nullable", "invalidates=group"},
-    {"setgrent", "", "void", ""},
-    {"endgrent", "", "void", ""},
-    {"getgrnam_r", "R str, W, W bytes=a3, int, W out=(arg=1 nullable)", "int",
-     ""},
-    {"getgrgid_r", "int, W, W bytes=a3, int, W out=(arg=1 nullable)", "int",
-     ""},
-    {"setgroups", "int, R count=a0 nullable-if=a0", "int", ""},
+    {"getpwnam", "R str", "ptr", ""},
+    {"getpwnam_r", "R str, W, W bytes=a3, int, W bytes=8", "int", ""},
+    {"getpwuid_r", "int, W, W bytes=a3, int, W bytes=8", "int", ""},
+    {"getgrnam", "R str", "ptr", ""},
+    {"getgrnam_r", "R str, W, W bytes=a3, int, W bytes=8", "int", ""},
+    {"getgrgid_r", "int, W, W bytes=a3, int, W bytes=8", "int", ""},
+    {"setgroups", "int, R bytes=a0*4 nullable-if=a0", "int", ""},
     {"initgroups", "R str, int", "int", ""},
-    {"setlocale", "int, R str nullable", "static=setlocale null-on-failure str",
-     "invalidates=setlocale invalidates=localeconv invalidates=nl_langinfo"},
-    {"localeconv", "", "static=localeconv nonnull", ""},
-    {"newlocale", "int, R str nullable, none nullable reallocs=freelocale",
-     "fresh=freelocale null-on-failure", ""},
-    {"duplocale", "none nullable", "fresh=freelocale null-on-failure", ""},
-    {"freelocale", "none nullable releases=freelocale", "void", ""},
-    {"uselocale", "none nullable", "ptr nullable", ""},
-    {"nl_langinfo", "int", "static=nl_langinfo nonnull str", ""},
-    {"nl_langinfo_l", "int, none nullable", "static=nl_langinfo nonnull str",
-     ""},
-    {"iconv_open", "R str, R str", "fresh=iconv_close nonnull", ""},
+    {"setlocale", "int, R str nullable", "ptr", ""},
+    {"newlocale", "int, R str nullable, none nullable reallocs", "ptr", ""},
+    {"iconv_open", "R str, R str", "ptr", ""},
     {"iconv", "none, RW nullable, RW nullable, RW nullable, RW nullable", "int",
      ""},
-    {"iconv_close", "none releases=iconv_close", "int", ""},
-    {"basename", "RW str nullable", "interior=0 nonnull str",
-     "chk=__xpg_basename:0"},
-    {"dirname", "RW str nullable", "interior=0 nonnull str", ""},
-    {"regcomp", "W inits=regfree, R str, int", "int", ""},
-    {"regexec", "R, R str, int, W count=a2 nullable, int", "int", ""},
+    {"basename", "RW str nullable", "ptr", "chk=__xpg_basename:0"},
+    {"dirname", "RW str nullable", "ptr", ""},
+    {"regcomp", "W, R str, int", "int", ""},
+    {"regexec", "R, R str, int, W bytes=a2*8 nullable, int", "int", ""},
     {"regerror", "int, R nullable, W bytes=a3 nullable-if=a3, int", "int", ""},
-    {"regfree", "RW finis=regfree", "void", ""},
+    {"regfree", "RW", "void", ""},
     {"fnmatch", "R str, R str, int", "int", ""},
-    {"glob", "R str, int, fn? sync=none, RW inits=globfree", "int", ""},
-    {"globfree", "RW finis=globfree", "void", ""},
-    {"wordexp", "R str, RW inits=wordfree, int", "int", "reads=environ"},
-    {"wordfree", "RW nullable finis=wordfree", "void", ""},
-    {"err", "int, R str nullable, ...", "noreturn", "exits printf=1/2"},
-    {"errx", "int, R str nullable, ...", "noreturn", "exits printf=1/2"},
-    {"verr", "int, R str nullable, other", "noreturn", "exits printf=1/2"},
-    {"verrx", "int, R str nullable, other", "noreturn", "exits printf=1/2"},
+    {"glob", "R str, int, fn, RW", "int", ""},
+    {"globfree", "RW", "void", ""},
+    {"wordexp", "R str, RW, int", "int", ""},
+    {"wordfree", "RW nullable", "void", ""},
+    {"err", "int, R str nullable, ...", "void", "printf=1/2"},
+    {"errx", "int, R str nullable, ...", "void", "printf=1/2"},
+    {"verr", "int, R str nullable, other", "void", "printf=1/2"},
+    {"verrx", "int, R str nullable, other", "void", "printf=1/2"},
     {"warn", "R str nullable, ...", "void", "printf=0/1"},
     {"warnx", "R str nullable, ...", "void", "printf=0/1"},
     {"vwarn", "R str nullable, other", "void", "printf=0/1"},
@@ -1441,13 +881,11 @@ static constexpr auto UsersExpectations = std::to_array<Expectation>({
     {"error", "int, int, R str, ...", "void", "printf=2/3"},
     {"error_at_line", "int, int, R str nullable, int, R str, ...", "void",
      "printf=4/5"},
-    {"openlog", "R str nullable retains=syslog, int, int", "void", ""},
+    {"openlog", "R str nullable, int, int", "void", ""},
     {"syslog", "int, R str, ...", "void",
-     "reads=syslog printf=1/2 chk=__syslog_chk:0/-1/1/2"},
+     "printf=1/2 chk=__syslog_chk:0/_/1/2"},
     {"vsyslog", "int, R str, other", "void",
-     "reads=syslog printf=1/2 chk=__vsyslog_chk:0/-1/1/2"},
-    {"closelog", "", "void", ""},
-    {"setlogmask", "int", "int", ""},
+     "printf=1/2 chk=__vsyslog_chk:0/_/1/2"},
     {"uname", "W", "int", ""},
     {"getrlimit", "int, W", "int", ""},
     {"setrlimit", "int, R", "int", ""},
@@ -1464,26 +902,17 @@ static constexpr auto UsersExpectations = std::to_array<Expectation>({
 // <pthread.h>, <threads.h> (§5.3: thread starts and destructors are entry
 // points; once-routines run synchronously).
 static constexpr auto ThreadExpectations = std::to_array<Expectation>({
-    {"pthread_create", "W, R nullable, fn entry=3, none nullable escapes",
-     "int", ""},
+    {"pthread_create", "W, R nullable, fn, none nullable", "int", ""},
     {"pthread_join", "other, W nullable", "int", ""},
-    {"pthread_detach", "other", "int", ""},
-    {"pthread_exit", "none nullable escapes", "noreturn", ""},
-    {"pthread_self", "", "int", ""},
-    {"pthread_self#2", "", "ptr nonnull", ""},
-    {"pthread_equal", "other, other", "int", ""},
-    {"pthread_cancel", "other", "int", ""},
-    {"pthread_kill", "other, int", "int", ""},
     {"pthread_setcancelstate", "int, W nullable", "int", ""},
     {"pthread_setcanceltype", "int, W nullable", "int", ""},
-    {"pthread_testcancel", "", "void", ""},
     {"pthread_attr_init", "W", "int", ""},
     {"pthread_attr_destroy", "RW", "int", ""},
     {"pthread_attr_setdetachstate", "RW, int", "int", ""},
     {"pthread_attr_getdetachstate", "R, W", "int", ""},
     {"pthread_attr_setstacksize", "RW, int", "int", ""},
     {"pthread_attr_getstacksize", "R, W", "int", ""},
-    {"pthread_attr_setstack", "RW, none escapes, int", "int", ""},
+    {"pthread_attr_setstack", "RW, none, int", "int", ""},
     {"pthread_mutex_init", "W, R nullable", "int", ""},
     {"pthread_mutex_destroy", "RW", "int", ""},
     {"pthread_mutex_lock", "RW", "int", ""},
@@ -1519,23 +948,15 @@ static constexpr auto ThreadExpectations = std::to_array<Expectation>({
     {"pthread_barrier_init", "W, R nullable, int", "int", ""},
     {"pthread_barrier_wait", "RW", "int", ""},
     {"pthread_barrier_destroy", "RW", "int", ""},
-    {"pthread_once", "RW, fn sync=none", "int", ""},
-    {"pthread_key_create", "W, fn? entry=none", "int", ""},
-    {"pthread_key_delete", "int", "int", ""},
-    {"pthread_setspecific", "int, none nullable escapes", "int", ""},
-    {"pthread_getspecific", "int", "ptr nullable", ""},
+    {"pthread_once", "RW, fn", "int", ""},
+    {"pthread_key_create", "W, fn", "int", ""},
     {"pthread_sigmask", "int, R nullable, W nullable", "int", ""},
-    {"pthread_atfork", "fn? entry=none, fn? entry=none, fn? entry=none", "int",
-     ""},
     {"pthread_setname_np", "other, R str", "int", ""},
     {"pthread_setname_np#2", "R str", "int", ""},
     {"pthread_getname_np", "other, W bytes=a2, int", "int", ""},
-    {"thrd_create", "W, fn entry=2, none nullable escapes", "int", ""},
+    {"thrd_create", "W, fn, none nullable", "int", ""},
     {"thrd_join", "other, W nullable", "int", ""},
-    {"thrd_detach", "other", "int", ""},
-    {"thrd_exit", "int", "noreturn", ""},
     {"thrd_sleep", "R, W nullable", "int", ""},
-    {"thrd_yield", "", "void", ""},
     {"mtx_init", "W, int", "int", ""},
     {"mtx_lock", "RW", "int", ""},
     {"mtx_trylock", "RW", "int", ""},
@@ -1548,22 +969,15 @@ static constexpr auto ThreadExpectations = std::to_array<Expectation>({
     {"cnd_wait", "RW, RW", "int", ""},
     {"cnd_timedwait", "RW, RW, R", "int", ""},
     {"cnd_destroy", "RW", "void", ""},
-    {"tss_create", "W, fn? entry=none", "int", ""},
-    {"tss_delete", "int", "void", ""},
-    {"tss_get", "int", "ptr nullable", ""},
-    {"tss_set", "int, none nullable escapes", "int", ""},
-    {"call_once", "RW, fn sync=none", "void", ""},
+    {"tss_create", "W, fn", "int", ""},
+    {"call_once", "RW, fn", "void", ""},
 });
 
 // Signals (handlers are entry points), non-local jumps (§5.4), scheduling,
 // semaphores, trees and searches (synchronous comparators), walks, spawning
 // and polling.
 static constexpr auto SignalExpectations = std::to_array<Expectation>({
-    {"signal", "int, fn? entry=none", "ptr nullable", ""},
-    {"sigaction", "int, R nullable entry=none, W nullable", "int", ""},
-    {"raise", "int", "int", ""},
-    {"kill", "int, int", "int", ""},
-    {"killpg", "int, int", "int", ""},
+    {"sigaction", "int, R nullable, W nullable", "int", ""},
     {"sigemptyset", "W", "int", ""},
     {"sigfillset", "W", "int", ""},
     {"sigaddset", "RW, int", "int", ""},
@@ -1576,195 +990,130 @@ static constexpr auto SignalExpectations = std::to_array<Expectation>({
     {"sigtimedwait", "R, W nullable, R nullable", "int", ""},
     {"sigpending", "W", "int", ""},
     {"sigaltstack", "R nullable, W nullable", "int", ""},
-    {"siginterrupt", "int, int", "int", ""},
-    {"sigqueue", "int, int, other", "int", ""},
     {"psignal", "int, R str nullable", "void", ""},
     {"psiginfo", "R, R str nullable", "void", ""},
     {"wait", "W nullable", "int", ""},
     {"waitpid", "int, W nullable, int", "int", ""},
     {"waitid", "int, int, W nullable, int", "int", ""},
     {"wait4", "int, W nullable, int, W nullable", "int", ""},
-    {"setjmp", "other", "int", "returns-twice"},
-    {"_setjmp", "other", "int", "returns-twice"},
-    {"sigsetjmp", "other, int", "int", "returns-twice chk=__sigsetjmp:0/1"},
-    {"longjmp", "other, int", "noreturn", "chk=__longjmp_chk:0/1"},
-    {"_longjmp", "other, int", "noreturn", ""},
-    {"siglongjmp", "other, int", "noreturn", ""},
-    {"sched_yield", "", "int", ""},
     {"sched_getaffinity", "int, int, W bytes=a1", "int", ""},
     {"sched_setaffinity", "int, int, R bytes=a1", "int", ""},
     {"sched_getparam", "int, W nullable", "int", ""},
     {"sched_setparam", "int, R nullable", "int", ""},
     {"sched_setscheduler", "int, int, R nullable", "int", ""},
-    {"sem_open", "R str, int, ...", "fresh=sem_close nullable", ""},
-    {"sem_close", "RW releases=sem_close", "int", ""},
+    {"sem_open", "R str, int, ...", "ptr", ""},
     {"sem_unlink", "R str", "int", ""},
     {"sem_init", "W, int, int", "int", ""},
-    {"sem_destroy", "none", "int", ""},
-    {"sem_wait", "none", "int", ""},
-    {"sem_trywait", "none", "int", ""},
     {"sem_timedwait", "none, R", "int", ""},
-    {"sem_post", "none", "int", ""},
     {"sem_getvalue", "none, W", "int", ""},
-    {"tsearch", "none nullable escapes, RW nullable, fn sync=0/1",
-     "ptr nullable", ""},
-    {"tfind", "none nullable, R nullable, fn sync=0/1", "ptr nullable", ""},
-    {"tdelete", "none nullable, RW nullable, fn sync=0/1", "ptr nullable", ""},
-    {"twalk", "none nullable, fn sync=0", "void", ""},
-    {"tdestroy", "none nullable, fn sync=none", "void", ""},
-    {"lfind",
-     "none nullable, R bytes=__WEAVEC_UNBOUNDED nullable, RW, int, "
-     "fn sync=0/1",
-     "interior=1 nullable", ""},
-    {"lsearch",
-     "none nullable, RW bytes=__WEAVEC_UNBOUNDED, RW, int, fn sync=0/1",
-     "interior=1 nonnull", ""},
-    {"ftw", "R str, fn sync=none, int", "int", ""},
-    {"nftw", "R str, fn sync=none, int, int", "int", ""},
+    {"tsearch", "none nullable, RW nullable, fn", "ptr", ""},
+    {"tfind", "none nullable, R nullable, fn", "ptr", ""},
+    {"tdelete", "none nullable, RW nullable, fn", "ptr", ""},
+    {"lfind", "none nullable, R nullable, RW, int, fn", "ptr", ""},
+    {"lsearch", "none nullable, RW, RW, int, fn", "ptr", ""},
+    {"ftw", "R str, fn, int", "int", ""},
+    {"nftw", "R str, fn, int, int", "int", ""},
     {"posix_spawn",
      "W nullable, R str, R nullable, R nullable, R nullable, R nullable", "int",
      ""},
     {"posix_spawnp",
      "W nullable, R str, R nullable, R nullable, R nullable, R nullable", "int",
-     "reads=environ"},
-    {"poll", "RW count=a1 nullable-if=a1, int, int", "int",
-     "chk=__poll_chk:0/1/2/-1"},
-    {"ppoll", "RW count=a1 nullable-if=a1, int, R nullable, R nullable", "int",
-     "chk=__ppoll_chk:0/1/2/3/-1"},
+     ""},
+    {"poll", "RW bytes=a1*8 nullable-if=a1, int, int", "int",
+     "chk=__poll_chk:0/1/2/size"},
+    {"ppoll", "RW bytes=a1*8 nullable-if=a1, int, R nullable, R nullable",
+     "int", "chk=__ppoll_chk:0/1/2/3/size"},
     {"select",
-     "int, RW bytes=(a0+7)/8 nullable, RW bytes=(a0+7)/8 nullable, "
-     "RW bytes=(a0+7)/8 nullable, RW nullable",
+     "int, RW bytes=(a0+7)/8 nullable, RW bytes=(a0+7)/8 nullable, RW "
+     "bytes=(a0+7)/8 nullable, RW nullable",
      "int", ""},
     {"pselect",
-     "int, RW bytes=(a0+7)/8 nullable, RW bytes=(a0+7)/8 nullable, "
-     "RW bytes=(a0+7)/8 nullable, R nullable, R nullable",
+     "int, RW bytes=(a0+7)/8 nullable, RW bytes=(a0+7)/8 nullable, RW "
+     "bytes=(a0+7)/8 nullable, R nullable, R nullable",
      "int", ""},
-    {"epoll_create", "int", "int", ""},
-    {"epoll_create1", "int", "int", ""},
     {"epoll_ctl", "int, int, int, R nullable", "int", ""},
-    {"epoll_wait", "int, W count=a2 nullable-if=a2, int, int", "int", ""},
-    {"epoll_pwait", "int, W count=a2 nullable-if=a2, int, int, R nullable",
+    {"epoll_wait", "int, W bytes=a2*12 nullable-if=a2, int, int", "int", ""},
+    {"epoll_pwait", "int, W bytes=a2*12 nullable-if=a2, int, int, R nullable",
      "int", ""},
-    {"kqueue", "", "int", ""},
     {"kevent",
-     "int, R count=a2 nullable-if=a2, int, W count=a4 nullable-if=a4, int, "
-     "R nullable",
+     "int, R bytes=a2*32 nullable-if=a2, int, W bytes=a4*32 nullable-if=a4, "
+     "int, R nullable",
      "int", ""},
 });
 
 // Sockets, name resolution, interfaces and the remaining system interfaces.
 static constexpr auto NetworkExpectations = std::to_array<Expectation>({
-    {"socket", "int, int, int", "int", ""},
-    {"socketpair", "int, int, int, W count=2", "int", ""},
+    {"socketpair", "int, int, int, W bytes=8", "int", ""},
     {"bind", "int, R bytes=a2 nullable-if=a2, int", "int", ""},
     {"connect", "int, R bytes=a2 nullable-if=a2, int", "int", ""},
-    {"listen", "int, int", "int", ""},
     {"accept", "int, W nullable, RW nullable", "int", ""},
     {"accept4", "int, W nullable, RW nullable, int", "int", ""},
-    {"shutdown", "int, int", "int", ""},
     {"send", "int, R bytes=a2 nullable-if=a2, int, int", "int", ""},
     {"sendto",
      "int, R bytes=a2 nullable-if=a2, int, int, R bytes=a5 nullable, int",
      "int", ""},
     {"sendmsg", "int, R, int", "int", ""},
     {"recv", "int, W bytes=a2 nullable-if=a2, int, int", "int",
-     "chk=__recv_chk:0/1/2/-1/3"},
+     "chk=__recv_chk:0/1/2/size/3"},
     {"recvfrom",
      "int, W bytes=a2 nullable-if=a2, int, int, W nullable, RW nullable", "int",
-     "chk=__recvfrom_chk:0/1/2/-1/3/4/5"},
+     "chk=__recvfrom_chk:0/1/2/size/3/4/5"},
     {"recvmsg", "int, RW, int", "int", ""},
     {"getsockopt", "int, int, int, W nullable, RW", "int", ""},
     {"setsockopt", "int, int, int, R bytes=a4 nullable-if=a4, int", "int", ""},
     {"getsockname", "int, W, RW", "int", ""},
     {"getpeername", "int, W, RW", "int", ""},
-    {"getaddrinfo",
-     "R str nullable, R str nullable, R nullable, "
-     "W out=(fresh=freeaddrinfo null-on-failure)",
+    {"getaddrinfo", "R str nullable, R str nullable, R nullable, W bytes=8",
      "int", ""},
-    {"freeaddrinfo", "none nullable releases=freeaddrinfo", "void", ""},
-    {"gai_strerror", "int", "static=gai_strerror nonnull str", ""},
     {"getnameinfo",
      "R bytes=a1 nullable, int, W bytes=a3 nullable, int, W bytes=a5 nullable, "
-     "int, "
-     "int",
+     "int, int",
      "int", ""},
-    {"gethostbyname", "R str", "static=hostent nullable",
-     "invalidates=hostent"},
-    {"gethostbyname2", "R str, int", "static=hostent nullable",
-     "invalidates=hostent"},
-    {"gethostbyaddr", "R bytes=a1, int, int", "static=hostent nullable",
-     "invalidates=hostent"},
-    {"getservbyname", "R str, R str nullable", "static=servent nullable",
-     "invalidates=servent"},
-    {"getservbyport", "int, R str nullable", "static=servent nullable",
-     "invalidates=servent"},
-    {"getprotobyname", "R str", "static=protoent nullable",
-     "invalidates=protoent"},
-    {"getprotobynumber", "int", "static=protoent nullable",
-     "invalidates=protoent"},
+    {"gethostbyname", "R str", "ptr", ""},
+    {"gethostbyname2", "R str, int", "ptr", ""},
+    {"gethostbyaddr", "R bytes=a1, int, int", "ptr", ""},
+    {"getservbyname", "R str, R str nullable", "ptr", ""},
+    {"getservbyport", "int, R str nullable", "ptr", ""},
+    {"getprotobyname", "R str", "ptr", ""},
     {"herror", "R str nullable", "void", ""},
-    {"hstrerror", "int", "static=hstrerror nonnull str", ""},
-    {"inet_ntop", "int, R, W bytes=a3, int", "arg=2 null-on-failure str", ""},
+    {"inet_ntop", "int, R, W bytes=a3, int", "ptr", ""},
     {"inet_pton", "int, R str, W", "int", ""},
     {"inet_addr", "R str", "int", ""},
     {"inet_aton", "R str, W nullable", "int", ""},
     {"inet_network", "R str", "int", ""},
-    {"inet_ntoa", "other", "static=inet_ntoa nonnull str", ""},
-    {"htons", "int", "int", ""},
-    {"htonl", "int", "int", ""},
-    {"ntohs", "int", "int", ""},
-    {"ntohl", "int", "int", ""},
-    {"getifaddrs", "W out=(fresh=freeifaddrs null-on-failure)", "int", ""},
-    {"freeifaddrs", "none nullable releases=freeifaddrs", "void", ""},
+    {"getifaddrs", "W bytes=8", "int", ""},
     {"if_nametoindex", "R str", "int", ""},
-    {"if_indextoname", "int, W bytes=IF_NAMESIZE", "arg=1 null-on-failure str",
-     ""},
-    {"if_nameindex", "", "fresh=if_freenameindex null-on-failure", ""},
-    {"if_freenameindex", "none nullable releases=if_freenameindex", "void", ""},
-    {"readv", "int, R count=a2 nullable-if=a2, int", "int", ""},
-    {"writev", "int, R count=a2 nullable-if=a2, int", "int", ""},
-    {"preadv", "int, R count=a2 nullable-if=a2, int, int", "int", ""},
-    {"pwritev", "int, R count=a2 nullable-if=a2, int, int", "int", ""},
+    {"if_indextoname", "int, W", "ptr", ""},
+    {"readv", "int, R bytes=a2*16 nullable-if=a2, int", "int", ""},
+    {"writev", "int, R bytes=a2*16 nullable-if=a2, int", "int", ""},
+    {"preadv", "int, R bytes=a2*16 nullable-if=a2, int, int", "int", ""},
+    {"pwritev", "int, R bytes=a2*16 nullable-if=a2, int, int", "int", ""},
     {"sendfile", "int, int, RW nullable, int", "int", ""},
     {"getrandom", "W bytes=a1 nullable-if=a1, int, int", "int", ""},
-    {"eventfd", "int, int", "int", ""},
-    {"inotify_init", "", "int", ""},
-    {"inotify_init1", "int", "int", ""},
     {"inotify_add_watch", "int, R str, int", "int", ""},
-    {"inotify_rm_watch", "int, int", "int", ""},
-    {"timerfd_create", "int, int", "int", ""},
     {"timerfd_settime", "int, int, R, W nullable", "int", ""},
     {"timerfd_gettime", "int, W", "int", ""},
     {"signalfd", "int, R, int", "int", ""},
-    {"prctl", "int, ...", "int", ""},
     {"sysinfo", "W", "int", ""},
     {"sysctlbyname", "R str, W nullable, RW nullable, R nullable, int", "int",
      ""},
-    {"flock", "int, int", "int", ""},
-    {"shmget", "int, int, int", "int", ""},
-    {"shmat", "int, none nullable, int", "fresh=shmdt nonnull", ""},
-    {"shmdt", "none nullable releases=shmdt", "int", ""},
     {"shmctl", "int, int, RW nullable", "int", ""},
     {"mq_open", "R str, int, ...", "int", ""},
-    {"mq_close", "int", "int", ""},
     {"mq_unlink", "R str", "int", ""},
     {"mq_send", "int, R bytes=a2 nullable-if=a2, int, int", "int", ""},
     {"mq_receive", "int, W bytes=a2, int, W nullable", "int", ""},
-    {"aio_read", "RW escapes", "int", ""},
-    {"aio_write", "RW escapes", "int", ""},
+    {"aio_read", "RW", "int", ""},
+    {"aio_write", "RW", "int", ""},
     {"aio_error", "R", "int", ""},
     {"aio_return", "RW", "int", ""},
-    {"aio_suspend", "R count=a1, int, R nullable", "int", ""},
+    {"aio_suspend", "R bytes=a1*8, int, R nullable", "int", ""},
     {"aio_cancel", "int, RW nullable", "int", ""},
-    {"setmntent", "R str, R str", "fresh=endmntent null-on-failure", ""},
-    {"getmntent", "RW", "static=mntent nullable", "invalidates=mntent"},
-    {"endmntent", "RW nullable releases=endmntent", "int", ""},
-    {"fts_open", "R, int, fn? sync=none", "fresh=fts_close null-on-failure",
-     ""},
-    {"fts_read", "RW", "interior=0 nullable", ""},
-    {"fts_children", "RW, int", "interior=0 nullable", ""},
+    {"setmntent", "R str, R str", "ptr", ""},
+    {"getmntent", "RW", "ptr", ""},
+    {"fts_open", "R, int, fn", "ptr", ""},
+    {"fts_read", "RW", "ptr", ""},
+    {"fts_children", "RW, int", "ptr", ""},
     {"fts_set", "RW, RW, int", "int", ""},
-    {"fts_close", "RW releases=fts_close", "int", ""},
 });
 
 // <wchar.h>, <wctype.h>, <uchar.h>: wide lengths count wchar_t elements;
@@ -1773,111 +1122,104 @@ static constexpr auto WideExpectations = std::to_array<Expectation>({
     {"wcslen", "R str", "int value=strlen(a0)", "wide"},
     {"wcsnlen", "R count=min(a1,strlen(a0)+1) nullable-if=a1, int",
      "int value=min(a1,strlen(a0))", "wide"},
-    {"wcscpy", "W count=strlen(a1)+1, R str", "arg=0 nonnull",
-     "wide chk=__wcscpy_chk:0/1/-1"},
+    {"wcscpy", "W count=strlen(a1)+1, R str", "ptr",
+     "wide chk=__wcscpy_chk:0/1/size"},
     {"wcsncpy",
      "W count=a2 nullable-if=a2, R count=min(a2,strlen(a1)+1) nullable-if=a2, "
      "int",
-     "arg=0 nonnull", "wide chk=__wcsncpy_chk:0/1/2/-1"},
-    {"wcpcpy", "W count=strlen(a1)+1, R str", "interior=0 nonnull",
-     "wide chk=__wcpcpy_chk:0/1/-1"},
+     "ptr", "wide chk=__wcsncpy_chk:0/1/2/size"},
+    {"wcpcpy", "W count=strlen(a1)+1, R str", "ptr",
+     "wide chk=__wcpcpy_chk:0/1/size"},
     {"wcpncpy",
      "W count=a2 nullable-if=a2, R count=min(a2,strlen(a1)+1) nullable-if=a2, "
      "int",
-     "interior=0 nonnull", "wide chk=__wcpncpy_chk:0/1/2/-1"},
-    {"wcscat", "RW str count=strlen(a0)+strlen(a1)+1, R str", "arg=0 nonnull",
-     "wide chk=__wcscat_chk:0/1/-1"},
+     "ptr", "wide chk=__wcpncpy_chk:0/1/2/size"},
+    {"wcscat", "RW str count=strlen(a0)+strlen(a1)+1, R str", "ptr",
+     "wide chk=__wcscat_chk:0/1/size"},
     {"wcsncat",
-     "RW str count=strlen(a0)+min(a2,strlen(a1))+1, "
-     "R count=min(a2,strlen(a1)+1) nullable-if=a2, int",
-     "arg=0 nonnull", "wide chk=__wcsncat_chk:0/1/2/-1"},
+     "RW str count=strlen(a0)+min(a2,strlen(a1))+1, R "
+     "count=min(a2,strlen(a1)+1) nullable-if=a2, int",
+     "ptr", "wide chk=__wcsncat_chk:0/1/2/size"},
     {"wcscmp", "R str, R str", "int", "wide"},
     {"wcsncmp",
-     "R count=min(a2,strlen(a0)+1) nullable-if=a2, "
-     "R count=min(a2,strlen(a1)+1) nullable-if=a2, int",
+     "R count=min(a2,strlen(a0)+1) nullable-if=a2, R "
+     "count=min(a2,strlen(a1)+1) nullable-if=a2, int",
      "int", "wide"},
     {"wcscasecmp", "R str, R str", "int", "wide"},
     {"wcsncasecmp",
-     "R count=min(a2,strlen(a0)+1) nullable-if=a2, "
-     "R count=min(a2,strlen(a1)+1) nullable-if=a2, int",
+     "R count=min(a2,strlen(a0)+1) nullable-if=a2, R "
+     "count=min(a2,strlen(a1)+1) nullable-if=a2, int",
      "int", "wide"},
     {"wcscoll", "R str, R str", "int", "wide"},
     {"wcsxfrm", "W count=a2 nullable-if=a2, R str, int", "int", "wide"},
-    {"wcschr", "R str, int", "interior=0 nullable", "wide"},
-    {"wcsrchr", "R str, int", "interior=0 nullable", "wide"},
-    {"wcsstr", "R str, R str", "interior=0 nullable", "wide"},
-    {"wcspbrk", "R str, R str", "interior=0 nullable", "wide"},
+    {"wcschr", "R str, int", "ptr", "wide"},
+    {"wcsrchr", "R str, int", "ptr", "wide"},
+    {"wcsstr", "R str, R str", "ptr", "wide"},
+    {"wcspbrk", "R str, R str", "ptr", "wide"},
     {"wcsspn", "R str, R str", "int", "wide"},
     {"wcscspn", "R str, R str", "int", "wide"},
-    {"wcstok", "RW str nullable, R str, RW out=(interior=0 nullable)",
-     "interior=0 nullable", "wide"},
+    {"wcstok", "RW str nullable, R str, RW bytes=8", "ptr", "wide"},
     {"wcswidth", "R count=min(a1,strlen(a0)+1) nullable-if=a1, int", "int",
      "wide"},
-    {"wcwidth", "int", "int", "wide"},
     {"wmemcpy", "W count=a2 nullable-if=a2, R count=a2 nullable-if=a2, int",
-     "arg=0 nonnull", "wide chk=__wmemcpy_chk:0/1/2/-1"},
+     "ptr", "wide chk=__wmemcpy_chk:0/1/2/size"},
     {"wmemmove", "W count=a2 nullable-if=a2, R count=a2 nullable-if=a2, int",
-     "arg=0 nonnull", "wide chk=__wmemmove_chk:0/1/2/-1"},
-    {"wmemset", "W count=a2 nullable-if=a2, int, int", "arg=0 nonnull",
-     "wide chk=__wmemset_chk:0/1/2/-1"},
+     "ptr", "wide chk=__wmemmove_chk:0/1/2/size"},
+    {"wmemset", "W count=a2 nullable-if=a2, int, int", "ptr",
+     "wide chk=__wmemset_chk:0/1/2/size"},
     {"wmemcmp", "R count=a2 nullable-if=a2, R count=a2 nullable-if=a2, int",
      "int", "wide"},
-    {"wmemchr", "R count=min(a2,strlen(a0)+1) nullable-if=a2, int, int",
-     "interior=0 nullable", "wide"},
+    {"wmemchr", "R count=min(a2,strlen(a0)+1) nullable-if=a2, int, int", "ptr",
+     "wide"},
     {"wmempcpy", "W count=a2 nullable-if=a2, R count=a2 nullable-if=a2, int",
-     "interior=0 nonnull", "wide chk=__wmempcpy_chk:0/1/2/-1"},
-    {"wcstol", "R str, W nullable out=(interior=0 nonnull), int", "int",
+     "ptr", "wide chk=__wmempcpy_chk:0/1/2/size"},
+    {"wcstol", "R str, W bytes=8 nullable, int", "int",
      "wide chk=__isoc23_wcstol:0/1/2"},
-    {"wcstoll", "R str, W nullable out=(interior=0 nonnull), int", "int",
+    {"wcstoll", "R str, W bytes=8 nullable, int", "int",
      "wide chk=__isoc23_wcstoll:0/1/2"},
-    {"wcstoul", "R str, W nullable out=(interior=0 nonnull), int", "int",
+    {"wcstoul", "R str, W bytes=8 nullable, int", "int",
      "wide chk=__isoc23_wcstoul:0/1/2"},
-    {"wcstoull", "R str, W nullable out=(interior=0 nonnull), int", "int",
+    {"wcstoull", "R str, W bytes=8 nullable, int", "int",
      "wide chk=__isoc23_wcstoull:0/1/2"},
-    {"wcstod", "R str, W nullable out=(interior=0 nonnull)", "int", "wide"},
-    {"wcstof", "R str, W nullable out=(interior=0 nonnull)", "int", "wide"},
-    {"wcstold", "R str, W nullable out=(interior=0 nonnull)", "int", "wide"},
-    {"btowc", "int", "int", "wide"},
-    {"wctob", "int", "int", "wide"},
+    {"wcstod", "R str, W bytes=8 nullable", "int", "wide"},
+    {"wcstof", "R str, W bytes=8 nullable", "int", "wide"},
+    {"wcstold", "R str, W bytes=8 nullable", "int", "wide"},
     {"mbsinit", "R nullable", "int", "wide"},
     {"mbrlen", "R bytes=min(a1,strlen(a0)+1) nullable, int, RW nullable", "int",
      "wide"},
     {"mbrtowc",
      "W nullable, R bytes=min(a2,strlen(a1)+1) nullable, int, RW nullable",
      "int", "wide"},
-    {"wcrtomb", "W bytes=MB_CUR_MAX nullable, int, RW nullable", "int",
-     "wide chk=__wcrtomb_chk:0/1/2/-1"},
+    {"wcrtomb", "W nullable, int, RW nullable", "int",
+     "wide chk=__wcrtomb_chk:0/1/2/size"},
     {"mbsrtowcs", "W count=a2 nullable, RW, int, RW nullable", "int",
-     "wide chk=__mbsrtowcs_chk:0/1/2/3/-1"},
+     "wide chk=__mbsrtowcs_chk:0/1/2/3/size"},
     {"wcsrtombs", "W bytes=a2 nullable, RW, int, RW nullable", "int",
-     "wide chk=__wcsrtombs_chk:0/1/2/3/-1"},
+     "wide chk=__wcsrtombs_chk:0/1/2/3/size"},
     {"mbsnrtowcs", "W count=a3 nullable, RW, int, int, RW nullable", "int",
-     "wide chk=__mbsnrtowcs_chk:0/1/2/3/4/-1"},
+     "wide chk=__mbsnrtowcs_chk:0/1/2/3/4/size"},
     {"wcsnrtombs", "W bytes=a3 nullable, RW, int, int, RW nullable", "int",
-     "wide chk=__wcsnrtombs_chk:0/1/2/3/4/-1"},
+     "wide chk=__wcsnrtombs_chk:0/1/2/3/4/size"},
     {"fgetwc", "RW", "int", "wide"},
     {"getwc", "RW", "int", "wide"},
-    {"getwchar", "", "int", "wide"},
     {"fputwc", "int, RW", "int", "wide"},
     {"putwc", "int, RW", "int", "wide"},
-    {"putwchar", "int", "int", "wide"},
     {"ungetwc", "int, RW", "int", "wide"},
-    {"fgetws", "W count=a1 nullable-if=a1, int, RW", "arg=0 nullable",
-     "wide chk=__fgetws_chk:0/-1/1/2"},
+    {"fgetws", "W count=a1 nullable-if=a1, int, RW", "ptr",
+     "wide chk=__fgetws_chk:0/size/1/2"},
     {"fputws", "R str, RW", "int", "wide"},
     {"fwide", "RW, int", "int", "wide"},
-    {"wprintf", "R str, ...", "int",
-     "wide printf=0/1 chk=__wprintf_chk:-1/0/1"},
+    {"wprintf", "R str, ...", "int", "wide printf=0/1 chk=__wprintf_chk:_/0/1"},
     {"fwprintf", "RW, R str, ...", "int",
-     "wide printf=1/2 chk=__fwprintf_chk:0/-1/1/2"},
+     "wide printf=1/2 chk=__fwprintf_chk:0/_/1/2"},
     {"swprintf", "W count=a1 nullable-if=a1, int, R str, ...", "int",
-     "wide printf=2/3 chk=__swprintf_chk:0/1/-1/-1/2/3"},
+     "wide printf=2/3 chk=__swprintf_chk:0/1/_/size/2/3"},
     {"vwprintf", "R str, other", "int",
-     "wide printf=0/1 chk=__vwprintf_chk:-1/0/1"},
+     "wide printf=0/1 chk=__vwprintf_chk:_/0/1"},
     {"vfwprintf", "RW, R str, other", "int",
-     "wide printf=1/2 chk=__vfwprintf_chk:0/-1/1/2"},
+     "wide printf=1/2 chk=__vfwprintf_chk:0/_/1/2"},
     {"vswprintf", "W count=a1 nullable-if=a1, int, R str, other", "int",
-     "wide printf=2/3 chk=__vswprintf_chk:0/1/-1/-1/2/3"},
+     "wide printf=2/3 chk=__vswprintf_chk:0/1/_/size/2/3"},
     {"wscanf", "R str, ...", "int",
      "wide scanf=0/1 chk=__isoc99_wscanf:0/1 chk=__isoc23_wscanf:0/1"},
     {"fwscanf", "RW, R str, ...", "int",
@@ -1890,12 +1232,8 @@ static constexpr auto WideExpectations = std::to_array<Expectation>({
      "wide scanf=1/2 chk=__isoc99_vfwscanf:0/1/2 chk=__isoc23_vfwscanf:0/1/2"},
     {"vswscanf", "R str, R str, other", "int",
      "wide scanf=1/2 chk=__isoc99_vswscanf:0/1/2 chk=__isoc23_vswscanf:0/1/2"},
-    {"wcsftime", "W count=a1 nullable-if=a1, int, R str, R", "int",
-     "reads=environ wide"},
-    {"open_wmemstream",
-     "W nullable escapes out=(fresh=free null-on-failure unzeroed), "
-     "W nullable escapes",
-     "fresh=fclose null-on-failure", "wide"},
+    {"wcsftime", "W count=a1 nullable-if=a1, int, R str, R", "int", "wide"},
+    {"open_wmemstream", "W bytes=8 nullable, W nullable", "ptr", "wide"},
     {"wctype", "R str", "int", ""},
     {"wctrans", "R str", "int", ""},
     {"mbrtoc8",
@@ -1907,25 +1245,13 @@ static constexpr auto WideExpectations = std::to_array<Expectation>({
     {"mbrtoc32",
      "W nullable, R bytes=min(a2,strlen(a1)+1) nullable, int, RW nullable",
      "int", ""},
-    {"c8rtomb", "W bytes=MB_CUR_MAX nullable, int, RW nullable", "int", ""},
-    {"c16rtomb", "W bytes=MB_CUR_MAX nullable, int, RW nullable", "int", ""},
-    {"c32rtomb", "W bytes=MB_CUR_MAX nullable, int, RW nullable", "int", ""},
+    {"c8rtomb", "W nullable, int, RW nullable", "int", ""},
+    {"c16rtomb", "W nullable, int, RW nullable", "int", ""},
+    {"c32rtomb", "W nullable, int, RW nullable", "int", ""},
 });
 
 // <math.h>, <errno.h>, <ctype.h>.
 static constexpr auto MathExpectations = std::to_array<Expectation>({
-    {"fabs", "other", "int", ""},
-    {"fabsf", "other", "int", ""},
-    {"fabsl", "other", "int", ""},
-    {"floor", "other", "int", ""},
-    {"floorf", "other", "int", ""},
-    {"floorl", "other", "int", ""},
-    {"ceil", "other", "int", ""},
-    {"ceilf", "other", "int", ""},
-    {"ceill", "other", "int", ""},
-    {"trunc", "other", "int", ""},
-    {"truncf", "other", "int", ""},
-    {"truncl", "other", "int", ""},
     {"frexp", "other, W", "int", ""},
     {"frexpf", "other, W", "int", ""},
     {"frexpl", "other, W", "int", ""},
@@ -1942,147 +1268,16 @@ static constexpr auto MathExpectations = std::to_array<Expectation>({
     {"sincosf", "other, W, W", "void", ""},
     {"sincosl", "other, W, W", "void", ""},
     {"lgamma_r", "other, W", "int", ""},
-    {"__errno_location", "", "static=errno nonnull", ""},
-    {"__error", "", "static=errno nonnull", ""},
-    {"__ctype_b_loc", "", "static=ctype nonnull", ""},
-    {"__ctype_tolower_loc", "", "static=ctype nonnull", ""},
-    {"__ctype_toupper_loc", "", "static=ctype nonnull", ""},
 });
 
 // Compiler builtins (Clang's Builtins.td) and the assertion-failure entry
 // points of glibc, musl and macOS. Each __sync builtin also has the sized
 // forms Sema resolves it to.
 static constexpr auto BuiltinExpectations = std::to_array<Expectation>({
-    {"__builtin_object_size", "none nullable, int", "int", ""},
-    {"__builtin_dynamic_object_size", "none nullable, int", "int", ""},
-    {"__builtin_expect", "int, int", "int", ""},
-    {"__builtin_expect_with_probability", "int, int, other", "int", ""},
-    {"__builtin_unpredictable", "int", "int", ""},
-    {"__builtin_assume", "int", "void", ""},
-    {"__builtin_assume_aligned", "none nullable, int, ...", "arg=0 nonnull",
-     ""},
-    {"__builtin_launder", "none nullable", "arg=0 nonnull", ""},
-    {"__builtin_prefetch", "none nullable, ...", "void", ""},
-    {"__builtin_unreachable", "", "noreturn", ""},
-    {"__builtin_trap", "", "noreturn", "exits"},
-    {"__builtin_verbose_trap", "R str, R str", "noreturn", "exits"},
-    {"__builtin_debugtrap", "", "void", ""},
-    {"__builtin_va_start", "other, ...", "void", ""},
-    {"__builtin_c23_va_start", "other, ...", "void", ""},
-    {"__builtin_va_end", "other", "void", ""},
-    {"__builtin_va_copy", "other, other", "void", ""},
-    {"__builtin_frame_address", "int", "ptr nullable", ""},
-    {"__builtin_return_address", "int", "ptr nullable", ""},
-    {"__builtin_extract_return_addr", "none nullable", "arg=0 nonnull", ""},
-    {"__builtin___clear_cache", "none, none", "void", ""},
-    {"__builtin_memcpy_inline",
-     "W bytes=a2 nullable-if=a2, R bytes=a2 nullable-if=a2, int", "void",
-     "disjoint=0/1/a2 copies=0/1/a2"},
-    {"__builtin_memset_inline", "W bytes=a2 nullable-if=a2, int, int", "void",
-     "fills=0/a1/a2"},
-    {"__builtin_alloca_with_align", "int, int",
-     "fresh=stack nonnull extent=a0 zeroed", ""},
-    {"__builtin_alloca_uninitialized", "int", "fresh=stack nonnull extent=a0",
-     ""},
-    {"__builtin_alloca_with_align_uninitialized", "int, int",
-     "fresh=stack nonnull extent=a0", ""},
-    {"__builtin_add_overflow", "other, other, W", "int", ""},
-    {"__builtin_sub_overflow", "other, other, W", "int", ""},
-    {"__builtin_mul_overflow", "other, other, W", "int", ""},
-    {"__builtin_sadd_overflow", "int, int, W", "int", ""},
-    {"__builtin_saddl_overflow", "int, int, W", "int", ""},
-    {"__builtin_saddll_overflow", "int, int, W", "int", ""},
-    {"__builtin_uadd_overflow", "int, int, W", "int", ""},
-    {"__builtin_uaddl_overflow", "int, int, W", "int", ""},
-    {"__builtin_uaddll_overflow", "int, int, W", "int", ""},
-    {"__builtin_ssub_overflow", "int, int, W", "int", ""},
-    {"__builtin_ssubl_overflow", "int, int, W", "int", ""},
-    {"__builtin_ssubll_overflow", "int, int, W", "int", ""},
-    {"__builtin_usub_overflow", "int, int, W", "int", ""},
-    {"__builtin_usubl_overflow", "int, int, W", "int", ""},
-    {"__builtin_usubll_overflow", "int, int, W", "int", ""},
-    {"__builtin_smul_overflow", "int, int, W", "int", ""},
-    {"__builtin_smull_overflow", "int, int, W", "int", ""},
-    {"__builtin_smulll_overflow", "int, int, W", "int", ""},
-    {"__builtin_umul_overflow", "int, int, W", "int", ""},
-    {"__builtin_umull_overflow", "int, int, W", "int", ""},
-    {"__builtin_umulll_overflow", "int, int, W", "int", ""},
-    {"__builtin_bswap16", "int", "int", ""},
-    {"__builtin_bswap32", "int", "int", ""},
-    {"__builtin_bswap64", "int", "int", ""},
-    {"__atomic_thread_fence", "int", "void", ""},
-    {"__atomic_signal_fence", "int", "void", ""},
-    {"__atomic_is_lock_free", "int, none nullable", "int", ""},
-    {"__atomic_always_lock_free", "int, none nullable", "int", ""},
-    {"__c11_atomic_thread_fence", "int", "void", ""},
-    {"__c11_atomic_signal_fence", "int", "void", ""},
-    {"__c11_atomic_is_lock_free", "int", "int", ""},
-    {"__sync_fetch_and_add", "RW, int, ...", "int",
-     "chk=__sync_fetch_and_add_1:0/1 chk=__sync_fetch_and_add_2:0/1 "
-     "chk=__sync_fetch_and_add_4:0/1 chk=__sync_fetch_and_add_8:0/1 "
-     "chk=__sync_fetch_and_add_16:0/1"},
-    {"__sync_fetch_and_sub", "RW, int, ...", "int",
-     "chk=__sync_fetch_and_sub_1:0/1 chk=__sync_fetch_and_sub_2:0/1 "
-     "chk=__sync_fetch_and_sub_4:0/1 chk=__sync_fetch_and_sub_8:0/1 "
-     "chk=__sync_fetch_and_sub_16:0/1"},
-    {"__sync_fetch_and_or", "RW, int, ...", "int",
-     "chk=__sync_fetch_and_or_1:0/1 chk=__sync_fetch_and_or_2:0/1 "
-     "chk=__sync_fetch_and_or_4:0/1 chk=__sync_fetch_and_or_8:0/1 "
-     "chk=__sync_fetch_and_or_16:0/1"},
-    {"__sync_fetch_and_and", "RW, int, ...", "int",
-     "chk=__sync_fetch_and_and_1:0/1 chk=__sync_fetch_and_and_2:0/1 "
-     "chk=__sync_fetch_and_and_4:0/1 chk=__sync_fetch_and_and_8:0/1 "
-     "chk=__sync_fetch_and_and_16:0/1"},
-    {"__sync_fetch_and_xor", "RW, int, ...", "int",
-     "chk=__sync_fetch_and_xor_1:0/1 chk=__sync_fetch_and_xor_2:0/1 "
-     "chk=__sync_fetch_and_xor_4:0/1 chk=__sync_fetch_and_xor_8:0/1 "
-     "chk=__sync_fetch_and_xor_16:0/1"},
-    {"__sync_add_and_fetch", "RW, int, ...", "int",
-     "chk=__sync_add_and_fetch_1:0/1 chk=__sync_add_and_fetch_2:0/1 "
-     "chk=__sync_add_and_fetch_4:0/1 chk=__sync_add_and_fetch_8:0/1 "
-     "chk=__sync_add_and_fetch_16:0/1"},
-    {"__sync_sub_and_fetch", "RW, int, ...", "int",
-     "chk=__sync_sub_and_fetch_1:0/1 chk=__sync_sub_and_fetch_2:0/1 "
-     "chk=__sync_sub_and_fetch_4:0/1 chk=__sync_sub_and_fetch_8:0/1 "
-     "chk=__sync_sub_and_fetch_16:0/1"},
-    {"__sync_or_and_fetch", "RW, int, ...", "int",
-     "chk=__sync_or_and_fetch_1:0/1 chk=__sync_or_and_fetch_2:0/1 "
-     "chk=__sync_or_and_fetch_4:0/1 chk=__sync_or_and_fetch_8:0/1 "
-     "chk=__sync_or_and_fetch_16:0/1"},
-    {"__sync_and_and_fetch", "RW, int, ...", "int",
-     "chk=__sync_and_and_fetch_1:0/1 chk=__sync_and_and_fetch_2:0/1 "
-     "chk=__sync_and_and_fetch_4:0/1 chk=__sync_and_and_fetch_8:0/1 "
-     "chk=__sync_and_and_fetch_16:0/1"},
-    {"__sync_xor_and_fetch", "RW, int, ...", "int",
-     "chk=__sync_xor_and_fetch_1:0/1 chk=__sync_xor_and_fetch_2:0/1 "
-     "chk=__sync_xor_and_fetch_4:0/1 chk=__sync_xor_and_fetch_8:0/1 "
-     "chk=__sync_xor_and_fetch_16:0/1"},
-    {"__sync_bool_compare_and_swap", "RW, int, int, ...", "int",
-     "chk=__sync_bool_compare_and_swap_1:0/1/2 "
-     "chk=__sync_bool_compare_and_swap_2:0/1/2 "
-     "chk=__sync_bool_compare_and_swap_4:0/1/2 "
-     "chk=__sync_bool_compare_and_swap_8:0/1/2 "
-     "chk=__sync_bool_compare_and_swap_16:0/1/2"},
-    {"__sync_val_compare_and_swap", "RW, int, int, ...", "int",
-     "chk=__sync_val_compare_and_swap_1:0/1/2 "
-     "chk=__sync_val_compare_and_swap_2:0/1/2 "
-     "chk=__sync_val_compare_and_swap_4:0/1/2 "
-     "chk=__sync_val_compare_and_swap_8:0/1/2 "
-     "chk=__sync_val_compare_and_swap_16:0/1/2"},
-    {"__sync_lock_test_and_set", "RW, int, ...", "int",
-     "chk=__sync_lock_test_and_set_1:0/1 chk=__sync_lock_test_and_set_2:0/1 "
-     "chk=__sync_lock_test_and_set_4:0/1 chk=__sync_lock_test_and_set_8:0/1 "
-     "chk=__sync_lock_test_and_set_16:0/1"},
-    {"__sync_lock_release", "W, ...", "void",
-     "chk=__sync_lock_release_1:0 chk=__sync_lock_release_2:0 "
-     "chk=__sync_lock_release_4:0 chk=__sync_lock_release_8:0 "
-     "chk=__sync_lock_release_16:0"},
-    {"__sync_synchronize", "", "void", ""},
-    {"__assert_fail", "R str, R str, int, R str nullable", "noreturn", "exits"},
-    {"__assert_perror_fail", "int, R str, int, R str nullable", "noreturn",
-     "exits"},
-    {"__assert_rtn", "R str nullable, R str, int, R str", "noreturn", "exits"},
-    {"__assert", "R str, R str, int", "noreturn", "exits"},
+    {"__assert_fail", "R str, R str, int, R str nullable", "void", ""},
+    {"__assert_perror_fail", "int, R str, int, R str nullable", "void", ""},
+    {"__assert_rtn", "R str nullable, R str, int, R str", "void", ""},
+    {"__assert", "R str, R str, int", "void", ""},
 });
 
 TEST(LibrarySpecTest, EveryRowMatchesItsIndependentExpectation) {
@@ -2111,31 +1306,13 @@ TEST(LibrarySpecTest, EveryRowMatchesItsIndependentExpectation) {
       }
       const LibraryEntry &entry = *it->second;
       EXPECT_EQ(renderParams(entry), expectation.params) << key;
-      EXPECT_EQ(renderValue(entry.result, entry.noreturn), expectation.result)
-          << key;
+      EXPECT_EQ(renderResult(entry), expectation.result) << key;
       EXPECT_EQ(renderClauses(entry), expectation.clauses) << key;
     }
   }
   for (const auto &[key, entry] : rows)
     EXPECT_TRUE(expected.contains(key)) << "row without an expectation: " << key
                                         << " (line " << entry->line << ")";
-}
-
-// RFC 0030 §8.2: the variadic arguments a literal format reads.
-TEST(LibrarySpecTest, FormatArgumentCounts) {
-  using Kind = LibFormat::Kind;
-  EXPECT_EQ(formatArgumentCount("%s %s\n", Kind::Printf), 2U);
-  EXPECT_EQ(formatArgumentCount("100%% %d", Kind::Printf), 1U);
-  EXPECT_EQ(formatArgumentCount("%*.*f|%-8s|%'lld", Kind::Printf), 5U);
-  EXPECT_EQ(formatArgumentCount("%m %n", Kind::Printf), 1U)
-      << "%m reads no argument";
-  EXPECT_EQ(formatArgumentCount("%1$s", Kind::Printf), std::nullopt)
-      << "positional";
-  EXPECT_EQ(formatArgumentCount("%", Kind::Printf), std::nullopt);
-  EXPECT_EQ(formatArgumentCount("%d %*d %s", Kind::Scanf), 2U)
-      << "%*d assigns nothing";
-  EXPECT_EQ(formatArgumentCount("%[^]a] %5ms", Kind::Scanf), 2U);
-  EXPECT_EQ(formatArgumentCount("%[abc", Kind::Scanf), std::nullopt);
 }
 
 } // namespace weavec::core

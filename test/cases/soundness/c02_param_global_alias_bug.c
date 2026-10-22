@@ -2,7 +2,7 @@
 // ASAN
 #include <stdlib.h>
 static char *g;
-static int f(char *p) { free(g); g = NULL; return p[0]; } // BUG: use-after-free
+static int f(char *p) { free(g); g = NULL; return p[0]; } // TRAP: heap-use-after-free
 int main(void) {
   g = calloc(8, 1);
   if (!g) return 1;

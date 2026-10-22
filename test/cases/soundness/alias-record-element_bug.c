@@ -7,7 +7,7 @@ static struct reg registry;
 static int seen;
 static void add(struct reg *r, int *p) { r->slot[1] = p; }
 static void fire(const struct reg *r) {
-  if (r->slot[1]) seen += *r->slot[1]; // BUG: use-after-free // TRAP
+  if (r->slot[1]) seen += *r->slot[1]; // TRAP
 }
 int main(void) {
   int *x = malloc(sizeof *x);

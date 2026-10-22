@@ -1,17 +1,21 @@
 # RFC 0009: Value-conditional behaviour: scalar facts, guarded effects and inferred `noreturn`
 
-- **Status**: Accepted
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-03
 - **Accepted**: 2026-09-03
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: extends the RFC 0006 *condition facts*
-  from pointer tests and tests of call results to tests of integer places;
-  extends the RFC 0003 summary vocabulary with `when` guards on effects,
-  stores and returns and with `never-returns`; supersedes the RFC 0006 and
-  RFC 0007 *Accepted false positives* entries "Merge-point conservatism"
-  and the RFC 0008 entry "Tested-then-merged" in its unannotated-`noreturn`
-  form.
+- **Supersedes / superseded by**: Superseded by RFC 0036; extends the RFC 0006
+  *condition facts* from pointer tests and tests of call results to tests of
+  integer places; extends the RFC 0003 summary vocabulary with `when` guards
+  on effects, stores and returns and with `never-returns`; supersedes the RFC
+  0006 and RFC 0007 *Accepted false positives* entries "Merge-point
+  conservatism" and the RFC 0008 entry "Tested-then-merged" in its
+  unannotated-`noreturn` form.
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Accepted
+> until then; it is kept as a record of the design.
 
 ## Summary
 

@@ -6,7 +6,6 @@
 // summary is incomplete: `p`, which it sets through `&p`, is no longer the
 // null the caller stored (a definite null dereference was reported here, as
 // in sqlite's `memdbFromDbSchema` after `sqlite3_file_control`).
-// FLAGS: -fweavec-budget=12
 // RUN-INPUT: 1
 // CLEAN
 static int g = 7;

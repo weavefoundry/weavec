@@ -1,5 +1,5 @@
 name: Bug report
-description: WeaveC crashed, rejected valid code, or accepted unsafe code
+description: weavec-cc crashed, trapped on a correct program, or let a memory bug through
 title: "[bug]: "
 labels: [bug, needs-triage]
 body:
@@ -8,10 +8,12 @@ body:
     attributes:
       label: Kind of bug
       options:
-        - False positive (safe code rejected)
-        - False negative (unsafe code accepted)
-        - Crash / assertion failure
-        - Wrong or unhelpful diagnostic
+        - False trap (a correct program stopped)
+        - Missed bug (an unsafe access ran)
+        - Crash / assertion failure in weavec-cc
+        - Wrong or unhelpful report
+        - Project fails to build with weavec-cc (drop-in)
+        - Performance (run time, build time, memory)
         - Build or installation problem
         - Other
     validations:
@@ -22,8 +24,9 @@ body:
     attributes:
       label: Minimal reproducer
       description: >
-        The smallest C program that shows the problem, plus the exact `weavec`
-        command line. Please avoid system headers where possible.
+        The smallest C program that shows the problem, plus the exact
+        `weavec-cc` command line and how you ran the program. Please avoid
+        system headers where possible.
       render: c
     validations:
       required: true
@@ -32,7 +35,10 @@ body:
     id: actual
     attributes:
       label: Actual behaviour
-      description: Full diagnostic output or crash backtrace.
+      description: >
+        The full report (`weavec: <kind> at ...`), compiler output or crash
+        backtrace. `WEAVEC_RT_BACKTRACE=1` adds the stack of the access that
+        stopped the program.
       render: text
     validations:
       required: true
@@ -47,8 +53,9 @@ body:
   - type: input
     id: version
     attributes:
-      label: weavec --version
-      placeholder: "weavec version 0.1.0-dev (abc123def456), built with LLVM 23.1.0"
+      label: weavec-cc --version
+      description: The `weavec-cc version` lines at the end of `weavec-cc --version`.
+      placeholder: "weavec-cc version 0.16.0 (abc123def456), built with LLVM 23.1.0"
     validations:
       required: true
 

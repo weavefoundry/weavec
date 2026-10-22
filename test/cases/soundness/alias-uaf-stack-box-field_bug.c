@@ -14,6 +14,6 @@ int b2(void) {
   bx.a = o;
   struct box *q = &bx;
   free(o);
-  return q->a->v; // BUG: use-after-free
+  return q->a->v; // TRAP: heap-use-after-free
 }
 int main(void) { return b2() == 12345; }

@@ -15,6 +15,6 @@ int main(int argc, char **argv) {
   if (name == NULL) return 1;
   strcpy(name, "carol");
   drop(name, atoi(argv[1]));
-  show(stdout, name); // BUG: use-after-free possible
+  show(stdout, name);
   return 0;
 }

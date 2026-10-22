@@ -3,7 +3,6 @@
 // (msgpack-c's msgpack_vrefbuffer_init). A warning, not an error.
 // STAGE: S8
 // CLEAN
-// ALLOW: conflicting-borrow
 // RUN-INPUT: 1
 // RUN-INPUT: 1 fail
 #include <stdbool.h>

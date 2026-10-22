@@ -3,7 +3,7 @@
 #include <stdlib.h>
 static char *g_cache;
 static void remember(char *p) { g_cache = p; }
-static int peek(void) { return g_cache[0]; } // BUG: use-after-free // TRAP
+static int peek(void) { return g_cache[0]; } // TRAP
 int main(void) {
   char *p = malloc(8);
   if (!p) return 1;

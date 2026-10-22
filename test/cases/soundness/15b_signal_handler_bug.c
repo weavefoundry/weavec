@@ -10,5 +10,5 @@ int main(void) {
   g_buf[0] = 1;
   signal(SIGUSR1, handler);
   raise(SIGUSR1);
-  return g_buf[0]; // BUG: use-after-free
+  return g_buf[0]; // TRAP: heap-use-after-free
 }

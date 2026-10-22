@@ -1,15 +1,10 @@
 # weavec::Frontend -- Clang FrontendAction / libTooling integration.
 weavec_add_library(
   Frontend
-  SOURCES AnalysisStats.cpp
-          ClangDiagnosticSink.cpp
-          DiagnosticControl.cpp
-          Driver.cpp
-          FrontendAction.cpp
-          ProgramAnalysis.cpp
+  SOURCES Driver.cpp
           ResourceDir.cpp
-          # RFC 0035: the guard pass, its frames, globals and library calls,
-          # the unsafe regions and the enforcement ledger.
+          # RFC 0035, RFC 0036: the guard passes, their frames, globals and
+          # library calls, the unsafe regions and the enforcement ledger.
           EnforcementLedger.cpp
           GuardExpand.cpp
           GuardFrames.cpp
@@ -19,12 +14,7 @@ weavec_add_library(
           GuardLibrary.cpp
           GuardPass.cpp
           UnsafeRegions.cpp
-          # RFC 0035 §8: the advisory analysis's summary lines and what
-          # `weavec --whole-program` checks across units.
-          AnalysisSummary.cpp
-          InterfaceFacts.cpp
-          ProgramChecks.cpp
-  PUBLIC_DEPS weavec::Analysis
+  PUBLIC_DEPS weavec::Core
   USES_LLVM)
 
 target_compile_definitions(
@@ -47,7 +37,6 @@ weavec_link_llvm(
   TransformUtils)
 weavec_link_clang(
   weavecFrontend
-  clangTooling
   clangFrontendTool
   clangFrontend
   clangCodeGen

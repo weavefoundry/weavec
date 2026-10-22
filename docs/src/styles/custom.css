@@ -313,6 +313,9 @@ h4,
   border-radius: 11px;
   box-shadow: 0 18px 45px -30px #001f14aa;
   position: relative;
+  /* A grid item: without this its code block's longest line sets the
+     column's width, and the page overflows on a phone. The block scrolls. */
+  min-width: 0;
 }
 .hero-demo::before {
   content: '';
@@ -344,7 +347,7 @@ h4,
   margin: 0;
   font-size: 0.75rem;
 }
-.diagnostic-output {
+.report-output {
   background: #291c1d;
   border: 1px solid #703d40;
   border-radius: 5px;
@@ -353,27 +356,23 @@ h4,
   color: #f4cbca;
   font: 0.7rem/1.8 var(--sl-font-mono);
 }
-.diagnostic-output > div {
+.report-output > div {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.7rem;
 }
-.diagnostic-output a {
-  color: #f4cbca;
-  text-decoration: none;
-}
-.diagnostic-output p {
+.report-output p {
   margin: 0.4rem 0 0.1rem;
 }
-.error-marker {
+.trap-marker {
   font-size: 0.56rem;
   background: #683738;
   padding: 0.1rem 0.4rem;
   border-radius: 3px;
   color: #ffddda;
 }
-.diagnostic-note {
+.report-note {
   color: #d1aaa6;
   font-size: 0.65rem;
 }

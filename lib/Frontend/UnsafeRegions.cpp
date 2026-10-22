@@ -8,8 +8,6 @@
 
 #include "weavec/Frontend/UnsafeRegions.h"
 
-#include "weavec/Analysis/Annotations.h"
-
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Attr.h"
@@ -106,7 +104,7 @@ public:
   bool VisitAttributedStmt(clang::AttributedStmt *statement) {
     for (const clang::Attr *attribute : statement->getAttrs())
       if (const auto *annotate = llvm::dyn_cast<clang::AnnotateAttr>(attribute);
-          annotate && annotate->getAnnotation() == analysis::spelling::Unsafe)
+          annotate && annotate->getAnnotation() == UnsafeAnnotation)
         add(statement->getSubStmt()->getSourceRange());
     return true;
   }
@@ -119,7 +117,7 @@ private:
   template <typename Range>
   static bool isUnsafe(Range attributes) {
     return std::ranges::any_of(attributes, [](const clang::AnnotateAttr *a) {
-      return a->getAnnotation() == analysis::spelling::Unsafe;
+      return a->getAnnotation() == UnsafeAnnotation;
     });
   }
 
@@ -183,7 +181,7 @@ private:
     return std::ranges::any_of(function.specific_attrs<clang::AnnotateAttr>(),
                                [](const clang::AnnotateAttr *attribute) {
                                  return attribute->getAnnotation() ==
-                                        analysis::spelling::Unsafe;
+                                        UnsafeAnnotation;
                                });
   }
 

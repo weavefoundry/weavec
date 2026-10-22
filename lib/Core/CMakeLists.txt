@@ -1,23 +1,9 @@
-# weavec::Core -- the frontend-independent ownership/borrow/lifetime model.
+# weavec::Core -- the C library table the guards read (RFC 0036 §6).
 #
-# This library MUST NOT depend on LLVM or Clang. Keeping it standard-library
-# only is what allows the model to be reused outside the Clang integration.
-weavec_add_library(
-  Core
-  SOURCES Diagnostic.cpp
-          Effects.cpp
-          FnSlots.cpp
-          Heap.cpp
-          Integer.cpp
-          Ledger.cpp
-          LibrarySpec.cpp
-          Path.cpp
-          PointerKind.cpp
-          Scc.cpp
-          SourceLocation.cpp
-          Zone.cpp)
+# This library MUST NOT depend on LLVM or Clang.
+weavec_add_library(Core SOURCES LibrarySpec.cpp)
 
-# RFC 0030 §8: the library table is embedded in the library as a byte array.
+# RFC 0036 §6: the library table is embedded in the library as a byte array.
 # Generated at configure time; CMAKE_CONFIGURE_DEPENDS re-runs the configure
 # step (and file(CONFIGURE) rewrites the .inc only when its content changes)
 # whenever LibrarySpec.txt is edited, so LibrarySpec.cpp rebuilds.

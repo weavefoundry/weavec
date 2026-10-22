@@ -8,7 +8,7 @@ int main(void) {
   if (!c) return 1;
   // RFC 0030 §7.5: first() is static and must-accesses s[0], so each call checks its
   // argument for null (the engine does not know c->name is zero-filled).
-  int r = first(c->name); // BUG: null-dereference
+  int r = first(c->name);
   free(c);
   return r;
 }

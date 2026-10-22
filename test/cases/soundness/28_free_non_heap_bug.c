@@ -4,6 +4,6 @@ static void release(void *p) { free(p); }
 int main(void) {
   int x = 0;
   int *p = &x;
-  release(p); // BUG: invalid-release
+  release(p); // TRAP: invalid-release
   return 0;
 }

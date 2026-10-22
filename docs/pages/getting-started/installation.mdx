@@ -5,7 +5,7 @@ description: Build and install WeaveC from source on macOS or Linux using LLVM, 
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-WeaveC currently ships source releases. Build it against an LLVM/Clang development installation, and keep that LLVM installation available at runtime. The CI-tested platforms are macOS and Linux. The runtime that `weavec-cc` links into the programs it builds supports 64-bit macOS and Linux targets; for any other target `weavec-cc` builds without it.
+WeaveC currently ships source releases. Build it against an LLVM/Clang development installation, and keep that LLVM installation available at run time: `weavec-cc` uses its Clang resources and linker. The CI-tested platforms are macOS and Linux. The runtime that `weavec-cc` links into the programs it builds supports 64-bit macOS and Linux targets; for any other target `weavec-cc` builds without it.
 
 ## 1. Install the toolchain
 
@@ -73,15 +73,21 @@ cmake --install build/release --prefix "$HOME/.local"
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-The install puts `weavec` and `weavec-cc` in `bin/`, and `weavec.h` and the runtime archives (`libweavec_rt.a`, `libweavec_alloc.a`) under `lib/weavec/`. `weavec-cc` finds the archives relative to its own location, so move the prefix as a whole. Add the PATH export to your shell configuration to retain it in new terminals. Use the [developer guide](/contributing/development/) for debug builds, alternative LLVM installations, and build options.
+The install puts `weavec-cc` in `bin/`, and `weavec.h` (under `lib/weavec/include/`) and the runtime archives (`libweavec_rt.a`, `libweavec_alloc.a`) under `lib/weavec/`. It also installs WeaveC's C++ libraries, their headers and a CMake package, which compiling C programs does not need. `weavec-cc` finds the archives relative to its own location, so move the prefix as a whole. Add the PATH export to your shell configuration to retain it in new terminals. Use the [developer guide](/contributing/development/) for debug builds, alternative LLVM installations, and build options.
 
 ## 4. Verify the installation
 
 ```sh
-weavec --version
 weavec-cc --version
 ```
 
-Both commands should print their version. If Clang resources or shared libraries cannot be found, check [installation troubleshooting](/reference/troubleshooting/).
+It prints Clang's version, then `weavec-cc version X.Y.Z` and the LLVM version it was built with. To check that the runtime links, compile and run an empty program:
+
+```sh
+printf 'int main(void) { return 0; }\n' > empty.c
+weavec-cc empty.c -o empty && ./empty && echo ok
+```
+
+It should print `ok` with no note about building without the WeaveC runtime. If Clang resources or shared libraries cannot be found, check [installation troubleshooting](/reference/troubleshooting/).
 
 **Next:** [Run your first check](/getting-started/first-check/).

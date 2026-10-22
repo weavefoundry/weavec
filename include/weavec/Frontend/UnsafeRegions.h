@@ -32,6 +32,10 @@ class CompilerInstance;
 
 namespace weavec::frontend {
 
+/// The annotation `WEAVEC_UNSAFE` expands to (`resources/include/weavec.h`
+/// spells the same).
+inline constexpr llvm::StringLiteral UnsafeAnnotation = "weavec.unsafe";
+
 /// The unsafe ranges of one unit, by file.
 class UnsafeRegions {
 public:

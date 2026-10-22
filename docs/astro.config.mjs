@@ -14,7 +14,7 @@ export default defineConfig({
     starlight({
       title: 'WeaveC',
       description:
-        'Run-time memory safety for existing C code, and an ownership analysis that reports bugs before it runs. Built on Clang and LLVM.',
+        'Run-time memory safety for existing C code: a drop-in C compiler that guards every memory access. Built on Clang and LLVM.',
       logo: { src: './src/assets/mark.svg', replacesTitle: false },
       favicon: '/favicon.svg',
       social: [
@@ -61,10 +61,8 @@ export default defineConfig({
         {
           label: 'Use WeaveC',
           items: [
-            item('Ownership & borrowing', 'guides/ownership'),
             item('Adopt incrementally', 'guides/adoption'),
             item('Build integration', 'guides/build-integration'),
-            item('Whole-program analysis', 'guides/whole-program'),
             item('Unsafe boundaries', 'guides/unsafe'),
           ],
         },
@@ -73,12 +71,8 @@ export default defineConfig({
           collapsed: true,
           items: [
             item('Command line', 'reference/cli'),
-            item('Annotations', 'reference/annotations'),
-            item('Annotation placement', 'reference/annotation-placement'),
-            item('Diagnostics', 'reference/diagnostics'),
-            item('Diagnostic controls', 'reference/diagnostic-controls'),
             item('Safety guarantees', 'reference/guarantees'),
-            item('Checker coverage', 'reference/checker-coverage'),
+            item('The weavec.h header', 'reference/annotations'),
             item('Compatibility', 'reference/compatibility'),
             item('Troubleshooting', 'reference/troubleshooting'),
           ],

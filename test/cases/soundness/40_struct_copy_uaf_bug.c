@@ -10,5 +10,5 @@ int main(void) {
   h1.n = 8;
   struct holder h2 = h1;
   free(h1.buf);
-  return h2.buf[0]; // BUG: use-after-free
+  return h2.buf[0]; // TRAP: heap-use-after-free
 }

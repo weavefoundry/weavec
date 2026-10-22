@@ -1,14 +1,19 @@
 # RFC 0017: C integer semantics and compositional spatial safety
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-07
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Amends RFC 0009's mathematical-integer
-  assumptions and scalar guards, RFC 0011's affine extents and requirements,
-  RFC 0012's relations and counted fields, RFC 0013's value snapshots,
-  RFC 0015's selectors and range interfaces, and RFC 0016's numeric context
-  facts. RFC 0005 continues to specify whole-program orchestration.
+- **Supersedes / superseded by**: Superseded by RFC 0036; amends RFC 0009's
+  mathematical-integer assumptions and scalar guards, RFC 0011's affine
+  extents and requirements, RFC 0012's relations and counted fields, RFC
+  0013's value snapshots, RFC 0015's selectors and range interfaces, and RFC
+  0016's numeric context facts. RFC 0005 continues to specify whole-program
+  orchestration.
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Implemented
+> until then; it is kept as a record of the design.
 
 ## Summary
 

@@ -6,11 +6,12 @@
 |*
 |*===----------------------------------------------------------------------===*|
 |*
-|* RFC 0035, sections 2 to 5. The guard pass checks the shadow inline and
-|* calls the slow path when a byte it reads is not 0; the slow path decides
-|* exactly, from the shadow alone, and names a failure by the shadow value
-|* that caused it. Frames and globals poison their redzones; this file
-|* clears what a non-local exit left behind and registers the globals.
+|* RFC 0035, sections 2 to 5, and RFC 0036, sections 4 and 6. The guard
+|* pass checks the shadow inline and calls the slow path when a byte it
+|* reads is not 0; the slow path decides exactly, from the shadow alone, and
+|* names a failure by the shadow value that caused it. Frames and globals
+|* poison their redzones; this file clears what a non-local exit left behind
+|* and registers the globals, in the process's runtime.
 |*
 \*===----------------------------------------------------------------------===*/
 
@@ -31,7 +32,8 @@ static inline int isPoison(unsigned char value) {
 }
 
 /* The name of a failure whose first unaddressable byte has shadow `value`;
- * for a partial granule, the poison after it says whose object it is. */
+ * for a partial granule, the poison after it says whose object it is (one
+ * with none after it is the program's, through ASan's interface). */
 static const char *kindOf(unsigned char value, uintptr_t granule) {
   unsigned look;
   if (!isPoison(value)) {
@@ -44,7 +46,7 @@ static const char *kindOf(unsigned char value, uintptr_t granule) {
         break;
     }
     if (!isPoison(value))
-      return "buffer-overflow";
+      return "use-after-poison";
   }
   switch (value) {
   case WeavecRtShadowHeapTail:
@@ -59,6 +61,8 @@ static const char *kindOf(unsigned char value, uintptr_t granule) {
     return "dynamic-stack-buffer-overflow";
   case WeavecRtShadowStackScope:
     return "stack-use-after-scope";
+  case WeavecRtShadowUser:
+    return "use-after-poison";
   case WeavecRtShadowGlobal:
     return "global-buffer-overflow";
   case WeavecRtShadowNull:
@@ -310,6 +314,15 @@ void __weavec_rt_alloca_unpoison(uintptr_t low, uintptr_t high) {
 void __weavec_rt_globals_register(const struct __weavec_rt_global *globals,
                                   uint64_t n) {
   uint64_t i;
+  /* A shared image registers in the process's runtime, whose shadow its
+   * guards read (RFC 0036 section 4). */
+  {
+    const struct __weavec_rt_dispatch *owner = weavecRtForward();
+    if (owner != 0) {
+      owner->registerGlobals(globals, n);
+      return;
+    }
+  }
   (void)weavecRtInitialise();
   for (i = 0; i < n; ++i) {
     const struct __weavec_rt_global *global = &globals[i];
@@ -326,9 +339,25 @@ void __weavec_rt_globals_register(const struct __weavec_rt_global *globals,
 void __weavec_rt_globals_unregister(const struct __weavec_rt_global *globals,
                                     uint64_t n) {
   uint64_t i;
+  {
+    const struct __weavec_rt_dispatch *owner = weavecRtForward();
+    if (owner != 0) {
+      owner->unregisterGlobals(globals, n);
+      return;
+    }
+  }
   for (i = 0; i < n; ++i)
     weavecRtShadowClear(globals[i].address,
                         globals[i].address + globals[i].padded);
+}
+
+/*===-- Fortified sizes (RFC 0036 section 6) ------------------------------===*/
+
+WEAVEC_RT_SLOW void __weavec_rt_limit_fail(uintptr_t address, uint64_t width,
+                                           uint64_t limit,
+                                           const struct __weavec_rt_site *site) {
+  weavecRtFailObject("intra-object-overflow", address, width, address,
+                     address + limit, site);
 }
 
 /*===-- Array bounds (section 5.4) -----------------------------------------===*/

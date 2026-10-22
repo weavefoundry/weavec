@@ -7,9 +7,8 @@
 // RUN-INPUT: 4
 // RUN-INPUT: 0 null
 #include <stdlib.h>
-#include "../Inputs/rfc0030.h"
 
-int at(const int *WEAVEC_COUNTED_BY(n) p, size_t n, size_t i) { return p[i]; } // TRAP // TRAP
+int at(const int * p, size_t n, size_t i) { return p[i]; } // TRAP // TRAP
 
 int main(int argc, char **argv) {
   int xs[4] = {1, 2, 3, 4};

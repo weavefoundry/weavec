@@ -6,7 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// `weavec-cc` is Clang's driver with WeaveC inside (RFC 0035 §1, §7):
+// `weavec-cc` is Clang's driver with WeaveC inside (RFC 0035 §1, §7, RFC 0036
+// §1, §7):
 //
 //   weavec-cc -c foo.c -o foo.o      compile foo.c with every memory access
 //                                    guarded (the guard pass), locals
@@ -14,23 +15,18 @@
 //                                    bounds-checked
 //   weavec-cc foo.o bar.o -o prog    link, with the WeaveC runtime
 //
-// The `-fweavec-*` and `-W*weavec*` flags are WeaveC's; everything else is
-// Clang's. Each `-cc1` job runs in this process. `-fweavec-diagnose` adds the
-// advisory analysis (RFC 0035 §8), whose findings are warnings.
+// The `-fweavec-*` flags are WeaveC's; everything else is Clang's. Each `-cc1`
+// job runs in this process.
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef WEAVEC_FRONTEND_DRIVER_H
 #define WEAVEC_FRONTEND_DRIVER_H
 
-#include "weavec/Core/AnalysisStats.h"
-#include "weavec/Frontend/DiagnosticControl.h"
-
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -46,29 +42,14 @@ struct DriverOptions {
   Checks checks = Checks::Trap;
   /// `-f[no-]weavec-zero-init`; unset means on.
   std::optional<bool> zeroInit;
-  /// `-fweavec-diagnose`: run the advisory analysis.
-  bool diagnose = false;
-  /// `-fweavec-dump-analysis`, with `-fweavec-diagnose`.
-  bool dumpAnalysis = false;
-  /// `-fweavec-budget=<n>`, `-fweavec-unit-budget=<n>`: the analysis's
-  /// budgets (`-fweavec-diagnose`); unset means the defaults.
-  std::optional<std::uint64_t> budget;
-  std::optional<std::uint64_t> unitBudget;
+  /// `-f[no-]weavec-asan-compat` (RFC 0036 §1): parse with
+  /// AddressSanitizer's language options, so the unit sees ASan's macros.
+  bool asanCompat = true;
   /// `-fweavec-ledger=<path>` (RFC 0035 §9).
   std::string ledger;
   /// `-f[no-]weavec-summary`; unset means on exactly when a ledger is
   /// written.
   std::optional<bool> summary;
-  /// `-fweavec-analysis-stats=<path>`.
-  std::string analysisStatsPath;
-  std::shared_ptr<core::AnalysisStats> stats;
-  /// The `-W` flags of the analysis's diagnostics; leaks are off unless
-  /// asked for.
-  DiagnosticControl control = [] {
-    DiagnosticControl leakOff;
-    leakOff.turnOffByDefault(core::diag::Leak);
-    return leakOff;
-  }();
   /// The flags consumed, in order, for forwarding to `-cc1` jobs.
   std::vector<std::string> spellings;
 
@@ -95,8 +76,7 @@ struct DriverOptions {
 int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress);
 
 /// Runs a `-cc1` command line (`argv` excludes `-cc1`): Clang's compiler
-/// proper with WeaveC's guard pass, unsafe-region collector and, under
-/// `-fweavec-diagnose`, analysis.
+/// proper with WeaveC's guard passes and unsafe-region collector.
 int runCc1(llvm::ArrayRef<const char *> argv, const char *argv0);
 
 } // namespace weavec::frontend

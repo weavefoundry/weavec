@@ -7,7 +7,6 @@
 // 'p' still reads as may-owned and the exit reports a possible leak. The fix
 // is a loop-head state that distinguishes the first turn from the later ones,
 // which RFC 0030 does not have; until then the warning is tolerated here.
-// ALLOW: leak
 // ASAN
 #include <stdlib.h>
 int main(int argc, char **argv) {

@@ -77,8 +77,8 @@ jobs:
           - name: Linux / Clang / Debug + ASan/UBSan
             os: ubuntu-24.04
             preset: ci-debug
-            # The test/cases suites analyse and build (guard passes and all)
-            # under ASan, without running the case programs.
+            # The test/cases suites build (guard passes and all) under ASan,
+            # without running the case programs.
             configure-args: -DWEAVEC_CASES_ARGS=--no-run
           - name: Linux / Clang / Release
             os: ubuntu-24.04
@@ -148,18 +148,10 @@ jobs:
           ulimit -c 0
           ctest --preset "${{ matrix.preset }}" -j "$(getconf _NPROCESSORS_ONLN)"
 
-      - name: Documentation examples
-        env:
-          ASAN_OPTIONS: detect_leaks=0:allow_user_poisoning=0
-        run: |
-          python3 docs/scripts/check-examples.py \
-            --weavec "build/${{ matrix.preset }}/bin/weavec" \
-            --weavec-cc "build/${{ matrix.preset }}/bin/weavec-cc"
-
-      # RFC 0035 gate H1: no checked-mode or old-engine residue, no library
-      # names compared outside the LibrarySpec table, no corpus project names
-      # in lib/, the engine seam, and the engine, library and runtime line
-      # budgets.
+      # RFC 0036 gate H1: no library names compared outside the LibrarySpec
+      # table, no corpus project names in lib/, the layering of lib/Core and
+      # the runtime, the runtime's entry points against the passes', and the
+      # library and runtime line budgets.
       - name: Repository hygiene
         if: runner.os == 'Linux' && matrix.preset == 'ci-release'
         run: |
@@ -167,18 +159,16 @@ jobs:
           python3 scripts/check-hygiene.py
 
       # RFC 0035 (section 11): the corpus gate's own tests, then --quick over
-      # pinned corpus configurations in test/corpus/: the weavec analysis
-      # against the triage in test/corpus/triage.json, and the enforcement
-      # ledgers of per-file weavec-cc compiles against the ratchet in
+      # pinned corpus configurations in test/corpus/: the enforcement ledgers
+      # of per-file weavec-cc compiles against the ratchet in
       # test/corpus/expected.json. The weekly Corpus workflow runs --full.
       - name: Pinned corpus
         if: matrix.preset == 'ci-release'
         run: |
           python3 scripts/test_corpus_gate.py
           python3 scripts/corpus-gate.py --quick \
-            --weavec "build/${{ matrix.preset }}/bin/weavec" \
             --weavec-cc "build/${{ matrix.preset }}/bin/weavec-cc" \
-            --only log.c --only cJSON-program --only linenoise-program \
+            --only log.c --only cJSON --only linenoise-program \
             --only jansson --json corpus-gate-quick.json
 
       - name: Upload pinned corpus results
@@ -192,7 +182,6 @@ jobs:
       - name: Smoke-test install
         run: |
           cmake --install "build/${{ matrix.preset }}" --prefix "$RUNNER_TEMP/weavec-install"
-          "$RUNNER_TEMP/weavec-install/bin/weavec" --version
           "$RUNNER_TEMP/weavec-install/bin/weavec-cc" --version
           printf 'int main(void) { return 0; }\n' > "$RUNNER_TEMP/hello.c"
           "$RUNNER_TEMP/weavec-install/bin/weavec-cc" "$RUNNER_TEMP/hello.c" -o "$RUNNER_TEMP/hello"

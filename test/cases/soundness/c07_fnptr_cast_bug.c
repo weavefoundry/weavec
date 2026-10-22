@@ -8,5 +8,5 @@ int main(void) {
   if (!p) return 1;
   borrow_fn fn = (borrow_fn)free_it;
   fn(p);
-  return p[0]; // BUG: use-after-free
+  return p[0]; // TRAP: heap-use-after-free
 }

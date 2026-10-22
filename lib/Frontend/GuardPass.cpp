@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// RFC 0035: the three passes' entry points and registration, and what they
-// share: the module's context (types, markers, runtime entry points, site
-// records, the ledger) and the inline checks of the shadow.
+// RFC 0035, RFC 0036: the guard passes' entry points and registration, and
+// what they share: the module's context (types, markers, runtime entry points,
+// site records, the ledger) and the inline checks of the shadow.
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,6 +21,7 @@
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/MDBuilder.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -320,6 +321,14 @@ llvm::FunctionCallee ModuleContext::rangeOkFunction() {
 llvm::FunctionCallee ModuleContext::strlenFunction() {
   return runtime("strlen",
                  llvm::FunctionType::get(i64, {ptr, i64, ptr}, false));
+}
+
+llvm::FunctionCallee ModuleContext::limitFailFunction() {
+  llvm::FunctionCallee callee = runtime(
+      "limit_fail", llvm::FunctionType::get(llvm::Type::getVoidTy(context),
+                                            {i64, i64, i64, ptr}, false));
+  slowPath(callee, module);
+  return callee;
 }
 
 llvm::GlobalVariable *ModuleContext::shadowDescriptor() {
@@ -796,6 +805,16 @@ void FunctionContext::writeShadow(llvm::Instruction *before,
   }
 }
 
+/// In a build with assertions, the function each pass leaves is valid IR:
+/// a broken one fails at the pass that broke it, not in the back end.
+static void verified([[maybe_unused]] const llvm::Function &function) {
+#ifndef NDEBUG
+  if (llvm::verifyFunction(function, &llvm::errs()))
+    llvm::report_fatal_error(llvm::Twine("weavec: a guard pass broke ") +
+                             function.getName());
+#endif
+}
+
 } // namespace guard
 
 llvm::PreservedAnalyses GuardInsertPass::run(llvm::Module &module,
@@ -804,8 +823,10 @@ llvm::PreservedAnalyses GuardInsertPass::run(llvm::Module &module,
     return llvm::PreservedAnalyses::all();
   guard::ModuleContext context(module, options);
   for (llvm::Function &function : module)
-    if (!guard::skips(function))
+    if (!guard::skips(function)) {
       guard::insertGuards(context, function);
+      guard::verified(function);
+    }
   return llvm::PreservedAnalyses::none();
 }
 
@@ -815,6 +836,7 @@ llvm::PreservedAnalyses GuardPrunePass::run(llvm::Function &function,
     return llvm::PreservedAnalyses::all();
   guard::ModuleContext context(*function.getParent(), options);
   guard::pruneGuards(context, function);
+  guard::verified(function);
   return llvm::PreservedAnalyses::none();
 }
 
@@ -826,9 +848,10 @@ GuardLoopPass::run(llvm::Function &function,
       function.getParent()->getDataLayout().getPointerSizeInBits() != 64)
     return llvm::PreservedAnalyses::all();
   guard::ModuleContext context(*function.getParent(), options);
-  return guard::versionLoops(context, function, analyses)
-             ? llvm::PreservedAnalyses::none()
-             : llvm::PreservedAnalyses::all();
+  const bool changed = guard::versionLoops(context, function, analyses);
+  guard::verified(function);
+  return changed ? llvm::PreservedAnalyses::none()
+                 : llvm::PreservedAnalyses::all();
 }
 
 llvm::PreservedAnalyses
@@ -846,6 +869,7 @@ GuardExpandPass::run(llvm::Module &module,
       work.push_back(&function);
   for (llvm::Function *function : work) {
     guard::expandGuards(context, *function, functions);
+    guard::verified(*function);
     functions.invalidate(*function, llvm::PreservedAnalyses::none());
   }
   guard::instrumentGlobals(context);

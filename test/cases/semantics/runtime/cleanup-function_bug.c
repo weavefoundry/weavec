@@ -14,7 +14,7 @@ static int total(struct table *t, long n) {
   long j;
   for (j = 0; j < n; j++) {
     struct row *held __attribute__((cleanup(drop))) = t->rows;
-    sum += held->cells[0]; // BUG: use-after-free // TRAP
+    sum += held->cells[0]; // TRAP
   }
   return sum;
 }

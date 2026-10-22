@@ -8,13 +8,10 @@ files and the gates.
 
 Modes (combine freely; at least one, or --update-from):
 
-  --quick   per config, the advisory analysis (`weavec`, per file, or
-            `weavec --whole-program` for wholeProgram configs), whose
-            definite errors need a verdict in triage.json, none of them
-            "false"; and `weavec-cc -c -O2 -fweavec-ledger=` of each file,
-            whose enforcement ledgers and the analysis' summary lines are
-            compared with the expected.json ratchet (the proven share of
-            the accesses must not drop). Every PR.
+  --quick   per config, `weavec-cc -c -O2 -fweavec-ledger=` of each file,
+            whose enforcement ledgers are compared with the expected.json
+            ratchet (the proven share of the accesses must not drop, the
+            unguarded accesses must not rise). Every PR.
   --full    --quick, then each config's build and test suite with
             CC=weavec-cc in trap mode, rerun in report mode to attribute
             failures and traps to lines, and built once more with the
@@ -108,23 +105,6 @@ LEDGER_COUNTS = ("accesses", "proven", "guarded", "unguarded")
 # -O in compile.args comes later and wins).
 QUICK_FLAGS = ("-O2",)
 
-# `file:line:col: severity: message [weavec::id]`.
-DIAG_RE = re.compile(
-    r"^(?P<file>[^:\n]+):(?P<line>\d+):(?P<col>\d+): "
-    r"(?P<severity>error|warning): (?P<message>.*) \[weavec::(?P<id>[a-z0-9-]+)\]$"
-)
-# Anything Clang itself reports (parse errors, missing headers) has no
-# `[weavec::...]` tag; it fails the analysis, so a broken setup never looks clean.
-CLANG_DIAG_RE = re.compile(r"^(?P<file>[^:\n]+):\d+:\d+: (?P<severity>error|fatal error): ")
-# The analysis' summary lines (lib/Core/Ledger.cpp): one per unit, and one
-# for the program under --whole-program.
-SUMMARY_RE = re.compile(
-    r"^weavec: (?:program (?P<program>.+?)|(?P<source>.+?)): (?P<sites>[\d,]+) sites?"
-    r"(?: in (?P<units>[\d,]+) units?)?: (?P<proven>[\d,]+) proven, (?P<notProven>[\d,]+) not proven, "
-    r"(?P<violations>[\d,]+) violations?, (?P<trusted>[\d,]+) trusted; (?P<errors>[\d,]+) errors?, "
-    r"(?P<warnings>[\d,]+) warnings?(?:; (?P<overBudget>[\d,]+) functions? over budget \(.*\))?\s*$"
-)
-ANALYSIS_COUNTS = ("sites", "proven", "notProven", "violations", "trusted", "errors", "warnings", "overBudget")
 # A run-time report (runtime/weavec_report.c, RFC 0035 section 5.3). A test
 # harness may prefix the line (CTest -V prints "12: ").
 REPORT_RE = re.compile(
@@ -136,7 +116,8 @@ INVALID_RELEASE_RE = re.compile(r"weavec: invalid release of 0x[0-9a-f]+: ")
 KINDS = (
     "heap-buffer-overflow", "heap-use-after-free", "stack-buffer-overflow",
     "stack-use-after-scope", "dynamic-stack-buffer-overflow", "global-buffer-overflow",
-    "buffer-overflow", "null-dereference", "unterminated-string", "index-out-of-bounds",
+    "intra-object-overflow", "use-after-poison",
+    "null-dereference", "unterminated-string", "index-out-of-bounds",
     "invalid-release", "double-free", "invalid-access", "overlapping-copy",
 )
 # How shells, make and CTest describe a process that died by SIGTRAP or
@@ -454,7 +435,6 @@ class Config:
     project: Project
     files: list[str]
     args: list[str]
-    whole_program: bool = False
     build: list[str] = dataclasses.field(default_factory=list)
     test: list[str] = dataclasses.field(default_factory=list)
     test_timeout: float | None = None
@@ -491,8 +471,7 @@ SETS = ("original", "heldOut", "fresh", "sealed", "fresh34", "sealed34", "fresh3
 NAMED_SETS = SETS[2:]
 # The sets that run only when asked for (--set, --only).
 SEALED_SETS = ("sealed", "sealed34", "sealed35")
-CONFIG_KEYS = frozenset(("name", "notes", "compile", "wholeProgram", "build", "test", "testTimeout", "bench",
-                         "heldOut", "set"))
+CONFIG_KEYS = frozenset(("name", "notes", "compile", "build", "test", "testTimeout", "bench", "heldOut", "set"))
 BENCH_KEYS = frozenset(("name", "build", "command", "repeat", "input", "check"))
 
 SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -558,8 +537,7 @@ def load_manifest(path: Path, support_root: Path) -> Manifest:
                 problems.append(f"config {cname}: testTimeout must be a positive number of seconds")
             config = Config(
                 name=cname, project=project, files=list(compile_.get("files", [])),
-                args=list(compile_.get("args", [])), whole_program=bool(c.get("wholeProgram", False)),
-                build=list(c.get("build", [])), test=list(c.get("test", [])), test_timeout=timeout,
+                args=list(compile_.get("args", [])), build=list(c.get("build", [])), test=list(c.get("test", [])), test_timeout=timeout,
                 bench=bench, notes=c.get("notes", ""), held_out=held_out is True, set=corpus_set)
             project.configs.append(config)
             configs.append(config)
@@ -664,118 +642,12 @@ def config_files(config: Config, root: Path, tracked: set[str] | None = None) ->
     return files
 
 
-# -- the advisory analysis (RFC 0035, section 8) --------------------------------
-
-
-@dataclasses.dataclass
-class Diagnostic:
-    file: str
-    line: int
-    col: int
-    severity: str
-    id: str
-    message: str
-
-    def render(self) -> str:
-        return f"{self.file}:{self.line}:{self.col}: {self.severity}: {self.message} [weavec::{self.id}]"
-
-    def to_json(self) -> dict:
-        return dataclasses.asdict(self)
-
-
-def parse_diagnostics(text: str, root: Path) -> tuple[list[Diagnostic], int]:
-    """WeaveC diagnostics and the number of Clang errors in tool output."""
-    diagnostics: list[Diagnostic] = []
-    clang_errors = 0
-    for line in text.splitlines():
-        m = DIAG_RE.match(line)
-        if m:
-            diagnostics.append(Diagnostic(file=rel_path(m.group("file"), root), line=int(m.group("line")),
-                                          col=int(m.group("col")), severity=m.group("severity"),
-                                          id=m.group("id"), message=m.group("message")))
-        elif CLANG_DIAG_RE.match(line):
-            clang_errors += 1
-    return diagnostics, clang_errors
-
-
-def parse_summaries(text: str) -> tuple[list[dict], dict | None]:
-    """The analysis' unit summary lines, and its program line if any."""
-    units: list[dict] = []
-    program = None
-    for line in text.splitlines():
-        m = SUMMARY_RE.match(line.strip())
-        if not m:
-            continue
-        counts = {key: int((m.group(key) or "0").replace(",", "")) for key in ANALYSIS_COUNTS}
-        if m.group("program") is not None:
-            program = counts
-        else:
-            units.append({"source": m.group("source"), **counts})
-    return units, program
+# -- the enforcement ledger (RFC 0035, section 9) --------------------------------
 
 
 def add_counts(into: dict, counts: dict, keys: Iterable[str]) -> None:
     for key in keys:
         into[key] = into.get(key, 0) + int(counts.get(key, 0))
-
-
-def classify_failure(result: ProcResult, diagnostics: list[Diagnostic], clang_errors: int,
-                     summaries: int) -> str:
-    """Setup and tool failures must never look like clean code."""
-    if result.error:
-        return result.error
-    if result.timed_out:
-        return f"timeout after {result.seconds:.0f} seconds"
-    if clang_errors:
-        return f"{clang_errors} Clang error(s)"
-    if result.returncode < 0 or result.returncode > 1:
-        return f"weavec exited with {describe_status(result)}"
-    if result.returncode and not any(d.severity == "error" for d in diagnostics):
-        return f"weavec failed without a WeaveC error (status {result.returncode})"
-    if not summaries:
-        return "weavec printed no summary line"
-    return ""
-
-
-@dataclasses.dataclass
-class AnalysisRun:
-    """One `weavec` process: a file, or the whole program."""
-    files: list[str]
-    counts: dict
-    diagnostics: list[Diagnostic]
-    cpu: float
-    failure: str = ""
-
-
-def analysis_command(weavec: str, config: Config, files: list[Path], support_root: Path) -> list[str]:
-    argv = [weavec]
-    if config.whole_program:
-        argv.append("--whole-program")
-    argv.extend(str(f) for f in files)
-    # Clang stops after 20 errors per unit by default.
-    argv.extend(["--", "-ferror-limit=0", *expand_args(config, support_root)])
-    return argv
-
-
-def run_analysis(weavec: str, config: Config, root: Path, files: list[Path], support_root: Path,
-                 timeout: float) -> AnalysisRun:
-    result = run_process(analysis_command(weavec, config, files, support_root), cwd=root, timeout=timeout)
-    diagnostics, clang_errors = parse_diagnostics(result.output, root)
-    units, program = parse_summaries(result.output)
-    counts: dict = {}
-    if config.whole_program and program is not None:
-        counts = dict(program)
-    else:
-        for unit in units:
-            add_counts(counts, unit, ANALYSIS_COUNTS)
-    failure = classify_failure(result, diagnostics, clang_errors, len(units) + (program is not None))
-    if not failure and len(units) != len(files):
-        failure = f"{len(units)} summary line(s) for {len(files)} file(s)"
-    return AnalysisRun(files=[f.relative_to(root).as_posix() for f in files], counts=counts,
-                       diagnostics=diagnostics, cpu=result.cpu, failure=failure)
-
-
-# -- the enforcement ledger (RFC 0035, section 9) --------------------------------
 
 
 def read_ledger(path: Path) -> tuple[dict, collections.Counter]:
@@ -855,12 +727,9 @@ def run_compile(weavec_cc: str, reference_cc: str | None, config: Config, root: 
 @dataclasses.dataclass
 class Quick:
     config: str
-    analysis: dict = dataclasses.field(default_factory=dict)
     ledger: dict = dataclasses.field(default_factory=lambda: {key: 0 for key in LEDGER_COUNTS})
     reasons: collections.Counter = dataclasses.field(default_factory=collections.Counter)
-    diagnostics: list[Diagnostic] = dataclasses.field(default_factory=list)
     units: dict = dataclasses.field(default_factory=dict)
-    analysis_cpu: float = 0.0
     compile_cpu: float = 0.0
     failures: list[str] = dataclasses.field(default_factory=list)
 
@@ -870,24 +739,11 @@ class Quick:
 
     def measured(self) -> dict:
         """The ratchet shape (expected.json)."""
-        return {
-            "ledger": {**{key: self.ledger[key] for key in LEDGER_COUNTS}, "provenShare": self.proven_share},
-            "analysis": {key: self.analysis.get(key, 0) for key in ANALYSIS_COUNTS},
-        }
+        return {"ledger": {**{key: self.ledger[key] for key in LEDGER_COUNTS}, "provenShare": self.proven_share}}
 
     def to_json(self) -> dict:
         return {**self.measured(), "reasons": dict(sorted(self.reasons.items())),
-                "analysisCpuSeconds": round(self.analysis_cpu, 2), "compileCpuSeconds": round(self.compile_cpu, 2),
-                "units": self.units, "failures": self.failures,
-                "diagnostics": [d.to_json() for d in self.diagnostics]}
-
-    def add_analysis(self, run: AnalysisRun) -> None:
-        self.analysis_cpu += run.cpu
-        if run.failure:
-            self.failures.append(f"weavec {' '.join(run.files)[:80]}: {run.failure}")
-            return
-        add_counts(self.analysis, run.counts, ANALYSIS_COUNTS)
-        self.diagnostics.extend(run.diagnostics)
+                "compileCpuSeconds": round(self.compile_cpu, 2), "units": self.units, "failures": self.failures}
 
     def add_compile(self, run: CompileRun) -> None:
         self.compile_cpu += run.cpu
@@ -911,23 +767,19 @@ class Quick:
 RATCHET_FIELDS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("ledger", "provenShare"), "higher"),
     (("ledger", "unguarded"), "lower"),
-    (("analysis", "errors"), "lower"),
-    (("analysis", "warnings"), "lower"),
 )
 # Counts whose change is a note: the code under test changes them both ways.
 TRACKED_FIELDS: tuple[tuple[str, ...], ...] = (
     ("ledger", "accesses"), ("ledger", "proven"), ("ledger", "guarded"),
-    ("analysis", "sites"), ("analysis", "proven"),
 )
 EXPECTED_COMMENT = [
     "The corpus ratchet (RFC 0035, section 11), written by scripts/corpus-gate.py --update (or",
     "--update-from a results file measured elsewhere, for example by CI). For each platform,",
     "configs.<config> records what --quick measured: `ledger`, the enforcement ledgers of the",
-    "per-file weavec-cc -c -O2 compiles (accesses, proven, guarded, unguarded, provenShare), and",
-    "`analysis`, the summary lines of the weavec analysis (sites, proven, notProven, violations,",
-    "trusted, errors, warnings, overBudget). provenShare must not drop, and unguarded, errors and",
-    "warnings must not rise; a better value and a change of the other counts are reported until",
-    "--update records them. test/corpus/README.md documents the gate.",
+    "per-file weavec-cc -c -O2 compiles (accesses, proven, guarded, unguarded, provenShare).",
+    "provenShare must not drop and unguarded must not rise; a better value and a change of the",
+    "other counts are reported until --update records them. test/corpus/README.md documents the",
+    "gate.",
 ]
 
 
@@ -1013,34 +865,25 @@ def load_expected(path: Path, update: bool) -> dict:
 
 # -- triage (triage.json) -------------------------------------------------------------
 
-TRIAGE_KEYS = ("config", "id", "certainty", "file", "line", "verdict", "note")
+TRIAGE_FIELDS = frozenset(("schema", "version", "_comment", "guardFailures"))
 GUARD_FAILURE_KEYS = ("config", "file", "line", "verdict", "note")
 
 
 @dataclasses.dataclass
 class Triage:
-    entries: list[dict]
     guard_failures: list[dict]
 
 
 def load_triage(path: Path) -> Triage:
-    """Verdicts on the analysis' findings, and the guard failures of test
-    suites that are true bugs of the project."""
+    """The guard failures of test suites that are true bugs of the project."""
     if not path.exists():
-        return Triage([], [])
+        return Triage([])
     data = read_json(path)
     check_schema(data, path, TRIAGE_SCHEMA, TRIAGE_VERSION)
     problems = []
-    entries = list(data.get("entries", []))
-    for entry in entries:
-        where = f"{entry.get('config')} {entry.get('file')}:{entry.get('line')}"
-        missing = [k for k in TRIAGE_KEYS if k not in entry]
-        if missing:
-            problems.append(f"entry {where}: missing {', '.join(missing)}")
-        elif entry["verdict"] not in ("true", "false"):
-            problems.append(f"entry {where}: verdict must be \"true\" or \"false\"")
-        elif entry["certainty"] not in ("definite", "possible"):
-            problems.append(f"entry {where}: certainty must be definite or possible")
+    unknown = sorted(set(data) - TRIAGE_FIELDS)
+    if unknown:
+        problems.append(f"unknown field(s) {', '.join(unknown)}")
     failures = list(data.get("guardFailures", []))
     for entry in failures:
         where = f"{entry.get('config')} {entry.get('file')}:{entry.get('line')}"
@@ -1054,63 +897,7 @@ def load_triage(path: Path) -> Triage:
             problems.append(f"guardFailures entry {where}: unknown kind {entry['kind']!r}")
     if problems:
         raise GateError(f"{path}: invalid triage:\n  " + "\n  ".join(problems))
-    return Triage(entries, failures)
-
-
-def findings_of(config: str, diagnostics: Iterable[Diagnostic]) -> list[dict]:
-    """The analysis' findings: an error is definite, a warning possible."""
-    seen = set()
-    out = []
-    for d in diagnostics:
-        key = (d.file, d.line, d.id)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({"config": config, "id": d.id, "certainty": "definite" if d.severity == "error" else "possible",
-                    "file": d.file, "line": d.line, "message": d.message})
-    return out
-
-
-@dataclasses.dataclass
-class TriageResult:
-    definite: list[dict] = dataclasses.field(default_factory=list)
-    possible: int = 0
-    untriaged: list[dict] = dataclasses.field(default_factory=list)
-    false_errors: list[dict] = dataclasses.field(default_factory=list)
-    stale: list[dict] = dataclasses.field(default_factory=list)
-
-    @property
-    def failed(self) -> bool:
-        return bool(self.untriaged or self.false_errors)
-
-    def to_json(self) -> dict:
-        return dataclasses.asdict(self)
-
-
-def check_triage(findings: list[dict], entries: list[dict], configs_run: set[str]) -> TriageResult:
-    """Every definite error needs a verdict and none may be "false"; possible
-    findings are counted, triaged or not. An entry no finding of a config
-    that ran matches is stale."""
-    result = TriageResult()
-    by_key = {(e["config"], normalise_path(e["file"]), int(e["line"]), e["id"]): e for e in entries}
-    matched = set()
-    for finding in findings:
-        key = (finding["config"], normalise_path(finding["file"]), finding["line"], finding["id"])
-        entry = by_key.get(key)
-        if entry is not None:
-            matched.add(key)
-        if finding["certainty"] != "definite":
-            result.possible += 1
-            continue
-        result.definite.append(finding)
-        if entry is None:
-            result.untriaged.append(finding)
-        elif entry["verdict"] == "false":
-            result.false_errors.append({**finding, "note": entry.get("note", "")})
-    for key, entry in by_key.items():
-        if entry["config"] in configs_run and key not in matched:
-            result.stale.append(entry)
-    return result
+    return Triage(failures)
 
 
 def triaged_failure(guard_failures: list[dict], config: str, report: dict) -> bool:
@@ -1487,6 +1274,8 @@ class BenchRun:
     times: dict = dataclasses.field(default_factory=dict)
     minimum: dict = dataclasses.field(default_factory=dict)
     outputs: dict = dataclasses.field(default_factory=dict)
+    # The peak resident memory of each build's runs, in bytes (RFC 0036 gate G7).
+    peak_rss: dict = dataclasses.field(default_factory=dict)
     ratio: float | None = None
     asan_ratio: float | None = None
     reports: list[dict] = dataclasses.field(default_factory=list)
@@ -1494,7 +1283,8 @@ class BenchRun:
 
     def to_json(self) -> dict:
         return {"config": self.config, "name": self.name, "times": self.times, "minimum": self.minimum,
-                "outputs": self.outputs, "ratio": self.ratio, "asanRatio": self.asan_ratio,
+                "outputs": self.outputs, "peakRssMiB": {k: round(v / 2 ** 20, 1) for k, v in self.peak_rss.items()},
+                "ratio": self.ratio, "asanRatio": self.asan_ratio,
                 "reports": self.reports, "failures": self.failures}
 
 
@@ -1503,7 +1293,6 @@ class BenchRun:
 
 @dataclasses.dataclass
 class Binaries:
-    weavec: str | None
     weavec_cc: str | None
     reference_cc: str | None
 
@@ -1535,7 +1324,7 @@ def tool_version(path: str | None) -> str:
         return f"unavailable: {exc}"
     text = (out.stdout or out.stderr).strip().splitlines()
     # weavec-cc prints Clang's version block first; its own line follows.
-    own = [line for line in text if line.startswith(("weavec-cc version", "weavec version"))]
+    own = [line for line in text if line.startswith("weavec-cc version")]
     return own[0] if own else (text[0] if text else "")
 
 
@@ -1716,7 +1505,6 @@ class Gate:
         self.jobs = max(1, args.jobs)
         self.triage = load_triage(args.triage)
         self.measured: dict[str, dict] = {}
-        self.findings: list[dict] = []
         self.injection_runs: list[InjectionRun] = []
         self.binaries = self.resolve_binaries()
         self.announce_binaries()
@@ -1726,10 +1514,8 @@ class Gate:
     def resolve_binaries(self) -> Binaries:
         a = self.args
         built = [ROOT / "build" / "release" / "bin", ROOT / "build" / "dev" / "bin"]
-        weavec_needed = (a.quick or a.full) and not a.reference_only
         cc_needed = (a.quick or a.full or a.inject or a.bench) and not a.reference_only
         reference_needed = a.reference_only or a.full or a.bench
-        weavec = resolve_binary(a.weavec, [d / "weavec" for d in built], "--weavec", weavec_needed)
         weavec_cc = resolve_binary(a.weavec_cc, [d / "weavec-cc" for d in built], "--weavec-cc", cc_needed)
         reference = a.cc or default_reference_cc()
         if reference:
@@ -1737,19 +1523,18 @@ class Gate:
         elif reference_needed:
             raise GateError("--cc: no reference compiler; set WEAVEC_LLVM_PREFIX or pass --cc")
         if a.reference_only:
-            weavec = weavec_cc = None
+            weavec_cc = None
         self.results["binaries"] = {
             name: {"path": path, "version": tool_version(path)}
-            for name, path in (("weavec", weavec), ("weavec-cc", weavec_cc), ("reference-cc", reference))
+            for name, path in (("weavec-cc", weavec_cc), ("reference-cc", reference))
             if path
         }
-        return Binaries(weavec, weavec_cc, reference)
+        return Binaries(weavec_cc, reference)
 
     def announce_binaries(self) -> None:
         """Say which binaries are under test, and refuse to time a Debug one:
         its verdicts are right and its timings mean nothing."""
-        for what, path in (("weavec", self.binaries.weavec), ("weavec-cc", self.binaries.weavec_cc),
-                           ("reference compiler", self.binaries.reference_cc)):
+        for what, path in (("weavec-cc", self.binaries.weavec_cc), ("reference compiler", self.binaries.reference_cc)):
             if not path:
                 continue
             build = build_type_of(path)
@@ -1758,8 +1543,7 @@ class Gate:
                                      if what != "reference compiler" else ""))
             if what == "reference compiler" or not build or build.lower() == "release":
                 continue
-            explicit = self.args.weavec if what == "weavec" else self.args.weavec_cc
-            if self.args.bench and not explicit:
+            if self.args.bench and not self.args.weavec_cc:
                 raise GateError(f"{what}: {path} is a {build} build and --bench measures CPU time. "
                                 f"Pass --{what} explicitly, or build a Release tree.")
             if self.args.full:
@@ -1816,17 +1600,13 @@ class Gate:
             raise GateError(f"{self.binaries.weavec_cc} does not write a {LEDGER_SCHEMA} version {LEDGER_VERSION} "
                             f"ledger (RFC 0035): {describe_status(result)}; {exc}; "
                             f"{result.stderr.strip()[:300]}") from None
-        result = run_process([self.binaries.weavec, str(source), "--"], cwd=scratch, timeout=120)
-        if not parse_summaries(result.output)[0]:
-            raise GateError(f"{self.binaries.weavec} prints no summary line (RFC 0035, section 8): "
-                            f"{describe_status(result)}; {result.output.strip()[:300]}")
 
     # ---- quick ----
 
     def run_quick(self) -> None:
         self.probe()
         timed = self.binaries.reference_cc if self.args.full else None
-        log(f"quick: weavec {self.binaries.weavec}, weavec-cc {self.binaries.weavec_cc}"
+        log(f"quick: weavec-cc {self.binaries.weavec_cc}"
             + (f", per-file compiles timed against {timed}" if timed else ""))
         tasks: list[tuple[Config, Callable[[], Any]]] = []
         for config in self.configs:
@@ -1834,61 +1614,30 @@ class Gate:
             files = config_files(config, root, self.tracked[config.project.name])
             work = self.run_dir / "quick" / config.name
             work.mkdir(parents=True, exist_ok=True)
-            groups = [files] if config.whole_program else [[f] for f in files]
-            for group in groups:
-                tasks.append((config, lambda c=config, r=root, g=group: run_analysis(
-                    self.binaries.weavec, c, r, g, self.support_root, self.args.timeout)))
             for file in files:
                 tasks.append((config, lambda c=config, r=root, f=file, w=work: run_compile(
                     self.binaries.weavec_cc, timed, c, r, f, self.support_root, w, self.args.timeout)))
-        # The whole programs first: they take longest.
-        tasks.sort(key=lambda t: not t[0].whole_program)
         quick = {c.name: Quick(config=c.name) for c in self.configs}
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.jobs) as pool:
             futures = {pool.submit(task): config for config, task in tasks}
             for future in concurrent.futures.as_completed(futures):
                 result = future.result()
                 measure = quick[futures[future].name]
-                if isinstance(result, AnalysisRun):
-                    measure.add_analysis(result)
-                    vlog(f"[{measure.config}] weavec {' '.join(result.files)[:60]}: {result.failure or 'ok'}")
-                else:
-                    measure.add_compile(result)
-                    vlog(f"[{measure.config}] weavec-cc -c {result.file}: {result.failure or 'ok'}")
+                measure.add_compile(result)
+                vlog(f"[{measure.config}] weavec-cc -c {result.file}: {result.failure or 'ok'}")
         for config in self.configs:
             self.record_quick(config, quick[config.name])
 
     def record_quick(self, config: Config, measure: Quick) -> None:
-        measure.diagnostics.sort(key=lambda d: (d.file, d.line, d.col, d.id))
         self.entry(config)["quick"] = measure.to_json()
         for failure in measure.failures:
             self.fail(f"{config.name}: {failure}", config=config.name)
         if not measure.failures:
             self.measured[config.name] = measure.measured()
-        self.findings.extend(findings_of(config.name, measure.diagnostics))
-        a = measure.analysis
         provenness = measure.proven_share
         log(f"[{config.name}] {measure.ledger['accesses']} accesses, "
-            f"{'-' if provenness is None else f'{provenness:.1%}'} proven, {measure.ledger['unguarded']} unguarded; "
-            f"analysis: {a.get('sites', 0)} sites, {a.get('errors', 0)} errors, {a.get('warnings', 0)} warnings "
-            f"({measure.analysis_cpu + measure.compile_cpu:.1f} s CPU)")
-
-    def evaluate_triage(self) -> None:
-        result = check_triage(self.findings, self.triage.entries, self.selected)
-        self.results["triage"] = result.to_json()
-        for finding in result.untriaged:
-            self.fail(f"untriaged definite {finding['id']} in {finding['config']} at {finding['file']}:"
-                      f"{finding['line']}: {finding['message']}")
-        for finding in result.false_errors:
-            self.fail(f"definite {finding['id']} triaged false in {finding['config']} at {finding['file']}:"
-                      f"{finding['line']}: {finding['message']}")
-        for entry in result.stale:
-            self.note(f"stale triage entry: {entry['config']} {entry['file']}:{entry['line']} {entry['id']}")
-        per_config = collections.Counter(f["config"] for f in result.definite)
-        self.gate("triage", not result.failed,
-                  {"definiteErrors": len(result.definite), "possible": result.possible,
-                   "untriaged": len(result.untriaged), "triagedFalse": len(result.false_errors),
-                   "perConfig": dict(sorted(per_config.items()))}, failed_above=True)
+            f"{'-' if provenness is None else f'{provenness:.1%}'} proven, {measure.ledger['unguarded']} unguarded "
+            f"({measure.compile_cpu:.1f} s CPU)")
 
     # ---- full: builds and tests ----
 
@@ -2170,6 +1919,8 @@ class Gate:
                                             f"{result.output.strip()[-300:]}")
                         break
                     run.times.setdefault(label, []).append(round(result.user, 4))
+                    if result.maxrss:
+                        run.peak_rss[label] = max(run.peak_rss.get(label, 0), result.maxrss)
                     run.outputs.setdefault(label, result.stdout.strip()[:200])
                 if run.failures:
                     break
@@ -2197,15 +1948,15 @@ class Gate:
         log(f"[{config.name}] bench {bench.name}: min user CPU "
             + ", ".join(f"{k} {v:.3f} s" for k, v in run.minimum.items())
             + (f"; ratio {run.ratio:.3f}" if run.ratio is not None else "")
-            + (f"; ASan {run.asan_ratio:.3f}" if run.asan_ratio is not None else ""))
+            + (f"; ASan {run.asan_ratio:.3f}" if run.asan_ratio is not None else "")
+            + ("; peak RSS " + ", ".join(f"{k} {v / 2 ** 20:.1f} MiB" for k, v in run.peak_rss.items())
+               if run.peak_rss else ""))
 
     # ---- gates ----
 
     def evaluate(self) -> None:
         a = self.args
         gates = self.manifest.gates
-        if (a.quick or a.full) and not a.reference_only:
-            self.evaluate_triage()
         if a.full and not a.reference_only:
             self.evaluate_drop_in()
             if a.checks == "trap":
@@ -2247,7 +1998,7 @@ class Gate:
             measured = {n: m for n, m in self.measured.items() if n not in self.tool_failures}
             skipped = sorted(set(self.measured) - set(measured))
             if skipped:
-                log(f"not recording {', '.join(skipped)}: their analyses, compiles, builds or runs failed")
+                log(f"not recording {', '.join(skipped)}: their compiles, builds or runs failed")
             if not measured:
                 log("nothing to record in expected.json")
                 return
@@ -2268,7 +2019,7 @@ class Gate:
 
     def producer(self) -> str:
         versions = self.results.get("binaries", {})
-        return (versions.get("weavec-cc") or versions.get("weavec") or {}).get("version", "")
+        return (versions.get("weavec-cc") or {}).get("version", "")
 
     # ---- main flow ----
 
@@ -2342,17 +2093,17 @@ def print_summary(configs: list[Config], results: dict) -> None:
         if not group:
             continue
         print(f"{corpus_set} configs:")
-        print(f"  {'config':<{width}}  {'accesses':>8} {'proven':>7} {'errors':>6} {'warnings':>8} "
+        print(f"  {'config':<{width}}  {'accesses':>8} {'proven':>7} {'unguarded':>9} "
               f"{'built':>5} {'tests':>5} {'traps':>5} {'build x':>7} {'run x':>6}")
         for c in group:
             entry = results["configs"].get(c.name) or {}
             quick = entry.get("quick") or {}
-            ledger, analysis = quick.get("ledger") or {}, quick.get("analysis") or {}
+            ledger = quick.get("ledger") or {}
             checked = (entry.get("builds") or {}).get(results["checks"]) or {}
             proven = ledger.get("provenShare")
             print(f"  {c.name:<{width}}  {cell(ledger.get('accesses')):>8} "
                   f"{cell(None if proven is None else proven * 100, '{:.1f}%'):>7} "
-                  f"{cell(analysis.get('errors')):>6} {cell(analysis.get('warnings')):>8} "
+                  f"{cell(ledger.get('unguarded')):>9} "
                   f"{yes_no(checked.get('built')):>5} {yes_no(checked.get('testsPassed')):>5} "
                   f"{cell(entry.get('traps')):>5} {cell(entry.get('buildCpuRatio'), '{:.2f}'):>7} "
                   f"{cell((entry.get('bench') or {}).get('ratio'), '{:.2f}'):>6}")
@@ -2381,7 +2132,7 @@ def update_from(results_path: Path, expected_path: Path) -> int:
         raise GateError(f"{results_path}: the run measured nothing")
     expected = load_expected(expected_path, update=True)
     versions = results.get("binaries", {})
-    producer = (versions.get("weavec-cc") or versions.get("weavec") or {}).get("version", "")
+    producer = (versions.get("weavec-cc") or {}).get("version", "")
     write_json(expected_path, merge_expected(expected, measured, results["platform"], results["machine"], producer))
     log(f"updated {expected_path} for {results['platform']} from {results_path} ({', '.join(sorted(measured))})")
     return 0
@@ -2391,9 +2142,10 @@ def update_from(results_path: Path, expected_path: Path) -> int:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 allow_abbrev=False)
     modes = ap.add_argument_group("modes")
-    modes.add_argument("--quick", action="store_true", help="the analysis and the per-file ledgers")
+    modes.add_argument("--quick", action="store_true", help="the per-file enforcement ledgers")
     modes.add_argument("--full", action="store_true", help="quick + builds, tests, injections, benchmarks")
     modes.add_argument("--inject", action="store_true", help="the injected bugs")
     modes.add_argument("--bench", action="store_true", help="the benchmarks")
@@ -2407,8 +2159,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     mods.add_argument("--update", action="store_true", help="record this run's measurements in expected.json")
     mods.add_argument("--no-asan", action="store_true", help="benchmarks without the ASan build")
     bins = ap.add_argument_group("binaries")
-    bins.add_argument("--weavec", help="weavec under test (default build/release/bin, then build/dev/bin)")
-    bins.add_argument("--weavec-cc", help="weavec-cc under test (same defaults)")
+    bins.add_argument("--weavec-cc", help="weavec-cc under test (default build/release/bin, then build/dev/bin)")
     bins.add_argument("--cc", help="reference compiler (default $WEAVEC_LLVM_PREFIX/bin/clang, else clang)")
     sel = ap.add_argument_group("selection and resources")
     sel.add_argument("--only", action="append", nargs="+", default=[], metavar="CONFIG",
@@ -2420,7 +2171,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                      help="run the configs of this set alone (repeatable; one of " + ", ".join(SETS) + ")")
     sel.add_argument("--injection", action="append", default=[], metavar="ID", help="run only this injection")
     sel.add_argument("--jobs", type=int, default=os.cpu_count() or 4, help="parallel processes (default: CPUs)")
-    sel.add_argument("--timeout", type=float, default=1800, help="seconds per analysis or compile (default 1800)")
+    sel.add_argument("--timeout", type=float, default=1800, help="seconds per per-file compile (default 1800)")
     sel.add_argument("--build-timeout", type=float, default=3600, help="seconds per build or test step")
     sel.add_argument("--repeat", type=int, help="benchmark runs per build (default: the manifest's, 7)")
     sel.add_argument("--workdir", type=Path, default=DEFAULT_WORKDIR,

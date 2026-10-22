@@ -10,7 +10,7 @@
 void run(void) {
   char *p = malloc(4);
   if (!p) return;
-  fill_min(p, 5, 9); // BUG: out-of-bounds
+  fill_min(p, 5, 9);
   free(p);
 }
 // Driver (RFC 0030 section 17.2): executes the defect so the runtime oracle can observe the check.

@@ -4,7 +4,6 @@
 // Applied together, the family is unknown: neither free() nor fclose() of the
 // result is a definite mismatched release.
 // CLEAN
-// ALLOW: mismatched-release
 // RUN-INPUT:
 // RUN-INPUT: mem
 #include <stdio.h>

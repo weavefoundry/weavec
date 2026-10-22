@@ -5,11 +5,10 @@
 // RUN-INPUT: 8
 // ASAN
 #include <stdlib.h>
-#include "../Inputs/rfc0030.h"
 
-struct buf { char *WEAVEC_COUNTED_BY(cap) data; size_t cap; };
+struct buf { char * data; size_t cap; };
 
-char at(const struct buf *b, size_t i) { return b->data[i]; } // BUG: out-of-bounds // TRAP
+char at(const struct buf *b, size_t i) { return b->data[i]; } // TRAP
 
 int main(int argc, char **argv) {
   char storage[8] = "abcdefg";

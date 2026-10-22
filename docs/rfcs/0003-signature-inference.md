@@ -1,13 +1,17 @@
 # RFC 0003: Signature inference
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-01
 - **Accepted**: 2026-09-01
 - **Implemented**: 2026-09-01
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: — (implements phase 2 and the first half of
-  phase 3 of RFC 0001)
+- **Supersedes / superseded by**: Superseded by RFC 0036 (implements phase 2
+  and the first half of phase 3 of RFC 0001).
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Implemented
+> until then; it is kept as a record of the design.
 
 ## Implementation notes
 

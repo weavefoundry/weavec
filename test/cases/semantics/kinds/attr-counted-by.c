@@ -9,7 +9,7 @@
 
 struct pkt { int len; char *buf __attribute__((counted_by(len))); };
 
-char at(const struct pkt *p, int i) { return p->buf[i]; } // BUG: out-of-bounds // TRAP
+char at(const struct pkt *p, int i) { return p->buf[i]; } // TRAP
 
 int main(int argc, char **argv) {
   char storage[4] = "abc";
