@@ -6,7 +6,7 @@ int main(int argc, char **argv) {
   (void)argv;
   char *p = malloc(4);
   if (!p) return 1;
-  fill(p, (size_t)argc + 4); // BUG: out-of-bounds // MISS: the analysis does not report a call's argument against the callee's requirement (RFC 0035 §8); the guard stops in the callee
+  fill(p, (size_t)argc + 4);
   free(p);
   return 0;
 }

@@ -5,7 +5,7 @@ void bad(void) {
   char *buf = malloc(10);
   if (!buf)
     return;
-  buf[10] = 'A'; // BUG: out-of-bounds // TRAP
+  buf[10] = 'A'; // TRAP
   free(buf);
 }
 

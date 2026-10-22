@@ -14,7 +14,7 @@ static volatile char sink;
 
 static void *worker(void *arg) {
   (void)arg;
-  sink = g[0]; // BUG: use-after-free
+  sink = g[0]; // TRAP: heap-use-after-free
   return NULL;
 }
 

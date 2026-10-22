@@ -18,13 +18,13 @@ static void put_eight(char *b) {
 
 void bad(void) {
   char *buf = xmalloc(4);
-  put_eight(buf); // BUG: out-of-bounds
+  put_eight(buf);
   free(buf);
 }
 
 void bad_direct(void) {
   char *buf = xmalloc(4);
-  buf[4] = 0; // BUG: out-of-bounds // TRAP
+  buf[4] = 0; // TRAP
   free(buf);
 }
 

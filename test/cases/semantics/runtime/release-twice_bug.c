@@ -23,6 +23,6 @@ int main(int argc, char **argv) {
   if (!c) return 1;
   c->buf = malloc(16);
   int r = handle(c, argc > 1);
-  conn_close(c); // BUG: double-free possible
+  conn_close(c);
   return r < 0;
 }

@@ -2,8 +2,7 @@
 // UNITS: 38_extern_impl.c
 // ASAN
 #include <stdlib.h>
-#include <weavec.h>
-void inspect(char *WEAVEC_BORROWED p); // BUG: annotation-mismatch definite
+void inspect(char * p);
 int main(void) {
   char *p = malloc(8);
   if (!p) return 1;

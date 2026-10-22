@@ -1,4 +1,4 @@
-// RFC 0030 §7.2 (WEAVEC_STRING): a NUL-terminated requirement is checked at every call.
+// RFC 0030 §7.2 (): a NUL-terminated requirement is checked at every call.
 // STAGE: S6
 // 's' is NulTerminated. At the call the requirement is checked against the exact extent of
 // 'b' as __weavec_strnlen(b, 4) < 4 (§10.3 rule 2), a length check with the len template.
@@ -6,9 +6,8 @@
 // RUN-INPUT: x
 // ASAN
 #include <stddef.h>
-#include "../Inputs/rfc0030.h"
 
-static size_t count_x(const char *WEAVEC_STRING s) {
+static size_t count_x(const char * s) {
   size_t n = 0;
   for (; *s; s++) // TRAP
     if (*s == 'x') n++;
@@ -19,5 +18,5 @@ int main(int argc, char **argv) {
   char b[4] = {'a', 'x', 'c', 0};
   (void)argv;
   if (argc > 1) b[3] = 'd';
-  return (int)count_x(b); // BUG: out-of-bounds // MISS: the analysis does not report a call's argument against the callee's requirement (RFC 0035 §8); the guard stops in the callee
+  return (int)count_x(b);
 }

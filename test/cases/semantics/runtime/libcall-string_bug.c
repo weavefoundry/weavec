@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 static void put(char *dst, const char *src) {
-  strcpy(dst, src); // BUG: out-of-bounds // TRAP
+  strcpy(dst, src); // TRAP
 }
 int main(int argc, char **argv) {
   char *dst = malloc(8);

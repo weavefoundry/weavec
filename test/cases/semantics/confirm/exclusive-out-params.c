@@ -5,7 +5,6 @@
 // never hold the same object. Each argument count takes another path. An
 // unconfirmed candidate may remain a warning (RFC 0034, Diagnostics).
 // CLEAN
-// ALLOW: double-free
 // RUN-INPUT:
 // RUN-INPUT: x
 // RUN-INPUT: x y

@@ -13,5 +13,5 @@ int main(void) {
   if (!bx.buf) return 1;
   bx.buf[0] = 1;
   free(q->buf);
-  return bx.buf[0]; // BUG: use-after-free
+  return bx.buf[0]; // TRAP: heap-use-after-free
 }

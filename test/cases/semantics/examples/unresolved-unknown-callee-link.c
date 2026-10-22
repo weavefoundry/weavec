@@ -13,7 +13,7 @@ int f(void) {
   char *p = malloc(8);
   if (!p) return 0;
   consume(p);
-  return p[0]; // BUG: use-after-free definite
+  return p[0]; // TRAP: heap-use-after-free
 }
 
 int main(void) { return f(); }

@@ -1,12 +1,16 @@
 # RFC 0013: Interprocedural heap state and value identity
 
-- **Status**: Accepted
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-06
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Amends RFC 0003's summaries, RFC 0007's
-  escaped resources, RFC 0008's replaced values and result objects, RFC 0011's
-  extents, and RFC 0012's string facts.
+- **Supersedes / superseded by**: Superseded by RFC 0036; amends RFC 0003's
+  summaries, RFC 0007's escaped resources, RFC 0008's replaced values and
+  result objects, RFC 0011's extents, and RFC 0012's string facts.
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Accepted
+> until then; it is kept as a record of the design.
 
 Implementation is authorized by the project owner's request to draft this
 RFC first and then implement the recommended milestone end to end. This

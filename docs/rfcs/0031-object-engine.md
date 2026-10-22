@@ -1,18 +1,26 @@
 # RFC 0031: The object engine — a sound heap abstraction behind the engine seam
 
-- **Status**: Implemented (as amended by [RFC 0032](0032-runtime-enforcement.md): unit record format 29 becomes 30, the place class of array-element cells at a boundary (§4.9) is the one RFC 0032's first amendment states, and the part of gate G6 that runtime extents and liveness close is closed there)
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-28
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Replaces the engine of RFC 0030
-  (`FunctionDataflow`, RFC 0030 §15) and the summary format of RFC 0030 §9.1
-  and §13.1 (summary format 29 becomes 30, unit record format 28 becomes 29).
-  Amends RFC 0030's assumption A3 (*Soundness*, below), its §3 certainty
-  rules (restated over objects in §5), its §9.4 boundary facts (§5.6), its
-  §14 seam (§8), and takes over its open gates G10, G14 and G15. Amends RFCs
-  0002–0017 wherever they describe how `FunctionDataflow` represents a fact;
-  what those RFCs decide about outcomes and diagnostics stays in force as
-  RFC 0030 restated it.
+- **Supersedes / superseded by**: Superseded by RFC 0036; replaces the engine
+  of RFC 0030 (`FunctionDataflow`, RFC 0030 §15) and the summary format of RFC
+  0030 §9.1 and §13.1 (summary format 29 becomes 30, unit record format 28
+  becomes 29). Amends RFC 0030's assumption A3 (*Soundness*, below), its §3
+  certainty rules (restated over objects in §5), its §9.4 boundary facts
+  (§5.6), its §14 seam (§8), and takes over its open gates G10, G14 and G15.
+  Amends RFCs 0002–0017 wherever they describe how `FunctionDataflow`
+  represents a fact; what those RFCs decide about outcomes and diagnostics
+  stays in force as RFC 0030 restated it.
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Implemented
+> until then (as amended by [RFC 0032](0032-runtime-enforcement.md): unit
+> record format 29 becomes 30, the place class of array-element cells at a
+> boundary (§4.9) is the one RFC 0032's first amendment states, and the part
+> of gate G6 that runtime extents and liveness close is closed there); it is
+> kept as a record of the design.
 
 This RFC was drafted before implementation. On 2026-09-28 the project owner
 accepted the recommendation of the milestone analysis (replace the engine

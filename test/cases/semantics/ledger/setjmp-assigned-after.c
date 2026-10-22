@@ -9,7 +9,6 @@
 // unassigned. (The allocation `fail` jumps away from is freed by the
 // handler, which the model does not follow from the `longjmp`: a leak.)
 // CLEAN
-// ALLOW: leak
 // RUN-INPUT:
 #include <setjmp.h>
 #include <stdlib.h>

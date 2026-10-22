@@ -1,6 +1,6 @@
 # RFC 0030: Prove or trap — one safety semantics with compiler-enforced checks
 
-- **Status**: Implemented (as amended by [RFC 0031](0031-object-engine.md), which replaced its engine, took over its gates G10, G14 and G15, and amended G10's limit to 65; and by [RFC 0032](0032-runtime-enforcement.md), which adds the outcome `guarded`, a runtime in every enforcing build, guards for temporal facets, the require level `guarded` and ledger version 2. Where this text says "RFC 0032" for records in object sections, baselines and archives, it means the adoption RFC, which is now planned as RFC 0033)
+- **Status**: Implemented (as amended by [RFC 0031](0031-object-engine.md), which replaced its engine, took over its gates G10, G14 and G15, and amended G10's limit to 65; and by [RFC 0032](0032-runtime-enforcement.md), which adds the outcome `guarded`, a runtime in every enforcing build, guards for temporal facets, the require level `guarded` and ledger version 2. Where this text says "RFC 0032" for records in object sections, baselines and archives, it means the adoption RFC, which is now planned as RFC 0033. Its analysis (§2–§9) is superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which deletes it)
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-18
 - **Tracking issue**: TBD
@@ -11,6 +11,14 @@
   `analysis-incomplete`, give unknown callees borrow-only effects, let
   `WEAVEC_UNSAFE` suppress diagnostics, trust `WEAVEC_ASSUME`, or state that
   WeaveC adds no runtime instrumentation (§19 lists each amendment).
+  Its enforcement is superseded by RFC 0035 and its analysis (§2–§9) by
+  RFC 0036.
+
+> [RFC 0035](0035-guard-by-default.md) superseded this RFC's enforcement
+> and kept its analysis as advisory; [RFC 0036](0036-deterministic-heap-reuse.md)
+> deletes that analysis (§2–§9: the `weavec` tool, its diagnostics and
+> every annotation but `WEAVEC_UNSAFE`). The RFC keeps its status as the
+> record of what was implemented.
 
 This RFC was drafted before implementation. On 2026-09-18 the project owner
 accepted every recommendation of the milestone analysis. The owner

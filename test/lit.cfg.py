@@ -3,7 +3,6 @@
 
 Test files are C sources with `// RUN:` lines. Available substitutions:
 
-  %weavec         the weavec binary (annotation header already on the path)
   %weavec_cc      the weavec-cc compiler driver
   %resource_dir   directory containing weavec.h
   FileCheck, not, count   LLVM test utilities
@@ -26,15 +25,10 @@ config.test_exec_root = os.path.join(config.weavec_obj_root, "test")
 
 # Tools --------------------------------------------------------------------
 
-weavec = os.path.join(config.weavec_tools_dir, "weavec")
-if not os.path.exists(weavec):
-    lit_config.fatal(f"weavec binary not found at {weavec}; build it first")
-
 weavec_cc = os.path.join(config.weavec_tools_dir, "weavec-cc")
 if not os.path.exists(weavec_cc):
     lit_config.fatal(f"weavec-cc binary not found at {weavec_cc}; build it first")
 
-# Longer names first so `%weavec_cc` is not rewritten as `%weavec` + `_cc`.
 config.substitutions.append(("%weavec_cc", weavec_cc))
 # RFC 0035: the runtime archive.
 config.substitutions.append(
@@ -42,7 +36,6 @@ config.substitutions.append(
 )
 # The reference compiler: the clang of the LLVM WeaveC is built against.
 config.substitutions.append(("%clang", config.clang or "clang"))
-config.substitutions.append(("%weavec", weavec))
 config.substitutions.append(
     ("%resource_dir", os.path.join(config.weavec_resource_dir, "include"))
 )

@@ -10,7 +10,7 @@
 
 void two(char *a, char *b) {
   free(a);
-  b[0] = 1; // BUG: use-after-free definite
+  b[0] = 1; // TRAP: heap-use-after-free
 }
 
 int main(void) {

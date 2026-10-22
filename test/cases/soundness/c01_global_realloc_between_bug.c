@@ -14,7 +14,7 @@ int main(void) {
   size_t i = 40;
   if (i < g_len) {
     shrink();
-    int r = g_buf[i]; // BUG: out-of-bounds // TRAP
+    int r = g_buf[i]; // TRAP
     free(g_buf);
     return r;
   }

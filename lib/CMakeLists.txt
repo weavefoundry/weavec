@@ -1,7 +1,6 @@
 # Library components, ordered by dependency:
-#   Core      -- Clang/LLVM-independent ownership model
-#   Analysis  -- Clang AST -> core facts; the checkers
-#   Frontend  -- Clang FrontendAction / tooling integration
+#   Core      -- the C library table of the guards (no Clang or LLVM)
+#   Frontend  -- the guard passes, the unsafe regions, the enforcement ledger
+#                and the compiler driver
 add_subdirectory(Core)
-add_subdirectory(Analysis)
 add_subdirectory(Frontend)

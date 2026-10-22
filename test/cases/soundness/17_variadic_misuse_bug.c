@@ -5,7 +5,7 @@ static int sum_ptrs(int n, ...) {
   va_list ap;
   va_start(ap, n);
   int s = 0;
-  for (int i = 0; i < n; i++) { int *p = va_arg(ap, int *); s += *p; } // BUG: out-of-bounds
+  for (int i = 0; i < n; i++) { int *p = va_arg(ap, int *); s += *p; } // TRAP: null-dereference
   va_end(ap);
   return s;
 }

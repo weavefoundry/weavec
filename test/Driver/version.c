@@ -1,15 +1,8 @@
-// RUN: %weavec --version | FileCheck %s
-// RUN: %weavec --help | FileCheck --check-prefix=HELP %s
+// RFC 0033 §10: weavec-cc prints Clang's version block first, so that a
+// configure script that reads the first line takes the Clang path, and its
+// own after it.
+// RUN: %weavec_cc --version | FileCheck %s
 //
-// CHECK: weavec version {{[0-9]+\.[0-9]+\.[0-9]+}}
+// CHECK: clang version
+// CHECK: weavec-cc version {{[0-9]+\.[0-9]+\.[0-9]+}}
 // CHECK-NEXT: built with LLVM {{[0-9]+\.}}
-//
-// HELP: weavec options
-// HELP-DAG: --budget
-// HELP-DAG: --no-zero-init
-// HELP-DAG: --whole-program
-// HELP-NOT: --report-unannotated
-// HELP-NOT: --ledger
-// HELP-NOT: --require
-// HELP-NOT: --dump-record
-// HELP-NOT: --no-runtime

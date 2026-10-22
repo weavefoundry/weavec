@@ -7,13 +7,12 @@
 // ASAN
 #include <stdlib.h>
 #include <string.h>
-#include <weavec.h>
 
-void fill(void *WEAVEC_SIZED_BY(n) dst, size_t n) { memset(dst, 'x', n); } // TRAP
+void fill(void * dst, size_t n) { memset(dst, 'x', n); } // TRAP
 
 int main(int argc, char **argv) {
   char buf[8];
   size_t n = argc > 1 ? (size_t)atoi(argv[1]) : sizeof buf;
-  fill(buf, n); // BUG: out-of-bounds // MISS: the analysis does not report a call's argument against the callee's requirement (RFC 0035 §8); the guard stops in the callee
+  fill(buf, n);
   return buf[0] == 'x' ? 0 : 1;
 }

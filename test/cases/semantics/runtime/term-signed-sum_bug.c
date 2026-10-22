@@ -23,7 +23,7 @@ int main(void) {
   unsigned char *in = malloc(64);
   if (!in)
     return 1;
-  pad(in, used); // BUG: out-of-bounds
+  pad(in, used);
   int last = in[63];
   free(in);
   return last;

@@ -9,7 +9,7 @@ static int run(int n) {
   if (p == NULL) return 1;
   *p = n;
   free(p);
-  if (n > 0) return *p; // BUG: use-after-free // TRAP
+  if (n > 0) return *p; // TRAP
   return 0;
 }
 int main(int argc, char **argv) { return run(argc > 1 ? atoi(argv[1]) : 0); }

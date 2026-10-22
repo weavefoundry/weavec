@@ -7,5 +7,5 @@ static int sum(const int *b, const int *e) {
 }
 int main(void) {
   int a[4] = {1, 2, 3, 4};
-  return sum(a, a + 4); // BUG: out-of-bounds
+  return sum(a, a + 4);
 }

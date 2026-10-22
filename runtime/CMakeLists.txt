@@ -2,9 +2,10 @@
 # lib/weavec next to include/weavec.h:
 #
 #   libweavec_rt.a     the runtime every enforcing link carries: the arena
-#                      allocator and its shadow memory, the guards' slow
-#                      paths, the checked library calls, frame and global
-#                      registration, and the reports
+#                      allocator and its shadow memory, the sweep (RFC 0036),
+#                      the guards' slow paths, frames, the checked library
+#                      calls, global registration, ASan's interface and the
+#                      reports
 #   libweavec_alloc.a  malloc, free and the rest of the standard allocation
 #                      functions over the arena; left out of a link whose
 #                      program defines the allocator itself (RFC 0032, 2.6)
@@ -17,8 +18,16 @@ if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
   message(FATAL_ERROR "The WeaveC runtime must be built with Clang (CC).")
 endif()
 
-add_library(weavec_rt STATIC weavec_alloc.c weavec_guard.c weavec_libc.c
-                             weavec_owner.c weavec_report.c weavec_rt.h)
+add_library(
+  weavec_rt STATIC
+  weavec_alloc.c
+  weavec_asan.c
+  weavec_guard.c
+  weavec_libc.c
+  weavec_owner.c
+  weavec_report.c
+  weavec_sweep.c
+  weavec_rt.h)
 add_library(weavec_alloc STATIC weavec_malloc.c weavec_rt.h)
 
 foreach(_weavec_runtime IN ITEMS weavec_rt weavec_alloc)

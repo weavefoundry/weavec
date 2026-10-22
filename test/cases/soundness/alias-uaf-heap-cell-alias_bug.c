@@ -15,6 +15,6 @@ int a3(void) {             /* heap cell, alias, no early-return join */
   *slot = o;
   struct n **alias = slot;
   free(o);
-  return (*alias)->v; // BUG: use-after-free
+  return (*alias)->v; // TRAP: heap-use-after-free
 }
 int main(void) { return a3() == 12345; }

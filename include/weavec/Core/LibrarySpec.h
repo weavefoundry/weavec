@@ -1,4 +1,4 @@
-//===- LibrarySpec.h - The declarative C library table ----------*- C++ -*-===//
+//===- LibrarySpec.h - The C library table of the guards --------*- C++ -*-===//
 //
 // Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -6,23 +6,22 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// RFC 0030 §8: one declarative table, `lib/Core/LibrarySpec.txt`, states what
-// every modelled C library, POSIX, platform and compiler-builtin function
-// does to its arguments and result: accesses and their lengths, nullability,
-// ownership effects and release families, hidden state slots, callbacks,
-// format arguments and fortified aliases. It also carries the §5.2 header
-// list that decides which system headers are the platform's own.
+// RFC 0036 §6: one declarative table, `lib/Core/LibrarySpec.txt`, states what
+// the guards need of each C library, POSIX and platform function: which
+// pointer arguments the call reads or writes and how many bytes, whether
+// null is allowed, which arguments must not overlap, how a format reads its
+// arguments, the runtime's checked version that replaces the call, and the
+// fortified aliases with their object-size argument.
 //
 // CMake embeds the text in the library; `LibrarySpec::shipped()` parses it
 // once on first use. `LibrarySpec::parse` parses any text in the same syntax
-// (tests, experiments). The syntax, its semantics and the extensions to the
-// RFC's §8.2 grammar are documented at the top of `LibrarySpec.txt`.
+// (tests). The syntax and its meaning are documented at the top of
+// `LibrarySpec.txt`.
 //
-// Which calls a row governs (§8): a direct call whose callee's name is the
-// row's name, `__builtin_<name>`, or one of the row's `chk` aliases (with the
-// alias's arguments remapped onto the row's), provided the program does not
-// define a function of that name. That last condition is the engine's to
-// check; this class only resolves names.
+// Which calls a row governs: a direct call whose callee's name is the row's
+// name, `__builtin_<name>`, or one of the row's `chk` aliases (with the
+// alias's arguments remapped onto the row's), provided the unit does not
+// define a function of that name (the guard pass's check).
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,7 +32,6 @@
 #include <functional>
 #include <map>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -41,47 +39,37 @@
 
 namespace weavec::core {
 
-/// A small expression over a call's arguments (§8.1):
+/// A small expression over a call's arguments:
 ///
-///   term ::= INT | 'a' N | 'strlen(a' N ')' | 'fmtlen(a' N ')' | MACRO
-///          | term '*' term | term '+' term | term '-' INT
+///   term ::= INT | 'a' N | 'strlen(a' N ')' | term '*' term
+///          | term '+' term | term '-' INT | term '/' INT
 ///          | 'min(' term ',' term ')' | '(' term ')'
 ///
-/// `*` binds tighter than `+` and `-`; both associate to the left.
-/// `strlen(aN)` counts the elements of argument N's pointee type before the
-/// terminating zero element (`wcslen` for `wchar_t`); inside `min(t, …)` it
-/// is the bounded length `strnlen(aN, t)` and requires no terminator within
-/// `t` elements. `fmtlen(aN)` is the length the `printf` family would
-/// produce for the format at argument N; it states a requirement and is
-/// never evaluated as a check term. `MACRO` (an identifier that starts with
-/// an upper-case letter or `_`, such as `BUFSIZ` or `L_tmpnam`) is the value
-/// of that macro in the calling unit; where it is undefined the term is
-/// unknown. Terms are mathematical integers: they never wrap.
+/// `*` and `/` bind tighter than `+` and `-`; all associate to the left.
+/// `strlen(aN)` counts the elements of argument N's string before its
+/// terminator; inside `min(t, …)` it is the bounded length `strnlen(aN, t)`
+/// and requires no terminator within `t` elements. Terms are mathematical
+/// integers.
 struct LibTerm {
   enum class Kind : std::uint8_t {
     Constant,     ///< `value`
     Argument,     ///< `a<arg>`
     StringLength, ///< `strlen(a<arg>)`
-    FormatLength, ///< `fmtlen(a<arg>)`
-    Macro,        ///< `macro`
     Product,      ///< `operands[0] * operands[1]`
     Sum,          ///< `operands[0] + operands[1]`
     Difference,   ///< `operands[0] - value`
     Min,          ///< `min(operands[0], operands[1])`
-    Quotient,     ///< `operands[0] / value`, rounded down (RFC 0033 §3)
+    Quotient,     ///< `operands[0] / value`, rounded down
   };
   Kind kind = Kind::Constant;
   std::int64_t value = 0;
   std::uint8_t arg = 0;
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::string macro = {};
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<LibTerm> operands = {};
 
   [[nodiscard]] static LibTerm constant(std::int64_t value);
   [[nodiscard]] static LibTerm argument(unsigned index);
   [[nodiscard]] static LibTerm stringLength(unsigned index);
-  [[nodiscard]] static LibTerm formatLength(unsigned index);
   [[nodiscard]] static LibTerm product(LibTerm left, LibTerm right);
   [[nodiscard]] static LibTerm sum(LibTerm left, LibTerm right);
   [[nodiscard]] static LibTerm difference(LibTerm left, std::int64_t right);
@@ -99,8 +87,6 @@ struct LibTerm {
   struct Values {
     std::function<std::optional<std::int64_t>(unsigned)> argument;
     std::function<std::optional<std::int64_t>(unsigned)> stringLength;
-    std::function<std::optional<std::int64_t>(unsigned)> formatLength;
-    std::function<std::optional<std::int64_t>(std::string_view)> macro;
   };
   /// Evaluates the term, or `std::nullopt` when a leaf is unknown or the
   /// value leaves the range of `std::int64_t`.
@@ -108,28 +94,6 @@ struct LibTerm {
   evaluate(const Values &values) const;
 
   friend bool operator==(const LibTerm &, const LibTerm &) = default;
-};
-
-/// How a function-pointer argument is invoked (§5.3).
-struct LibCallback {
-  enum class Kind : std::uint8_t {
-    /// Zero or more times before the call returns (`qsort`, `bsearch`).
-    Sync,
-    /// Later, as an entry point: a thread or a signal handler
-    /// (`pthread_create`, `signal`, `sigaction`).
-    Entry,
-    /// After the main flow ends (`atexit`, `at_quick_exit`, `on_exit`).
-    AtExit,
-  };
-  Kind kind = Kind::Sync;
-  /// Sync: for each parameter of the target, the call argument its pointer
-  /// points into (`qsort`: `{0, 0}`); empty when the target receives only
-  /// pointers to the library's own storage (`nftw`). Entry: at most one
-  /// index, the argument passed to the target (`pthread_create`: `{3}`).
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::vector<std::uint8_t> arguments = {};
-
-  friend bool operator==(const LibCallback &, const LibCallback &) = default;
 };
 
 /// `disjoint(first, second, length)`: the first `length` bytes behind the
@@ -142,48 +106,14 @@ struct LibDisjoint {
   friend bool operator==(const LibDisjoint &, const LibDisjoint &) = default;
 };
 
-/// RFC 0035 §2.5: `wrapper(name)`: the runtime's checked
-/// `__weavec_rt_<name>` replaces the call. It takes the call's arguments and
-/// the site (first when the call is variadic, last otherwise) and checks
-/// what the call reads and writes as it runs: the bytes the row's terms
-/// could not name before the call (a formatted write's), or fewer than
-/// they name (`memchr` reads up to the byte it finds).
+/// `wrapper(name)`: the runtime's checked `__weavec_rt_<name>` replaces the
+/// call. It takes the call's arguments and the site (first when the call is
+/// variadic, last otherwise) and checks what the call reads and writes as
+/// it runs.
 struct LibWrapper {
   std::string name;
 
   friend bool operator==(const LibWrapper &, const LibWrapper &) = default;
-};
-
-/// `copies(dst, src, length)`: the call copies the first `length` bytes of
-/// argument `src` to argument `dst` (`memcpy`, `strncpy`).
-struct LibCopy {
-  std::uint8_t dst = 0;
-  std::uint8_t src = 0;
-  LibTerm length;
-
-  friend bool operator==(const LibCopy &, const LibCopy &) = default;
-};
-
-/// `fills(dst, value, length)`: the call sets the first `length` bytes of
-/// argument `dst` to `value` (`memset`, `bzero`).
-struct LibFill {
-  std::uint8_t dst = 0;
-  LibTerm value;
-  LibTerm length;
-
-  friend bool operator==(const LibFill &, const LibFill &) = default;
-};
-
-/// `writes-str(dst[, length])`: when the call succeeds, argument `dst`
-/// holds a string of `length` characters, or of unknown length when absent
-/// (`strcpy`, `fgets`). Terms read the arguments' values before the call; a
-/// negative length means nothing is written (`snprintf(d, 0, …)`).
-struct LibStringWrite {
-  std::uint8_t dst = 0;
-  std::optional<LibTerm> length;
-
-  friend bool operator==(const LibStringWrite &,
-                         const LibStringWrite &) = default;
 };
 
 /// The `printf(f, v)` / `scanf(f, v)` clause.
@@ -193,215 +123,81 @@ struct LibFormat {
   /// The format argument.
   std::uint8_t format = 0;
   /// The first variadic argument; for a `v…` function (`vprintf`), whose
-  /// entry is not variadic, the `va_list` argument.
+  /// row is not variadic, the `va_list` argument.
   std::uint8_t first = 0;
-  /// True when `first` is a `va_list` (the entry is not variadic): the
+  /// True when `first` is a `va_list` (the row is not variadic): the
   /// conversions cannot be matched against the arguments.
   bool vaList = false;
 
   friend bool operator==(const LibFormat &, const LibFormat &) = default;
 };
 
-/// The result of a call, or (`LibraryParam::out`) the value the call stores
-/// through a pointer-to-pointer argument.
-struct LibraryResult {
-  enum class Kind : std::uint8_t {
-    Void,          ///< `void`, `noreturn`
-    Int,           ///< `int`: any non-pointer result
-    Fresh,         ///< `fresh(F)`: a new resource of family `family`
-    Static,        ///< `static(S)`: a borrow of hidden state slot `state`
-    Arg,           ///< `arg(N)`: argument `arg` itself
-    Interior,      ///< `interior(N)`: a pointer into argument `arg`'s object
-    InteriorState, ///< `interior-state(S)`: into the value `S` retains
-    Unknown,       ///< `ptr`: a pointer of unknown provenance
-  };
-  Kind kind = Kind::Void;
-  /// Fresh: the release family. Arg: when non-empty, the result is instead
-  /// `fresh(family)` when argument `arg` is null (`realpath`, `getcwd`).
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::string family = {};
-  /// Static, InteriorState: the hidden state slot. Arg: when non-empty, the
-  /// result is instead `static(state)` when argument `arg` is null
-  /// (`tmpnam`, `ctermid`).
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::string state = {};
-  /// Arg, Interior: the argument.
-  std::uint8_t arg = 0;
-  /// Fresh, Static: accessible bytes.
-  std::optional<LibTerm> extent;
-  enum class Null : std::uint8_t {
-    /// Never null. For `arg(N)`: exactly the argument, null only when the
-    /// argument is.
-    Never,
-    /// Null exactly when the call fails (allocation or lookup failure).
-    OnFailure,
-    /// May be null for any other reason (`strchr` found nothing).
-    May,
-  };
-  Null null = Null::Never;
-  /// §11: a `fresh` result eligible for zero-initialisation lowering.
-  bool zeroInit = false;
-  /// `str`: the pointer is to a string terminated by a zero element.
-  bool string = false;
-  /// `replaces` (out values only): the value previously in the slot is
-  /// consumed as by `realloc` of the same family before the new one is
-  /// stored (`getline`).
-  bool replaces = false;
-  /// `value(t)` (Int): the result equals `t` (`strlen` is `strlen(a0)`).
-  std::optional<LibTerm> value;
-  /// `offset(t)` (Interior): the result is `t` elements past the start of
-  /// argument `arg` (`stpcpy` is `strlen(a1)`).
-  std::optional<LibTerm> offset;
-  /// `zero-filled` (Fresh): the library sets the whole extent to zero bytes
-  /// (`calloc`), whatever §11 lowering does.
-  bool zeroFilled = false;
-
-  /// True for the pointer kinds (everything but Void and Int).
-  [[nodiscard]] bool isPointer() const noexcept;
-  friend bool operator==(const LibraryResult &,
-                         const LibraryResult &) = default;
-};
-
-/// One parameter of a row (§8.1).
+/// One parameter of a row.
 struct LibraryParam {
   enum class Type : std::uint8_t { Int, Pointer, Function, Other };
   Type type = Type::Int;
   /// What the call does to the bytes behind a pointer.
   enum class Access : std::uint8_t { None, Read, Write, ReadWrite };
   Access access = Access::None;
-  /// Required accessible bytes behind the pointer. Without `bytes`, `count`
-  /// or `string`, a pointer needs one element of its pointee type.
+  /// Bytes the call accesses behind the pointer. Without `bytes`, `count`
+  /// or `string`, its first byte is guarded.
   std::optional<LibTerm> bytes;
-  /// Required accessible elements of the pointee type (`wmemcpy`).
+  /// `wchar_t` elements the call accesses (wide rows).
   std::optional<LibTerm> count;
-  /// The pointee must hold a terminated string within its object.
+  /// The pointee holds a terminated string.
   bool string = false;
   enum class Null : std::uint8_t { Forbidden, Allowed, AllowedIfZero };
   Null null = Null::Forbidden;
   /// AllowedIfZero: null is allowed when this term is zero.
   std::optional<LibTerm> zeroTerm;
-  enum class Effect : std::uint8_t {
-    Borrow,  ///< Used for the call only.
-    Release, ///< Released (`free`); `family` names the releaser.
-    Realloc, ///< Released on success, or kept, as `realloc` (§8.2).
-    Retain,  ///< Stored in hidden state slot `state` for later `reads`.
-    Escape,  ///< Kept by the library where no row can follow it.
-    Init,    ///< The pointee acquires a resource of `family` (`regcomp`).
-    Fini,    ///< The pointee's `family` resource ends; its storage stays
-             ///< valid and may be initialised again (`regfree`).
-  };
+  /// `release`, `realloc`: the allocator validates the pointer.
+  enum class Effect : std::uint8_t { Borrow, Release, Realloc };
   Effect effect = Effect::Borrow;
-  /// Release, Realloc, Init, Fini: the family.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::string family = {};
-  /// Retain: the hidden state slot.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::string state = {};
-  /// Function parameters, and pointer parameters whose pointee holds the
-  /// function pointers (`sigaction`'s `act`).
-  std::optional<LibCallback> callback;
-  /// `out(…)`: the call stores this value through the pointer, which points
-  /// to a pointer slot (`getline`, `asprintf`, `strtol`'s end pointer).
-  std::optional<LibraryResult> out;
-  /// `range(t)` (Release only, RFC 0034 §6.3): the call releases the `t`
-  /// bytes from the pointer (`munmap`): the object only when they cover it
-  /// from its start; any other release of it is possible, and the pointer
-  /// may point anywhere in it.
-  std::optional<LibTerm> range;
 
   friend bool operator==(const LibraryParam &, const LibraryParam &) = default;
 };
 
-/// A fortified alias (§8, "Which calls a row governs").
+/// A fortified alias.
 struct LibraryChk {
   /// `__builtin___memcpy_chk`, `__memcpy_chk`.
   std::string name;
-  /// For each alias argument, the row's argument index, or -1 (dropped).
-  /// Alias arguments beyond the list continue from the last mapped index
-  /// (variadic rows only).
+  /// For each alias argument, the row's argument index, or -1 (dropped:
+  /// a flag, or the object size). Alias arguments beyond the list continue
+  /// from the last mapped index (variadic rows only).
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<std::int8_t> argumentOf = {};
+  /// The alias argument that carries the size of the object the row
+  /// writes (`size`), or -1.
+  int sizeArgument = -1;
 
   friend bool operator==(const LibraryChk &, const LibraryChk &) = default;
 };
 
-/// The parameter classes of a declaration, to choose between rows of the
-/// same name (`qsort_r` has a glibc and a BSD order) and to refuse a row for
-/// a declaration that does not fit it.
-struct LibSignature {
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::vector<LibraryParam::Type> params = {};
-  bool variadic = false;
-  bool pointerResult = false;
-
-  friend bool operator==(const LibSignature &, const LibSignature &) = default;
-};
-
-/// One row of the table (§8.1).
+/// One row of the table.
 struct LibraryEntry {
   std::string name;
-  /// The header that declares it, relative to its include directory; empty
-  /// for compiler builtins.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::string header = {};
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<LibraryChk> chk = {};
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<LibraryParam> params = {};
   bool variadic = false;
-  LibraryResult result;
+  /// The result: none, a non-pointer, or a pointer.
+  enum class Result : std::uint8_t { Void, Int, Pointer };
+  Result result = Result::Void;
+  /// `value(t)` (Int): the result equals `t` (`strlen` is `strlen(a0)`).
+  std::optional<LibTerm> value;
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<LibDisjoint> disjoint = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::vector<LibCopy> copies = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::vector<LibFill> fills = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::vector<LibStringWrite> writesString = {};
-  /// State slots whose borrows end (`setenv` → `environ`).
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::vector<std::string> invalidates = {};
-  /// State slots read (`strtok(NULL, …)` → `strtok`).
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::vector<std::string> reads = {};
-  bool noreturn = false;
-  bool exits = false;
-  bool returnsTwice = false;
   /// `wide`: the row's strings end in a zero `wchar_t`, and `count` and
   /// `strlen(aN)` count `wchar_t` elements (`wcslen`).
   bool wide = false;
   std::optional<LibFormat> format;
-  /// RFC 0035 §2.5: the runtime's checked version that replaces the call.
   std::optional<LibWrapper> wrapper;
   /// The line of `LibrarySpec.txt` the row starts on.
   unsigned line = 0;
 
   /// The parameter for argument `index`, or null for a variadic argument.
   [[nodiscard]] const LibraryParam *param(unsigned index) const noexcept;
-  /// The result or an `out` value is a fresh resource.
-  [[nodiscard]] bool allocates() const noexcept;
-  /// Some argument is released or reallocated: calls are Release sites.
-  [[nodiscard]] bool releases() const noexcept;
-  /// Some argument carries a callback clause (a §9.4 boundary).
-  [[nodiscard]] bool hasCallback() const noexcept;
-  /// RFC 0034 §6.3: the row gives pointer argument `index` no access
-  /// requirement and no effect (`mmap`'s address hint, `none` with neither
-  /// an extent, an effect, a callback nor an out value, and named by no
-  /// clause or callback): the call uses only its value.
-  [[nodiscard]] bool usesValueOnly(unsigned index) const noexcept;
-  /// Neither `noreturn` nor `exits` (§7.5 "known to return").
-  [[nodiscard]] bool knownToReturn() const noexcept;
-  /// A fact rests on the row's own statement about hidden behaviour: a
-  /// `static`/`interior-state` result, `retain`/`reads`/`invalidates`, or
-  /// a callback clause. Such facets are `trusted(library-spec)` (§8.2).
-  [[nodiscard]] bool trustsLibrarySpec() const noexcept;
-  [[nodiscard]] LibSignature signature() const;
-  /// True if a declaration with `declared` classes may use this row: the
-  /// same arity and variadic-ness, the same pointer-ness of the result, and
-  /// each `int`, pointer or `fn` parameter of the same class (`other`
-  /// matches anything, as does a pointer declared where the row says
-  /// `other`, for `va_list`).
-  [[nodiscard]] bool accepts(const LibSignature &declared) const;
 
   friend bool operator==(const LibraryEntry &, const LibraryEntry &) = default;
 };
@@ -413,13 +209,15 @@ struct LibraryMatch {
   const LibraryChk *alias = nullptr;
 
   /// The row argument that call argument `callArgument` becomes, or -1 when
-  /// the alias drops it (an object-size or flag argument).
+  /// the alias drops it.
   [[nodiscard]] int rowArgument(unsigned callArgument) const noexcept;
   /// The call argument that carries row argument `rowArg`, or -1.
   [[nodiscard]] int callArgument(unsigned rowArg) const noexcept;
-  /// The row parameter for call argument `callArgument`, or null (dropped
-  /// or variadic).
-  [[nodiscard]] const LibraryParam *param(unsigned callArgument) const noexcept;
+  /// The call argument that carries the object size of a fortified alias,
+  /// or -1.
+  [[nodiscard]] int sizeArgument() const noexcept {
+    return alias != nullptr ? alias->sizeArgument : -1;
+  }
 };
 
 /// The parsed table.
@@ -440,62 +238,25 @@ public:
   [[nodiscard]] const std::vector<LibraryEntry> &entries() const noexcept {
     return rows;
   }
-  /// The §5.2 header list, in file order (`dir/*` patterns included).
-  [[nodiscard]] const std::vector<std::string> &headers() const noexcept {
-    return headerList;
-  }
 
   /// The row named exactly `name` (the first, if it has overloads).
   [[nodiscard]] const LibraryEntry *find(std::string_view name) const;
   /// Resolves a callee name: the row's own name, a `chk` alias, or either
-  /// behind a `__builtin_` prefix. The first overload wins.
+  /// behind a `__builtin_` prefix. With `arguments`, the first overload
+  /// whose arity the call matches (a variadic row accepts more), else the
+  /// first.
   [[nodiscard]] std::optional<LibraryMatch>
-  lookup(std::string_view callee) const;
-  /// As above, choosing the overload that `accepts(declared)`; no match
-  /// when none does.
-  [[nodiscard]] std::optional<LibraryMatch>
-  lookup(std::string_view callee, const LibSignature &declared) const;
-
-  /// §5.2: whether a system header, named relative to the include directory
-  /// that found it (`stdio.h`, `sys/ioctl.h`), is a C library, POSIX or
-  /// platform header. On Darwin every header of the SDK is
-  /// (`darwinSdk`). Headers under the toolchain's resource directory always
-  /// are; that is the caller's test, not this one.
-  [[nodiscard]] bool isPlatformHeader(std::string_view relativePath,
-                                      bool darwinSdk) const;
+  lookup(std::string_view callee,
+         std::optional<unsigned> arguments = std::nullopt) const;
 
 private:
   std::vector<LibraryEntry> rows;
-  std::vector<std::string> headerList;
-  /// The concrete names of `headerList`, and its `dir/*` patterns as
-  /// `dir/` prefixes.
-  std::set<std::string, std::less<>> headerNames;
-  std::vector<std::string> headerPrefixes;
   std::multimap<std::string, std::size_t, std::less<>> byName;
   /// Alias name to (row index, index into the row's `chk`).
   std::map<std::string, std::pair<std::size_t, std::size_t>, std::less<>>
       byAlias;
-
-  [[nodiscard]] std::optional<LibraryMatch>
-  resolve(std::string_view callee, const LibSignature *declared) const;
   friend class LibrarySpecParser;
 };
-
-/// The heap family: `malloc`'s releaser (`free`). Release-family names are
-/// the releasing function's name (RFC 0007); compare against this rather
-/// than spelling the libc name.
-inline constexpr std::string_view HeapFamily = "free";
-/// The family of `alloca` storage, released when the frame returns.
-inline constexpr std::string_view StackFamily = "stack";
-/// The family of `FILE` streams from `fopen` and friends.
-inline constexpr std::string_view StreamFamily = "fclose";
-
-/// RFC 0030 §8.2: the number of variadic arguments a literal `printf`
-/// (`kind` Printf) or `scanf` format reads, `*` widths and precisions
-/// included; nothing for a format with positional (`%1$d`) conversions or a
-/// malformed one.
-[[nodiscard]] std::optional<unsigned>
-formatArgumentCount(std::string_view format, LibFormat::Kind kind);
 
 } // namespace weavec::core
 

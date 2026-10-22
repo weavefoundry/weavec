@@ -20,13 +20,22 @@
 
 #include <string.h>
 
-enum { WeavecRtDispatchMagic = 0x52435657, WeavecRtDispatchVersion = 3 };
+enum { WeavecRtDispatchMagic = 0x52435657, WeavecRtDispatchVersion = 4 };
 
 const struct __weavec_rt_dispatch __weavec_rt_dispatch = {
-    WeavecRtDispatchMagic, WeavecRtDispatchVersion, &__weavec_rt_heap,
-    &__weavec_rt_shadow,   weavecRtInitialise,      __weavec_rt_alloc,
-    __weavec_rt_free,      __weavec_rt_realloc,     __weavec_rt_size,
-    weavecRtHeapObjectAt,  __weavec_rt_fatal};
+    WeavecRtDispatchMagic,
+    WeavecRtDispatchVersion,
+    &__weavec_rt_heap,
+    &__weavec_rt_shadow,
+    weavecRtInitialise,
+    __weavec_rt_alloc,
+    __weavec_rt_free,
+    __weavec_rt_realloc,
+    __weavec_rt_size,
+    weavecRtHeapObjectAt,
+    __weavec_rt_fatal,
+    __weavec_rt_globals_register,
+    __weavec_rt_globals_unregister};
 
 #if defined(__APPLE__)
 

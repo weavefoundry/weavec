@@ -12,5 +12,5 @@ int main(void) {
   if (!p) return 1;
   p[0] = 1;
   f1(p);
-  return p[0]; // BUG: use-after-free
+  return p[0]; // TRAP: heap-use-after-free
 }

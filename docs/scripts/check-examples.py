@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Exercise the published tutorial examples against built WeaveC binaries.
+"""Exercise the published tutorial examples against a built weavec-cc.
 
-`weavec` must report the use-after-free in use-after-free.c and accept fixed.c
-(RFC 0035 section 8: the advisory analysis). `weavec-cc` must compile
+Every example in docs/examples must compile. `weavec-cc` must compile
 lookup.c, record the guarded load of `table[i]` in the enforcement ledger
-(`weavec-ledger` version 3, RFC 0035 section 9), link it, run it, and stop a
-negative index with an `index-out-of-bounds` report; and it must build vec.c
-and stop a read past its heap block with a `heap-buffer-overflow` report
-(RFC 0035 section 5.3; the default `-fweavec-checks=trap`).
+(`weavec-ledger` version 3, RFC 0035 section 9), link it, run it, and stop
+a negative index with an `index-out-of-bounds` report; and it must build
+vec.c and stop a read past its heap block with a `heap-buffer-overflow`
+report (RFC 0035 section 5.3; the default `-fweavec-checks=trap`).
 """
 
 import argparse
@@ -19,13 +18,9 @@ import subprocess
 import tempfile
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--weavec", required=True, type=Path, help="the weavec analysis tool")
-parser.add_argument(
-    "--weavec-cc", type=Path, help="the weavec-cc compiler (default: next to --weavec)"
-)
+parser.add_argument("--weavec-cc", required=True, type=Path, help="the weavec-cc compiler")
 args = parser.parse_args()
-weavec = args.weavec.resolve()
-weavec_cc = (args.weavec_cc or weavec.with_name("weavec-cc")).resolve()
+weavec_cc = args.weavec_cc.resolve()
 examples = Path(__file__).resolve().parent.parent / "examples"
 traps = {-signal.SIGTRAP, -signal.SIGILL}
 
@@ -35,15 +30,6 @@ def run(command, **options):
         [str(part) for part in command],
         capture_output=True, text=True, timeout=60, check=False, **options,
     )
-
-
-def analyse(source):
-    return run([weavec, source, "--", "-std=c17"])
-
-
-def analysis_summary(stderr, name):
-    """The analysis's summary line (RFC 0035 section 8) for source `name`."""
-    return re.search(rf"^weavec: (\S*/)?{re.escape(name)}: [\d,]+ sites?: ", stderr, re.M)
 
 
 def enforcement_summary(stderr, name):
@@ -59,14 +45,12 @@ def expect_trap(result, kind, name, line, detail):
     assert re.search(pattern, result.stderr, re.M), "unexpected report:\n" + result.stderr
 
 
-bad = analyse(examples / "use-after-free.c")
-assert bad.returncode != 0 and "[weavec::use-after-free]" in bad.stderr, bad.stderr
-good = analyse(examples / "fixed.c")
-assert good.returncode == 0, good.stderr
-assert analysis_summary(good.stderr, "fixed.c"), "no summary line:\n" + good.stderr
-
 with tempfile.TemporaryDirectory() as temp:
     temp = Path(temp)
+    for source in sorted(examples.glob("*.c")):
+        compiled = run([weavec_cc, "-std=c17", "-c", source, "-o", temp / (source.stem + ".o")])
+        assert compiled.returncode == 0, f"{source.name}:\n{compiled.stderr}"
+
     ledgers = temp / "ledger"
     ledgers.mkdir()
     obj = temp / "lookup.o"
@@ -99,5 +83,5 @@ with tempfile.TemporaryDirectory() as temp:
     assert re.search(r"^weavec: 0x[0-9a-f]+ is 0 bytes after the 16-byte heap object at 0x[0-9a-f]+$",
                      past.stderr, re.M), "no heap object line:\n" + past.stderr
 
-print("Documentation examples passed: use-after-free, fixed lifetime, the guarded "
-      "load in the ledger, and the index and heap reports.")
+print("Documentation examples passed: every example compiles, the guarded load "
+      "in the ledger, and the index and heap reports.")

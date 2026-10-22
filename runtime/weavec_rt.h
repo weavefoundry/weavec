@@ -6,7 +6,8 @@
 |*
 |*===----------------------------------------------------------------------===*|
 |*
-|* RFC 0035, section 5. Shared by the runtime's own sources and its tests;
+|* RFC 0035, section 5, and RFC 0036, section 5. Shared by the runtime's own
+|* sources and its tests;
 |* not installed. Compiled code reaches the runtime through the entry points
 |* the guard pass calls (lib/Frontend/GuardPass*.cpp declares the same
 |* ones), the shadow descriptor it reads inline, and the standard allocation
@@ -62,6 +63,8 @@ enum {
   WeavecRtShadowStackMid = 0xF2,
   WeavecRtShadowStackRight = 0xF3,
   WeavecRtShadowStackDynamic = 0xF4,
+  /* RFC 0036 section 5: poisoned by the program through ASan's interface. */
+  WeavecRtShadowUser = 0xF7,
   WeavecRtShadowStackScope = 0xF8,
   WeavecRtShadowGlobal = 0xF9,
   WeavecRtShadowHeapTail = 0xFA,
@@ -160,13 +163,21 @@ struct __weavec_rt_heap_t {
 
 WEAVEC_RT_API extern struct __weavec_rt_heap_t __weavec_rt_heap;
 
-/* Slot states: the low two bits of a slot word. */
+/* A slot word is `value << 2 | state`: a live slot's value is its object's
+ * size, a free or dead slot's the index + 1 of the next slot on its list (0
+ * for none). */
 enum {
   WeavecRtNever = 0,
   WeavecRtLive = 1,
   WeavecRtFree = 2,
-  WeavecRtDead = 3
+  WeavecRtDead = 3,
+  WeavecRtWordState = 3,
+  WeavecRtWordShift = 2
 };
+
+static inline uint32_t weavecRtWordValue(uint32_t word) {
+  return word >> WeavecRtWordShift;
+}
 
 WEAVEC_RT_API void *__weavec_rt_alloc(size_t size, size_t alignment);
 WEAVEC_RT_API void __weavec_rt_free(void *p);
@@ -228,25 +239,30 @@ WEAVEC_RT_API void __weavec_rt_overlap(uintptr_t destination, uintptr_t source,
                                        uint64_t n,
                                        const struct __weavec_rt_site *site);
 
-/* Checked library calls (section 2.5). */
-WEAVEC_RT_API char *__weavec_rt_strcpy(char *d, const char *s,
+/* Checked library calls (section 2.5). A writing call whose row has a
+ * fortified alias takes `limit`, the size of the object it writes at most
+ * (RFC 0036 section 6: a fortified call's object size; SIZE_MAX when
+ * unknown): after the call's arguments and before the site, or right after
+ * the site when the call is variadic. */
+WEAVEC_RT_API char *__weavec_rt_strcpy(char *d, const char *s, size_t limit,
                                        const struct __weavec_rt_site *site);
-WEAVEC_RT_API char *__weavec_rt_stpcpy(char *d, const char *s,
+WEAVEC_RT_API char *__weavec_rt_stpcpy(char *d, const char *s, size_t limit,
                                        const struct __weavec_rt_site *site);
-WEAVEC_RT_API char *__weavec_rt_strcat(char *d, const char *s,
+WEAVEC_RT_API char *__weavec_rt_strcat(char *d, const char *s, size_t limit,
                                        const struct __weavec_rt_site *site);
 WEAVEC_RT_API int __weavec_rt_sprintf(const struct __weavec_rt_site *site,
-                                      char *d, const char *format, ...);
+                                      size_t limit, char *d,
+                                      const char *format, ...);
 WEAVEC_RT_API int __weavec_rt_vsprintf(char *d, const char *format,
-                                       va_list arguments,
+                                       va_list arguments, size_t limit,
                                        const struct __weavec_rt_site *site);
 WEAVEC_RT_API int __weavec_rt_snprintf(const struct __weavec_rt_site *site,
-                                       char *d, size_t n, const char *format,
-                                       ...);
+                                       size_t limit, char *d, size_t n,
+                                       const char *format, ...);
 WEAVEC_RT_API int __weavec_rt_vsnprintf(char *d, size_t n, const char *format,
-                                        va_list arguments,
+                                        va_list arguments, size_t limit,
                                         const struct __weavec_rt_site *site);
-WEAVEC_RT_API char *__weavec_rt_gets(char *d,
+WEAVEC_RT_API char *__weavec_rt_gets(char *d, size_t limit,
                                      const struct __weavec_rt_site *site);
 /* The scanf family checks, after the call, what each conversion that ran
  * wrote. */
@@ -279,6 +295,42 @@ WEAVEC_RT_API int __weavec_rt_strcasecmp(const char *a, const char *b,
 WEAVEC_RT_API int __weavec_rt_strncasecmp(const char *a, const char *b,
                                           size_t n,
                                           const struct __weavec_rt_site *site);
+/* RFC 0036 section 6: the number parsers check, after the call, the bytes
+ * the C library read: up to the end pointer and the character that stopped
+ * it, or, when nothing was converted, the leading white space and sign and
+ * the character after them. */
+WEAVEC_RT_API long __weavec_rt_strtol(const char *s, char **end, int base,
+                                      const struct __weavec_rt_site *site);
+WEAVEC_RT_API long long __weavec_rt_strtoll(const char *s, char **end,
+                                            int base,
+                                            const struct __weavec_rt_site *site);
+WEAVEC_RT_API unsigned long
+__weavec_rt_strtoul(const char *s, char **end, int base,
+                    const struct __weavec_rt_site *site);
+WEAVEC_RT_API unsigned long long
+__weavec_rt_strtoull(const char *s, char **end, int base,
+                     const struct __weavec_rt_site *site);
+WEAVEC_RT_API intmax_t __weavec_rt_strtoimax(const char *s, char **end,
+                                             int base,
+                                             const struct __weavec_rt_site *site);
+WEAVEC_RT_API uintmax_t
+__weavec_rt_strtoumax(const char *s, char **end, int base,
+                      const struct __weavec_rt_site *site);
+WEAVEC_RT_API double __weavec_rt_strtod(const char *s, char **end,
+                                        const struct __weavec_rt_site *site);
+WEAVEC_RT_API float __weavec_rt_strtof(const char *s, char **end,
+                                       const struct __weavec_rt_site *site);
+WEAVEC_RT_API long double
+__weavec_rt_strtold(const char *s, char **end,
+                    const struct __weavec_rt_site *site);
+WEAVEC_RT_API int __weavec_rt_atoi(const char *s,
+                                   const struct __weavec_rt_site *site);
+WEAVEC_RT_API long __weavec_rt_atol(const char *s,
+                                    const struct __weavec_rt_site *site);
+WEAVEC_RT_API long long __weavec_rt_atoll(const char *s,
+                                          const struct __weavec_rt_site *site);
+WEAVEC_RT_API double __weavec_rt_atof(const char *s,
+                                      const struct __weavec_rt_site *site);
 /* The mappings clear the shadow of what they map and unmap. */
 WEAVEC_RT_API void *__weavec_rt_mmap(void *address, size_t length,
                                      int protection, int flags, int fd,
@@ -287,7 +339,7 @@ WEAVEC_RT_API void *__weavec_rt_mmap(void *address, size_t length,
 WEAVEC_RT_API int __weavec_rt_munmap(void *address, size_t length,
                                      const struct __weavec_rt_site *site);
 
-/* Frames (section 3). */
+/* Frames (RFC 0035 section 3). */
 WEAVEC_RT_API void __weavec_rt_unpoison_stack(void);
 /* A dynamic stack object of `size` bytes at `address` (32-aligned), followed
  * by its redzone up to the next 32-byte boundary and 32 bytes more. */
@@ -296,7 +348,15 @@ WEAVEC_RT_API void __weavec_rt_alloca_poison(uintptr_t address, uint64_t size);
  * return frees. */
 WEAVEC_RT_API void __weavec_rt_alloca_unpoison(uintptr_t low, uintptr_t high);
 
-/* Globals (section 4): `n` records {address, size, size with redzone}. */
+/* A fortified call that writes `width` bytes at `address`, more than the
+ * `limit` its object size allows (RFC 0036 section 6). */
+WEAVEC_RT_API WEAVEC_RT_SLOW void
+__weavec_rt_limit_fail(uintptr_t address, uint64_t width, uint64_t limit,
+                       const struct __weavec_rt_site *site);
+
+/* Globals (section 4): `n` records {address, size, size with redzone}. On
+ * Darwin a copy that forwards registers them with the owner (RFC 0036
+ * section 4). */
 struct __weavec_rt_global {
   uintptr_t address;
   uint64_t size;
@@ -315,6 +375,11 @@ __weavec_rt_globals_unregister(const struct __weavec_rt_global *globals,
  * the site asks for a report, which is printed once per site. */
 void weavecRtFail(const char *kind, uintptr_t address, uint64_t width,
                   const struct __weavec_rt_site *site);
+/* As weavecRtFail, with a second line that places `address` relative to
+ * the destination [lo, hi) (RFC 0036 section 6). */
+void weavecRtFailObject(const char *kind, uintptr_t address, uint64_t width,
+                        uintptr_t lo, uintptr_t hi,
+                        const struct __weavec_rt_site *site);
 /* Called by a failure right before it traps, so that the trap ends the
  * program even where the program blocked or caught SIGTRAP and SIGILL. */
 WEAVEC_RT_API void __weavec_rt_trapping(void);
@@ -344,6 +409,9 @@ struct __weavec_rt_dispatch {
   size_t (*size)(const void *);
   struct weavecRtHeapObject (*object)(uintptr_t);
   void (*fatal)(const char *, const void *, const char *);
+  /* RFC 0036 section 4: version 4. */
+  void (*registerGlobals)(const struct __weavec_rt_global *, uint64_t);
+  void (*unregisterGlobals)(const struct __weavec_rt_global *, uint64_t);
 };
 WEAVEC_RT_API extern const struct __weavec_rt_dispatch __weavec_rt_dispatch;
 
@@ -386,6 +454,38 @@ static inline const struct __weavec_rt_dispatch *weavecRtForward(void) {
  * no room for the arena. */
 int weavecRtInitialise(void);
 
+/* The runtime's own mappings, which the sweep does not scan. */
+void weavecRtInternal(uintptr_t low, uintptr_t high);
+void weavecRtInternalDrop(uintptr_t low);
+
+/* The sweep (weavec_sweep.c), and the allocator's side of it. */
+struct weavecRtSweepCounts {
+  size_t recycled;
+  size_t retained;
+  size_t retainedBytes;
+};
+void weavecRtSweep(void);
+void weavecRtLastSweep(struct weavecRtSweepCounts *out);
+extern unsigned long long weavecRtSweepNanos;
+extern unsigned long long weavecRtSweepLongest;
+/* RFC 0036 section 3.3: a sweep ended at `ended` (CLOCK_MONOTONIC
+ * nanoseconds) after `took`; the allocator paces the next one by it. */
+void weavecRtSwept(uint64_t ended, uint64_t took);
+/* The most bytes the live heap's slots and the quarantine held, for
+ * WEAVEC_RT_STATS=1 (not synchronised). */
+void weavecRtPeaks(size_t *live, size_t *quarantine);
+void weavecRtSweepLock(void);
+void weavecRtSweepUnlock(void);
+void weavecRtLockAll(void);
+void weavecRtUnlockAll(void);
+int weavecRtSweepWanted(void);
+int weavecRtPrepareMarks(void);
+void weavecRtMarkWords(uintptr_t low, uintptr_t high);
+void weavecRtMarkHeap(void);
+/* Moves what nothing marked to the free lists (unless `recycle` is 0), and
+ * clears the marks. */
+void weavecRtRecycle(struct weavecRtSweepCounts *counts, int recycle);
+
 /* WEAVEC_RT_STATS=1: what the runtime did, printed when the program exits. */
 enum {
   WeavecRtStatAllocations,
@@ -396,6 +496,7 @@ enum {
   WeavecRtStatRanges,
   WeavecRtStatStrings,
   WeavecRtStatStackUnpoisons,
+  WeavecRtStatSweeps,
   WeavecRtStatCount
 };
 extern unsigned long long weavecRtStats[WeavecRtStatCount];

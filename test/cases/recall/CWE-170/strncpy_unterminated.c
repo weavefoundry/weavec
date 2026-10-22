@@ -9,24 +9,24 @@
 void bad(void) {
   char name[8];
   strncpy(name, "0123456789", sizeof name);
-  print_int((int)strlen(name)); // BUG: out-of-bounds // TRAP
+  print_int((int)strlen(name)); // TRAP
 }
 
 void bad_puts(void) {
   char name[8];
   strncpy(name, "0123456789", sizeof name);
-  puts(name); // BUG: out-of-bounds // TRAP
+  puts(name); // TRAP
 }
 
 void bad_initialiser(void) {
   char name[4] = "abcd";
-  printf("%s\n", name); // BUG: out-of-bounds // TRAP
+  printf("%s\n", name); // TRAP
 }
 
 void bad_memset(void) {
   char name[8];
   memset(name, 'x', sizeof name);
-  print_int((int)strlen(name)); // BUG: out-of-bounds // TRAP
+  print_int((int)strlen(name)); // TRAP
 }
 
 void good(void) {

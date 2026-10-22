@@ -8,5 +8,5 @@ int main(void) {
   if (!o.buf) return 1;
   o.buf[0] = 1;
   drop(&o);
-  return o.buf[0]; // BUG: use-after-free
+  return o.buf[0]; // TRAP: heap-use-after-free
 }

@@ -172,6 +172,8 @@ public:
   llvm::FunctionCallee rangeFunction();
   llvm::FunctionCallee rangeOkFunction();
   llvm::FunctionCallee strlenFunction();
+  /// RFC 0036 §6: a fortified call writes more than its object size.
+  llvm::FunctionCallee limitFailFunction();
 
   /// `__weavec_rt_shadow`.
   llvm::GlobalVariable *shadowDescriptor();

@@ -1,18 +1,22 @@
 # RFC 0005: Whole-program analysis: cross-translation-unit summaries and the compiler driver
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-02
 - **Accepted**: 2026-09-02
 - **Implemented**: 2026-09-02
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: supersedes RFC 0003 *`annotation-required`,
-  revised* item 1 (the boundary moves from the translation unit to the
-  program) and the *Cross-TU inference* row of RFC 0003 *Soundness*;
-  resolves RFC 0001's open question *Inference across translation units*;
-  narrows RFC 0004 *Callbacks registered from another translation unit* to
-  code outside the program; records the struct-copy rule RFC 0002 left
-  implicit.
+- **Supersedes / superseded by**: Superseded by RFC 0036; supersedes RFC 0003
+  *`annotation-required`, revised* item 1 (the boundary moves from the
+  translation unit to the program) and the *Cross-TU inference* row of RFC
+  0003 *Soundness*; resolves RFC 0001's open question *Inference across
+  translation units*; narrows RFC 0004 *Callbacks registered from another
+  translation unit* to code outside the program; records the struct-copy rule
+  RFC 0002 left implicit.
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Implemented
+> until then; it is kept as a record of the design.
 
 ## Implementation notes
 

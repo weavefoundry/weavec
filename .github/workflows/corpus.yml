@@ -1,10 +1,10 @@
 name: Corpus
 
 # Runs the full corpus gate (RFC 0035, section 11) over the projects pinned
-# by SHA in test/corpus/manifest.json, but the sealed sets: the weavec
-# analysis and the per-file enforcement ledgers (checked against
-# test/corpus/triage.json and test/corpus/expected.json), each project's
-# build and test suite with CC=weavec-cc in trap mode (rerun in report mode,
+# by SHA in test/corpus/manifest.json, but the sealed sets: the per-file
+# enforcement ledgers (checked against test/corpus/expected.json), each
+# project's build and test suite with CC=weavec-cc in trap mode (rerun in
+# report mode, with the guard failures of test/corpus/triage.json allowed,
 # and built once more with the reference compiler for the build-time gate),
 # the injected bugs and the benchmarks (against the reference compiler and
 # ASan). The gate clones the projects into build/corpus. Pull requests run
@@ -61,7 +61,6 @@ jobs:
       - name: Run corpus gate
         run: |
           python3 scripts/corpus-gate.py --full \
-            --weavec build/ci-release/bin/weavec \
             --weavec-cc build/ci-release/bin/weavec-cc \
             --json corpus-gate-full.json
 

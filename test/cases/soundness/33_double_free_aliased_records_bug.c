@@ -10,6 +10,6 @@ int main(void) {
   struct obj *a = obj_new(d);
   struct obj *b = obj_new(d);
   obj_free(a);
-  obj_free(b); // BUG: double-free
+  obj_free(b); // TRAP: invalid-release
   return 0;
 }

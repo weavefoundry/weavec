@@ -3,18 +3,18 @@ import assert from 'node:assert/strict';
 import { sections, rewriteUrl, rewriteMarkdown, rfcStatus } from './content.mjs';
 
 const routes = {
-  'docs/annotations.md': '/reference/annotations/',
-  'docs/annotations.md#placement': '/reference/annotation-placement/',
+  'docs/architecture.md': '/internals/architecture/',
+  'docs/architecture.md#the-runtime': '/internals/the-runtime/',
   'docs/rfcs/0030-prove-or-trap.md': '/rfcs/0030-prove-or-trap/',
 };
 test('cross-file anchors follow split sections', () => {
   assert.equal(
-    rewriteUrl('../annotations.md#placement', 'docs/rfcs/README.md', routes),
-    '/reference/annotation-placement/#placement',
+    rewriteUrl('../architecture.md#the-runtime', 'docs/rfcs/README.md', routes),
+    '/internals/the-runtime/#the-runtime',
   );
   assert.equal(
-    rewriteUrl('#placement', 'docs/annotations.md', routes),
-    '/reference/annotation-placement/#placement',
+    rewriteUrl('#the-runtime', 'docs/architecture.md', routes),
+    '/internals/the-runtime/#the-runtime',
   );
   assert.equal(
     rewriteUrl('0030-prove-or-trap.md#soundness', 'docs/rfcs/0018-checked.md', routes),
@@ -23,17 +23,17 @@ test('cross-file anchors follow split sections', () => {
 });
 test('code examples and external URLs are unchanged; reference links are rewritten', () => {
   const markdown =
-    '[guide][g]\n\n[g]: annotations.md#placement\n\n`[code](annotations.md)`\n\n```md\n[code](annotations.md)\n```\n\n[external](https://example.com/)';
-  const result = rewriteMarkdown(markdown, 'docs/architecture.md', routes);
-  assert.ok(result.includes('[g]: /reference/annotation-placement/#placement'));
-  assert.ok(result.includes('`[code](annotations.md)`'));
-  assert.ok(result.includes('```md\n[code](annotations.md)\n```'));
+    '[guide][g]\n\n[g]: architecture.md#the-runtime\n\n`[code](architecture.md)`\n\n```md\n[code](architecture.md)\n```\n\n[external](https://example.com/)';
+  const result = rewriteMarkdown(markdown, 'docs/roadmap.md', routes);
+  assert.ok(result.includes('[g]: /internals/the-runtime/#the-runtime'));
+  assert.ok(result.includes('`[code](architecture.md)`'));
+  assert.ok(result.includes('```md\n[code](architecture.md)\n```'));
   assert.ok(result.includes('[external](https://example.com/)'));
 });
 test('repository files link to their source and cannot escape the repository', () => {
   assert.equal(
-    rewriteUrl('../lib/Core/Place.cpp', 'docs/architecture.md', routes),
-    'https://github.com/weavefoundry/weavec/blob/main/lib/Core/Place.cpp',
+    rewriteUrl('../runtime/weavec_rt.h', 'docs/architecture.md', routes),
+    'https://github.com/weavefoundry/weavec/blob/main/runtime/weavec_rt.h',
   );
   assert.throws(() => rewriteUrl('../../private.txt', 'docs/file.md', routes), /leaves repository/);
 });

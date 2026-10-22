@@ -4,7 +4,6 @@
 // list, and the caller releases each with its own releaser by the flag. An
 // unconfirmed candidate may remain a warning (RFC 0034, Diagnostics).
 // CLEAN
-// ALLOW: mismatched-release
 // RUN-INPUT:
 // RUN-INPUT: unix
 /* Janet net.c: janet_get_addrinfo returns either a calloc'd sockaddr_un

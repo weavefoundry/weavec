@@ -42,6 +42,6 @@ int main(int argc, char **argv) {
   push(&l, "c");
   struct item *b = find(&l, "b");
   if (argc > 1) remove_item(&l, argv[1]);
-  if (b) return b->name == NULL; // BUG: use-after-free // TRAP
+  if (b) return b->name == NULL; // TRAP
   return 0;
 }

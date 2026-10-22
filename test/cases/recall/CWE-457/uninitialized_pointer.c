@@ -3,7 +3,7 @@
 
 void bad(void) {
   char *data;
-  data[0] = 'A'; // BUG: use-of-uninitialized // TRAP
+  data[0] = 'A'; // TRAP
 }
 
 void bad_on_path(int flag) {
@@ -11,7 +11,7 @@ void bad_on_path(int flag) {
   char *data;
   if (flag)
     data = buf;
-  print_line(data); // BUG: use-of-uninitialized // NEUTRALISED: zero-init
+  print_line(data);
 }
 
 void good(int flag) {

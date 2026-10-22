@@ -12,6 +12,6 @@ int main(void) {
   char *p = malloc(8);
   if (!p) return 1;
   free(p);
-  p[0] = 1; // BUG: use-after-free possible // TRAP
+  p[0] = 1; // TRAP
   return 0;
 }

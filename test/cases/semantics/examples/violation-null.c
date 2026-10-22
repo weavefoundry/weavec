@@ -7,7 +7,7 @@
 
 struct node { struct node *next; int v; };
 
-int k(struct node *n) { if (n == NULL) return n->v; return 0; } // BUG: null-dereference definite
+int k(struct node *n) { if (n == NULL) return n->v; return 0; } // TRAP: null-dereference
 
 int main(int argc, char **argv) {
   struct node x = {NULL, 1};

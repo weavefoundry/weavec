@@ -72,8 +72,8 @@ Useful cache variables (`-D...` or in `CMakeUserPresets.json`):
 
 Build targets of note:
 
-- `weavec` — the advisory analysis tool, in `build/<preset>/bin/`.
-- `weavec-cc` — the drop-in compiler driver, next to it. It needs Clang's
+- `weavec-cc` — the drop-in compiler driver, in `build/<preset>/bin/`. It
+  needs Clang's
   resource directory and (for jobs it does not run in-process, such as
   `-cc1as`) a `clang` binary; both are recorded at configure time from the
   LLVM install used to build, and `WEAVEC_CLANG` overrides the binary. It
@@ -90,21 +90,14 @@ Build targets of note:
 
 ### Unit tests (`unittests/`)
 
-GoogleTest, one binary per library (`WeaveCCoreTests`, `WeaveCAnalysisTests`,
-`WeaveCFrontendTests`). Core tests exercise the model directly, including
-the object engine's domain (`HeapTest.cpp`, one test per invariant I1–I6 of
-RFC 0031 §4.7), the join and widening of summaries (`EffectsTest.cpp`)
-and one test per row of the library table (`LibrarySpecTest.cpp`).
-Analysis tests parse snippets with
-`clang::tooling::buildASTFromCodeWithArgs`, run `ObjectEngine` over them and
-collect diagnostics with `core::DiagnosticCollector`; `TestUtils.h` has
-`analyze` and `analyzeInProgram` (a snippet checked against another unit's
-interface), and the result gives each function's `core::FunctionEffects`.
-Frontend tests run the whole-program analysis over in-memory units, the
-diagnostic controls, and the guard passes: `GuardPassTest.cpp` runs
-GuardInsert, GuardPrune and GuardExpand on IR text, each removal rule of
-RFC 0035 §6 alone, and checks the ledger rows they leave. Run one with
-`build/dev/unittests/WeaveCCoreTests --gtest_filter='Heap*'`.
+GoogleTest, one binary per library (`WeaveCCoreTests`,
+`WeaveCFrontendTests`). The Core tests check every row of the library table
+against an independent, hand-written expectation table
+(`LibrarySpecTest.cpp`). The Frontend tests run the guard passes on IR text
+(`GuardPassTest.cpp`): GuardInsert, GuardPrune and GuardExpand, each
+removal rule of RFC 0035 §6 alone, frames and global redzones, and the
+ledger rows they leave. Run one with
+`build/dev/unittests/WeaveCFrontendTests --gtest_filter='GuardExpand*'`.
 
 ### The runtime (`runtime/`)
 
@@ -116,21 +109,30 @@ archives so that its `malloc` is the arena's:
 
 ```sh
 ctest --preset dev -R '^runtime$'                     # every test
-build/dev/runtime/weavec_rt_test guards quarantine    # only the named tests
+build/dev/runtime/weavec_rt_test guards sweep-recycles  # only the named tests
 ```
 
 The tests are `shadow-ready`, `classes`, `shadow-encoding`,
-`reuse-is-zero`, `alignment`, `realloc`, `quarantine`, `quarantine-holds`,
-`invalid-releases`, `huge`, `foreign`, `guards`, `strings`,
-`checked-calls`, `globals`, `allocas`, `unpoison-stack`, `mappings`,
-`array-bounds`, `threads` and `fork`. A test that must stop the program (a
-failed guard, an invalid release) runs in a child process, and the parent
-checks how it died. The runtime has platform-specific halves (Darwin's
-malloc zone and its one runtime per process, glibc's `__libc_free`, the
-shadow window's size), so a change to it must pass on both Darwin and
-Linux; CI runs the test in its Linux and macOS CTest jobs. The runtime
-includes no WeaveC header but `runtime/weavec_rt.h`, and
-`scripts/check-hygiene.py` holds it to its own line budget.
+`reuse-is-zero`, `alignment`, `realloc`, `sweep-recycles`,
+`quarantine-holds`, `sweep-follows-the-heap`, `sweep-stops-threads`,
+`pacing`, `library-data-is-scanned`, `invalid-releases`, `huge`,
+`foreign`, `guards`, `strings`, `checked-calls`, `globals`, `allocas`,
+`unpoison-stack`, `asan-interface`, `parsers-and-limits`, `mappings`,
+`array-bounds`, `threads` and `fork`. The sweep tests scrub the stack
+they leave behind with a compiler barrier and use size classes no other
+test touches: the scan is conservative, and a stale copy of an address in
+an unused stack slot keeps its block. A
+test that must stop the program (a failed guard, an invalid release) runs
+in a child process, and the parent checks how it died. The runtime has
+platform-specific halves (Darwin's malloc zone and its one runtime per
+process, `thread_suspend` against Linux's signals for the sweep, glibc's
+`__libc_free`, the shadow window's size), so a change to it must pass on
+both Darwin and Linux; CI runs the test in its Linux and macOS CTest jobs.
+The runtime includes no WeaveC header but `runtime/weavec_rt.h`, and
+`scripts/check-hygiene.py` holds it to its own line budget. Keep its
+`preserve_all` entry points (`WEAVEC_RT_SLOW`) trivial wrappers over
+non-inlined helpers: Apple clang 21 saves some callee-saved registers below
+the stack pointer in a `preserve_all` function that uses many of them.
 
 ### Integration tests (`test/`)
 
@@ -139,14 +141,11 @@ with `lit -v build/dev/test/Guards/heap-overflow.c`. The suites:
 
 | Directory | What it pins |
 | --- | --- |
-| `test/Guards/` | the guard passes and the runtime. `ir-*.c` run `%weavec_cc -O2 -S -emit-llvm` and FileCheck the IR: the inline checks, the frame and global layout, the guards a rule removes, the stack unpoisoning before a `noreturn` call. The others build and run a program and pin the exact report (`weavec: heap-buffer-overflow at …`), report mode, verify mode, the ledger and summary line, unsafe regions and `no_sanitize`, the checked library calls, array bounds, `longjmp`, `mmap` and zero-initialisation. |
-| `test/Driver/` | `weavec-cc` and `weavec` on the command line: compile and link, the runtime on the link line and its fallback notes (`runtime-link.c`), one runtime per process on Darwin, `-fweavec-*` and `-W` flags, `-fweavec-diagnose`, versions. |
-| `test/Analysis/` | the advisory analysis's diagnostics, through `%weavec`. |
-| `test/Annotations/` | the `weavec.h` annotations and the pointer kinds they give (`--dump-kinds`). |
-| `test/WholeProgram/` | several files through `%weavec --whole-program`, with shared sources in `test/WholeProgram/Inputs/`. |
+| `test/Guards/` | the guard passes and the runtime. `ir-*.c` run `%weavec_cc -O2 -S -emit-llvm` and FileCheck the IR: the inline checks, the frame layout and shared frame space (`ir-frames.c`, `shared-frame.c`), the unpoisoning before `noreturn` calls (`ir-noreturn.c`), the global layout, the guards a rule removes. The others build and run a program and pin the exact report (`weavec: heap-buffer-overflow at …`): heap, stack and global overflows, use after scope, intra-object overflow of fortified calls, use after poison, report mode, verify mode, the ledger and summary line, unsafe regions and `no_sanitize`, the checked library calls, array bounds, `longjmp`, `mmap` and zero-initialisation. |
+| `test/Driver/` | `weavec-cc` on the command line: compile and link, the runtime on the link line and its fallback notes (`runtime-link.c`), one runtime per process on Darwin, the globals of a dylib and a bundle (`image-globals.c`), `-D_FORTIFY_SOURCE=3` (`fortify.c`), ASan's macros (`asan-compat*.c`), `-fweavec-*` flags, versions. |
 
-Every diagnostic change and every change to a run-time report needs a lit
-test, because these pin the exact user-visible output. New tests are named
+Every change to a run-time report needs a lit test, because these pin the
+exact user-visible output. New tests are named
 by feature (`test/Guards/<feature>.c`, `test/Guards/ir-<feature>.c`);
 existing `rfcNNNN-` names stay.
 
@@ -156,29 +155,32 @@ Executable C cases organised by feature, with their expectations in
 line-comment markers; [`test/cases/README.md`](../test/cases/README.md) has
 the grammar. For each case `scripts/run-cases.py`:
 
-1. analyses it with `weavec` (`--whole-program` when it has several units)
-   and checks the diagnostics against `BUG: <id>` lines (`MISS: <reason>`
-   on a `BUG` line marks one the analysis is known not to report),
-   `CLEAN` and `ALLOW: <id>`;
-2. builds it with `weavec-cc` (trap mode, or verify mode under
+1. builds it with `weavec-cc` (trap mode, or verify mode under
    `--checks verify`) and checks the enforcement ledger against
    `GUARDED`, `PROVEN`, `UNGUARDED` and `EXPECT-LEDGER` markers;
-3. runs it once per `RUN-INPUT` and requires every stop to be one a
+2. runs it once per `RUN-INPUT` and requires every stop to be one a
    `TRAP: <kind>` marker expects (a report kind such as
    `heap-buffer-overflow`, or `invalid-release`), and every `TRAP` to be hit;
-   `TRAP-AT: <unit>:<line>` expects a stop in a unit several cases share.
+   `TRAP-AT: <unit>:<line>` expects a stop in a unit several cases share; a
+   `CLEAN` case must not stop.
    A `DETECT` case is judged instead by whether its bug stops at or before a
    `STOP` line and its fixed twin runs clean (`--min-stops N` gates the
-   count).
+   count; `MISS` marks a `STOP` line as a known miss).
+
+`test/cases/determinism/` holds a bug per class RFC 0036 makes
+deterministic (use after free and double free after churn, a fortified
+field overflow, a pool poisoned through ASan's interface), each with its
+correct twin (gate G1), and, as `XFAIL`, the bugs it leaves to a later RFC
+(a jump into a neighbouring object, use after return).
 
 `--asan` adds the ASan oracle (each case built with
 `-fsanitize=address,array-bounds` by the reference compiler); `--checks
-verify` fails any case that reports `weavec.proven`; `--no-run` analyses and
-builds only; `--filter GLOB` selects cases. CTest registers one
+verify` fails any case that reports `weavec.proven`; `--no-run` builds
+only; `--filter GLOB` selects cases. CTest registers one
 `cases-<suite>` test per top-level directory, so `ctest --preset dev -L
 cases` runs them in parallel; the cache variable `WEAVEC_CASES_ARGS` passes
-runner options (the ASan CI job uses `--no-run`). A false trap or false
-positive fixed gets a `CLEAN` case; a new guard rule gets a bug case and its
+runner options (the ASan CI job uses `--no-run`). A false trap fixed gets a
+`CLEAN` case; a new guard rule gets a bug case and its
 correct twin under `test/cases/semantics/<feature>/`.
 
 ### Corpus gate (`test/corpus/`)
@@ -187,7 +189,7 @@ correct twin under `test/cases/semantics/<feature>/`.
 `test/corpus/manifest.json` with `weavec-cc`, runs their test suites and
 benchmarks, and compares the results with the ratchet in
 `test/corpus/expected.json`; anything that needs a verdict (a trap in a
-project's tests, an analysis finding) is recorded in
+project's tests) is recorded in
 `test/corpus/triage.json`. `--quick` runs a few configurations on every
 pull request, and the weekly **Corpus** workflow runs the full gate. See
 [`test/corpus/README.md`](../test/corpus/README.md) for the configurations,
@@ -198,10 +200,12 @@ benchmarks on an idle machine.
 
 `scripts/check-hygiene.py` checks the repository rules (no library names
 compared outside `lib/Core/LibrarySpec.txt`, no corpus project named under
-`lib/`, the engine seam) and the line budgets of the object engine, of the
-libraries (`lib/`, `include/` and `tools/`) and of the runtime (counted
-apart, because it is linked into compiled programs, not into the
-compiler); `--help` lists each check and its limit. It runs in the Linux
+`lib/`, no Clang or LLVM header in Core, the runtime's includes, every
+runtime entry point the passes name declared in `runtime/weavec_rt.h`) and
+the line budgets of the libraries (`lib/`, `include/` and `tools/`, 9,000)
+and of the runtime (6,000, counted apart, because it is linked into
+compiled programs, not into the compiler); `--help` lists each check and
+its limit. It runs in the Linux
 Release CI job.
 
 ### Sanitizers
@@ -210,9 +214,9 @@ Release CI job.
 everything. This CI preset uses `-O1 -gline-tables-only` to keep the test
 suites within the job's runtime budget while retaining assertions,
 both sanitizers and source locations in stack traces. The `dev-asan` preset
-keeps the unoptimized Debug build for interactive debugging. The analysis
-and the guard passes are the most likely places for lifetime bugs of our
-own, so run the CI preset before submitting changes to them.
+keeps the unoptimized Debug build for interactive debugging. The guard
+passes are the most likely place for lifetime bugs of our own, so run the
+CI preset before submitting changes to them.
 
 ## Formatting and linting
 
@@ -232,9 +236,10 @@ editor integration.
 - `weavec-cc -O2 -S -emit-llvm file.c -o -` prints the unit's IR after the
   guard passes: each surviving guard is an inline shadow check whose slow
   side calls `__weavec_rt_guard`, `__weavec_rt_range` or another
-  `__weavec_rt_*` entry point, and tracked locals live in one frame alloca
-  with redzones. Compare with `-fweavec-checks=none` to see the guards'
-  whole effect.
+  `__weavec_rt_*` entry point; the tracked locals are offsets into one
+  `weavec.frame` alloca whose shadow is written at entry and cleared at
+  each return. Compare with
+  `-fweavec-checks=none` to see the guards' whole effect.
 - `-mllvm -print-after-all` (narrowed with `-mllvm
   -filter-print-funcs=<function>`) prints the IR after every pass, so the
   markers (`__weavec.guard`, `__weavec.range`, `__weavec.strlen`,
@@ -257,12 +262,21 @@ editor integration.
   makes it trap at the first again. `WEAVEC_RT_REPORT_LOG=<path>` appends
   each report to a file instead of standard error, for a test harness that
   keeps a passing test's output to itself.
+- `WEAVEC_RT_BACKTRACE=1` prints the stack of the access that stops the
+  program after its report.
 - `WEAVEC_RT_STATS=1 ./prog` prints the runtime's counters on stderr at
   exit, one line each, `weavec: runtime: <n> <what>`: allocations,
   releases, recycled slots, huge blocks, slow guards, range guards, string
-  guards and stack unpoisons. The counters are not synchronised.
-  `WEAVEC_RT_QUARANTINE=<bytes>` sets the quarantine budget (0 recycles a
-  released block at once).
+  guards, stack unpoisons and sweeps, then the sweeps' total and
+  longest pause, the blocks and bytes the last sweep retained, and the
+  most the live slots and the quarantine held. The
+  counters are not synchronised.
+- `WEAVEC_RT_QUARANTINE=<bytes>` sets how much the quarantine must gain
+  (and more than a quarter of the live heap) before a sweep is due (paced
+  to eight times the last sweep's duration; twice the value, or
+  half the live heap, sweeps at once); 16 MiB by default. `WEAVEC_RT_SWEEP_SIGNAL=<n>` sets the signal number that stops
+  threads for a sweep on Linux (by default `SIGPWR`, or `SIGXCPU` when the
+  program handles `SIGPWR`).
 - `weavec-cc` runs its `-cc1` jobs in-process, so `lldb -- build/dev/bin/
   weavec-cc -c file.c` stops in the passes directly; `weavec-cc -###
   file.c` prints the jobs Clang's driver planned and the link line with the
@@ -278,34 +292,6 @@ editor integration.
   ASan run then hangs until its timeout.
 - For lit failures, `lit -a` prints the full command and output; the test's
   working files are under `build/<preset>/test/<suite>/Output/`.
-
-## Debugging the analysis
-
-- `weavec file.c -- -Xclang -ast-dump` does *not* work (the tooling action
-  replaces Clang's); use `clang -fsyntax-only -Xclang -ast-dump file.c`
-  directly to inspect the AST.
-- Run the tool under a debugger with `lldb -- build/dev/bin/weavec file.c --`.
-- `weavec --dump-analysis file.c --` prints the inferred places, lifetimes,
-  exit state and summary of every analysed function.
-  `weavec --whole-program --dump-analysis a.c b.c --` names each unit in
-  analysis order and then prints the joined program database (every
-  exported summary) and the program's function-pointer slots.
-- `weavec --dump-kinds file.c --` prints the unit's pointer kinds (declared
-  and inferred, with must-access requirements, slot demotions, store groups
-  and field candidates) and its function-pointer slots, without running the
-  engine.
-- The object engine prints its own state to stderr when
-  `WEAVEC_ENGINE_DUMP` is set (`lib/Analysis/EngineUnit.cpp`,
-  `EngineSummary.cpp`, `EngineRun.cpp`): any value prints the summary of
-  every function the unit analyses and of every summary it imports from the
-  program database; `2` also prints each run's exit states, and `3` each
-  run's block entry states (objects, cells, symbols and the zone), as
-  `ObjectEngine::dump` does. `WEAVEC_ENGINE_TRACE` prints every block visit
-  of the fixpoint with the states it sends and the joins it makes. Both are
-  unstable and verbose; use them on a reduced case.
-- `weavec --analysis-stats=<path>` (`-fweavec-analysis-stats=<path>` in
-  `weavec-cc -fweavec-diagnose`) writes the analysis's work statistics as
-  JSON, to find what spends a budget.
 
 ## Releasing
 

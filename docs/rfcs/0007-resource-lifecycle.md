@@ -1,18 +1,22 @@
 # RFC 0007: Resource lifecycle: leaks, release families and owned fields
 
-- **Status**: Accepted
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-02
 - **Accepted**: 2026-09-02
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: supersedes the RFC 0003 rule that a
-  callee's consumption *below* a consumed argument is "the callee's
-  business" at the call site (*Applying a summary at a call*, step 1); the
-  RFC 0004 decision that `WEAVEC_OWNED` on a field is recorded but not
+- **Supersedes / superseded by**: Superseded by RFC 0036; supersedes the RFC
+  0003 rule that a callee's consumption *below* a consumed argument is "the
+  callee's business" at the call site (*Applying a summary at a call*, step
+  1); the RFC 0004 decision that `WEAVEC_OWNED` on a field is recorded but not
   consumed (*Unresolved questions*, last row); and the RFC 0003 summary text
-  format version 2 (bumped to 3). Resolves the RFC 0002 and RFC 0006
-  *Future work* items *Leak reporting*, *Leak detection and release
-  families* and *Owned fields*, and the RFC 0004 item *Allocator families*.
+  format version 2 (bumped to 3). Resolves the RFC 0002 and RFC 0006 *Future
+  work* items *Leak reporting*, *Leak detection and release families* and
+  *Owned fields*, and the RFC 0004 item *Allocator families*.
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Accepted
+> until then; it is kept as a record of the design.
 
 ## Summary
 

@@ -7,20 +7,20 @@
 
 void bad(void) {
   char buf[8];
-  strcpy(buf, "0123456789"); // BUG: out-of-bounds // TRAP
+  strcpy(buf, "0123456789"); // TRAP
   print_line(buf);
 }
 
 void bad_strcat(void) {
   char buf[8];
   strcpy(buf, "0123");
-  strcat(buf, "45678"); // BUG: out-of-bounds // TRAP
+  strcat(buf, "45678"); // TRAP
   print_line(buf);
 }
 
 void bad_sprintf(int x) {
   char buf[4];
-  sprintf(buf, "%d!!!", x); // BUG: out-of-bounds // TRAP
+  sprintf(buf, "%d!!!", x); // TRAP
   print_line(buf);
 }
 

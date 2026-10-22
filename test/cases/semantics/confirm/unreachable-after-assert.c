@@ -6,7 +6,6 @@
 // edge is infeasible in every run, the replay's too. An unconfirmed
 // candidate may remain a warning (RFC 0034, Diagnostics), hence the ALLOW.
 // CLEAN
-// ALLOW: null-dereference
 /* QuickJS __JS_EvalInternal (quickjs.c:37449-37484) in CONFIG_CHECK_JSVALUE
  * mode: the DIRECT branch ends in an assert that can never hold there, so
  * only the else branch (b = NULL, eval_type != DIRECT) survives; the later

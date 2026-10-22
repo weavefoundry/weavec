@@ -5,7 +5,7 @@
 // ASAN
 #include <stdlib.h>
 
-void f(void) { char *p = malloc(4); if (!p) return; p[4] = 0; free(p); } // BUG: out-of-bounds definite
+void f(void) { char *p = malloc(4); if (!p) return; p[4] = 0; free(p); } // TRAP: heap-buffer-overflow
 
 int main(void) {
   f();

@@ -8,7 +8,7 @@
 static void *same(void *p) { return p; }
 static void *(*volatile hide)(void *) = same;
 static void chop(char *s) {
-  s[strlen(s) - 1] = 0; // BUG: out-of-bounds // TRAP
+  s[strlen(s) - 1] = 0; // TRAP
 }
 int main(void) {
   char buf[8];

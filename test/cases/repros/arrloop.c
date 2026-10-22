@@ -4,7 +4,6 @@
 // at most a possible finding, which is a warning, and a leak is never an error; so
 // double-free and leak warnings are allowed, and the program must not trap.
 // CLEAN
-// ALLOW: double-free leak
 // ASAN
 #include <stdlib.h>
 void free_all(char **v, int n) { int i; for (i = 0; i < n; i++) free(v[i]); free(v); }

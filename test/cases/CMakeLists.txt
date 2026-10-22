@@ -40,8 +40,8 @@ foreach(suite IN LISTS _weavec_case_suites)
     NAME cases-${suite}
     COMMAND
       "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/run-cases.py"
-      --weavec "$<TARGET_FILE:weavec>" --weavec-cc "$<TARGET_FILE:weavec-cc>"
-      --filter "${suite}/**" --jobs "${WEAVEC_CASES_JOBS}" --json
+      --weavec-cc "$<TARGET_FILE:weavec-cc>" --filter "${suite}/**" --jobs
+      "${WEAVEC_CASES_JOBS}" --json
       "${CMAKE_CURRENT_BINARY_DIR}/cases-${suite}.json" ${_weavec_cases_args})
   set_tests_properties(
     cases-${suite} PROPERTIES LABELS "integration;cases" TIMEOUT 900 PROCESSORS

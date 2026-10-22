@@ -6,7 +6,7 @@ void run(unsigned n) {
   unsigned bytes = n + 2u;
   char *p = malloc(bytes);
   if (!p) return;
-  p[1] = 0; // BUG: out-of-bounds // TRAP
+  p[1] = 0; // TRAP
   free(p);
 }
 // Driver (RFC 0030 section 17.2): executes the defect so the runtime oracle can observe the check.

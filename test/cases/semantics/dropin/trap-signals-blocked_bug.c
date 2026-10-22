@@ -5,7 +5,7 @@
 #include <signal.h>
 #include <stdlib.h>
 static int at(int *p, int i) {
-  return p[i]; // BUG: out-of-bounds // TRAP
+  return p[i]; // TRAP
 }
 int main(int argc, char **argv) {
   sigset_t all;

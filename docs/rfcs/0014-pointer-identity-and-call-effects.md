@@ -1,12 +1,16 @@
 # RFC 0014: Pointer identity and precise call effects
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-06
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Amends RFC 0004's indirect callees,
-  RFC 0005's exported summaries, RFC 0006's written objects, RFC 0009's
-  guards, and RFC 0013's heap identities and projection.
+- **Supersedes / superseded by**: Superseded by RFC 0036; amends RFC 0004's
+  indirect callees, RFC 0005's exported summaries, RFC 0006's written objects,
+  RFC 0009's guards, and RFC 0013's heap identities and projection.
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Implemented
+> until then; it is kept as a record of the design.
 
 ## Summary
 

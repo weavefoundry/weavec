@@ -5,7 +5,7 @@
 // ASAN
 #include <stdlib.h>
 
-void g(char *p) { free(p); p[0] = 1; } // BUG: use-after-free definite
+void g(char *p) { free(p); p[0] = 1; } // TRAP: heap-use-after-free
 
 int main(void) {
   char *p = malloc(8);

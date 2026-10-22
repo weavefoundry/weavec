@@ -6,7 +6,6 @@
 // Diagnostics), and so may the possible invalid release of a range that does
 // not start a mapping (munmap takes any page-aligned range).
 // CLEAN
-// ALLOW: double-free use-after-free invalid-release
 /* libdeflate programs/test_util.c alloc_guarded_buffer: munmap of part of a
  * mapping is modelled as a release of the whole mapping, so unmapping the two
  * guard pages is a "double free" and the middle page is "used after free".

@@ -31,6 +31,7 @@
 
 #include "weavec_rt.h"
 
+#include <execinfo.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
@@ -86,6 +87,9 @@ static int firstReport(unsigned long long hash) {
 
 /* WEAVEC_RT_ABORT=1. */
 static int abortSetting;
+/* WEAVEC_RT_BACKTRACE=1: the stack of the access that stops the program,
+ * after its report. */
+static int backtraceSetting;
 
 /* WEAVEC_RT_REPORT_LOG=<path>: every report is appended to that file, one
  * write per line, for a test harness that keeps the output of a passing test
@@ -97,6 +101,8 @@ __attribute__((constructor)) static void readReportSettings(void) {
   const char *value = getenv("WEAVEC_RT_ABORT");
   const char *path;
   abortSetting = value != NULL && strcmp(value, "1") == 0;
+  value = getenv("WEAVEC_RT_BACKTRACE");
+  backtraceSetting = value != NULL && strcmp(value, "1") == 0;
   /* A set-user-ID or set-group-ID program does not write where its
    * environment says. */
 #if defined(__APPLE__)
@@ -195,6 +201,33 @@ static int finish(struct Line *line, char *text) {
   return (int)(line->at - text);
 }
 
+/* `address` relative to the object [lo, hi), for the second line. */
+static int describeRange(uintptr_t address, uintptr_t lo, uintptr_t hi,
+                         const char *noun, char *text, size_t room) {
+  struct Line line = {text, text + room - 1};
+  put(&line, "weavec: ");
+  putHex(&line, address);
+  if (address >= hi) {
+    put(&line, " is ");
+    putUnsigned(&line, address - hi, 10);
+    put(&line, " bytes after the ");
+  } else if (address < lo) {
+    put(&line, " is ");
+    putUnsigned(&line, lo - address, 10);
+    put(&line, " bytes before the ");
+  } else {
+    put(&line, " is ");
+    putUnsigned(&line, address - lo, 10);
+    put(&line, " bytes inside the ");
+  }
+  putUnsigned(&line, hi - lo, 10);
+  put(&line, "-byte ");
+  put(&line, noun);
+  put(&line, " at ");
+  putHex(&line, lo);
+  return finish(&line, text);
+}
+
 /* Where a heap address lies relative to its object, for the second line;
  * its size, 0 when there is nothing to say. */
 static int describeHeap(uintptr_t address, char *text, size_t room) {
@@ -202,26 +235,65 @@ static int describeHeap(uintptr_t address, char *text, size_t room) {
   struct Line line = {text, text + room - 1};
   if (!object.found)
     return 0;
-  put(&line, "weavec: ");
-  putHex(&line, address);
   if (!object.live) {
+    put(&line, "weavec: ");
+    putHex(&line, address);
     put(&line, " is inside a released heap block at ");
     putHex(&line, object.base);
-  } else if (address >= object.base + object.size) {
-    put(&line, " is ");
-    putUnsigned(&line, address - object.base - object.size, 10);
-    put(&line, " bytes after the ");
-    putUnsigned(&line, object.size, 10);
-    put(&line, "-byte heap object at ");
-    putHex(&line, object.base);
-  } else {
-    return 0;
+    return finish(&line, text);
   }
-  return finish(&line, text);
+  if (address >= object.base + object.size)
+    return describeRange(address, object.base, object.base + object.size,
+                         "heap object", text, room);
+  return 0;
+}
+
+/* The first line of a report; false when report mode already reported the
+ * site. */
+static int reportLine(const char *kind, uintptr_t address, uint64_t width,
+                      const struct __weavec_rt_site *site);
+
+static void stop(const struct __weavec_rt_site *site) {
+  const unsigned flags = site != NULL ? site->flags : 0;
+  if ((flags & WeavecRtSiteReport) != 0 && !shouldAbort())
+    return;
+  __weavec_rt_trapping();
+  if (backtraceSetting) {
+    void *frames[64];
+    backtrace_symbols_fd(frames, backtrace(frames, 64), 2);
+  }
+  __builtin_trap();
+}
+
+void weavecRtFailObject(const char *kind, uintptr_t address, uint64_t width,
+                        uintptr_t lo, uintptr_t hi,
+                        const struct __weavec_rt_site *site) {
+  char text[256];
+  int size;
+  if (!reportLine(kind, address, width, site))
+    return;
+  size = describeRange(address, lo, hi, "destination", text, sizeof text);
+  if (size > 0)
+    emit(text, size);
+  stop(site);
 }
 
 void weavecRtFail(const char *kind, uintptr_t address, uint64_t width,
                   const struct __weavec_rt_site *site) {
+  char text[256];
+  int size;
+  if (!reportLine(kind, address, width, site))
+    return;
+  if (strncmp(kind, "heap-", 5) == 0) {
+    size = describeHeap(address, text, sizeof text);
+    if (size > 0)
+      emit(text, size);
+  }
+  stop(site);
+}
+
+static int reportLine(const char *kind, uintptr_t address, uint64_t width,
+                      const struct __weavec_rt_site *site) {
   const unsigned flags = site != NULL ? site->flags : 0;
   const char *file = site != NULL && site->file != NULL ? site->file : NULL;
   const unsigned line = site != NULL ? site->line : 0;
@@ -229,9 +301,8 @@ void weavecRtFail(const char *kind, uintptr_t address, uint64_t width,
   const int report = (flags & WeavecRtSiteReport) != 0 && !shouldAbort();
   char text[1024];
   struct Line out = {text, text + sizeof text - 1};
-  int size;
   if (report && !firstReport(siteHash(kind, file, line, column)))
-    return;
+    return 0;
   put(&out, "weavec: ");
   if ((flags & WeavecRtSiteProven) != 0)
     put(&out, "weavec.proven: ");
@@ -266,15 +337,7 @@ void weavecRtFail(const char *kind, uintptr_t address, uint64_t width,
     putHex(&out, address);
   }
   emit(text, finish(&out, text));
-  if (strncmp(kind, "heap-", 5) == 0) {
-    size = describeHeap(address, text, sizeof text);
-    if (size > 0)
-      emit(text, size);
-  }
-  if (report)
-    return;
-  __weavec_rt_trapping();
-  __builtin_trap();
+  return 1;
 }
 
 /* Counted without synchronisation: a diagnostic aid, not an account. */
@@ -282,8 +345,9 @@ unsigned long long weavecRtStats[WeavecRtStatCount];
 
 __attribute__((destructor)) static void printStats(void) {
   static const char *const Names[WeavecRtStatCount] = {
-      "allocations", "releases",      "recycled slots",   "huge blocks",
-      "slow guards", "range guards",  "string guards",    "stack unpoisons"};
+      "allocations", "releases",     "recycled slots", "huge blocks",
+      "slow guards", "range guards", "string guards",  "stack unpoisons",
+      "sweeps"};
   const char *value = getenv("WEAVEC_RT_STATS");
   int i;
   /* (The owner's counters count every image's work.) */
@@ -296,6 +360,41 @@ __attribute__((destructor)) static void printStats(void) {
     putUnsigned(&line, weavecRtStats[i], 10);
     put(&line, " ");
     put(&line, Names[i]);
+    {
+      const long written = (long)write(2, text, (size_t)finish(&line, text));
+      (void)written;
+    }
+  }
+  {
+    struct weavecRtSweepCounts last;
+    char text[256];
+    struct Line line = {text, text + sizeof text - 1};
+    weavecRtLastSweep(&last);
+    put(&line, "weavec: runtime: sweeps took ");
+    putUnsigned(&line, weavecRtSweepNanos / 1000000, 10);
+    put(&line, " ms (longest ");
+    putUnsigned(&line, weavecRtSweepLongest / 1000000, 10);
+    put(&line, " ms); the last retained ");
+    putUnsigned(&line, last.retained, 10);
+    put(&line, " blocks (");
+    putUnsigned(&line, last.retainedBytes, 10);
+    put(&line, " bytes)");
+    {
+      const long written = (long)write(2, text, (size_t)finish(&line, text));
+      (void)written;
+    }
+  }
+  {
+    size_t live;
+    size_t quarantine;
+    char text[160];
+    struct Line line = {text, text + sizeof text - 1};
+    weavecRtPeaks(&live, &quarantine);
+    put(&line, "weavec: runtime: at most ");
+    putUnsigned(&line, live >> 20, 10);
+    put(&line, " MiB of live slots and ");
+    putUnsigned(&line, quarantine >> 20, 10);
+    put(&line, " MiB of released ones waiting for a sweep");
     {
       const long written = (long)write(2, text, (size_t)finish(&line, text));
       (void)written;

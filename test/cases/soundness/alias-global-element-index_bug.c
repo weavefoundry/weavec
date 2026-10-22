@@ -10,7 +10,7 @@ static void add(int *p) {
 }
 static void fire(void) {
   for (int i = 0; i < n; i++)
-    seen += *g[i]; // BUG: use-after-free // TRAP
+    seen += *g[i]; // TRAP
 }
 int main(void) {
   int *x = malloc(sizeof *x);

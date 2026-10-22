@@ -1,19 +1,23 @@
 # RFC 0012: Spatial safety II: strings, sized fields, offset relations and assumptions
 
-- **Status**: Accepted
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-05
 - **Accepted**: 2026-09-05
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: extends RFC 0011's *Spatial records* with
-  string facts, its *Relations* with constant offsets and lower bounds, its
-  *Bounds checks* with the string functions of the library table, and its
-  *Annotation surface* with `WEAVEC_SIZED_BY` on fields and
-  `WEAVEC_ASSUME`; strikes *null-terminated string extents*, *flexible
-  array members* and the `i < n - 1` case of *an interval domain* from
-  RFC 0011's *Future work*, and *flexible array members* from its *Bugs
-  deliberately not caught*. Bumps the sidecar format (RFC 0005) from 7 to
-  8; the summary text format (RFC 0003) stays at 7.
+- **Supersedes / superseded by**: Superseded by RFC 0036; extends RFC 0011's
+  *Spatial records* with string facts, its *Relations* with constant offsets
+  and lower bounds, its *Bounds checks* with the string functions of the
+  library table, and its *Annotation surface* with `WEAVEC_SIZED_BY` on fields
+  and `WEAVEC_ASSUME`; strikes *null-terminated string extents*, *flexible
+  array members* and the `i < n - 1` case of *an interval domain* from RFC
+  0011's *Future work*, and *flexible array members* from its *Bugs
+  deliberately not caught*. Bumps the sidecar format (RFC 0005) from 7 to 8;
+  the summary text format (RFC 0003) stays at 7.
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Accepted
+> until then; it is kept as a record of the design.
 
 ## Summary
 

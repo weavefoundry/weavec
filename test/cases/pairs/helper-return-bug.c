@@ -10,7 +10,7 @@ void run(unsigned n) {
   if (n != 257) return;
   char *p = malloc(narrow_count(n));
   if (!p) return;
-  p[1] = 0; // BUG: out-of-bounds
+  p[1] = 0; // TRAP: heap-buffer-overflow
   free(p);
 }
 // Driver (RFC 0030 section 17.2): executes the defect so the runtime oracle can observe the check.
