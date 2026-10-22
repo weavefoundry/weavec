@@ -166,16 +166,6 @@ static void scanExcluding(uintptr_t low, uintptr_t high) {
     weavecRtMarkWords(low, high);
 }
 
-/* The first address at or after `address` outside the runtime's own
- * mappings (sorted). */
-static uintptr_t skipInternal(uintptr_t address) {
-  unsigned i;
-  for (i = 0; i < internalCount; ++i)
-    if (address >= internalRanges[i].low && address < internalRanges[i].high)
-      address = internalRanges[i].high;
-  return address;
-}
-
 /* Scans a writable mapping, a stack only from its stack pointer. */
 static void scanMapping(uintptr_t low, uintptr_t high) {
   unsigned i;
@@ -195,6 +185,16 @@ static void scanMapping(uintptr_t low, uintptr_t high) {
 #if defined(__APPLE__)
 
 /*===-- Darwin --------------------------------------------------------------===*/
+
+/* The first address at or after `address` outside the runtime's own
+ * mappings (sorted). */
+static uintptr_t skipInternal(uintptr_t address) {
+  unsigned i;
+  for (i = 0; i < internalCount; ++i)
+    if (address >= internalRanges[i].low && address < internalRanges[i].high)
+      address = internalRanges[i].high;
+  return address;
+}
 
 static thread_act_array_t threads;
 static mach_msg_type_number_t threadCount;

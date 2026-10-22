@@ -313,6 +313,9 @@ h4,
   border-radius: 11px;
   box-shadow: 0 18px 45px -30px #001f14aa;
   position: relative;
+  /* A grid item: without this its code block's longest line sets the
+     column's width, and the page overflows on a phone. The block scrolls. */
+  min-width: 0;
 }
 .hero-demo::before {
   content: '';
