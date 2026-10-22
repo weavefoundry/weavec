@@ -21,7 +21,7 @@ A guarded compile also turns on some of Clang's own options: `-fsanitize=array-b
 
 In the enforcing modes a C unit sees what it would see under AddressSanitizer: `__SANITIZE_ADDRESS__` is defined and `__has_feature(address_sanitizer)` is true, so a project's ASan-specific code (poisoning in a pool allocator, a scan kept from ASan) is compiled in, and the runtime implements ASan's poisoning interface for it. `__WEAVEC__` is defined whenever WeaveC is on. `-fno-weavec-asan-compat` leaves the ASan macros undefined. See [AddressSanitizer compatibility](/reference/cli/#addresssanitizer-compatibility).
 
-On glibc targets an optimising compile whose command line does not set `_FORTIFY_SOURCE` gets `-D_FORTIFY_SOURCE=3`, so string and `printf`-family calls carry the size of the object or field they write, which the guards check. Darwin's SDK fortifies optimising compiles at level 2, and keeps doing so under WeaveC although Clang turns it off under ASan.
+On glibc targets an optimising compile whose command line does not set `_FORTIFY_SOURCE` gets `-D_FORTIFY_SOURCE=3`, so string and `printf`-family calls carry the size of the object they write, which the guards check (glibc's inline wrappers state the rest of the object even for a field, so a write into the next field is not stopped there). Darwin's SDK fortifies optimising compiles at level 2, and keeps doing so under WeaveC although Clang turns it off under ASan.
 
 ### The allocator
 

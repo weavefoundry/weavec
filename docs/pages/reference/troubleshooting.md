@@ -57,7 +57,7 @@ A trap is almost always a real bug. The exceptions are programs that read past a
 - `stack-use-after-scope`: the access is to a local whose block has ended, through a pointer that outlived it. This is caught at every optimisation level. A use of a local after its function returned is not caught.
 - `global-buffer-overflow`: the access left a global or static variable the unit defines into its redzone.
 
-Within a struct, an index into a declared array field is checked against its bound (`index-out-of-bounds`), and a fortified string call into a field against the field's size (`intra-object-overflow`); a pointer walk past a field is not.
+Within a struct, an index into a declared array field is checked against its bound (`index-out-of-bounds`), and a fortified string call into a field against the size the call states (`intra-object-overflow`): the field's with Darwin's headers, the rest of the object with glibc's; a pointer walk past a field is not checked.
 
 ## Other reports
 

@@ -9,7 +9,7 @@ jmp_buf there;
 
 // CHECK-LABEL: define {{.*}}@leave(
 // CHECK: call void @__weavec_rt_unpoison_stack()
-// CHECK-NEXT: call void @longjmp(
+// CHECK-NEXT: call void @{{(__)?longjmp(_chk)?}}(
 void leave(void) { longjmp(there, 1); }
 
 // CHECK-LABEL: define {{.*}}@quit(

@@ -16,7 +16,7 @@ WeaveC is a drop-in C compiler, `weavec-cc`, that makes the C code you already h
 
 - **Every access is guarded.** An access past a heap block, a local or a global, a use of a local after its scope, an index past an array's declared bound and a bad `free` stop the program. A guard is removed only where a simple local rule proves it redundant.
 - **Freed memory is reused only after a sweep.** A released heap block waits until a sweep of the program's stacks, registers, writable data and live heap finds no pointer to it. A use after free or a double free traps, however much the program allocated since.
-- **Fortified sizes are kept.** A fortified library call never writes more than the size of the field it was given: a `strcpy` that would run from an 8-byte field into the next one traps.
+- **Fortified sizes are kept.** A fortified library call never writes more than the size it was given: with Darwin's headers, a `strcpy` that would run from an 8-byte field into the next one traps.
 
 WeaveC is built on Clang and LLVM, which provide parsing, code generation and platform support. WeaveC adds LLVM passes that guard the code, and a runtime in C.
 

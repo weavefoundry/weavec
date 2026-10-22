@@ -600,6 +600,23 @@ override the body.
    cost little, and every local keeps its own bytes as in RFC 0035. So RFC
    0036 is less sound than RFC 0035 in one place: in such a large frame, a
    use after scope that reaches a later local's bytes passes.
+9. **Fortified sizes on glibc (§1, §6, (F)).** glibc fortifies through
+   inline wrapper functions (`strcpy` calls `__builtin___strcpy_chk(d, s,
+   __builtin_dynamic_object_size(d, 1))` inside itself). Clang cannot see a
+   field from inside the wrapper, so after inlining the size is the rest of
+   the object (12 bytes for an 8-byte `name` followed by an `int`), not the
+   field. (F) holds for the size the call states, so on glibc a write from a
+   field into the next stays inside it and passes, as it does with plain
+   Clang there; Darwin's headers fortify with macros at the call site and
+   pass the field's size. The tests of (F) spell the call out as Darwin's
+   headers produce it (`__builtin___strcpy_chk` with
+   `__builtin_object_size(field, 1)`), so they test the check on every
+   platform. Defining `_FORTIFY_SOURCE=3` on glibc also makes glibc's own
+   fortified wrappers replace a header's inline copies of them (a case that
+   models glibc's mechanism with its own wrapper builds with
+   `-U_FORTIFY_SOURCE`). Field sizes the guards compute themselves, from
+   the address's `getelementptr`, would close the gap; that is future work
+   for an RFC.
 
 ## Measured gates
 

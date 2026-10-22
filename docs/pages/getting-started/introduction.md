@@ -15,7 +15,7 @@ There is nothing to annotate and no separate tool to run. Existing code builds u
 
 A use after free is caught however much the program allocated after the `free`. A released heap block is reused only after a _sweep_ finds no pointer to it in the program's stacks, registers, writable data and live heap; a use after free or a double free through any pointer the program holds therefore traps. Sweeps are paced so that they take a small share of the run time.
 
-A fortified library call (`__strcpy_chk(d, s, 8)`, which Clang emits for a `strcpy` into an 8-byte field when the C library fortifies it) never writes more than that size: an overflow from the field into the next one traps as `intra-object-overflow`.
+A fortified library call (`__strcpy_chk(d, s, 8)`, which Clang emits for a `strcpy` into an 8-byte field when the C library fortifies it at the call site, as Darwin's does) never writes more than that size: an overflow from the field into the next one traps as `intra-object-overflow`. glibc's fortified calls state the rest of the object instead, so there the check stops a write past the object.
 
 ## What the compiler guards
 

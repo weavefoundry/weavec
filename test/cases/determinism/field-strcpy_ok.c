@@ -1,4 +1,5 @@
-// RFC 0036 §6: the twin of field-strcpy_bug.c, whose name fits.
+// RFC 0036 §6: the twin of field-strcpy_bug.c, whose name fits; the call
+// is spelled out as in the bug.
 // CLEAN
 // FLAGS: -O2
 // RUN-INPUT:
@@ -15,7 +16,7 @@ int main(int argc, char **argv) {
   struct user *u = calloc(1, sizeof *u);
   if (u == NULL)
     return 1;
-  strcpy(u->name, argc > 1 ? argv[1] : "AAAAAAA");
+  __builtin___strcpy_chk(u->name, argc > 1 ? argv[1] : "AAAAAAA", __builtin_object_size(u->name, 1));
   printf("%s %d\n", u->name, u->admin);
   free(u);
   return 0;
