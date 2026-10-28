@@ -117,6 +117,10 @@ static uintptr_t hugeHigh;
  * no pointer to them: a stale pointer then finds a dead block, and nothing
  * else can be mapped there. */
 static size_t hugeDeadCount;
+/* Their bytes, which count toward the quarantine's for when a sweep runs
+ * (RFC 0036 amendment 10): they hold address space and, on Linux, a
+ * mapping each. */
+static size_t hugeDeadBytes;
 static unsigned long long hugeReleases;
 
 static size_t pageBytes;
@@ -626,7 +630,8 @@ static uint64_t nanoseconds(void) {
  * most about a ninth of the run time. The clock is read once per sixteenth
  * of the soft budget released. */
 static int overBudget(void) {
-  const size_t held = __atomic_load_n(&quarantineBytes, __ATOMIC_RELAXED);
+  const size_t held = __atomic_load_n(&quarantineBytes, __ATOMIC_RELAXED) +
+                      __atomic_load_n(&hugeDeadBytes, __ATOMIC_RELAXED);
   const size_t kept = __atomic_load_n(&retainedBytes, __ATOMIC_RELAXED);
   const size_t live = __atomic_load_n(&liveBytes, __ATOMIC_RELAXED);
   const size_t gained = held > kept ? held - kept : 0;
@@ -845,6 +850,7 @@ static int hugeFree(uintptr_t address) {
                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
     ok = 1;
     ++hugeDeadCount;
+    (void)__atomic_add_fetch(&hugeDeadBytes, block->size, __ATOMIC_RELAXED);
   }
   weavecRtUnlock(&hugeLock);
   return ok;
@@ -1030,8 +1036,11 @@ void __weavec_rt_free(void *p) {
     retire(ref);
     return;
   }
-  if (hugeFree(address))
+  if (hugeFree(address)) {
+    if (overBudget())
+      weavecRtSweep();
     return;
+  }
   {
     HugeBlock block;
     if (hugeFind(address, &block))
@@ -1277,7 +1286,6 @@ void weavecRtRecycle(struct weavecRtSweepCounts *counts, int recycle) {
       state->deadTail = 0;
     memset(state->marks, 0, ((size_t)state->bump + 63) / 64 * 8);
   }
-  __atomic_store_n(&retainedBytes, quarantineBytes, __ATOMIC_RELAXED);
   for (i = 0; i < hugeCount;) {
     HugeBlock *block = &hugeBlocks[i];
     if (block->dead == 0 || block->marked || !recycle) {
@@ -1291,11 +1299,14 @@ void weavecRtRecycle(struct weavecRtSweepCounts *counts, int recycle) {
     }
     weavecRtShadowClear(block->base, block->base + block->size + 16);
     (void)munmap((void *)block->map, block->mapBytes);
+    hugeDeadBytes -= block->size;
     memmove(block, block + 1, (hugeCount - i - 1) * sizeof(HugeBlock));
     --hugeCount;
     --hugeDeadCount;
     ++counts->recycled;
   }
+  __atomic_store_n(&retainedBytes, quarantineBytes + hugeDeadBytes,
+                   __ATOMIC_RELAXED);
 }
 
 /*===-- The Darwin zone (section 2.5) ---------------------------------------===*/

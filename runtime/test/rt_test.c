@@ -456,6 +456,68 @@ static void testLibraryDataIsScanned(void) {
   (void)setvbuf(stdin, NULL, _IONBF, 0);
 }
 
+/* Stores the address `hidden` hides at `holder`. Not inlined: the
+ * address must not stay in the caller's registers. */
+static __attribute__((noinline)) void plant(void *volatile *holder,
+                                            uintptr_t hidden) {
+  *holder = (void *)(hidden ^ Hidden);
+}
+
+/* Whether a block whose only pointer is stored at `holder` survives a
+ * sweep. */
+static int keptBy(void *volatile *holder, size_t bytes) {
+  /* Not the class's first slot, whose address the heap's table holds. */
+  void *volatile first = opaque(malloc(bytes));
+  volatile uintptr_t hidden = releasedBlock(bytes);
+  unsigned char *again;
+  plant(holder, hidden);
+  scrubStack();
+  weavecRtSweep();
+  again = reuse(hidden ^ Hidden, bytes);
+  *holder = NULL;
+  if (again != NULL)
+    free(again);
+  free(first);
+  return again == NULL;
+}
+
+static void testSharedMemoryIsScanned(void) {
+  /* A pointer kept only in shared memory keeps its block: a shared
+   * anonymous mapping (on Linux "/dev/zero (deleted)" in /proc/self/maps)
+   * and, on Linux, POSIX shared memory under /dev/shm. (Size classes of
+   * their own, as above.) */
+  void *volatile *shared =
+      (void *volatile *)mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                             MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  CHECK((void *)shared != MAP_FAILED);
+  if ((void *)shared != MAP_FAILED) {
+    CHECK(keptBy(shared, 6100));
+    (void)munmap((void *)shared, 4096);
+  }
+#if defined(__linux__)
+  {
+    char name[64];
+    int fd;
+    (void)snprintf(name, sizeof name, "/dev/shm/weavec-rt-test-%d",
+                   (int)getpid());
+    fd = open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd >= 0) {
+      void *volatile *posix = NULL;
+      (void)unlink(name);
+      if (ftruncate(fd, 4096) == 0)
+        posix = (void *volatile *)mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                                       MAP_SHARED, fd, 0);
+      (void)close(fd);
+      CHECK(posix != NULL && (void *)posix != MAP_FAILED);
+      if (posix != NULL && (void *)posix != MAP_FAILED) {
+        CHECK(keptBy(posix, 6900));
+        (void)munmap((void *)posix, 4096);
+      }
+    }
+  }
+#endif
+}
+
 static void testSweepStopsThreads(void) {
   /* A pointer only another thread holds keeps its block. */
   volatile uintptr_t hidden = releasedBlock(48);
@@ -542,6 +604,26 @@ static void testHuge(void) {
   CHECK(p != NULL && ((uintptr_t)p & (((size_t)1 << 21) - 1)) == 0);
   free(p);
   CHECK(opaque(malloc(tooMany / 2)) == NULL);
+}
+
+static void testHugeReleasesSweep(void) {
+  /* RFC 0036 amendment 10: released huge blocks count toward the
+   * quarantine, so a program that frees only huge blocks still sweeps and
+   * gives their address space back. */
+  const size_t size = ((size_t)1 << 30) + 4096;
+  unsigned long long before;
+  unsigned i;
+  weavecRtSweep();
+  before = weavecRtStats[WeavecRtStatSweeps];
+  for (i = 0; i < 4; ++i) {
+    char *p = (char *)opaque(malloc(size));
+    CHECK(p != NULL);
+    if (p == NULL)
+      return;
+    p[0] = 1;
+    free(p);
+  }
+  CHECK(weavecRtStats[WeavecRtStatSweeps] >= before + 4);
 }
 
 static void testForeign(void) {
@@ -971,8 +1053,10 @@ static const struct {
     {"sweep-stops-threads", testSweepStopsThreads},
     {"pacing", testPacing},
     {"library-data-is-scanned", testLibraryDataIsScanned},
+    {"shared-memory-is-scanned", testSharedMemoryIsScanned},
     {"invalid-releases", testInvalidReleases},
     {"huge", testHuge},
+    {"huge-releases-sweep", testHugeReleasesSweep},
     {"foreign", testForeign},
     {"guards", testGuards},
     {"strings", testStrings},

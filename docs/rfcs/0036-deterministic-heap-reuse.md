@@ -618,6 +618,21 @@ override the body.
    the address's `getelementptr`, would close the gap; that is future work
    for an RFC.
 
+10. **Released huge blocks and the roots (§3.2–§3.4).** A released huge
+    block holds no memory, but its reservation holds address space and, on
+    Linux, a mapping of the process's limited count until a sweep unmaps
+    it; the body counted only quarantined slots in `q`, so a program that
+    freed only huge blocks never swept (128 releases of 600 MiB blocks kept
+    75 GiB reserved). A released huge block now counts toward `q` at its
+    size until a sweep unmaps it, and toward what a sweep retained while a
+    word still points to it. The mark is also stated more exactly: on
+    Linux, a mapping of a file under `/dev` is device memory and is not
+    read, but for shared memory (`/dev/shm`, shared anonymous mappings,
+    which `/proc/self/maps` names `/dev/zero`, and hugetlbfs under
+    `/dev/hugepages`); a sweep that cannot read every root (on Linux,
+    `/proc/self/maps`; on Darwin, the walk of the address space ends early)
+    recycles nothing, as one that cannot stop every thread does (A7).
+
 ## Measured gates
 
 Measured 2026-10-09 on the branch (darwin-arm64, Apple M3, `release`

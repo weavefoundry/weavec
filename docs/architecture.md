@@ -484,7 +484,9 @@ definitions serve every shared library.
 ### When to sweep
 
 Let `gained` be the bytes the quarantine gained since the last sweep (what
-the last sweep retained is not counted), `Q` the configured quarantine
+the last sweep retained is not counted; released huge blocks count at
+their size, so a program that frees only huge blocks still sweeps and
+gives their address space back, RFC 0036 amendment 10), `Q` the configured quarantine
 (`WEAVEC_RT_QUARANTINE`, 16 MiB by default) and `live` the bytes of live
 heap blocks. A release (or an allocation) sweeps before it returns
 (RFC 0036 §3.3) when `gained` reaches the *hard* budget `max(2 Q, live /
@@ -510,7 +512,10 @@ The sweep (RFC 0036 §3.4, `weavec_sweep.c`):
    quarantined slots and released huge blocks (interior addresses count):
    - each thread's registers, and its stack from its stack pointer;
    - every other readable, writable mapping of the process but the
-     runtime's own. On Darwin a mapping is asked first for its count of
+     runtime's own. On Linux, of the files under `/dev` only shared memory
+     is scanned (`/dev/shm`, shared anonymous mappings, which show as
+     `/dev/zero`, and hugetlbfs), not device memory; a sweep that cannot
+     read `/proc/self/maps` recycles nothing. On Darwin a mapping is asked first for its count of
      dirty and swapped-out pages (one call), and skipped when it has none,
      or when it is the kernel's reclaim ring; `mincore` then finds the pages
      to scan. The dyld shared cache is not walked: its writable mappings

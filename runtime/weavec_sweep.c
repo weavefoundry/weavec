@@ -443,11 +443,13 @@ static void lockImages(void) { weavecRtLock(&imageLock); }
 static void unlockImages(void) { weavecRtUnlock(&imageLock); }
 
 /* Every readable, writable mapping that was touched, but the shared
- * cache's, whose loaded images' writable segments are scanned instead. */
-static void scanMappings(void) {
+ * cache's, whose loaded images' writable segments are scanned instead;
+ * whether the walk reached the end of the address space. */
+static int scanMappings(void) {
   mach_vm_address_t address = 0;
   unsigned i;
   for (;;) {
+    kern_return_t result;
     mach_vm_size_t size = 0;
     natural_t depth = 0;
     vm_region_submap_info_data_64_t info;
@@ -457,10 +459,12 @@ static void scanMappings(void) {
     address = skipInternal(address);
     if (address >= cacheLow && address < cacheHigh)
       address = cacheHigh;
-    if (mach_vm_region_recurse(mach_task_self(), &address, &size, &depth,
-                               (vm_region_recurse_info_t)&info,
-                               &count) != KERN_SUCCESS)
+    result = mach_vm_region_recurse(mach_task_self(), &address, &size, &depth,
+                                    (vm_region_recurse_info_t)&info, &count);
+    if (result == KERN_INVALID_ADDRESS)
       break;
+    if (result != KERN_SUCCESS)
+      return 0;
     if (!info.is_submap && worthScanning(&info) &&
         (address + size <= cacheLow || address >= cacheHigh)) {
       const uintptr_t low = (uintptr_t)address;
@@ -475,6 +479,7 @@ static void scanMappings(void) {
   }
   for (i = 0; i < imageSegmentCount; ++i)
     scanResident(imageSegments[i].low, imageSegments[i].high);
+  return 1;
 }
 
 #else
@@ -724,7 +729,13 @@ static size_t readMaps(void) {
       mapsRoom = room;
     }
     got = read(fd, mapsText + used, mapsRoom - used - 1);
-    if (got <= 0)
+    if (got < 0 && errno == EINTR)
+      continue;
+    if (got < 0) {
+      (void)close(fd);
+      return 0;
+    }
+    if (got == 0)
       break;
     used += (size_t)got;
   }
@@ -733,10 +744,12 @@ static size_t readMaps(void) {
   return used;
 }
 
-static void scanMappings(void) {
+/* Every readable, writable mapping but a device's; whether
+ * /proc/self/maps could be read. */
+static int scanMappings(void) {
   const char *at;
   if (readMaps() == 0)
-    return;
+    return 0;
   at = mapsText;
   while (*at != 0) {
     const uintptr_t low = hex(&at);
@@ -749,11 +762,16 @@ static void scanMappings(void) {
     readable = at[0] == 'r';
     writable = at[1] == 'w';
     if (readable && writable) {
-      /* [vvar] and [vsyscall] are never rw; a device mapping might be. */
+      /* [vvar] and [vsyscall] are never rw; a device mapping might be. Shared
+       * memory under /dev is memory: POSIX shared memory (/dev/shm), shared
+       * anonymous mappings ("/dev/zero (deleted)") and hugetlbfs. */
       const char *name = at;
       while (*name != 0 && *name != '\n' && *name != '[' && *name != '/')
         ++name;
-      if (strncmp(name, "/dev/", 5) != 0)
+      if (strncmp(name, "/dev/", 5) != 0 ||
+          strncmp(name, "/dev/shm/", 9) == 0 ||
+          strncmp(name, "/dev/zero", 9) == 0 ||
+          strncmp(name, "/dev/hugepages/", 15) == 0)
         scanMapping(low, high);
     }
     while (*at != 0 && *at != '\n')
@@ -761,6 +779,7 @@ static void scanMappings(void) {
     if (*at == '\n')
       ++at;
   }
+  return 1;
 }
 
 static void lockImages(void) {}
@@ -815,9 +834,10 @@ void weavecRtSweep(void) {
     for (i = 0; i < world->registerCount; ++i)
       weavecRtMarkWords((uintptr_t)world->registers[i],
                         (uintptr_t)(world->registers[i] + 34));
-    scanMappings();
+    /* Without every root, nothing is recycled. */
+    const int scanned = scanMappings();
     weavecRtMarkHeap();
-    weavecRtRecycle(&counts, !threadsChanged());
+    weavecRtRecycle(&counts, scanned && !threadsChanged());
     weavecRtCount(WeavecRtStatSweeps);
     lastCounts = counts;
   }
