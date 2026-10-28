@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.17.0 (2026-10-28)
+
+### Features
+
+- Reuse freed memory after a sweep, and drop the analysis
+  ([#49](https://github.com/weavefoundry/weavec/pull/49),
+  [`d3c5b8c`](https://github.com/weavefoundry/weavec/commit/d3c5b8c9bc61808621fc32c4db2b7b52f0755102))
+
+
 ## v0.16.0 (2026-10-08)
 
 ### Features
