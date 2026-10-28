@@ -103,14 +103,9 @@ enum { RedZone = 0 };
 #endif
 
 typedef struct {
-  uintptr_t sp;
-  /* The mapping that holds the stack pointer, found while stopped. */
-  uintptr_t low;
-  uintptr_t high;
-} StackWindow;
-
-typedef struct {
-  StackWindow stacks[MaxThreads + 1];
+  /* Two stack pointers for each stopped thread on Linux (the handler's and
+   * the interrupted code's) and the sweeping thread's. */
+  uintptr_t stacks[2 * MaxThreads + 1];
   unsigned stackCount;
   /* Registers of the stopped threads (Darwin), scanned as words. */
   uintptr_t registers[MaxThreads][34];
@@ -168,17 +163,18 @@ static void scanExcluding(uintptr_t low, uintptr_t high) {
 
 /* Scans a writable mapping, a stack only from its stack pointer. */
 static void scanMapping(uintptr_t low, uintptr_t high) {
+  /* The lowest stack pointer in the mapping: threads whose stacks share one
+   * mapping are all scanned from it. */
+  uintptr_t sp = 0;
   unsigned i;
-  for (i = 0; i < world->stackCount; ++i) {
-    const StackWindow *stack = &world->stacks[i];
-    if (stack->sp >= low && stack->sp < high) {
-      const uintptr_t from =
-          stack->sp - RedZone > low ? stack->sp - RedZone : low;
-      scanExcluding(from, high);
-      return;
-    }
-  }
-  scanExcluding(low, high);
+  for (i = 0; i < world->stackCount; ++i)
+    if (world->stacks[i] >= low && world->stacks[i] < high &&
+        (sp == 0 || world->stacks[i] < sp))
+      sp = world->stacks[i];
+  if (sp == 0)
+    scanExcluding(low, high);
+  else
+    scanExcluding(sp - RedZone > low ? sp - RedZone : low, high);
 }
 
 
@@ -243,7 +239,7 @@ static int stopThreads(void) {
           (uintptr_t)arm_thread_state64_get_fp(state);
       world->registers[world->registerCount][30] =
           (uintptr_t)arm_thread_state64_get_lr(state);
-      world->stacks[world->stackCount].sp =
+      world->stacks[world->stackCount] =
           (uintptr_t)arm_thread_state64_get_sp(state);
     }
 #elif defined(__x86_64__)
@@ -257,7 +253,7 @@ static int stopThreads(void) {
         return 0;
       for (r = 0; r < sizeof state / sizeof(uint64_t) && r < 34; ++r)
         world->registers[world->registerCount][r] = raw[r];
-      world->stacks[world->stackCount].sp = state.__rsp;
+      world->stacks[world->stackCount] = state.__rsp;
     }
 #else
     return 0;
@@ -363,8 +359,8 @@ static int worthScanning(const vm_region_submap_info_data_64_t *info) {
 static uintptr_t stackIn(uintptr_t low, uintptr_t high) {
   unsigned i;
   for (i = 0; i < world->stackCount; ++i)
-    if (world->stacks[i].sp >= low && world->stacks[i].sp < high)
-      return world->stacks[i].sp;
+    if (world->stacks[i] >= low && world->stacks[i] < high)
+      return world->stacks[i];
   return 0;
 }
 
@@ -647,10 +643,10 @@ static int stopThreads(void) {
   for (i = 0; i < stopTargets; ++i) {
     if (stopped[i] == 0 || stoppedSp[i] == 0)
       continue;
-    world->stacks[world->stackCount].sp = stoppedSp[i];
+    world->stacks[world->stackCount] = stoppedSp[i];
     ++world->stackCount;
     if (stoppedInterruptedSp[i] != 0) {
-      world->stacks[world->stackCount].sp = stoppedInterruptedSp[i];
+      world->stacks[world->stackCount] = stoppedInterruptedSp[i];
       ++world->stackCount;
     }
   }
@@ -741,26 +737,6 @@ static void scanMappings(void) {
   const char *at;
   if (readMaps() == 0)
     return;
-  /* The stacks' mappings first. */
-  at = mapsText;
-  while (*at != 0) {
-    const char *line = at;
-    const uintptr_t low = hex(&at);
-    uintptr_t high;
-    unsigned i;
-    ++at;
-    high = hex(&at);
-    for (i = 0; i < world->stackCount; ++i)
-      if (world->stacks[i].sp >= low && world->stacks[i].sp < high) {
-        world->stacks[i].low = low;
-        world->stacks[i].high = high;
-      }
-    while (*at != 0 && *at != '\n')
-      ++at;
-    if (*at == '\n')
-      ++at;
-    (void)line;
-  }
   at = mapsText;
   while (*at != 0) {
     const uintptr_t low = hex(&at);
@@ -833,7 +809,7 @@ void weavecRtSweep(void) {
   stoppedAll = stopThreads();
   if (stoppedAll && weavecRtPrepareMarks()) {
     unsigned i;
-    world->stacks[world->stackCount].sp = (uintptr_t)&here;
+    world->stacks[world->stackCount] = (uintptr_t)&here;
     ++world->stackCount;
     sortInternal();
     for (i = 0; i < world->registerCount; ++i)
