@@ -6,7 +6,7 @@
 |*
 |*===----------------------------------------------------------------------===*|
 |*
-|* RFC 0035, section 5. One program, linked with libweavec_rt.a and
+|* RFC 0035, section 5, and RFC 0036. One program, linked with libweavec_rt.a and
 |* libweavec_alloc.a, so `malloc` here is the arena's. Each test is a
 |* function; a test that must stop the program runs in a child process and
 |* the parent checks how it died. Run without arguments for every test, or
@@ -31,6 +31,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #if defined(__APPLE__)
@@ -196,42 +197,52 @@ static void testShadowEncoding(void) {
 /* The program's path, for a test that runs in a copy of itself. */
 static const char *program;
 
-/* The quarantine budget is read when the program starts: a test that needs
- * none runs in a copy started with WEAVEC_RT_QUARANTINE=0. True in that
- * copy; in this one, runs it and checks that it passed. */
-static int withoutQuarantine(void) {
-  const char *budget = getenv("WEAVEC_RT_QUARANTINE");
-  pid_t child;
-  int status = 0;
-  if (budget != NULL && strcmp(budget, "0") == 0)
-    return 1;
-  child = fork();
-  if (child == 0) {
-    char *arguments[3];
-    arguments[0] = (char *)program;
-    arguments[1] = (char *)current;
-    arguments[2] = NULL;
-    setenv("WEAVEC_RT_QUARANTINE", "0", 1);
-    execv(program, arguments);
-    _exit(127);
-  }
-  CHECK(child > 0 && waitpid(child, &status, 0) == child &&
-        WIFEXITED(status) && WEXITSTATUS(status) == 0);
-  return 0;
+/* RFC 0036 section 3.4: an address no word of the program holds. */
+static const uintptr_t Hidden = 0x5a5a5a5a5a5a5a5aULL;
+
+/* Allocates `n` bytes, writes them, releases them, and returns the
+ * address hidden, so that no pointer to the block is left once it returns
+ * (its frame is below the stack pointer, which a sweep does not scan). */
+static __attribute__((noinline)) uintptr_t releaseHere(size_t n) {
+  unsigned char *volatile p = (unsigned char *)malloc(n);
+  uintptr_t hidden;
+  memset(p, 0xff, n);
+  hidden = (uintptr_t)p ^ Hidden;
+  free(p);
+  CHECK(!addressable(p, 1));
+  p = NULL;
+  return hidden;
+}
+
+/* Releases the block 16 KiB below the caller, where scrubStack clears
+ * whatever the allocator's calls left behind. */
+static __attribute__((noinline)) uintptr_t releasedBlock(size_t n) {
+  volatile unsigned char depth[16384];
+  depth[0] = 0;
+  return releaseHere(n) + depth[0];
+}
+
+/* Clears the stack below the caller, where released frames left copies. */
+static __attribute__((noinline)) void scrubStack(void) {
+  unsigned char scratch[65536];
+  memset(scratch, 0, sizeof scratch);
+  /* Keeps the optimiser from removing the stores to a dead array. */
+  __asm__ volatile("" : : "r"(scratch) : "memory");
 }
 
 static void testReuseIsZero(void) {
-  /* With no quarantine a released slot comes back at once, zeroed. */
+  /* A released slot comes back after a sweep, zeroed. */
   unsigned round;
-  if (!withoutQuarantine())
-    return;
-  for (round = 0; round < 64; ++round) {
-    unsigned char *p = (unsigned char *)opaque(malloc(200));
+  for (round = 0; round < 16; ++round) {
+    unsigned char *p;
     unsigned i;
+    (void)releasedBlock(200);
+    scrubStack();
+    weavecRtSweep();
+    p = (unsigned char *)opaque(malloc(200));
     for (i = 0; i < 200; ++i)
       CHECK(p[i] == 0);
     CHECK(addressable(p, 200) && !addressable(p, 201));
-    memset(p, 0xff, 200);
     free(p);
   }
 }
@@ -298,31 +309,235 @@ static void testRealloc(void) {
 #endif
 }
 
-static void testQuarantine(void) {
-  /* With no budget the newest release is the first to be reused. */
-  enum { Blocks = 64 };
-  void *blocks[Blocks];
+/* Allocates blocks of `n` bytes until one is `target` (at most 256): that
+ * block, or null; the others are released again. A sweep hands released
+ * slots out in address order, so the target need not be the first. Not
+ * inlined: its array would sit, uninitialised, in the frame the sweep scans. */
+static __attribute__((noinline)) unsigned char *reuse(uintptr_t target,
+                                                       size_t n) {
+  unsigned char *taken[256];
+  unsigned char *found = NULL;
+  unsigned count = 0;
   unsigned i;
-  void *again;
-  if (!withoutQuarantine())
+  while (count < 256 && found == NULL) {
+    unsigned char *p = (unsigned char *)opaque(malloc(n));
+    if ((uintptr_t)p == target)
+      found = p;
+    else
+      taken[count++] = p;
+  }
+  for (i = 0; i < count; ++i)
+    free(taken[i]);
+  return found;
+}
+
+static void testSweepRecycles(void) {
+  /* A released block nothing points to is reused after a sweep, and its
+   * bytes are zero again. (A size class no other test or library call
+   * uses: a stale copy of an earlier block's address, left in a frame the
+   * scan reads, would keep the slot.) */
+  volatile uintptr_t hidden = releasedBlock(2700);
+  unsigned char *again;
+  unsigned i;
+  int zero = 1;
+  scrubStack();
+  weavecRtSweep();
+  again = reuse(hidden ^ Hidden, 2700);
+  CHECK(again != NULL);
+  if (again == NULL)
     return;
-  for (i = 0; i < Blocks; ++i)
-    blocks[i] = opaque(malloc(1000));
-  for (i = 0; i < Blocks; ++i)
-    free(blocks[i]);
-  again = opaque(malloc(1000));
-  CHECK(addressable(again, 1000));
+  CHECK(addressable(again, 2700));
+  for (i = 0; i < 2700; ++i)
+    zero &= again[i] == 0;
+  CHECK(zero);
   free(again);
 }
 
 static void testQuarantineHolds(void) {
-  /* Under the default budget a released block stays released. */
-  void *p = opaque(malloc(1000));
+  /* A released block a variable still points to is never reused, however
+   * many sweeps run. */
+  void *volatile p = opaque(malloc(1000));
   unsigned i;
   free(p);
-  for (i = 0; i < 100; ++i)
-    free(opaque(malloc(1000)));
+  for (i = 0; i < 100; ++i) {
+    void *q = opaque(malloc(1000));
+    CHECK(q != p);
+    free(q);
+    weavecRtSweep();
+  }
   CHECK(!addressable(p, 1));
+}
+
+static void *volatile *heapHolder;
+
+static void testSweepFollowsTheHeap(void) {
+  /* A pointer stored in a live heap block keeps its target; once it is
+   * overwritten, the target is reused. (A size class of its own, as
+   * above.) */
+  volatile uintptr_t hidden = releasedBlock(5300);
+  heapHolder = (void *volatile *)malloc(64);
+  heapHolder[3] = (void *)(hidden ^ Hidden);
+  scrubStack();
+  weavecRtSweep();
+  {
+    void *q = opaque(malloc(5300));
+    CHECK((uintptr_t)q != (hidden ^ Hidden));
+    CHECK(!addressable(heapHolder[3], 1));
+    free(q);
+  }
+  heapHolder[3] = NULL;
+  scrubStack();
+  weavecRtSweep();
+  {
+    unsigned char *q = reuse(hidden ^ Hidden, 5300);
+    CHECK(q != NULL);
+    free(q);
+  }
+  free((void *)heapHolder);
+  heapHolder = NULL;
+}
+
+static void *volatile threadHeld;
+static volatile int threadRelease;
+
+static void *holder(void *argument) {
+  /* Keeps the block in a local (a register or the stack) until told. */
+  void *volatile mine = argument;
+  while (!__atomic_load_n(&threadRelease, __ATOMIC_ACQUIRE))
+    sched_yield();
+  mine = NULL;
+  return mine;
+}
+
+static uint64_t monotonic(void) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+}
+
+static void testPacing(void) {
+  /* RFC 0036 section 3.3: past the soft budget (16 MiB), a release sweeps
+   * only once eight times the last sweep's duration has passed; the hard
+   * budget (256 MiB) sweeps at once. */
+  enum { Block = 60000, Count = 400 };
+  static void *blocks[Count];
+  unsigned long long before;
+  unsigned i;
+  weavecRtSweep();
+  before = weavecRtStats[WeavecRtStatSweeps];
+  for (i = 0; i < Count; ++i)
+    blocks[i] = opaque(malloc(Block));
+  /* As if the last sweep had just taken 1,000 seconds. */
+  weavecRtSwept(monotonic(), 1000000000000ULL);
+  for (i = 0; i < Count; ++i)
+    free(blocks[i]);
+  CHECK(weavecRtStats[WeavecRtStatSweeps] == before);
+  /* As if it had taken no time: the next release sweeps. */
+  weavecRtSwept(monotonic(), 0);
+  free(opaque(malloc(Block)));
+  CHECK(weavecRtStats[WeavecRtStatSweeps] == before + 1);
+}
+
+static void testLibraryDataIsScanned(void) {
+  /* A block only the C library's own data points to (the buffer stdin was
+   * given lives in its FILE, in the library's data; on Darwin, in the
+   * dyld shared cache, scanned through the image table) is not reused. */
+  enum { Bytes = 7000 };
+  char *buffer = (char *)opaque(malloc(Bytes));
+  volatile uintptr_t hidden = (uintptr_t)buffer ^ Hidden;
+  unsigned char *again;
+  CHECK(setvbuf(stdin, buffer, _IOFBF, Bytes) == 0);
+  buffer = NULL;
+  free((void *)(hidden ^ Hidden));
+  scrubStack();
+  weavecRtSweep();
+  again = reuse(hidden ^ Hidden, Bytes);
+  CHECK(again == NULL);
+  (void)setvbuf(stdin, NULL, _IONBF, 0);
+}
+
+/* Stores the address `hidden` hides at `holder`. Not inlined: the
+ * address must not stay in the caller's registers. */
+static __attribute__((noinline)) void plant(void *volatile *holder,
+                                            uintptr_t hidden) {
+  *holder = (void *)(hidden ^ Hidden);
+}
+
+/* Whether a block whose only pointer is stored at `holder` survives a
+ * sweep. */
+static int keptBy(void *volatile *holder, size_t bytes) {
+  /* Not the class's first slot, whose address the heap's table holds. */
+  void *volatile first = opaque(malloc(bytes));
+  volatile uintptr_t hidden = releasedBlock(bytes);
+  unsigned char *again;
+  plant(holder, hidden);
+  scrubStack();
+  weavecRtSweep();
+  again = reuse(hidden ^ Hidden, bytes);
+  *holder = NULL;
+  if (again != NULL)
+    free(again);
+  free(first);
+  return again == NULL;
+}
+
+static void testSharedMemoryIsScanned(void) {
+  /* A pointer kept only in shared memory keeps its block: a shared
+   * anonymous mapping (on Linux "/dev/zero (deleted)" in /proc/self/maps)
+   * and, on Linux, POSIX shared memory under /dev/shm. (Size classes of
+   * their own, as above.) */
+  void *volatile *shared =
+      (void *volatile *)mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                             MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  CHECK((void *)shared != MAP_FAILED);
+  if ((void *)shared != MAP_FAILED) {
+    CHECK(keptBy(shared, 6100));
+    (void)munmap((void *)shared, 4096);
+  }
+#if defined(__linux__)
+  {
+    char name[64];
+    int fd;
+    (void)snprintf(name, sizeof name, "/dev/shm/weavec-rt-test-%d",
+                   (int)getpid());
+    fd = open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd >= 0) {
+      void *volatile *posix = NULL;
+      (void)unlink(name);
+      if (ftruncate(fd, 4096) == 0)
+        posix = (void *volatile *)mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                                       MAP_SHARED, fd, 0);
+      (void)close(fd);
+      CHECK(posix != NULL && (void *)posix != MAP_FAILED);
+      if (posix != NULL && (void *)posix != MAP_FAILED) {
+        CHECK(keptBy(posix, 6900));
+        (void)munmap((void *)posix, 4096);
+      }
+    }
+  }
+#endif
+}
+
+static void testSweepStopsThreads(void) {
+  /* A pointer only another thread holds keeps its block. */
+  volatile uintptr_t hidden = releasedBlock(48);
+  pthread_t thread;
+  CHECK(pthread_create(&thread, NULL, holder, (void *)(hidden ^ Hidden)) == 0);
+  scrubStack();
+  weavecRtSweep();
+  {
+    unsigned i;
+    void *blocks[8];
+    for (i = 0; i < 8; ++i) {
+      blocks[i] = opaque(malloc(48));
+      CHECK((uintptr_t)blocks[i] != (hidden ^ Hidden));
+    }
+    for (i = 0; i < 8; ++i)
+      free(blocks[i]);
+  }
+  __atomic_store_n(&threadRelease, 1, __ATOMIC_RELEASE);
+  CHECK(pthread_join(thread, NULL) == 0);
+  threadRelease = 0;
 }
 
 static void doubleFree(void) {
@@ -389,6 +604,26 @@ static void testHuge(void) {
   CHECK(p != NULL && ((uintptr_t)p & (((size_t)1 << 21) - 1)) == 0);
   free(p);
   CHECK(opaque(malloc(tooMany / 2)) == NULL);
+}
+
+static void testHugeReleasesSweep(void) {
+  /* RFC 0036 amendment 10: released huge blocks count toward the
+   * quarantine, so a program that frees only huge blocks still sweeps and
+   * gives their address space back. */
+  const size_t size = ((size_t)1 << 30) + 4096;
+  unsigned long long before;
+  unsigned i;
+  weavecRtSweep();
+  before = weavecRtStats[WeavecRtStatSweeps];
+  for (i = 0; i < 4; ++i) {
+    char *p = (char *)opaque(malloc(size));
+    CHECK(p != NULL);
+    if (p == NULL)
+      return;
+    p[0] = 1;
+    free(p);
+  }
+  CHECK(weavecRtStats[WeavecRtStatSweeps] >= before + 4);
 }
 
 static void testForeign(void) {
@@ -528,12 +763,12 @@ static void testStrings(void) {
 
 static void copyTooLong(void) {
   char *p = (char *)opaque(malloc(8));
-  (void)__weavec_rt_strcpy(p, "eight chars", &trapSite);
+  (void)__weavec_rt_strcpy(p, "eight chars", (size_t)-1, &trapSite);
 }
 
 static void printTooLong(void) {
   char *p = (char *)opaque(malloc(8));
-  (void)__weavec_rt_sprintf(&trapSite, p, "%d-%d", 12345, 6789);
+  (void)__weavec_rt_sprintf(&trapSite, (size_t)-1, p, "%d-%d", 12345, 6789);
 }
 
 static void compareTooFar(void) {
@@ -552,24 +787,24 @@ static void printUnterminated(void) {
   char out[64];
   char *p = (char *)opaque(malloc(4));
   memcpy(p, "abcd", 4);
-  (void)__weavec_rt_snprintf(&trapSite, out, sizeof out, "[%s]", p);
+  (void)__weavec_rt_snprintf(&trapSite, (size_t)-1, out, sizeof out, "[%s]", p);
 }
 
 static void testCheckedCalls(void) {
   char *p = (char *)opaque(malloc(16));
   char *q;
-  CHECK(__weavec_rt_strcpy(p, "short", &trapSite) == p);
+  CHECK(__weavec_rt_strcpy(p, "short", (size_t)-1, &trapSite) == p);
   CHECK(strcmp(p, "short") == 0);
-  CHECK(__weavec_rt_strcat(p, "er", &trapSite) == p);
+  CHECK(__weavec_rt_strcat(p, "er", (size_t)-1, &trapSite) == p);
   CHECK(strcmp(p, "shorter") == 0);
-  q = __weavec_rt_stpcpy(p, "abc", &trapSite);
+  q = __weavec_rt_stpcpy(p, "abc", (size_t)-1, &trapSite);
   CHECK(q == p + 3 && *q == 0);
-  CHECK(__weavec_rt_sprintf(&trapSite, p, "%d", 42) == 2);
+  CHECK(__weavec_rt_sprintf(&trapSite, (size_t)-1, p, "%d", 42) == 2);
   CHECK(strcmp(p, "42") == 0);
   /* A size larger than the buffer is no error when the output fits. */
-  CHECK(__weavec_rt_snprintf(&trapSite, p, 1000, "%s", "fits") == 4);
+  CHECK(__weavec_rt_snprintf(&trapSite, (size_t)-1, p, 1000, "%s", "fits") == 4);
   CHECK(strcmp(p, "fits") == 0);
-  CHECK(__weavec_rt_snprintf(&trapSite, p, 4, "%s", "truncated") == 9);
+  CHECK(__weavec_rt_snprintf(&trapSite, (size_t)-1, p, 4, "%s", "truncated") == 9);
   CHECK(strcmp(p, "tru") == 0);
   /* A search or comparison checks only what it read. */
   memcpy(p, "ab\nc", 4);
@@ -603,7 +838,7 @@ static void testCheckedCalls(void) {
     char out[16];
     char *word = (char *)opaque(malloc(4));
     memcpy(word, "abcd", 4);
-    CHECK(__weavec_rt_snprintf(&trapSite, out, sizeof out, "%.4s|%d|%s",
+    CHECK(__weavec_rt_snprintf(&trapSite, (size_t)-1, out, sizeof out, "%.4s|%d|%s",
                                word, 7, (const char *)NULL) > 0);
     CHECK(strncmp(out, "abcd|7|", 7) == 0);
     free(word);
@@ -653,6 +888,59 @@ static void testUnpoisonStack(void) {
   if (setjmp(unwound) == 0)
     deep();
   CHECK(addressable((void *)poisoned, 64));
+}
+
+/*===-- ASan's interface (RFC 0036 section 5) ------------------------------===*/
+
+void __asan_poison_memory_region(const volatile void *address, size_t size);
+void __asan_unpoison_memory_region(const volatile void *address, size_t size);
+int __asan_address_is_poisoned(const volatile void *address);
+void *__asan_region_is_poisoned(void *address, size_t size);
+
+static void testAsanInterface(void) {
+  char *pool = (char *)opaque(malloc(256));
+  __asan_poison_memory_region(pool + 64, 128);
+  CHECK(__asan_address_is_poisoned(pool + 64));
+  CHECK(!__asan_address_is_poisoned(pool + 63));
+  CHECK(__asan_region_is_poisoned(pool, 100) == pool + 64);
+  CHECK(shadowAt(pool + 64) == WeavecRtShadowUser);
+  __asan_unpoison_memory_region(pool + 64, 40);
+  CHECK(!__asan_address_is_poisoned(pool + 103));
+  CHECK(__asan_address_is_poisoned(pool + 104));
+  __asan_unpoison_memory_region(pool + 64, 128);
+  CHECK(__asan_region_is_poisoned(pool, 256) == NULL);
+  free(pool);
+}
+
+/*===-- Number parsing and fortified limits (RFC 0036 section 6) ----------===*/
+
+static void parseUnterminated(void) {
+  char *digits = (char *)opaque(malloc(3));
+  memcpy(digits, "123", 3);
+  (void)__weavec_rt_strtol(digits, NULL, 10, &trapSite);
+}
+
+static void copyPastLimit(void) {
+  char *p = (char *)opaque(malloc(32));
+  (void)__weavec_rt_strcpy(p, "more than eight", 8, &trapSite);
+}
+
+static void testParsersAndLimits(void) {
+  char *text = (char *)opaque(malloc(3));
+  char *end = NULL;
+  char line[256];
+  memcpy(text, "12,", 3);
+  /* strtol reads up to the comma: no terminator needed. */
+  CHECK(__weavec_rt_strtol(text, &end, 10, &trapSite) == 12);
+  CHECK(end == text + 2);
+  CHECK(__weavec_rt_atoi(text, &trapSite) == 12);
+  CHECK(__weavec_rt_strtod(text, NULL, &trapSite) == 12.0);
+  memcpy(text, " -x", 3);
+  CHECK(__weavec_rt_strtol(text, &end, 10, &trapSite) == 0 && end == text);
+  free(text);
+  CHECK(trapsIn(parseUnterminated));
+  firstLine(copyPastLimit, line, sizeof line);
+  CHECK(strstr(line, "weavec: intra-object-overflow at rt_test.c:") == line);
 }
 
 static void testMappings(void) {
@@ -759,10 +1047,16 @@ static const struct {
     {"reuse-is-zero", testReuseIsZero},
     {"alignment", testAlignment},
     {"realloc", testRealloc},
-    {"quarantine", testQuarantine},
+    {"sweep-recycles", testSweepRecycles},
     {"quarantine-holds", testQuarantineHolds},
+    {"sweep-follows-the-heap", testSweepFollowsTheHeap},
+    {"sweep-stops-threads", testSweepStopsThreads},
+    {"pacing", testPacing},
+    {"library-data-is-scanned", testLibraryDataIsScanned},
+    {"shared-memory-is-scanned", testSharedMemoryIsScanned},
     {"invalid-releases", testInvalidReleases},
     {"huge", testHuge},
+    {"huge-releases-sweep", testHugeReleasesSweep},
     {"foreign", testForeign},
     {"guards", testGuards},
     {"strings", testStrings},
@@ -770,6 +1064,8 @@ static const struct {
     {"globals", testGlobals},
     {"allocas", testAllocas},
     {"unpoison-stack", testUnpoisonStack},
+    {"asan-interface", testAsanInterface},
+    {"parsers-and-limits", testParsersAndLimits},
     {"mappings", testMappings},
     {"array-bounds", testArrayBounds},
     {"threads", testThreads},

@@ -16,13 +16,13 @@ static void fill_n(int *buf, int n) {
 
 void bad(void) {
   char small[4];
-  fill_eight(small); // BUG: out-of-bounds
+  fill_eight(small);
   print_bytes(small, 4);
 }
 
 void bad_symbolic(void) {
   int ints[8];
-  fill_n(ints, 16); // BUG: out-of-bounds
+  fill_n(ints, 16);
   print_int(ints[0]);
 }
 

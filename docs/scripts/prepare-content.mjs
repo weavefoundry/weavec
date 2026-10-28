@@ -90,20 +90,7 @@ const stale = new Set(
   (await readdir(output, { recursive: true })).filter((name) => /\.(md|mdx|json)$/.test(name)),
 );
 
-await split(
-  'docs/annotations.md',
-  {
-    Placement: 'reference/annotation-placement',
-    Diagnostics: 'reference/diagnostics',
-    'What the checker understands': 'reference/checker-coverage',
-    'Related pointer arguments': 'guides/related-pointers',
-    'C integers and dynamic bounds': 'guides/integers-and-bounds',
-    'Controlling diagnostics': 'reference/diagnostic-controls',
-    'Compatibility with other annotation schemes': 'reference/annotation-compatibility',
-  },
-  'reference/annotations',
-  'Annotations',
-);
+await whole('docs/annotations.md', 'reference/annotations');
 
 await whole('docs/development.md', 'contributing/development');
 await whole('docs/roadmap.md', 'project/roadmap');
@@ -133,32 +120,6 @@ for (const filename of (await readdir(path.join(docs, 'rfcs'))).sort()) {
     href: `/${route}/`,
   });
 }
-
-// Each diagnostic keeps its exact source description and gains a focused remedy.
-const diagnosticPage = pages.find((page) => page.route === 'reference/diagnostics');
-const remedies = JSON.parse(await read('docs/data/diagnostic-remedies.json'));
-const diagnosticRows = diagnosticPage.body
-  .split('\n')
-  .filter((line) => /^\| `[^`]+`\s*\|/.test(line));
-const diagnosticIndex = [];
-for (const line of diagnosticRows) {
-  const match = line.match(/^\| `([^`]+)`\s*\|\s*([^|]*?)\s*\|\s*(.*?)\s*\|$/);
-  if (!match) throw new Error(`Cannot parse diagnostic: ${line}`);
-  const [, id, severity, description] = match;
-  const remedy = remedies[id];
-  if (!remedy) throw new Error(`Add documentation guidance for ${id}`);
-  add(
-    'docs/annotations.md',
-    `reference/diagnostics/${id}`,
-    id,
-    `Default severity: **${severity}** · Identifier: \`weavec::${id}\`\n\n## What it means\n\n${description}\n\n## How to resolve it\n\n${remedy}\n\n## Related reference\n\n[Diagnostic controls](/reference/diagnostic-controls/) · [Guarantees](/reference/guarantees/)`,
-  );
-  diagnosticIndex.push(`| [\`${id}\`](/reference/diagnostics/${id}/) | ${severity} |`);
-}
-diagnosticPage.body =
-  '<span id="diagnostics"></span>\n\nEvery WeaveC diagnostic ends with a stable identifier such as `[weavec::use-after-free]`. Open an entry for its exact meaning, conditions, and resolution guidance.\n\n| Diagnostic | Default severity |\n| --- | --- |\n' +
-  diagnosticIndex.join('\n') +
-  '\n\nThese diagnostics come from the advisory analysis: the `weavec` tool, and `weavec-cc -fweavec-diagnose`, which prints every finding as a warning. In `weavec`, severity follows certainty: a finding that holds on every path is an error, and a temporal finding that holds on some paths only is a warning. A null dereference or out-of-bounds access that is only possible is not reported; the guards of a `weavec-cc` build stop it at run time if it happens. Run-time reports are not diagnostics and have no identifier; see [check modes](/reference/cli/#check-modes). Start with the first diagnostic and follow its source notes. See [diagnostic controls](/reference/diagnostic-controls/) and the [safety guarantees](/reference/guarantees/).';
 
 try {
   await whole('CHANGELOG.md', 'project/releases');
@@ -225,7 +186,7 @@ for (const page of pages) {
     content = rewriteMarkdown(raw, page.source, routes);
   } else {
     const lastUpdated = commitDate(page.source);
-    const description = `${page.title} — WeaveC documentation for run-time memory safety and ownership analysis in C.`;
+    const description = `${page.title} — WeaveC documentation: run-time memory safety for existing C code.`;
     const frontmatter = {
       title: page.title,
       description,
@@ -258,6 +219,4 @@ await writeChanged(
   path.join(docs, 'public/social-card.png'),
   await sharp(path.join(docs, 'public/social-card.svg')).png().toBuffer(),
 );
-console.log(
-  `Prepared ${pages.length} pages, ${rfcs.length} RFCs, and ${diagnosticRows.length} diagnostic entries for WeaveC ${version}.`,
-);
+console.log(`Prepared ${pages.length} pages and ${rfcs.length} RFCs for WeaveC ${version}.`);

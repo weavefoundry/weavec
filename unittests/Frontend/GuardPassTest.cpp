@@ -75,7 +75,7 @@ struct PassRun {
   }
 
   void insert() { runModule(GuardInsertPass(options)); }
-  void prune() {
+  void prune() const {
     llvm::FunctionAnalysisManager functions;
     llvm::PassBuilder builder;
     builder.registerFunctionAnalyses(functions);
@@ -91,10 +91,10 @@ struct PassRun {
     for (const llvm::Function &function : *module)
       for (const llvm::BasicBlock &block : function)
         for (const llvm::Instruction &instruction : block)
-          if (const auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction))
-            if (const llvm::Function *target = call->getCalledFunction())
-              if (target->getName() == callee)
-                ++count;
+          if (const auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
+              call != nullptr && call->getCalledFunction() != nullptr &&
+              call->getCalledFunction()->getName() == callee)
+            ++count;
     return count;
   }
 

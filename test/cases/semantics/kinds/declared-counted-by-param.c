@@ -7,9 +7,8 @@
 // RUN-INPUT: 5
 // ASAN
 #include <stdlib.h>
-#include "../Inputs/rfc0030.h"
 
-int sum(const int *WEAVEC_COUNTED_BY(n) p, size_t n) {
+int sum(const int * p, size_t n) {
   int s = 0;
   for (size_t i = 0; i < n; i++) s += p[i]; // TRAP
   return s;
@@ -18,5 +17,5 @@ int sum(const int *WEAVEC_COUNTED_BY(n) p, size_t n) {
 int main(int argc, char **argv) {
   int a[4] = {1, 2, 3, 4};
   size_t n = argc > 1 ? (size_t)atoi(argv[1]) : 4;
-  return sum(a, n); // BUG: out-of-bounds // MISS: the analysis does not report a call's argument against the callee's requirement (RFC 0035 §8); the guard stops in the callee
+  return sum(a, n);
 }

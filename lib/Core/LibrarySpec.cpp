@@ -1,4 +1,4 @@
-//===- LibrarySpec.cpp - The declarative C library table ------------------===//
+//===- LibrarySpec.cpp - The C library table of the guards ----------------===//
 //
 // Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -6,11 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// RFC 0030 §8. The parser reads the `LibrarySpec.txt` syntax documented at
+// RFC 0036 §6. The parser reads the `LibrarySpec.txt` syntax documented at
 // the top of that file: comments and continuations are removed first, giving
-// logical lines that each hold one directive or one entry; each entry is then
-// parsed by recursive descent and validated on its own, and the table as a
-// whole is validated last (overloads, aliases).
+// logical lines that each hold one entry; each entry is parsed by recursive
+// descent and validated on its own, and the aliases are indexed last.
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,7 +17,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <initializer_list>
 #include <limits>
 #include <set>
 #include <utility>
@@ -40,11 +38,6 @@ LibTerm LibTerm::argument(unsigned index) {
 
 LibTerm LibTerm::stringLength(unsigned index) {
   return LibTerm{.kind = Kind::StringLength,
-                 .arg = static_cast<std::uint8_t>(index)};
-}
-
-LibTerm LibTerm::formatLength(unsigned index) {
-  return LibTerm{.kind = Kind::FormatLength,
                  .arg = static_cast<std::uint8_t>(index)};
 }
 
@@ -96,10 +89,6 @@ std::string LibTerm::str() const {
     return "a" + std::to_string(arg);
   case Kind::StringLength:
     return "strlen(a" + std::to_string(arg) + ")";
-  case Kind::FormatLength:
-    return "fmtlen(a" + std::to_string(arg) + ")";
-  case Kind::Macro:
-    return macro;
   case Kind::Product:
     return parenthesised(operands[0], isAdditive(operands[0])) + "*" +
            parenthesised(operands[1], isAdditive(operands[1]) ||
@@ -158,10 +147,6 @@ std::optional<std::int64_t> LibTerm::evaluate(const Values &values) const {
     return ask(values.argument, arg);
   case Kind::StringLength:
     return ask(values.stringLength, arg);
-  case Kind::FormatLength:
-    return ask(values.formatLength, arg);
-  case Kind::Macro:
-    return values.macro ? values.macro(macro) : std::nullopt;
   case Kind::Difference: {
     const auto left = operands[0].evaluate(values);
     if (!left || value == std::numeric_limits<std::int64_t>::min())
@@ -192,101 +177,11 @@ std::optional<std::int64_t> LibTerm::evaluate(const Values &values) const {
 }
 
 //===----------------------------------------------------------------------===//
-// Results, entries and matches
+// Entries and matches
 //===----------------------------------------------------------------------===//
-
-bool LibraryResult::isPointer() const noexcept {
-  return kind != Kind::Void && kind != Kind::Int;
-}
 
 const LibraryParam *LibraryEntry::param(unsigned index) const noexcept {
   return index < params.size() ? &params[index] : nullptr;
-}
-
-bool LibraryEntry::allocates() const noexcept {
-  if (result.kind == LibraryResult::Kind::Fresh ||
-      (result.kind == LibraryResult::Kind::Arg && !result.family.empty()))
-    return true;
-  return std::ranges::any_of(params, [](const LibraryParam &p) {
-    return p.out && p.out->kind == LibraryResult::Kind::Fresh;
-  });
-}
-
-bool LibraryEntry::releases() const noexcept {
-  return std::ranges::any_of(params, [](const LibraryParam &p) {
-    return p.effect == LibraryParam::Effect::Release ||
-           p.effect == LibraryParam::Effect::Realloc;
-  });
-}
-
-bool LibraryEntry::hasCallback() const noexcept {
-  return std::ranges::any_of(
-      params, [](const LibraryParam &p) { return p.callback.has_value(); });
-}
-
-bool LibraryEntry::usesValueOnly(unsigned index) const noexcept {
-  const LibraryParam *p = param(index);
-  if (p == nullptr || p->type != LibraryParam::Type::Pointer ||
-      p->access != LibraryParam::Access::None || p->bytes || p->count ||
-      p->string || p->effect != LibraryParam::Effect::Borrow || p->callback ||
-      p->out)
-    return false;
-  const auto names = [index](unsigned argument) { return argument == index; };
-  for (const LibraryParam &other : params)
-    if (other.callback && std::ranges::any_of(other.callback->arguments, names))
-      return false;
-  return std::ranges::none_of(disjoint,
-                              [&](const LibDisjoint &d) {
-                                return names(d.first) || names(d.second);
-                              }) &&
-         std::ranges::none_of(
-             copies,
-             [&](const LibCopy &c) { return names(c.dst) || names(c.src); }) &&
-         std::ranges::none_of(fills,
-                              [&](const LibFill &f) { return names(f.dst); }) &&
-         std::ranges::none_of(
-             writesString,
-             [&](const LibStringWrite &w) { return names(w.dst); }) &&
-         (!format || !names(format->format));
-}
-
-bool LibraryEntry::knownToReturn() const noexcept {
-  return !noreturn && !exits;
-}
-
-bool LibraryEntry::trustsLibrarySpec() const noexcept {
-  const auto hidden = [](const LibraryResult &value) {
-    return value.kind == LibraryResult::Kind::Static ||
-           value.kind == LibraryResult::Kind::InteriorState ||
-           !value.state.empty();
-  };
-  if (hidden(result) || !invalidates.empty() || !reads.empty())
-    return true;
-  return std::ranges::any_of(params, [&hidden](const LibraryParam &p) {
-    return p.effect == LibraryParam::Effect::Retain || p.callback ||
-           (p.out && hidden(*p.out));
-  });
-}
-
-LibSignature LibraryEntry::signature() const {
-  LibSignature signature{.variadic = variadic,
-                         .pointerResult = result.isPointer()};
-  for (const LibraryParam &p : params)
-    signature.params.push_back(p.type);
-  return signature;
-}
-
-bool LibraryEntry::accepts(const LibSignature &declared) const {
-  if (declared.params.size() != params.size() ||
-      declared.variadic != variadic ||
-      declared.pointerResult != result.isPointer())
-    return false;
-  for (std::size_t i = 0; i < params.size(); ++i) {
-    const LibraryParam::Type row = params[i].type;
-    if (row != LibraryParam::Type::Other && row != declared.params[i])
-      return false;
-  }
-  return true;
 }
 
 int LibraryMatch::rowArgument(unsigned callArgument) const noexcept {
@@ -314,37 +209,13 @@ int LibraryMatch::callArgument(unsigned rowArg) const noexcept {
          (static_cast<int>(rowArg) - map.back());
 }
 
-const LibraryParam *LibraryMatch::param(unsigned callArgument) const noexcept {
-  const int row = rowArgument(callArgument);
-  return entry == nullptr || row < 0 ? nullptr
-                                     : entry->param(static_cast<unsigned>(row));
-}
-
-/// The nullability a result kind has when the row does not say.
-static LibraryResult::Null defaultNull(LibraryResult::Kind kind) {
-  switch (kind) {
-  case LibraryResult::Kind::Fresh:
-    return LibraryResult::Null::OnFailure;
-  case LibraryResult::Kind::Interior:
-  case LibraryResult::Kind::InteriorState:
-  case LibraryResult::Kind::Unknown:
-    return LibraryResult::Null::May;
-  case LibraryResult::Kind::Void:
-  case LibraryResult::Kind::Int:
-  case LibraryResult::Kind::Static:
-  case LibraryResult::Kind::Arg:
-    return LibraryResult::Null::Never;
-  }
-  return LibraryResult::Null::Never;
-}
-
 //===----------------------------------------------------------------------===//
 // Lexical helpers
 //===----------------------------------------------------------------------===//
 
 namespace {
-/// One logical line: a directive or an entry, with comments removed and
-/// continuations joined, and the physical line of each character.
+/// One logical line: an entry, with comments removed and continuations
+/// joined, and the physical line of each character.
 struct LogicalLine {
   std::string text;
   std::vector<unsigned> lines;
@@ -394,14 +265,8 @@ static std::vector<LogicalLine> logicalLines(std::string_view text) {
 static bool isDigit(char c) {
   return c >= '0' && c <= '9';
 }
-static bool isUpper(char c) {
-  return c >= 'A' && c <= 'Z';
-}
-static bool isLower(char c) {
-  return c >= 'a' && c <= 'z';
-}
 static bool isIdentifierStart(char c) {
-  return isUpper(c) || isLower(c) || c == '_';
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
 }
 static bool isIdentifierChar(char c) {
   return isIdentifierStart(c) || isDigit(c);
@@ -410,54 +275,6 @@ static bool isIdentifierChar(char c) {
 static bool isIdentifier(std::string_view text) {
   return !text.empty() && isIdentifierStart(text.front()) &&
          std::ranges::all_of(text, isIdentifierChar);
-}
-
-static std::optional<LibraryParam::Access> accessNamed(std::string_view word) {
-  using Access = LibraryParam::Access;
-  if (word == "r")
-    return Access::Read;
-  if (word == "w")
-    return Access::Write;
-  if (word == "rw")
-    return Access::ReadWrite;
-  if (word == "none")
-    return Access::None;
-  return std::nullopt;
-}
-
-/// The effect a flag names; `escape` for the one without a family.
-static LibraryParam::Effect effectNamed(std::string_view flag) {
-  using Effect = LibraryParam::Effect;
-  if (flag == "release")
-    return Effect::Release;
-  if (flag == "realloc")
-    return Effect::Realloc;
-  if (flag == "retain")
-    return Effect::Retain;
-  if (flag == "init")
-    return Effect::Init;
-  if (flag == "fini")
-    return Effect::Fini;
-  return Effect::Escape;
-}
-
-static LibraryResult::Null nullNamed(std::string_view flag) {
-  if (flag == "nonnull")
-    return LibraryResult::Null::Never;
-  if (flag == "null-on-failure")
-    return LibraryResult::Null::OnFailure;
-  return LibraryResult::Null::May;
-}
-
-/// The key a flag is recorded under: flags that exclude one another share
-/// the key of their group.
-static std::string
-exclusionKey(const std::string &flag,
-             std::initializer_list<std::pair<bool, std::string_view>> groups) {
-  for (const auto &[member, group] : groups)
-    if (member)
-      return std::string(group);
-  return flag;
 }
 
 namespace {
@@ -550,13 +367,6 @@ private:
     }
     return left;
   }
-  std::optional<LibTerm> lengthOf(bool format) {
-    const auto index = argumentIndex();
-    if (!index || !accept(")"))
-      return fail(format ? "expected 'fmtlen(aN)'" : "expected 'strlen(aN)'");
-    return format ? LibTerm::formatLength(*index)
-                  : LibTerm::stringLength(*index);
-  }
   std::optional<LibTerm> atom() {
     skipSpace();
     if (pos >= text.size())
@@ -573,10 +383,12 @@ private:
         return fail("expected ')' in a term");
       return inner;
     }
-    if (accept("strlen("))
-      return lengthOf(false);
-    if (accept("fmtlen("))
-      return lengthOf(true);
+    if (accept("strlen(")) {
+      const auto index = argumentIndex();
+      if (!index || !accept(")"))
+        return fail("expected 'strlen(aN)'");
+      return LibTerm::stringLength(*index);
+    }
     if (accept("min(")) {
       auto left = sum();
       if (!left)
@@ -595,13 +407,6 @@ private:
       if (!index)
         return fail("argument index out of range in a term");
       return LibTerm::argument(*index);
-    }
-    if (isUpper(text[pos]) || text[pos] == '_') {
-      const std::size_t begin = pos;
-      while (pos < text.size() && isIdentifierChar(text[pos]))
-        ++pos;
-      return LibTerm{.kind = LibTerm::Kind::Macro,
-                     .macro = std::string(text.substr(begin, pos - begin))};
     }
     return fail("expected a term");
   }
@@ -640,18 +445,14 @@ private:
   std::string message;
   const LogicalLine *line = nullptr;
   std::size_t pos = 0;
-  /// The header entries are declared in; empty under `builtins`.
-  std::string header;
-  bool haveSection = false;
-  bool underPattern = false;
   /// The entry being parsed, for messages.
   std::string entryName;
 
-  bool fail(const std::string &why, std::optional<unsigned> at = {}) {
+  bool fail(const std::string &why) {
     if (!message.empty())
       return false;
-    unsigned number = at.value_or(0);
-    if (!at && line != nullptr && !line->lines.empty())
+    unsigned number = 0;
+    if (line != nullptr && !line->lines.empty())
       number = line->lines[std::min(pos, line->lines.size() - 1)];
     message = "LibrarySpec.txt:" + std::to_string(number) + ": ";
     if (!entryName.empty())
@@ -667,12 +468,9 @@ private:
     skipSpace();
     return pos >= line->text.size();
   }
-  bool peek(char c) {
-    skipSpace();
-    return pos < line->text.size() && line->text[pos] == c;
-  }
   bool accept(char c) {
-    if (!peek(c))
+    skipSpace();
+    if (pos >= line->text.size() || line->text[pos] != c)
       return false;
     ++pos;
     return true;
@@ -707,448 +505,199 @@ private:
     }
     return text;
   }
-  std::optional<std::string> parenthesisedName(std::string_view flag,
-                                               std::string_view what) {
-    const std::string context = "after '" + std::string(flag) + "'";
-    if (!expect('(', context))
-      return std::nullopt;
-    auto text = name(what);
-    if (!text || !expect(')', "after " + std::string(what)))
-      return std::nullopt;
-    return text;
-  }
-  std::optional<std::int64_t> integer(bool allowMinusOne) {
+  std::optional<std::uint8_t> index(std::string_view what) {
     skipSpace();
-    const bool negative = allowMinusOne && accept('-');
     const std::size_t begin = pos;
-    std::int64_t value = 0;
-    while (pos < line->text.size() && isDigit(line->text[pos]) &&
-           value < 1000000)
-      value = (value * 10) + (line->text[pos++] - '0');
-    if (pos == begin || (negative && value != 1)) {
-      fail(negative ? "only -1 may be negative" : "expected an integer");
+    unsigned value = 0;
+    while (pos < line->text.size() && isDigit(line->text[pos]) && value < 1000)
+      value = (value * 10) + static_cast<unsigned>(line->text[pos++] - '0');
+    if (pos == begin) {
+      fail("expected " + std::string(what));
       return std::nullopt;
     }
-    return negative ? -value : value;
-  }
-  std::optional<std::uint8_t> index(std::string_view what) {
-    const auto value = integer(false);
-    if (!value)
-      return std::nullopt;
-    if (*value > 255) {
+    if (value > 255) {
       fail(std::string(what) + " out of range");
       return std::nullopt;
     }
-    return static_cast<std::uint8_t>(*value);
+    return static_cast<std::uint8_t>(value);
   }
-  /// A term inside a clause's argument list, after its '(' or a ','.
-  std::optional<LibTerm> clauseTerm(std::string_view clause) {
+  std::optional<LibTerm> term(std::string_view where) {
     TermReader reader(line->text, pos);
-    auto term = reader.read();
-    if (!term)
-      fail(reader.error() + " in '" + std::string(clause) + "(…)'");
-    return term;
+    auto result = reader.read();
+    if (!result)
+      fail(reader.error() + " in '" + std::string(where) + "(…)'");
+    return result;
   }
   std::optional<LibTerm> parenthesisedTerm(std::string_view flag) {
     if (!expect('(', "after '" + std::string(flag) + "'"))
       return std::nullopt;
-    TermReader reader(line->text, pos);
-    auto term = reader.read();
-    if (!term) {
-      fail(reader.error() + " in '" + std::string(flag) + "(…)'");
+    auto result = term(flag);
+    if (!result ||
+        !expect(')', "after the term of '" + std::string(flag) + "'"))
       return std::nullopt;
-    }
-    if (!expect(')', "after the term of '" + std::string(flag) + "'"))
-      return std::nullopt;
-    return term;
+    return result;
   }
 
-  bool parseLine();
-  bool parseHeader();
-  bool parseEntry(std::string rowName);
+  bool parseEntry();
   std::optional<LibraryParam> parseParam();
-  bool parseParamFlag(LibraryParam &param, const std::string &flag,
-                      std::set<std::string> &seen);
-  std::optional<LibCallback> parseCallback(const std::string &flag);
-  std::optional<LibraryResult> parseResult(bool out, bool &noreturn);
-  bool parseResultFlag(LibraryResult &result, const std::string &flag, bool out,
-                       std::set<std::string> &seen);
+  bool parseResult(LibraryEntry &entry);
   bool parseClause(LibraryEntry &entry, const std::string &clause);
-  bool validateTerm(const LibraryEntry &entry, const LibTerm &term,
+  bool validateTerm(const LibraryEntry &entry, const LibTerm &value,
                     std::string_view where);
-  bool validateResult(const LibraryEntry &entry, const LibraryResult &result,
-                      std::string_view where);
-  bool validateEntry(LibraryEntry &entry);
-  bool validateTable();
+  bool validateEntry(const LibraryEntry &entry);
 };
 
 std::optional<LibraryParam> LibrarySpecParser::parseParam() {
-  using Type = LibraryParam::Type;
-  const std::string kind = word();
   LibraryParam param;
-  if (kind == "int" || kind == "other") {
-    param.type = kind == "int" ? Type::Int : Type::Other;
-    if (peek(':')) {
-      fail("'" + kind + "' parameters take no flags");
-      return std::nullopt;
-    }
+  const std::string head = word();
+  if (head == "int") {
+    param.type = LibraryParam::Type::Int;
     return param;
   }
-  if (kind == "fn") {
-    param.type = Type::Function;
-  } else if (const auto access = accessNamed(kind)) {
-    param.type = Type::Pointer;
-    param.access = *access;
+  if (head == "other") {
+    param.type = LibraryParam::Type::Other;
+    return param;
+  }
+  if (head == "fn") {
+    param.type = LibraryParam::Type::Function;
+    return param;
+  }
+  param.type = LibraryParam::Type::Pointer;
+  if (head == "r") {
+    param.access = LibraryParam::Access::Read;
+  } else if (head == "w") {
+    param.access = LibraryParam::Access::Write;
+  } else if (head == "rw") {
+    param.access = LibraryParam::Access::ReadWrite;
+  } else if (head == "none") {
+    param.access = LibraryParam::Access::None;
   } else {
-    fail(kind.empty() ? "expected a parameter"
-                      : "unknown parameter type '" + kind + "'");
+    fail("expected a parameter, found '" + head + "'");
     return std::nullopt;
   }
   std::set<std::string> seen;
   while (accept(':')) {
     const std::string flag = word();
-    if (!parseParamFlag(param, flag, seen))
+    if (!seen.insert(flag).second) {
+      fail("duplicate flag '" + flag + "'");
       return std::nullopt;
+    }
+    if (flag == "bytes" || flag == "count") {
+      auto value = parenthesisedTerm(flag);
+      if (!value)
+        return std::nullopt;
+      (flag == "bytes" ? param.bytes : param.count) = std::move(*value);
+    } else if (flag == "str") {
+      param.string = true;
+    } else if (flag == "null-ok") {
+      param.null = LibraryParam::Null::Allowed;
+    } else if (flag == "null-if-zero") {
+      auto value = parenthesisedTerm(flag);
+      if (!value)
+        return std::nullopt;
+      param.null = LibraryParam::Null::AllowedIfZero;
+      param.zeroTerm = std::move(*value);
+    } else if (flag == "release") {
+      param.effect = LibraryParam::Effect::Release;
+    } else if (flag == "realloc") {
+      param.effect = LibraryParam::Effect::Realloc;
+    } else {
+      fail("unknown parameter flag '" + flag + "'");
+      return std::nullopt;
+    }
+  }
+  if (seen.contains("null-ok") && seen.contains("null-if-zero")) {
+    fail("'null-ok' and 'null-if-zero' exclude each other");
+    return std::nullopt;
+  }
+  if (param.bytes && param.count) {
+    fail("'bytes' and 'count' exclude each other");
+    return std::nullopt;
+  }
+  if (param.string && param.access != LibraryParam::Access::Read &&
+      param.access != LibraryParam::Access::ReadWrite) {
+    fail("'str' needs 'r' or 'rw'");
+    return std::nullopt;
   }
   return param;
 }
 
-std::optional<LibCallback>
-LibrarySpecParser::parseCallback(const std::string &flag) {
-  LibCallback callback;
-  if (flag == "at-exit") {
-    callback.kind = LibCallback::Kind::AtExit;
-    return callback;
-  }
-  callback.kind =
-      flag == "sync" ? LibCallback::Kind::Sync : LibCallback::Kind::Entry;
-  if (!expect('(', "after '" + flag + "'"))
-    return std::nullopt;
-  if (!accept(')')) {
-    do {
-      const auto argument = index("callback argument");
-      if (!argument)
-        return std::nullopt;
-      callback.arguments.push_back(*argument);
-    } while (accept(','));
-    if (!expect(')', "after the arguments of '" + flag + "(…)'"))
-      return std::nullopt;
-  }
-  if (callback.kind == LibCallback::Kind::Entry &&
-      callback.arguments.size() > 1) {
-    fail("'entry(…)' takes at most one argument");
-    return std::nullopt;
-  }
-  return callback;
-}
-
-bool LibrarySpecParser::parseParamFlag(LibraryParam &param,
-                                       const std::string &flag,
-                                       std::set<std::string> &seen) {
-  using Effect = LibraryParam::Effect;
-  const bool function = param.type == LibraryParam::Type::Function;
-  const bool callback = flag == "sync" || flag == "entry" || flag == "at-exit";
-  const bool effect = flag == "release" || flag == "realloc" ||
-                      flag == "retain" || flag == "escape" || flag == "init" ||
-                      flag == "fini";
-  const bool null = flag == "null-ok" || flag == "null-if-zero";
-  const std::string key = exclusionKey(
-      flag, {{callback, "callback"}, {effect, "effect"}, {null, "null"}});
-  if (!seen.insert(key).second)
-    return fail(key == flag ? "duplicate flag '" + flag + "'"
-                            : "conflicting " + key + " flags ('" + flag + "')");
-  if (function && !callback && flag != "null-ok")
-    return fail("'" + flag + "' is not a flag of 'fn' parameters");
-  if (flag == "bytes" || flag == "count") {
-    auto term = parenthesisedTerm(flag);
-    if (!term)
-      return false;
-    if ((flag == "bytes" && param.count) || (flag == "count" && param.bytes))
-      return fail("'bytes' and 'count' exclude one another");
-    (flag == "bytes" ? param.bytes : param.count) = std::move(*term);
-  } else if (flag == "str") {
-    param.string = true;
-  } else if (flag == "null-ok") {
-    param.null = LibraryParam::Null::Allowed;
-  } else if (flag == "null-if-zero") {
-    auto term = parenthesisedTerm(flag);
-    if (!term)
-      return false;
-    param.null = LibraryParam::Null::AllowedIfZero;
-    param.zeroTerm = std::move(*term);
-  } else if (flag == "range") {
-    auto term = parenthesisedTerm(flag);
-    if (!term)
-      return false;
-    param.range = std::move(*term);
-  } else if (flag == "escape") {
-    param.effect = Effect::Escape;
-  } else if (effect) {
-    const bool state = flag == "retain";
-    auto text = parenthesisedName(flag, state ? "a state slot" : "a family");
-    if (!text)
-      return false;
-    param.effect = effectNamed(flag);
-    (state ? param.state : param.family) = std::move(*text);
-  } else if (callback) {
-    auto parsed = parseCallback(flag);
-    if (!parsed)
-      return false;
-    param.callback = std::move(*parsed);
-  } else if (flag == "out") {
-    if (!expect('(', "after 'out'"))
-      return false;
-    bool noreturn = false;
-    auto value = parseResult(true, noreturn);
-    if (!value || !expect(')', "after the value of 'out(…)'"))
-      return false;
-    param.out = std::move(*value);
-  } else {
-    return fail(flag.empty() ? "expected a parameter flag after ':'"
-                             : "unknown parameter flag '" + flag + "'");
-  }
-  return true;
-}
-
-std::optional<LibraryResult> LibrarySpecParser::parseResult(bool out,
-                                                            bool &noreturn) {
-  using Kind = LibraryResult::Kind;
+bool LibrarySpecParser::parseResult(LibraryEntry &entry) {
   const std::string kind = word();
-  LibraryResult result;
-  if (kind == "void" || kind == "int" || kind == "noreturn") {
-    if (out) {
-      fail("an 'out' value must be a pointer, not '" + kind + "'");
-      return std::nullopt;
-    }
-    result.kind = kind == "int" ? Kind::Int : Kind::Void;
-    noreturn = kind == "noreturn";
-    if (kind == "int" && accept(':')) {
-      if (word() != "value") {
-        fail("the only flag of an 'int' result is 'value(…)'");
-        return std::nullopt;
-      }
-      result.value = parenthesisedTerm("value");
-      if (!result.value)
-        return std::nullopt;
-    }
-    if (peek(':')) {
-      fail("'" + kind + "' results take no " +
-           (kind == "int" ? "other flags" : "flags"));
-      return std::nullopt;
-    }
-    return result;
-  }
-  if (kind == "fresh" || kind == "static" || kind == "interior-state") {
-    const bool family = kind == "fresh";
-    auto text = parenthesisedName(kind, family ? "a family" : "a state slot");
-    if (!text)
-      return std::nullopt;
-    result.kind = Kind::InteriorState;
-    if (family)
-      result.kind = Kind::Fresh;
-    else if (kind == "static")
-      result.kind = Kind::Static;
-    (family ? result.family : result.state) = std::move(*text);
-  } else if (kind == "arg" || kind == "interior") {
-    if (!expect('(', "after '" + kind + "'"))
-      return std::nullopt;
-    const auto argument = index("argument index");
-    if (!argument || !expect(')', "after the argument index"))
-      return std::nullopt;
-    result.kind = kind == "arg" ? Kind::Arg : Kind::Interior;
-    result.arg = *argument;
+  if (kind == "void") {
+    entry.result = LibraryEntry::Result::Void;
   } else if (kind == "ptr") {
-    result.kind = Kind::Unknown;
+    entry.result = LibraryEntry::Result::Pointer;
+  } else if (kind == "int") {
+    entry.result = LibraryEntry::Result::Int;
+    if (accept(':')) {
+      if (word() != "value")
+        return fail("expected 'value(…)' after 'int:'");
+      entry.value = parenthesisedTerm("value");
+      if (!entry.value)
+        return false;
+    }
   } else {
-    fail(kind.empty() ? "expected a result"
-                      : "unknown result kind '" + kind + "'");
-    return std::nullopt;
-  }
-  result.null = defaultNull(result.kind);
-  std::set<std::string> seen;
-  while (accept(':')) {
-    const std::string flag = word();
-    if (!parseResultFlag(result, flag, out, seen))
-      return std::nullopt;
-  }
-  const bool zeroFlag = seen.contains("zero");
-  const bool fresh = result.kind == Kind::Fresh ||
-                     (result.kind == Kind::Arg && !result.family.empty());
-  if (zeroFlag && !fresh) {
-    fail("'zero-init' and 'no-zero-init' apply only to fresh results");
-    return std::nullopt;
-  }
-  if (fresh && result.family == HeapFamily && !zeroFlag) {
-    fail("a 'fresh(free)' value needs 'zero-init' or 'no-zero-init' (§11)");
-    return std::nullopt;
-  }
-  if (result.extent && result.kind != Kind::Fresh &&
-      result.kind != Kind::Static) {
-    fail("'extent' applies only to fresh and static results");
-    return std::nullopt;
-  }
-  if (result.offset && result.kind != Kind::Interior) {
-    fail("'offset' applies only to 'interior(N)' results");
-    return std::nullopt;
-  }
-  if (result.zeroFilled && (result.kind != Kind::Fresh || !result.extent)) {
-    fail("'zero-filled' applies only to fresh results with an extent");
-    return std::nullopt;
-  }
-  return result;
-}
-
-bool LibrarySpecParser::parseResultFlag(LibraryResult &result,
-                                        const std::string &flag, bool out,
-                                        std::set<std::string> &seen) {
-  const bool null =
-      flag == "null-on-failure" || flag == "nonnull" || flag == "null-ok";
-  const bool zero = flag == "zero-init" || flag == "no-zero-init";
-  const bool alternative = flag == "or-fresh" || flag == "or-static";
-  const std::string key = exclusionKey(
-      flag, {{null, "null"}, {zero, "zero"}, {alternative, "alternative"}});
-  if (!seen.insert(key).second)
-    return fail(key == flag ? "duplicate flag '" + flag + "'"
-                            : "conflicting " + key + " flags ('" + flag + "')");
-  if (flag == "extent" || flag == "offset") {
-    auto term = parenthesisedTerm(flag);
-    if (!term)
-      return false;
-    (flag == "extent" ? result.extent : result.offset) = std::move(*term);
-  } else if (null) {
-    result.null = nullNamed(flag);
-  } else if (zero) {
-    result.zeroInit = flag == "zero-init";
-  } else if (flag == "zero-filled") {
-    result.zeroFilled = true;
-  } else if (flag == "str") {
-    result.string = true;
-  } else if (flag == "replaces") {
-    if (!out || result.kind != LibraryResult::Kind::Fresh)
-      return fail("'replaces' applies only to a fresh 'out' value");
-    result.replaces = true;
-  } else if (alternative) {
-    if (result.kind != LibraryResult::Kind::Arg)
-      return fail("'" + flag + "' applies only to 'arg(N)' results");
-    const bool fresh = flag == "or-fresh";
-    auto text = parenthesisedName(flag, fresh ? "a family" : "a state slot");
-    if (!text)
-      return false;
-    (fresh ? result.family : result.state) = std::move(*text);
-  } else {
-    return fail(flag.empty() ? "expected a result flag after ':'"
-                             : "unknown result flag '" + flag + "'");
+    return fail("expected 'void', 'int' or 'ptr', found '" + kind + "'");
   }
   return true;
 }
 
 bool LibrarySpecParser::parseClause(LibraryEntry &entry,
                                     const std::string &clause) {
-  if (clause == "exits" || clause == "returns-twice" || clause == "wide") {
-    bool *flag = &entry.returnsTwice;
-    if (clause == "exits")
-      flag = &entry.exits;
-    else if (clause == "wide")
-      flag = &entry.wide;
-    if (*flag)
-      return fail("duplicate clause '" + clause + "'");
-    *flag = true;
-  } else if (clause == "invalidates" || clause == "reads") {
-    auto state = parenthesisedName(clause, "a state slot");
-    if (!state)
-      return false;
-    auto &list = clause == "reads" ? entry.reads : entry.invalidates;
-    if (std::ranges::find(list, *state) != list.end())
-      return fail("duplicate clause '" + clause + "(" + *state + ")'");
-    list.push_back(std::move(*state));
-  } else if (clause == "disjoint") {
+  if (clause == "wide") {
+    if (entry.wide)
+      return fail("duplicate clause 'wide'");
+    entry.wide = true;
+    return true;
+  }
+  if (clause == "disjoint") {
     if (!expect('(', "after 'disjoint'"))
       return false;
-    LibDisjoint disjoint;
-    const auto first = index("argument index");
-    if (!first || !expect(',', "in 'disjoint(…)'"))
+    auto first = index("an argument index");
+    if (!first || !expect(',', "in 'disjoint'"))
       return false;
-    const auto second = index("argument index");
-    if (!second || !expect(',', "in 'disjoint(…)'"))
+    auto second = index("an argument index");
+    if (!second || !expect(',', "in 'disjoint'"))
       return false;
-    TermReader reader(line->text, pos);
-    auto length = reader.read();
-    if (!length)
-      return fail(reader.error() + " in 'disjoint(…)'");
-    if (!expect(')', "after 'disjoint(…'"))
+    auto length = term("disjoint");
+    if (!length || !expect(')', "after 'disjoint(…'"))
       return false;
-    disjoint.first = *first;
-    disjoint.second = *second;
-    disjoint.length = std::move(*length);
-    entry.disjoint.push_back(std::move(disjoint));
-  } else if (clause == "copies" || clause == "fills") {
-    const std::string context = "in '" + clause + "(…)'";
-    if (!expect('(', "after '" + clause + "'"))
-      return false;
-    const auto dst = index("argument index");
-    if (!dst || !expect(',', context))
-      return false;
-    std::optional<std::uint8_t> src;
-    std::optional<LibTerm> value;
-    if (clause == "copies")
-      src = index("argument index");
-    else
-      value = clauseTerm(clause);
-    if ((!src && !value) || !expect(',', context))
-      return false;
-    auto length = clauseTerm(clause);
-    if (!length || !expect(')', "after '" + clause + "(…'"))
-      return false;
-    if (src)
-      entry.copies.push_back(
-          LibCopy{.dst = *dst, .src = *src, .length = std::move(*length)});
-    else
-      entry.fills.push_back(LibFill{.dst = *dst,
-                                    .value = std::move(*value),
-                                    .length = std::move(*length)});
-  } else if (clause == "writes-str") {
-    if (!expect('(', "after 'writes-str'"))
-      return false;
-    const auto dst = index("argument index");
-    if (!dst)
-      return false;
-    LibStringWrite write{.dst = *dst, .length = std::nullopt};
-    if (accept(',')) {
-      write.length = clauseTerm(clause);
-      if (!write.length)
-        return false;
-    }
-    if (!expect(')', "after 'writes-str(…'"))
-      return false;
-    entry.writesString.push_back(std::move(write));
-  } else if (clause == "printf" || clause == "scanf") {
+    entry.disjoint.push_back(LibDisjoint{
+        .first = *first, .second = *second, .length = std::move(*length)});
+    return true;
+  }
+  if (clause == "printf" || clause == "scanf") {
     if (entry.format)
-      return fail("more than one format clause");
+      return fail("a row has at most one format clause");
     if (!expect('(', "after '" + clause + "'"))
       return false;
-    const auto format = index("format argument");
-    if (!format || !expect(',', "in '" + clause + "(…)'"))
+    auto format = index("the format's index");
+    if (!format || !expect(',', "in '" + clause + "'"))
       return false;
-    const auto first = index("first variadic argument");
+    auto first = index("the first argument's index");
     if (!first || !expect(')', "after '" + clause + "(…'"))
       return false;
     entry.format =
         LibFormat{.kind = clause == "printf" ? LibFormat::Kind::Printf
                                              : LibFormat::Kind::Scanf,
                   .format = *format,
-                  .first = *first};
-  } else if (clause == "wrapper") {
+                  .first = *first,
+                  .vaList = !entry.variadic};
+    return true;
+  }
+  if (clause == "wrapper") {
     if (entry.wrapper)
       return fail("duplicate clause 'wrapper'");
     if (!expect('(', "after 'wrapper'"))
       return false;
     auto wrapped = name("a wrapper name");
-    if (!wrapped)
-      return false;
-    if (!expect(')', "after the wrapper name"))
+    if (!wrapped || !expect(')', "after the wrapper name"))
       return false;
     entry.wrapper = LibWrapper{.name = std::move(*wrapped)};
-  } else if (clause == "chk") {
+    return true;
+  }
+  if (clause == "chk") {
     if (!expect('(', "after 'chk'"))
       return false;
     auto alias = name("an alias name");
@@ -1156,95 +705,90 @@ bool LibrarySpecParser::parseClause(LibraryEntry &entry,
       return false;
     LibraryChk chk{.name = std::move(*alias)};
     do {
-      const auto argument = integer(true);
-      if (!argument)
-        return false;
-      if (*argument > 127)
-        return fail("alias argument index out of range");
-      chk.argumentOf.push_back(static_cast<std::int8_t>(*argument));
+      if (accept("size")) {
+        if (chk.sizeArgument >= 0)
+          return fail("an alias has at most one 'size' argument");
+        chk.sizeArgument = static_cast<int>(chk.argumentOf.size());
+        chk.argumentOf.push_back(-1);
+      } else if (accept('_')) {
+        chk.argumentOf.push_back(-1);
+      } else {
+        auto row = index("a row argument index, '_' or 'size'");
+        if (!row)
+          return false;
+        if (*row > 127)
+          return fail("alias argument index out of range");
+        chk.argumentOf.push_back(static_cast<std::int8_t>(*row));
+      }
     } while (accept(','));
-    if (!expect(')', "after the arguments of 'chk(…)'"))
+    if (!expect(')', "after the alias's arguments"))
       return false;
     entry.chk.push_back(std::move(chk));
-  } else {
-    return fail(clause.empty() ? "expected a clause or ';'"
-                               : "unknown clause '" + clause + "'");
-  }
-  return true;
-}
-
-bool LibrarySpecParser::parseLine() {
-  pos = 0;
-  if (atEnd())
-    return true;
-  const std::string first = word();
-  if (first == "header")
-    return parseHeader();
-  if (first == "builtins") {
-    if (!expect(';', "after 'builtins'"))
-      return false;
-    if (!atEnd())
-      return fail("unexpected text after ';'");
-    header.clear();
-    haveSection = true;
-    underPattern = false;
     return true;
   }
-  if (!isIdentifier(first))
-    return fail(first.empty() ? "expected an entry or a directive"
-                              : "'" + first + "' is not a function name");
-  return parseEntry(first);
+  return fail("unknown clause '" + clause + "'");
 }
 
-static bool isHeaderName(std::string_view stem) {
-  const auto allowed = [](char c) {
-    return isIdentifierChar(c) || c == '.' || c == '/' || c == '-' || c == '+';
-  };
-  return !stem.empty() && stem.front() != '/' && stem.back() != '/' &&
-         stem.find("..") == std::string_view::npos &&
-         stem.find("//") == std::string_view::npos &&
-         std::ranges::all_of(stem, allowed);
+bool LibrarySpecParser::validateTerm(const LibraryEntry &entry,
+                                     const LibTerm &value,
+                                     std::string_view where) {
+  if ((value.kind == LibTerm::Kind::Argument ||
+       value.kind == LibTerm::Kind::StringLength) &&
+      value.arg >= entry.params.size())
+    return fail("argument a" + std::to_string(value.arg) + " of " +
+                std::string(where) + " is past the row's parameters");
+  if (value.kind == LibTerm::Kind::StringLength &&
+      entry.params[value.arg].type != LibraryParam::Type::Pointer)
+    return fail("strlen(a" + std::to_string(value.arg) + ") of " +
+                std::string(where) + " names a non-pointer");
+  return std::ranges::all_of(value.operands, [&](const LibTerm &operand) {
+    return validateTerm(entry, operand, where);
+  });
 }
 
-bool LibrarySpecParser::parseHeader() {
-  skipSpace();
-  const std::size_t begin = pos;
-  while (pos < line->text.size() && line->text[pos] != ';' &&
-         line->text[pos] != ' ')
-    ++pos;
-  const std::string path = line->text.substr(begin, pos - begin);
-  if (!expect(';', "after the header name"))
+bool LibrarySpecParser::validateEntry(const LibraryEntry &entry) {
+  for (std::size_t i = 0; i < entry.params.size(); ++i) {
+    const LibraryParam &param = entry.params[i];
+    const std::string where = "parameter " + std::to_string(i);
+    for (const std::optional<LibTerm> *value :
+         {&param.bytes, &param.count, &param.zeroTerm})
+      if (*value && !validateTerm(entry, **value, where))
+        return false;
+    if (param.count && !entry.wide)
+      return fail("'count' needs a wide row");
+  }
+  if (entry.value && !validateTerm(entry, *entry.value, "the result"))
     return false;
-  if (!atEnd())
-    return fail("unexpected text after ';'");
-  const bool pattern = path.ends_with("/*");
-  const std::string_view stem =
-      std::string_view(path).substr(0, path.size() - (pattern ? 2 : 0));
-  if (!isHeaderName(stem))
-    return fail("invalid header name '" + path + "'");
-  if (std::ranges::find(spec.headerList, path) == spec.headerList.end()) {
-    spec.headerList.push_back(path);
-    if (pattern)
-      spec.headerPrefixes.push_back(std::string(stem) + "/");
-    else
-      spec.headerNames.insert(path);
-  }
-  header = pattern ? std::string() : path;
-  haveSection = true;
-  underPattern = pattern;
+  for (const LibDisjoint &disjoint : entry.disjoint)
+    if (disjoint.first >= entry.params.size() ||
+        disjoint.second >= entry.params.size() ||
+        !validateTerm(entry, disjoint.length, "'disjoint'"))
+      return fail("'disjoint' names an argument past the row's parameters");
+  if (entry.format &&
+      (entry.format->format >= entry.params.size() ||
+       (!entry.variadic && entry.format->first >= entry.params.size())))
+    return fail("the format clause names an argument past the parameters");
+  // The runtime's wrapper is the row's own: a row that redirects to
+  // another's would check that row's arguments.
+  if (entry.wrapper && entry.wrapper->name != entry.name)
+    return fail("'wrapper(" + entry.wrapper->name + ")' must name the row");
+  for (const LibraryChk &chk : entry.chk)
+    for (const std::int8_t row : chk.argumentOf)
+      if (row >= 0 && !entry.variadic &&
+          std::cmp_greater_equal(row, entry.params.size()))
+        return fail("alias '" + chk.name +
+                    "' names an argument past the row's parameters");
   return true;
 }
 
-bool LibrarySpecParser::parseEntry(std::string rowName) {
-  entryName = rowName;
-  if (!haveSection)
-    return fail("an entry must follow a 'header' or 'builtins' line");
-  if (underPattern)
-    return fail("an entry must follow a concrete 'header', not a pattern");
+bool LibrarySpecParser::parseEntry() {
   LibraryEntry entry;
-  entry.name = std::move(rowName);
-  entry.header = header;
-  entry.line = line->lines.front();
+  entry.line = line->lines.empty() ? 0 : line->lines.front();
+  auto rowName = name("a function name");
+  if (!rowName)
+    return false;
+  entry.name = *rowName;
+  entryName = entry.name;
   if (!expect('(', "after the function name"))
     return false;
   if (!accept(')')) {
@@ -1258,229 +802,28 @@ bool LibrarySpecParser::parseEntry(std::string rowName) {
         return false;
       entry.params.push_back(std::move(*param));
     } while (accept(','));
-    if (!expect(')', entry.variadic ? "after '...'" : "after the parameters"))
+    if (!expect(')', "after the parameters"))
       return false;
   }
   if (!accept("->"))
     return fail("expected '->' after the parameters");
-  bool noreturn = false;
-  auto result = parseResult(false, noreturn);
-  if (!result)
+  if (!parseResult(entry))
     return false;
-  entry.result = std::move(*result);
-  entry.noreturn = noreturn;
   while (!accept(';')) {
     if (atEnd())
       return fail("expected ';' at the end of the entry");
-    if (!parseClause(entry, word()))
+    const std::string clause = word();
+    if (clause.empty())
+      return fail("expected a clause or ';'");
+    if (!parseClause(entry, clause))
       return false;
   }
   if (!atEnd())
-    return fail("unexpected text after ';' (one entry per line)");
+    return fail("unexpected text after ';'");
   if (!validateEntry(entry))
     return false;
+  spec.byName.emplace(entry.name, spec.rows.size());
   spec.rows.push_back(std::move(entry));
-  entryName.clear();
-  return true;
-}
-
-static bool isPointerParam(const LibraryEntry &entry, unsigned index) {
-  return index < entry.params.size() &&
-         entry.params[index].type == LibraryParam::Type::Pointer;
-}
-
-static void forEachLeaf(const LibTerm &term,
-                        const std::function<void(const LibTerm &)> &visit) {
-  if (term.operands.empty())
-    visit(term);
-  for (const LibTerm &operand : term.operands)
-    forEachLeaf(operand, visit);
-}
-
-bool LibrarySpecParser::validateTerm(const LibraryEntry &entry,
-                                     const LibTerm &term,
-                                     std::string_view where) {
-  std::string problem;
-  forEachLeaf(term, [&](const LibTerm &leaf) {
-    if (!problem.empty() || leaf.kind == LibTerm::Kind::Constant ||
-        leaf.kind == LibTerm::Kind::Macro)
-      return;
-    const std::string spelled = leaf.str();
-    if (leaf.arg >= entry.params.size())
-      problem = "'" + spelled + "' in " + std::string(where) +
-                " names a missing parameter";
-    else if (leaf.kind == LibTerm::Kind::StringLength &&
-             entry.params[leaf.arg].type != LibraryParam::Type::Pointer)
-      problem = "'" + spelled + "' needs a pointer parameter";
-    else if (leaf.kind == LibTerm::Kind::FormatLength &&
-             (!entry.format || entry.format->kind != LibFormat::Kind::Printf ||
-              entry.format->format != leaf.arg))
-      problem = "'" + spelled + "' needs a 'printf(" +
-                std::to_string(leaf.arg) + ", …)' clause";
-  });
-  return problem.empty() || fail(problem);
-}
-
-bool LibrarySpecParser::validateResult(const LibraryEntry &entry,
-                                       const LibraryResult &result,
-                                       std::string_view where) {
-  using Kind = LibraryResult::Kind;
-  if (result.kind == Kind::Arg || result.kind == Kind::Interior) {
-    const LibraryParam *param = entry.param(result.arg);
-    if (param == nullptr || param->type != LibraryParam::Type::Pointer)
-      return fail(std::string(where) + " names argument " +
-                  std::to_string(result.arg) + ", which is not a pointer");
-    const bool alternative = !result.family.empty() || !result.state.empty();
-    if (alternative && param->null != LibraryParam::Null::Allowed)
-      return fail(std::string(where) +
-                  ": 'or-fresh'/'or-static' need argument " +
-                  std::to_string(result.arg) + " to be 'null-ok'");
-  }
-  return std::ranges::all_of(
-      std::initializer_list<const std::optional<LibTerm> *>{
-          &result.extent, &result.value, &result.offset},
-      [&](const std::optional<LibTerm> *term) {
-        return !*term || validateTerm(entry, **term, where);
-      });
-}
-
-bool LibrarySpecParser::validateEntry(LibraryEntry &entry) {
-  const auto count = entry.params.size();
-  const auto isPointer = [&entry](unsigned index) {
-    return index < entry.params.size() &&
-           entry.params[index].type == LibraryParam::Type::Pointer;
-  };
-  for (std::size_t i = 0; i < count; ++i) {
-    const LibraryParam &param = entry.params[i];
-    const std::string where = "parameter " + std::to_string(i);
-    for (const auto *term :
-         {&param.bytes, &param.count, &param.zeroTerm, &param.range})
-      if (*term && !validateTerm(entry, **term, where))
-        return false;
-    if (param.range && param.effect != LibraryParam::Effect::Release)
-      return fail(where + ": 'range' needs 'release'");
-    if (param.string && param.access != LibraryParam::Access::Read &&
-        param.access != LibraryParam::Access::ReadWrite)
-      return fail(where + ": 'str' needs read access ('r' or 'rw')");
-    if (param.callback)
-      for (const std::uint8_t argument : param.callback->arguments)
-        if (argument >= count)
-          return fail(where + ": the callback names missing argument " +
-                      std::to_string(argument));
-    if (param.out &&
-        !validateResult(entry, *param.out, "the out value of " + where))
-      return false;
-  }
-  if (!validateResult(entry, entry.result, "the result"))
-    return false;
-  // The runtime's version of a call is named after it: a row copied from
-  // another must not keep that one's wrapper.
-  if (entry.wrapper && entry.wrapper->name != entry.name)
-    return fail("'wrapper(" + entry.wrapper->name +
-                ")' must name the row's "
-                "own function, '" +
-                entry.name + "'");
-  if (entry.exits && !entry.noreturn)
-    return fail("'exits' needs a 'noreturn' result");
-  if (entry.returnsTwice && entry.result.kind != LibraryResult::Kind::Int)
-    return fail("'returns-twice' needs an 'int' result");
-  for (const LibDisjoint &disjoint : entry.disjoint) {
-    if (!isPointer(disjoint.first) || !isPointer(disjoint.second) ||
-        disjoint.first == disjoint.second)
-      return fail("'disjoint' needs two different pointer parameters");
-    if (!validateTerm(entry, disjoint.length, "'disjoint'"))
-      return false;
-  }
-  const auto accesses = [&entry](unsigned index, LibraryParam::Access access) {
-    if (!isPointerParam(entry, index))
-      return false;
-    const LibraryParam::Access actual = entry.params[index].access;
-    return actual == access || actual == LibraryParam::Access::ReadWrite;
-  };
-  for (const LibCopy &copy : entry.copies) {
-    if (!accesses(copy.dst, LibraryParam::Access::Write) ||
-        !accesses(copy.src, LibraryParam::Access::Read) || copy.dst == copy.src)
-      return fail("'copies' needs a written and a different read pointer "
-                  "parameter");
-    if (!validateTerm(entry, copy.length, "'copies'"))
-      return false;
-  }
-  for (const LibFill &fill : entry.fills) {
-    if (!accesses(fill.dst, LibraryParam::Access::Write))
-      return fail("'fills' needs a written pointer parameter");
-    if (!validateTerm(entry, fill.value, "'fills'") ||
-        !validateTerm(entry, fill.length, "'fills'"))
-      return false;
-  }
-  for (const LibStringWrite &write : entry.writesString) {
-    if (!accesses(write.dst, LibraryParam::Access::Write))
-      return fail("'writes-str' needs a written pointer parameter");
-    if (write.length && !validateTerm(entry, *write.length, "'writes-str'"))
-      return false;
-  }
-  if (entry.format) {
-    LibFormat &format = *entry.format;
-    if (!isPointer(format.format) || !entry.params[format.format].string)
-      return fail("the format argument must be an 'r:str' parameter");
-    format.vaList = !entry.variadic;
-    if (entry.variadic && format.first != count)
-      return fail("the first variadic argument is " + std::to_string(count) +
-                  ", not " + std::to_string(format.first));
-    if (!entry.variadic &&
-        (format.first >= count ||
-         entry.params[format.first].type != LibraryParam::Type::Other))
-      return fail("a 'v…' function's va_list argument must be 'other'");
-  }
-  for (const LibraryChk &alias : entry.chk) {
-    if (alias.name == entry.name)
-      return fail("an alias cannot repeat the entry's name");
-    std::vector<int> uses(count, 0);
-    for (std::size_t i = 0; i < alias.argumentOf.size(); ++i) {
-      // NOLINTNEXTLINE(bugprone-signed-char-misuse,cert-str34-c): an index
-      const int target = alias.argumentOf[i];
-      const bool last = i + 1 == alias.argumentOf.size();
-      if (target == -1)
-        continue;
-      if (std::cmp_equal(target, count) && entry.variadic && last)
-        continue;
-      if (target < 0 || std::cmp_greater_equal(target, count))
-        return fail("alias '" + alias.name + "' maps to missing argument " +
-                    std::to_string(target));
-      ++uses[static_cast<std::size_t>(target)];
-    }
-    for (std::size_t i = 0; i < count; ++i)
-      if (uses[i] != 1)
-        return fail("alias '" + alias.name + "' must map argument " +
-                    std::to_string(i) + " exactly once");
-  }
-  return true;
-}
-
-bool LibrarySpecParser::validateTable() {
-  for (std::size_t i = 0; i < spec.rows.size(); ++i) {
-    const LibraryEntry &row = spec.rows[i];
-    const auto [first, last] = spec.byName.equal_range(row.name);
-    for (auto it = first; it != last; ++it) {
-      if (spec.rows[it->second].signature() != row.signature())
-        continue;
-      entryName = row.name;
-      return fail("defined again with the same signature (first on line " +
-                      std::to_string(spec.rows[it->second].line) + ")",
-                  row.line);
-    }
-    spec.byName.emplace(row.name, i);
-  }
-  for (std::size_t i = 0; i < spec.rows.size(); ++i) {
-    const LibraryEntry &row = spec.rows[i];
-    for (std::size_t k = 0; k < row.chk.size(); ++k) {
-      const std::string &alias = row.chk[k].name;
-      entryName = row.name;
-      if (spec.byName.contains(alias))
-        return fail("alias '" + alias + "' is also an entry name", row.line);
-      if (!spec.byAlias.emplace(alias, std::make_pair(i, k)).second)
-        return fail("alias '" + alias + "' is declared twice", row.line);
-    }
-  }
   entryName.clear();
   return true;
 }
@@ -1489,13 +832,23 @@ bool LibrarySpecParser::parse(std::string_view text) {
   const std::vector<LogicalLine> lines = logicalLines(text);
   for (const LogicalLine &logical : lines) {
     line = &logical;
-    entryName.clear();
-    if (!parseLine())
+    pos = 0;
+    if (atEnd())
+      continue;
+    if (!parseEntry())
       return false;
   }
   line = nullptr;
-  entryName.clear();
-  return validateTable();
+  for (std::size_t row = 0; row < spec.rows.size(); ++row)
+    for (std::size_t alias = 0; alias < spec.rows[row].chk.size(); ++alias) {
+      const std::string &name = spec.rows[row].chk[alias].name;
+      if (spec.byName.contains(name) || spec.byAlias.contains(name)) {
+        entryName = spec.rows[row].name;
+        return fail("alias '" + name + "' is already a row or an alias");
+      }
+      spec.byAlias.emplace(name, std::make_pair(row, alias));
+    }
+  return true;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1510,69 +863,45 @@ std::optional<LibrarySpec> LibrarySpec::parse(std::string_view text,
     error = parser.error();
     return std::nullopt;
   }
-  error.clear();
   return spec;
 }
 
 const LibraryEntry *LibrarySpec::find(std::string_view name) const {
-  const auto it = byName.lower_bound(name);
-  return it == byName.end() || it->first != name ? nullptr : &rows[it->second];
+  const auto found = byName.find(name);
+  return found == byName.end() ? nullptr : &rows[found->second];
 }
 
-std::optional<LibraryMatch>
-LibrarySpec::resolve(std::string_view callee,
-                     const LibSignature *declared) const {
-  const auto direct = [&](std::string_view name) -> const LibraryEntry * {
-    const auto [first, last] = byName.equal_range(name);
-    for (auto it = first; it != last; ++it)
-      if (declared == nullptr || rows[it->second].accepts(*declared))
-        return &rows[it->second];
-    return nullptr;
-  };
-  const auto aliased =
-      [&](std::string_view name) -> std::optional<LibraryMatch> {
-    const auto it = byAlias.find(name);
-    if (it == byAlias.end())
-      return std::nullopt;
-    const LibraryEntry &row = rows[it->second.first];
-    return LibraryMatch{.entry = &row, .alias = &row.chk[it->second.second]};
-  };
-  if (const LibraryEntry *entry = direct(callee))
-    return LibraryMatch{.entry = entry};
-  if (auto match = aliased(callee))
-    return match;
-  constexpr std::string_view Builtin = "__builtin_";
-  if (!callee.starts_with(Builtin))
-    return std::nullopt;
-  callee.remove_prefix(Builtin.size());
-  if (const LibraryEntry *entry = direct(callee))
-    return LibraryMatch{.entry = entry};
-  return aliased(callee);
-}
-
-std::optional<LibraryMatch> LibrarySpec::lookup(std::string_view callee) const {
-  return resolve(callee, nullptr);
+/// Whether a call of `arguments` arguments fits `entry`.
+static bool fits(const LibraryEntry &entry, unsigned arguments) {
+  return entry.variadic ? arguments >= entry.params.size()
+                        : arguments == entry.params.size();
 }
 
 std::optional<LibraryMatch>
 LibrarySpec::lookup(std::string_view callee,
-                    const LibSignature &declared) const {
-  return resolve(callee, &declared);
-}
-
-bool LibrarySpec::isPlatformHeader(std::string_view relativePath,
-                                   bool darwinSdk) const {
-  if (darwinSdk)
-    return true;
-  std::string path(relativePath);
-  std::ranges::replace(path, '\\', '/');
-  while (path.starts_with("./"))
-    path.erase(0, 2);
-  if (headerNames.contains(path))
-    return true;
-  return std::ranges::any_of(headerPrefixes, [&path](const std::string &p) {
-    return path.starts_with(p);
-  });
+                    std::optional<unsigned> arguments) const {
+  for (const bool builtin : {false, true}) {
+    std::string_view name = callee;
+    if (builtin) {
+      if (!name.starts_with("__builtin_"))
+        break;
+      name.remove_prefix(sizeof("__builtin_") - 1);
+    }
+    if (const auto found = byAlias.find(name); found != byAlias.end()) {
+      const LibraryEntry &entry = rows[found->second.first];
+      return LibraryMatch{.entry = &entry,
+                          .alias = &entry.chk[found->second.second]};
+    }
+    const auto [first, last] = byName.equal_range(name);
+    if (first == last)
+      continue;
+    if (arguments)
+      for (auto it = first; it != last; ++it)
+        if (fits(rows[it->second], *arguments))
+          return LibraryMatch{.entry = &rows[it->second]};
+    return LibraryMatch{.entry = &rows[first->second]};
+  }
+  return std::nullopt;
 }
 
 // The table text, as `LibrarySpecTextData` / `LibrarySpecTextSize`; generated
@@ -1589,79 +918,6 @@ const LibrarySpec &LibrarySpec::shipped() {
     return parse(shippedText(), error).value_or(LibrarySpec{});
   }();
   return Shipped;
-}
-
-std::optional<unsigned> formatArgumentCount(std::string_view format,
-                                            LibFormat::Kind kind) {
-  const auto digit = [](char c) { return c >= '0' && c <= '9'; };
-  unsigned count = 0;
-  for (std::size_t i = 0; i < format.size(); ++i) {
-    if (format[i] != '%')
-      continue;
-    if (++i >= format.size())
-      return std::nullopt;
-    if (format[i] == '%')
-      continue;
-    // `%1$d`: positional arguments are matched by index, not counted.
-    std::size_t j = i;
-    while (j < format.size() && digit(format[j]))
-      ++j;
-    if (j > i && j < format.size() && format[j] == '$')
-      return std::nullopt;
-    if (kind == LibFormat::Kind::Scanf) {
-      const bool suppressed = format[i] == '*';
-      if (suppressed)
-        ++i;
-      while (i < format.size() && digit(format[i]))
-        ++i;
-      while (i < format.size() &&
-             std::string_view("hljztLqm").find(format[i]) !=
-                 std::string_view::npos)
-        ++i;
-      if (i >= format.size())
-        return std::nullopt;
-      if (format[i] == '[') {
-        // A scan set: `]` right after `[` or `[^` is a member.
-        ++i;
-        if (i < format.size() && format[i] == '^')
-          ++i;
-        if (i < format.size() && format[i] == ']')
-          ++i;
-        while (i < format.size() && format[i] != ']')
-          ++i;
-        if (i >= format.size())
-          return std::nullopt;
-      }
-      count += suppressed ? 0 : 1;
-      continue;
-    }
-    while (i < format.size() &&
-           std::string_view("-+ #0'").find(format[i]) != std::string_view::npos)
-      ++i;
-    for (int part = 0; part < 2 && i < format.size(); ++part) {
-      if (part == 1) {
-        if (format[i] != '.')
-          break;
-        ++i;
-      }
-      if (i < format.size() && format[i] == '*') {
-        ++count;
-        ++i;
-      } else {
-        while (i < format.size() && digit(format[i]))
-          ++i;
-      }
-    }
-    while (i < format.size() && std::string_view("hljztLq").find(format[i]) !=
-                                    std::string_view::npos)
-      ++i;
-    if (i >= format.size())
-      return std::nullopt;
-    // `%m` prints `strerror(errno)` and reads no argument.
-    if (format[i] != 'm')
-      ++count;
-  }
-  return count;
 }
 
 } // namespace weavec::core

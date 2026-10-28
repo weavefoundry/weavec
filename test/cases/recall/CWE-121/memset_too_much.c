@@ -10,7 +10,7 @@ struct record {
 
 void bad(void) {
   char buf[32];
-  memset(buf, 0, 64); // BUG: out-of-bounds // TRAP
+  memset(buf, 0, 64); // TRAP
   print_bytes(buf, 32);
 }
 
@@ -29,6 +29,6 @@ int main(int argc, char **argv) {
   int which = argc > 1 ? argv[1][0] - '0' : 0;
   struct record r;
   if (which == 1) bad();
-  if (which == 2) bad_member(&r); // BUG: out-of-bounds
+  if (which == 2) bad_member(&r);
   return 0;
 }

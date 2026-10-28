@@ -7,5 +7,5 @@ int main(void) {
   p[0] = 1;
   g = p;
   free(p);
-  return g[0]; // BUG: use-after-free
+  return g[0]; // TRAP: heap-use-after-free
 }

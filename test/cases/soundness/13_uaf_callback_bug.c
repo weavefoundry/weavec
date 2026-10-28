@@ -11,5 +11,5 @@ int main(void) {
   c.buf[0] = 1;
   c.on_done = release_buf;
   finish(&c);
-  return c.buf[0]; // BUG: use-after-free
+  return c.buf[0]; // TRAP: heap-use-after-free
 }

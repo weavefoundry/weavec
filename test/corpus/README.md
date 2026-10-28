@@ -5,19 +5,18 @@ WeaveC on real C projects at pinned revisions: RFC 0035, section 11 and the
 [`scripts/corpus-gate.py`](../../scripts/corpus-gate.py) (tests, which need
 no compiler: [`scripts/test_corpus_gate.py`](../../scripts/test_corpus_gate.py)).
 
-Since RFC 0035 every memory access of a `weavec-cc` build is guarded unless
-a local rule proves the guard redundant, and the analysis is advisory. The
-gate follows: it builds each project with `CC=weavec-cc` and runs its own
-test suite, which must pass with no guard failing; it measures how many
-accesses the build leaves guarded (the enforcement ledger), what the
-`weavec` analysis reports, whether each injected bug stops at its line, and
-what the guards cost at build and run time.
+Every memory access of a `weavec-cc` build is guarded unless a local rule
+proves the guard redundant (RFC 0035). The gate builds each project with
+`CC=weavec-cc` and runs its own test suite, which must pass with no guard
+failing; it measures how many accesses the build leaves guarded (the
+enforcement ledger), whether each injected bug stops at its line, and what
+the guards cost at build and run time.
 
 | File | What it holds |
 | --- | --- |
-| `manifest.json` | The 48 projects (url, 40-hex `sha`, `support` files) and their 50 configs: `compile` (files and arguments), `wholeProgram`, `build`, `test`, `testTimeout`, `bench`, `heldOut` and `set` (below); and `gates`, the limits of the gates below |
+| `manifest.json` | The 48 projects (url, 40-hex `sha`, `support` files) and their 49 configs: `compile` (files and arguments), `build`, `test`, `testTimeout`, `bench`, `heldOut` and `set` (below); and `gates`, the limits of the gates below |
 | `expected.json` | The ratchet, per platform and config, written by `--update` |
-| `triage.json` | Verdicts on the analysis' findings (`entries`), and `guardFailures`: the guard failures of test suites that are true bugs of the project |
+| `triage.json` | `guardFailures`: the guard failures of test suites that are true bugs of the project |
 | `injections/` | `injections.json` and one patch per injected bug, by project (39), plus the drivers some of them build |
 | `bench/` | The benchmark workloads and drivers, and `zlib-input.py`, the generator of the 64 MiB compression input |
 | `support/` | Files a checkout needs that it does not have: generated configuration headers (`{support}` in compile arguments), test wrappers and data fetchers, build files |
@@ -25,19 +24,18 @@ what the guards cost at build and run time.
 
 ## The configs
 
-| Config | Files | Whole program | Build | Test | Bench |
-| --- | --- | --- | --- | --- | --- |
-| sds | `sds.c` | | `make sds-test` | `./sds-test` | |
-| cJSON | `cJSON.c` | | CMake with tests and utils | CTest (22 tests) | parse + print |
-| cJSON-program | `cJSON.c cJSON_Utils.c` | yes | (the cJSON build) | | |
-| jsmn | `example/simple.c example/jsondump.c` | | `make simple_example jsondump` | `make test` (4 builds of `test/tests.c`) | |
-| log.c | `src/log.c` | | | | |
-| printf | `printf.c` | | | | |
-| linenoise | `linenoise.c` | | | | |
-| linenoise-program | `linenoise.c example.c` | yes | `make linenoise-example` | `make test` (the pty harness, 102 checks, about 20 s) | |
-| zlib | 15 library files | yes | `./configure && make -j8` | `make test` | minigzip on 64 MiB |
-| lua | `l*.c` | yes | the developer makefile | 27 `testes` files (below) | `lua-bench.lua` |
-| jansson | 12 `src/` files | yes | CMake | CTest (215 tests) | |
+| Config | Files | Build | Test | Bench |
+| --- | --- | --- | --- | --- |
+| sds | `sds.c` | `make sds-test` | `./sds-test` | |
+| cJSON | `cJSON.c` | CMake with tests and utils | CTest (22 tests) | parse + print |
+| jsmn | `example/simple.c example/jsondump.c` | `make simple_example jsondump` | `make test` (4 builds of `test/tests.c`) | |
+| log.c | `src/log.c` | | | |
+| printf | `printf.c` | | | |
+| linenoise | `linenoise.c` | | | |
+| linenoise-program | `linenoise.c example.c` | `make linenoise-example` | `make test` (the pty harness, 102 checks, about 20 s) | |
+| zlib | 15 library files | `./configure && make -j8` | `make test` | minigzip on 64 MiB |
+| lua | `l*.c` | the developer makefile | 27 `testes` files (below) | `lua-bench.lua` |
+| jansson | 12 `src/` files | CMake | CTest (215 tests) | |
 
 The projects without a build (log.c, printf) or a C test suite (printf's is
 C++, which includes `printf.c` into a C++ unit) are compile-only: their
@@ -90,7 +88,7 @@ a checkout: builds, injections and benchmarks work on copies under
 `<workdir>/.gate/`, deleted afterwards unless `--keep`.
 
 ```sh
-# Every PR (CI runs it on a few configs): the analysis and the ledgers.
+# Every PR (CI runs it on a few configs): the enforcement ledgers.
 scripts/corpus-gate.py --quick [--only cJSON sds] [--json out.json]
 scripts/corpus-gate.py --quick --update          # record the ratchet
 
@@ -117,29 +115,25 @@ The binaries default to `build/release/bin`, then `build/dev/bin` (a Debug
 binary's timings mean nothing: `--bench` refuses one it found itself, and
 `--full` warns). The reference compiler (`--cc`) defaults to
 `$WEAVEC_LLVM_PREFIX/bin/clang`, else `clang`. `--jobs` bounds parallel
-processes, `--timeout` each analysis or per-file compile (default 1,800 s),
+processes, `--timeout` each per-file compile (default 1,800 s),
 `--build-timeout` each build or test step (a config's `testTimeout` replaces
 it for its tests). The exit status is 0 on success, 1 when a check fails and
 2 on a usage or setup error. `--json OUT` writes everything the run
-measured, every diagnostic and report included.
+measured, every report included.
 
 ## What each mode checks
 
-- **`--quick`**, per config:
-  - the advisory analysis (RFC 0035, section 8): `weavec <file> --
-    -ferror-limit=0 <args>` for each file, or `weavec --whole-program
-    <files> -- …` for a `wholeProgram` config, in the checkout. Its
-    diagnostics go to the triage, its summary lines (`N sites: P proven, U
-    not proven, V violations, T trusted; E errors, W warnings`) to the
-    ratchet;
-  - the enforcement ledgers (RFC 0035, section 9): `weavec-cc -c -O2
-    -fweavec-checks=trap -fweavec-ledger=<file> <args> <file>` for each
-    file (a config's own `-O` comes later and wins). A ledger must be a
-    `weavec-ledger` document of version 3; its units' summaries (accesses,
-    proven, guarded, unguarded) are summed per config and go to the ratchet.
+- **`--quick`**, per config, the enforcement ledgers (RFC 0035, section
+  9): `weavec-cc -c -O2 -fweavec-checks=trap -fweavec-ledger=<file> <args>
+  <file>` for each file, in the checkout (a config's own `-O` comes later
+  and wins). A ledger must be a `weavec-ledger` document of version 3; its
+  units' summaries (accesses, proven, guarded, unguarded) are summed per
+  config and go to the ratchet. Before the first compile, a probe checks
+  that `weavec-cc` writes such a ledger at all.
 
-  A crash, a timeout, a Clang error, a missing summary line or a missing
-  ledger fails the run, and that config is not recorded by `--update`.
+  A failing compile (a crash, a timeout, a Clang error) or a missing or
+  invalid ledger fails the run, and that config is not recorded by
+  `--update`.
 - **`--full`**: `--quick` (with each per-file compile also timed with the
   reference compiler, for G9), then for each config with a `build`: the
   build and test commands in a copy with `CC` set to a wrapper around
@@ -182,7 +176,6 @@ measured, every diagnostic and report included.
 
 | Gate | RFC 0035 | Mode | Passes when |
 | --- | --- | --- | --- |
-| `triage` | (section 8) | `--quick` | every definite error of the analysis (an `error`) has a verdict in `triage.json`, and none is `"false"` |
 | ratchet | (section 11) | `--quick` | no measurement is worse than `expected.json` records (below) |
 | `drop-in` | G1, G2, G3 | `--full` | every build passes, and every test suite in trap (or verify) mode and in report mode, with no trap but at `guardFailures` |
 | `injections` | (G4, G5 on the corpus) | `--inject`, `--full` | every selected injection stops at its line |
@@ -199,34 +192,24 @@ sets) and G8 (start-up) are measured by their own scripts, not here.
 `platforms.<platform>.configs.<config>` holds what `--quick` measured:
 
 - `ledger`: `accesses`, `proven`, `guarded`, `unguarded` and `provenShare`
-  (proven over accesses, to four places), summed over the per-file ledgers;
-- `analysis`: `sites`, `proven`, `notProven`, `violations`, `trusted`,
-  `errors`, `warnings` and `overBudget`, from the analysis' summary lines
-  (the program line for a `wholeProgram` config).
+  (proven over accesses, to four places), summed over the per-file ledgers.
 
-`provenShare` must not drop and `unguarded`, `errors` and `warnings` must
-not rise: a worse value fails the run. A better one, and any change of the
-other counts, is reported for `--update` to record. A config or platform
-with no record is reported, not failed, until `--update` records it.
-Platforms are recorded separately (system headers change the numbers).
-`--update` records the configs whose analyses and compiles all succeeded;
-`--update-from RESULTS` records a `--json` file written elsewhere, for
-example the `corpus-gate-quick-<os>` artifact of a CI run.
+`provenShare` must not drop and `unguarded` must not rise: a worse value
+fails the run. A better one, and any change of the other counts, is
+reported for `--update` to record. A config or platform with no record is
+reported, not failed, until `--update` records it. Platforms are recorded
+separately (system headers change the numbers). `--update` records the
+configs whose compiles all succeeded; `--update-from RESULTS` records a
+`--json` file written elsewhere, for example the `corpus-gate-quick-<os>`
+artifact of a CI run.
 
-The record holds cJSON, cJSON-program, log.c and sds on `darwin-arm64`, measured
-with `weavec-cc` 0.15.0-dev (9fb1dc1231cf). The other configs and platforms
-have none yet: record them with `--quick --update` on a quiet machine, and
-from CI's results files with `--update-from`.
+The record holds the original configs (cJSON, jansson, jsmn, linenoise,
+linenoise-program, log.c, lua, printf, sds and zlib) on `darwin-arm64`,
+measured with `weavec-cc` 0.15.0-dev (90dcdf8665ea). The other configs and
+platforms have none yet: record them with `--quick --update` on a quiet
+machine, and from CI's results files with `--update-from`.
 
 ## Triage (`triage.json`)
-
-`entries` holds verdicts on the analysis' findings,
-`{config, id, certainty, file, line, verdict, note}`, keyed by config, file,
-line and id. A definite finding is an `error` of `weavec`, a possible one a
-`warning`. Every definite error a run reports needs an entry and none may
-be triaged `"false"`; possible findings are counted and need none. An entry
-no finding of a config that ran matches is reported as stale without
-failing; entries are removed when a population is re-triaged.
 
 `guardFailures` lists the guard failures of a test suite that are true
 bugs of the project: `{config, file, line, verdict, note}`, with an
@@ -235,16 +218,19 @@ is `"true"`, and the note is the source evidence: the gate refuses an entry
 with any other verdict, so a false trap is never triaged away (it is a bug
 in WeaveC). A report at a listed site is not counted as a trap, and a test
 suite that fails in trap mode only because of such reports passes when its
-report-mode rerun passes. An entry no run names is reported as stale.
+report-mode rerun passes. An entry no run names is reported as stale. The file holds nothing else: the
+gate refuses any other field.
 
-The entries are four for jansson's `hashlittle`
+There are no entries. The last four were jansson's `hashlittle`
 (`src/lookup3.h:259`, `260`, `263`, `264`): its tail switch reads a whole
 32-bit word of the key and masks off the bytes past the key's end, as the
 comment above the switch says; the source selects a byte-wise tail under
-Valgrind and AddressSanitizer (`NO_MASKING_TRICK`). mbedtls's test helpers
-read 239 bytes past a certificate array (`library/x509_crt.c:1415`); since
-RFC 0035 the read lands inside the next global, which no redzone separates
-it from, so no guard fails there (as under ASan), and it has no entry.
+Valgrind and AddressSanitizer (`NO_MASKING_TRICK`), which `weavec-cc`
+selects too since RFC 0036 (it compiles as ASan would). mbedtls's test
+helpers read 239 bytes past a certificate array
+(`library/x509_crt.c:1415`); since RFC 0035 the read lands inside the next
+global, which no redzone separates it from, so no guard fails there (as
+under ASan), and it has no entry.
 
 ## Commands and their environment
 
@@ -294,5 +280,5 @@ line.
 Measured on 2026-10-06 with `weavec-cc` 0.15.0-dev (9fb1dc1231cf), the
 injections of sds (5), log.c (2), printf (1) and jsmn (2) stop where their
 entries say. Those of cJSON, linenoise, zlib, Lua and jansson were
-converted from the analysis-era entries (whose `run` commands they keep,
-and whose test suites they otherwise run) and await their first run.
+converted from earlier entries (whose `run` commands they keep, and whose
+test suites they otherwise run) and await their first run.

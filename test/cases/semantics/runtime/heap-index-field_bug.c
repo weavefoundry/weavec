@@ -16,7 +16,7 @@ static struct vec *vec_new(size_t cap) {
   return v;
 }
 static void vec_set(struct vec *v, size_t i, int x) {
-  v->data[i] = x; // BUG: out-of-bounds // TRAP
+  v->data[i] = x; // TRAP
 }
 int main(int argc, char **argv) {
   struct vec *v = vec_new(8);

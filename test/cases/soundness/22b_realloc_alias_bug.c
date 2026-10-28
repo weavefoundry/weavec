@@ -8,7 +8,7 @@ int main(void) {
   char *alias = p;
   char *q = realloc(p, 1 << 20);
   if (!q) { free(p); return 1; }
-  int r = alias[0]; // BUG: use-after-move
+  int r = alias[0]; // TRAP: heap-use-after-free
   free(q);
   return r;
 }

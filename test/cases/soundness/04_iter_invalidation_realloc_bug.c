@@ -11,7 +11,7 @@ int main(int argc, char **argv) {
   int *nv = realloc(v, cap * sizeof *nv);
   if (!nv) { free(v); return 1; }
   v = nv;
-  *it = 42; // BUG: use-after-move
+  *it = 42; // TRAP: heap-use-after-free
   int r = v[1];
   free(v);
   return r;

@@ -10,7 +10,7 @@ int a1(void) {             /* no alias, heap cell */
   if (!slot || !o) { free(slot); free(o); return 0; }
   *slot = o;
   free(o);
-  int r = (*slot)->v; // BUG: use-after-free
+  int r = (*slot)->v; // TRAP: heap-use-after-free
   free(slot);
   return r;
 }

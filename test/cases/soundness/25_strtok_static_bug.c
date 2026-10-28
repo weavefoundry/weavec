@@ -6,6 +6,6 @@ int main(void) {
   if (!s) return 1;
   char *t = strtok(s, ",");
   free(s);
-  t = strtok(NULL, ","); // BUG: use-after-free
+  t = strtok(NULL, ",");
   return t ? t[0] : 0; // TRAP
 }

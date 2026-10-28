@@ -1,7 +1,6 @@
 // RFC 0032 §3: the correct twin of uaf-container_bug.c: another item is removed, and 'b' stays live.
 // STAGE: S3
 // CLEAN
-// ALLOW: leak
 // RUN-INPUT: c
 // ASAN
 #include <stdio.h>

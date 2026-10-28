@@ -1,16 +1,20 @@
 # RFC 0008: Pointer validity: null dereferences, uninitialised pointers, invalid releases and replaced values
 
-- **Status**: Accepted
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-03
 - **Accepted**: 2026-09-03
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: amends the RFC 0003 rule on *where
-  effects are read from* (*Deriving a summary*, third bullet: frees and
-  moves below a dereference are read from the exit state alone); extends
-  the RFC 0003 summary vocabulary (`replaced`, `requires`, `notnull`, the
-  `result` root) and the RFC 0006/0007 outcome facts (`nonNullOn`);
+- **Supersedes / superseded by**: Superseded by RFC 0036; amends the RFC 0003
+  rule on *where effects are read from* (*Deriving a summary*, third bullet:
+  frees and moves below a dereference are read from the exit state alone);
+  extends the RFC 0003 summary vocabulary (`replaced`, `requires`, `notnull`,
+  the `result` root) and the RFC 0006/0007 outcome facts (`nonNullOn`);
   resolves the RFC 0007 *Future work* item "Nullability (a later RFC)".
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Accepted
+> until then; it is kept as a record of the design.
 
 ## Summary
 

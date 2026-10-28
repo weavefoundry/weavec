@@ -27,20 +27,19 @@ Pagefind creates its search index during the production build. Validate search i
 
 ## Where content lives
 
-| Source                               | Purpose                                                        |
-| ------------------------------------ | -------------------------------------------------------------- |
-| `docs/pages/`                        | Authored onboarding, task guides, and website pages.           |
-| `docs/annotations.md`                | Authoritative annotation and diagnostic reference.             |
-| `docs/rfcs/`                         | Authoritative design records and their statuses.               |
-| `docs/architecture.md`               | Architecture source, split by section for the site.            |
-| `docs/data/diagnostic-remedies.json` | Practical resolution guidance for each diagnostic.             |
-| `docs/examples/`                     | Tutorial source files included directly in published examples. |
-| `docs/src/`                          | Components, styles, and content configuration.                 |
-| `docs/scripts/`                      | Content preparation and validation.                            |
+| Source                 | Purpose                                                        |
+| ---------------------- | -------------------------------------------------------------- |
+| `docs/pages/`          | Authored onboarding, task guides, and website pages.           |
+| `docs/annotations.md`  | Reference for the `weavec.h` header and `WEAVEC_UNSAFE`.       |
+| `docs/rfcs/`           | Authoritative design records and their statuses.               |
+| `docs/architecture.md` | Architecture source, split by section for the site.            |
+| `docs/examples/`       | Tutorial source files included directly in published examples. |
+| `docs/src/`            | Components, styles, and content configuration.                 |
+| `docs/scripts/`        | Content preparation and validation.                            |
 
 `npm run prepare:content` creates `docs/.generated/`. Do not edit or commit that directory. The preparation step preserves the original guides, rewrites repository links to site routes, and gives generated pages edit links pointing to their real source.
 
-When adding a top-level heading to a split source guide, update its mapping in `scripts/prepare-content.mjs`. An unmapped heading fails the build so content cannot silently disappear. RFC entries and diagnostic pages are discovered automatically; new diagnostic IDs require resolution guidance.
+The architecture guide is split into one page per top-level heading, and RFC entries are discovered automatically. Other imported sources and their routes are listed in `scripts/prepare-content.mjs`.
 
 The RFC library reads status from each RFC's own metadata. Page dates use Git commit history. The version badge comes from the root CMake project version, and release notes come from the generated `CHANGELOG.md`.
 
@@ -55,10 +54,10 @@ npm run test:browser
 
 The build checks TypeScript, every internal page and fragment link, local assets, canonical URLs, metadata, search output, and the 404 page. Browser tests exercise desktop and mobile navigation, search, RFC filtering, both themes, and accessibility.
 
-Tutorial examples are also exercised against WeaveC by the compiler CI: `weavec` must report the use-after-free example and accept its fix; `weavec-cc` must record the lookup example's guarded load in the enforcement ledger and stop a negative index with an `index-out-of-bounds` report, and must stop the vector example's read past its heap block with a `heap-buffer-overflow` report. You can run them locally from the repository root; `weavec-cc` is taken from the same directory unless `--weavec-cc` names it:
+The tutorial examples can be exercised against a built `weavec-cc`: it must record the lookup example's guarded load in the enforcement ledger and stop a negative index with an `index-out-of-bounds` report, and must stop the vector example's read past its heap block with a `heap-buffer-overflow` report. Run them from the repository root:
 
 ```sh
-python3 docs/scripts/check-examples.py --weavec build/dev/bin/weavec --weavec-cc build/dev/bin/weavec-cc
+python3 docs/scripts/check-examples.py --weavec-cc build/dev/bin/weavec-cc
 ```
 
 ## GitHub Pages deployment

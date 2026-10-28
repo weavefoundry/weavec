@@ -3,7 +3,6 @@
 // its own fresh string through one of three out-parameters (the summary
 // keeps them as possible stores), so no two of a, b and c hold one object.
 // CLEAN
-// ALLOW: double-free
 // RUN-INPUT:
 // RUN-INPUT: x
 // RUN-INPUT: x y

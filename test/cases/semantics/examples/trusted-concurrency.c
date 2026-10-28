@@ -25,6 +25,6 @@ int main(void) {
   shared[0] = 1;
   if (pthread_create(&t, NULL, worker, NULL) != 0) return 1;
   pthread_join(t, NULL);
-  if (shared) return shared[0]; // BUG: use-after-free
+  if (shared) return shared[0]; // TRAP: heap-use-after-free
   return 0;
 }

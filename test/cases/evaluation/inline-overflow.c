@@ -5,7 +5,7 @@ void run(void) {
   if (!b) return;
   b->data = malloc(4);
   if (!b->data) { free(b); return; }
-  b->data[4] = 0; // BUG: out-of-bounds // TRAP
+  b->data[4] = 0; // TRAP
   free(b->data);
   free(b);
 }

@@ -10,7 +10,7 @@
 static char *g;
 static volatile char sink;
 
-static void reader(void) { sink = g[0]; } // BUG: use-after-free // TRAP
+static void reader(void) { sink = g[0]; } // TRAP
 
 int main(void) {
   g = malloc(8);

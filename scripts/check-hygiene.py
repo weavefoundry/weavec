@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
-"""Check repository hygiene: gate H2 of RFC 0030 (docs/rfcs/0030-prove-or-trap.md)
-as RFC 0031 (docs/rfcs/0031-object-engine.md, section 2) moves it to the object engine.
+"""Check repository hygiene: gate H1 of RFC 0036 (docs/rfcs/0036-deterministic-heap-reuse.md).
 
-Seven checks, one per bullet of H2 (its fourth bullet is split in two):
+Seven checks, the rules of AGENTS.md that a script can hold the tree to:
 
-  retired-name       0 occurrences of SafetyState, CheckedContract,
-                     checkContracts or --checked, or of the old engine's
-                     FunctionDataflow, DataflowEngine, TranslationUnitAnalyzer,
-                     FunctionAnalyzer, SummaryStore or FunctionSummary, in
-                     lib/, tools/ and docs/ outside docs/rfcs/ (superseded
-                     RFCs keep their text). Plain case-sensitive substrings:
-                     --checked-report counts.
   library-name-test  0 `== "NAME"` or `"NAME" ==` comparisons (any whitespace
                      around ==) in the C and C++ sources (.h .hpp .cpp .cc .c
                      .def .inc) of lib/, include/ and tools/ outside
@@ -18,60 +10,39 @@ Seven checks, one per bullet of H2 (its fourth bullet is split in two):
                      lib/Core/LibrarySpec.txt answers to: an entry, a chk()
                      alias (a fortified form), or the __builtin_ spelling of
                      either. Comparisons inside comments do not count.
+                     Library behaviour goes in the table, which the guard
+                     passes read through GuardLibrary.cpp.
   corpus-word        0 occurrences of the words cJSON, jansson, linenoise,
-                     jsmn, zlib, lua, Lua, sds and minigzip, and of RFC 0033's
-                     fresh and sealed projects zstd, libuv, oniguruma, redis,
-                     expat, pcre2, libevent, libsodium, libxml2, libpng,
-                     mbedtls, msgpack and yyjson, in any file under lib/,
+                     jsmn, zlib, lua, Lua, sds and minigzip, and of the
+                     corpus's later projects (zstd, libuv, oniguruma, redis,
+                     expat, ...; CORPUS_WORDS below), in any file under lib/,
                      comments included (the word rule is below).
-  engine-include     only lib/Analysis/Engine*.cpp and
-                     lib/Analysis/ObjectEngine.cpp include Engine.h (the
-                     engine's private header): no other file under lib/ or
-                     include/ includes a header whose last path component is
-                     Engine.h. Nor does a file of a new component (RFC 0030
-                     section 1: every file under lib/ or include/ whose name
-                     starts with SiteCollector, AttributeReader,
-                     KindInference, SlotCollector, BoundaryInvariants,
-                     CheckPlanner or LedgerAdapter) include it through the
-                     project headers it includes. The include chain is
-                     reported.
-  engine-sink        the engine receives no DiagnosticSink (it publishes only
-                     through LedgerAdapter): no identifier containing
-                     DiagnosticSink (ClangDiagnosticSink too) in
-                     lib/Analysis/Engine*.{h,cpp}, lib/Analysis/ObjectEngine.cpp
-                     or include/weavec/Analysis/ObjectEngine.h, comments and
-                     string literals ignored. A missing lib/Analysis/Engine.h
-                     is a violation.
-  engine-lines       lib/Analysis/Engine*.h and lib/Analysis/Engine*.cpp
-                     (EngineIntegers.h included) total at most 21,500 lines.
+  core-include       lib/Core and include/weavec/Core include no Clang or LLVM
+                     header: no include whose path starts with clang/,
+                     clang-c/, llvm/ or llvm-c/ in their C and C++ sources.
+  runtime-include    the runtime (runtime/, its tests included) includes no
+                     WeaveC header but its own weavec_rt.h: every quoted
+                     include names weavec_rt.h (by its last path component),
+                     and no angled include's path starts with weavec.
+  runtime-entry      every runtime entry point the passes name is declared in
+                     runtime/weavec_rt.h: each `runtime("NAME"` call (the
+                     pass's declaration of __weavec_rt_NAME) and each
+                     "__weavec_rt_NAME" string literal in the C and C++
+                     sources of lib/Frontend, and each wrapper(NAME) clause of
+                     lib/Core/LibrarySpec.txt (the passes redirect the call to
+                     __weavec_rt_NAME). A name the header does not contain as
+                     an identifier (comments ignored) is a violation, and so
+                     is a missing header. A name the passes compute (passed
+                     through a variable) is not seen.
   library-lines      the code under lib/, include/ and tools/ totals at most
-                     57,000 lines. lib/Core/LibrarySpec.txt does not count:
-                     it is a declarative table, and its growth is coverage,
-                     not sprawl. Both limits are ratchets (RFC 0030 gate H2):
-                     they are lowered as code is deleted, and raised only by
-                     an RFC amendment that records the measurement. RFC 0031
-                     stage S7 recorded them: the measurement at the end of S7
-                     (19,654 and 64,367 lines), rounded up to a multiple of
-                     500. RFC 0032 (gate H1, Implementation amendments)
-                     raised the library limit to 69,000 for the planner's
-                     guards, the range caches, object registration and the
-                     driver's runtime handling (68,744 lines measured).
-                     RFC 0033 (gate H1, Implementation amendments) raised
-                     them to 21,500 and 70,000 for the witness rule, the
-                     length guards, the link modes and the unit budget
-                     (21,078 and 69,980 lines measured). RFC 0034 (gate
-                     H1, Implementation amendments) raised them to 22,000
-                     and 72,000 for the shadow guards' passes, confirmation
-                     by replay and the work and memory budgets. RFC 0035
-                     (stage S6) lowered them to 21,500 and 58,000 once the
-                     check planner, the unit records, the link step and the
-                     analysis ledger were deleted (21,121 and 57,963 lines
-                     measured), and the library limit to 57,000 for gate H1
-                     once the summary text format, the link-only paths and
-                     the code only tests used were deleted (55,992 lines
-                     measured).
+                     9,000 lines (RFC 0036 gate H1; the headers and the
+                     driver's tool count too). lib/Core/LibrarySpec.txt does
+                     not count: it is a declarative table, and its growth is
+                     coverage, not sprawl. The limit is a ratchet: it is
+                     lowered as code is deleted, and raised only by an RFC
+                     amendment that records the measurement.
   runtime-lines      the C runtime (runtime/, its tests under runtime/test/
-                     excluded) totals at most 4,000 lines (RFC 0032 gate H1).
+                     excluded) totals at most 6,000 lines (RFC 0036 gate H1).
                      It is counted apart from the libraries: it is linked
                      into compiled programs, not into the compiler.
 
@@ -80,37 +51,31 @@ preceded or followed by an ASCII letter or digit, and case matters.
 Underscores and other punctuation are boundaries, so cJSON_IsString, lua_State
 and <zlib.h> are violations, while evaluation, sdsnew, LUA and Zlib are not.
 
-engine-include ignores commented-out includes; it resolves an include against
-the including file's directory, lib/Analysis/ and include/, follows only files
-under lib/ and include/, and counts every include whose last component is
-Engine.h, resolved or not (SafetyEngine.h and ObjectEngine.h are other
-headers).
+The include checks ignore commented-out includes.
 
 Files come from `git ls-files --cached --others --exclude-standard`, so ignored
-build output (docs/node_modules, docs/dist, docs/.astro, ...) is never read
-while new untracked files are; files deleted in the working tree are skipped.
-When the root is not the top of a git work tree (a source archive), the
-directories are walked instead, skipping node_modules, dist, .generated,
-.astro, test-results, playwright-report, __pycache__, .git and build*.
-Symbolic links are skipped, and so are binary files (a NUL byte in the first
-8 KiB), by every check, the line counts included. Text is read as UTF-8 with
-invalid bytes replaced. Lines are counted as `wc -l` counts them, plus one
-for a last line that has no trailing newline.
+build output is never read while new untracked files are; files deleted in
+the working tree are skipped. When the root is not the top of a git work tree
+(a source archive), the directories are walked instead, skipping
+node_modules, dist, .generated, .astro, test-results, playwright-report,
+__pycache__, .git and build*. Symbolic links are skipped, and so are binary
+files (a NUL byte in the first 8 KiB), by every check, the line counts
+included. Text is read as UTF-8 with invalid bytes replaced. Lines are
+counted as `wc -l` counts them, plus one for a last line that has no trailing
+newline.
 
 Exit status: 0 when every check passes, 1 when any fails, 2 on a usage error.
 
 Examples:
 
   scripts/check-hygiene.py
-  scripts/check-hygiene.py --root ~/src/weavec-0.11.0 --json hygiene.json
+  scripts/check-hygiene.py --root ~/src/weavec-0.17.0 --json hygiene.json
 """
 
 from __future__ import annotations
 
 import argparse
-import collections
 import dataclasses
-import fnmatch
 import json
 import os
 import posixpath
@@ -119,40 +84,28 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Container, Iterator, Optional
+from typing import Iterator, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------
-# Gate H2 (RFC 0030, Acceptance gates, Hygiene; RFC 0031, section 2)
+# Gate H1 (RFC 0036, Acceptance gates, Hygiene)
 # ---------------------------------------------------------------------------
 
-# Recorded by RFC 0031 stage S7 and RFC 0032, 0033 and 0034 gate H1 (see the
-# module docstring).
-ENGINE_LINE_LIMIT = 21_500
-LIBRARY_LINE_LIMIT = 57_000
-RUNTIME_LINE_LIMIT = 4_000
+# Recorded by RFC 0036 gate H1 and RFC 0032 gate H1 (see the module docstring).
+LIBRARY_LINE_LIMIT = 9_000
+RUNTIME_LINE_LIMIT = 6_000
 
-# retired-name
-RETIRED_CHECKED_NAMES = ("SafetyState", "CheckedContract", "checkContracts", "--checked")
-# The old engine's (RFC 0031 section 1).
-RETIRED_ENGINE_NAMES = ("FunctionDataflow", "DataflowEngine", "TranslationUnitAnalyzer",
-                        "FunctionAnalyzer", "SummaryStore", "FunctionSummary")
-RETIRED_NAMES = RETIRED_CHECKED_NAMES + RETIRED_ENGINE_NAMES
-RETIRED_NAME_DIRS = ("lib", "tools", "docs")
-RETIRED_NAME_EXEMPT = ("docs/rfcs/",)
-# The pages that still describe the old engine until the rewrite that RFC
-# 0031 section 10 asks for lands. Remove each one as it is rewritten.
-# library-name-test (section 8)
+# library-name-test
 LIBRARY_SPEC = "lib/Core/LibrarySpec.txt"
 LIBRARY_SPEC_PREFIX = "lib/Core/LibrarySpec"
 LIBRARY_DIRECTIVES = ("header", "builtins")
 BUILTIN_PREFIX = "__builtin_"
 SOURCE_DIRS = ("lib", "include", "tools")
 SOURCE_SUFFIXES = (".h", ".hpp", ".cpp", ".cc", ".c", ".def", ".inc")
-# corpus-word (the corpus projects of section 17.5, and RFC 0033 section 11's
-# fresh and sealed projects)
+# corpus-word (test/corpus/manifest.json's projects, by the RFC that chose them)
 CORPUS_WORDS = ("cJSON", "jansson", "linenoise", "jsmn", "zlib", "lua", "Lua", "sds", "minigzip",
+                # RFC 0033, section 11.
                 "zstd", "libuv", "oniguruma", "redis", "expat", "pcre2", "libevent", "libsodium",
                 "libxml2", "libpng", "mbedtls", "msgpack", "yyjson",
                 # RFC 0034, section 9.
@@ -160,37 +113,28 @@ CORPUS_WORDS = ("cJSON", "jansson", "linenoise", "jsmn", "zlib", "lua", "Lua", "
                 "libdeflate", "zlib-ng", "curl", "cmark", "libgit2", "libjpeg", "opus",
                 "flac", "giflib", "wren")
 CORPUS_WORD_DIRS = ("lib",)
-# engine-include (RFC 0030 sections 1 and 14, RFC 0031 section 2)
-NEW_COMPONENTS = ("SiteCollector", "AttributeReader", "KindInference", "SlotCollector",
-                  "BoundaryInvariants", "CheckPlanner", "LedgerAdapter")
-COMPONENT_DIRS = ("lib", "include")
-ENGINE_HEADER = "Engine.h"
-ENGINE_DIR = "lib/Analysis"
-ENGINE_INCLUDERS = ("Engine*.cpp", "ObjectEngine.cpp")  # in ENGINE_DIR
-# Searched after the including file's directory.
-INCLUDE_PATH = ("lib/Analysis", "include")
-# engine-sink (RFC 0030 section 14)
-ENGINE_PRIVATE_HEADER = "lib/Analysis/Engine.h"
-ENGINE_SINK_PATTERNS = ("Engine*.h", "Engine*.cpp", "ObjectEngine.cpp")  # in ENGINE_DIR
-ENGINE_PUBLIC_HEADER = "include/weavec/Analysis/ObjectEngine.h"
-DIAGNOSTIC_SINK = "DiagnosticSink"
-# engine-lines and library-lines (RFC 0030 section 18, The line budget)
-ENGINE_LINE_PATTERNS = ("Engine*.h", "Engine*.cpp")  # in ENGINE_DIR
+# core-include (AGENTS.md, rule 1)
+CORE_DIRS = ("lib/Core", "include/weavec/Core")
+FOREIGN_INCLUDE_PREFIXES = ("clang/", "clang-c/", "llvm/", "llvm-c/")
+# runtime-include and runtime-entry (AGENTS.md, rule 9)
+RUNTIME_HEADER = "runtime/weavec_rt.h"
+RUNTIME_SOURCE_SUFFIXES = (".c", ".h")
+RUNTIME_PREFIX = "__weavec_rt_"
+PASS_DIRS = ("lib/Frontend",)
+# library-lines and runtime-lines
 LIBRARY_DIRS = ("lib", "include", "tools")
 # What a total's violation line shows in place of a path.
-ENGINE_TOTAL = "lib/Analysis/Engine*.{h,cpp}"
 LIBRARY_TOTAL = "{lib,include,tools}/**"
 RUNTIME_DIRS = ("runtime",)
 RUNTIME_TESTS = "runtime/test/"
 RUNTIME_TOTAL = "runtime/**"
 
 CHECKS = (
-    ("retired-name", "checked-mode or old-engine names outside docs/rfcs/"),
     ("library-name-test", '== "<name>" against a LibrarySpec name outside lib/Core/LibrarySpec*'),
     ("corpus-word", "a corpus project's name (cJSON, jansson, ..., zstd, redis, ...) in lib/"),
-    ("engine-include", "Engine.h included outside Engine*.cpp and ObjectEngine.cpp"),
-    ("engine-sink", "the engine naming a DiagnosticSink"),
-    ("engine-lines", "lib/Analysis/Engine*.{h,cpp} over their line limit"),
+    ("core-include", "a Clang or LLVM header included by lib/Core or include/weavec/Core"),
+    ("runtime-include", "a WeaveC header other than weavec_rt.h included by runtime/"),
+    ("runtime-entry", "a runtime entry point the passes name that runtime/weavec_rt.h does not declare"),
     ("library-lines", "lib/, include/ and tools/ over their line limit"),
     ("runtime-lines", "runtime/ (without runtime/test/) over its line limit"),
 )
@@ -199,7 +143,7 @@ CHECKS = (
 # File selection
 # ---------------------------------------------------------------------------
 
-SCANNED_DIRS = ("lib", "include", "tools", "docs", "runtime")
+SCANNED_DIRS = ("lib", "include", "tools", "runtime")
 WALK_SKIPPED_DIRS = frozenset(("node_modules", "dist", ".generated", ".astro", "test-results",
                                "playwright-report", "__pycache__", ".git"))
 WALK_SKIPPED_PREFIX = "build"
@@ -227,7 +171,7 @@ class Result:
     unreadable: list[str] = dataclasses.field(default_factory=list)
     library_entries: Optional[int] = None
     library_aliases: Optional[int] = None
-    engine_lines: dict[str, int] = dataclasses.field(default_factory=dict)
+    entry_points: dict[str, bool] = dataclasses.field(default_factory=dict)
     library_lines: dict[str, int] = dataclasses.field(default_factory=dict)
     runtime_lines: dict[str, int] = dataclasses.field(default_factory=dict)
     violations: list[Violation] = dataclasses.field(default_factory=list)
@@ -443,22 +387,6 @@ def include_directives(code: str) -> list[tuple[int, str, str]]:
     return found
 
 
-def resolve_include(including: str, path: str, known: Container[str]) -> Optional[str]:
-    """The file among `known` that `#include "path"` in `including` names:
-    relative to the including file's directory, then to INCLUDE_PATH."""
-    for base in (posixpath.dirname(including), *INCLUDE_PATH):
-        candidate = posixpath.normpath(posixpath.join(base, path))
-        if candidate in known:
-            return candidate
-    return None
-
-
-def identifiers_containing(text: str, word: str) -> list[tuple[int, str]]:
-    """(offset, identifier) of each identifier in `text` that contains `word`."""
-    pattern = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z0-9_]*" + re.escape(word) + r"[A-Za-z0-9_]*")
-    return [(match.start(), match.group()) for match in pattern.finditer(text)]
-
-
 # ---------------------------------------------------------------------------
 # LibrarySpec names (the grammar is in lib/Core/LibrarySpec.txt's header)
 # ---------------------------------------------------------------------------
@@ -523,7 +451,7 @@ def library_names(text: str) -> LibraryNames:
 
 
 # ---------------------------------------------------------------------------
-# Checks 1 to 3: text
+# Checks 1 and 2: text
 # ---------------------------------------------------------------------------
 
 
@@ -534,13 +462,6 @@ def find_all(pattern: re.Pattern, text: str) -> Iterator[tuple[int, int, str]]:
     for number, line in enumerate(text.split("\n"), 1):
         for match in pattern.finditer(line):
             yield number, match.start() + 1, match.group()
-
-
-def check_retired_names(tree: Tree, result: Result) -> None:
-    pattern = re.compile("|".join(re.escape(name) for name in RETIRED_NAMES))
-    for file in tree.files(RETIRED_NAME_DIRS, exclude=RETIRED_NAME_EXEMPT):
-        for number, column, name in find_all(pattern, file.text):
-            result.add("retired-name", file.path, number, f"'{name}' at column {column}")
 
 
 def _is_word(character: str) -> bool:
@@ -612,83 +533,67 @@ def check_corpus_words(tree: Tree, result: Result) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Checks 4 and 5: the engine seam (RFC 0030 section 14, "Two rules keep the
-# seam honest"; RFC 0031 section 2)
+# Checks 3 to 5: layering (AGENTS.md, rules 1 and 9)
 # ---------------------------------------------------------------------------
 
 
-def _in_engine_dir(path: str, patterns: tuple[str, ...]) -> bool:
-    """Whether `path` is directly in ENGINE_DIR and its name matches one of
-    `patterns`."""
-    name = posixpath.basename(path)
-    return (posixpath.dirname(path) == ENGINE_DIR
-            and any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns))
-
-
-def _shortest_chain(start: str, includes: Callable[[str], list[tuple[int, str, str]]],
-                    resolve: Callable[[str, str], Optional[str]]) -> Optional[list[str]]:
-    """The shortest include chain from `start` to Engine.h: `path:line` for
-    each include followed, then Engine.h as resolved (or as spelled)."""
-    parents: dict[str, Optional[tuple[str, int]]] = {start: None}
-    queue = collections.deque([start])
-    while queue:
-        node = queue.popleft()
-        for line, spelling, included in includes(node):
-            target = resolve(node, included)
-            if posixpath.basename(included) == ENGINE_HEADER:
-                hops = [f"{node}:{line}", target or spelling]
-                while parents[node] is not None:
-                    node, parent_line = parents[node]
-                    hops.insert(0, f"{node}:{parent_line}")
-                return hops
-            if target is not None and target not in parents:
-                parents[target] = (node, line)
-                queue.append(target)
-    return None
-
-
-def check_engine_includes(tree: Tree, result: Result) -> None:
-    files = {file.path: file for file in tree.files(COMPONENT_DIRS)}
-    directives: dict[str, list[tuple[int, str, str]]] = {}
-    chains: dict[str, Optional[list[str]]] = {}
-
-    def includes(path: str) -> list[tuple[int, str, str]]:
-        if path not in directives:
-            directives[path] = include_directives(files[path].lexed.code)
-        return directives[path]
-
-    def resolve(including: str, path: str) -> Optional[str]:
-        return resolve_include(including, path, files)
-
-    for path in files:
-        if _in_engine_dir(path, ENGINE_INCLUDERS):
-            continue  # no new component's name starts with Engine
-        component = posixpath.basename(path).startswith(NEW_COMPONENTS)
-        for line, spelling, included in includes(path):
-            target = resolve(path, included)
-            if posixpath.basename(included) == ENGINE_HEADER:
-                result.add("engine-include", path, line,
-                           f"includes Engine.h directly: {path}:{line} -> {target or spelling}")
-                continue
-            if not component or target is None:
-                continue
-            if target not in chains:
-                chains[target] = _shortest_chain(target, includes, resolve)
-            if chains[target] is not None:
-                chain = " -> ".join([f"{path}:{line}", *chains[target]])
-                result.add("engine-include", path, line, f"includes Engine.h transitively: {chain}")
-
-
-def check_engine_sink(tree: Tree, result: Result) -> None:
-    if tree.get(ENGINE_PRIVATE_HEADER) is None:
-        result.add("engine-sink", ENGINE_PRIVATE_HEADER, None,
-                   "missing or unreadable, so the engine cannot be checked")
-    for file in tree.files(COMPONENT_DIRS):
-        if not (_in_engine_dir(file.path, ENGINE_SINK_PATTERNS) or file.path == ENGINE_PUBLIC_HEADER):
+def check_core_includes(tree: Tree, result: Result) -> None:
+    for file in tree.files(CORE_DIRS):
+        if not file.path.endswith(SOURCE_SUFFIXES):
             continue
-        bare = file.lexed.bare
-        for offset, name in identifiers_containing(bare, DIAGNOSTIC_SINK):
-            result.add("engine-sink", file.path, line_at(bare, offset), f"the engine names {name}")
+        for line, spelling, path in include_directives(file.lexed.code):
+            if path.startswith(FOREIGN_INCLUDE_PREFIXES):
+                result.add("core-include", file.path, line, f"includes {spelling}")
+
+
+def check_runtime_includes(tree: Tree, result: Result) -> None:
+    for file in tree.files(RUNTIME_DIRS):
+        if not file.path.endswith(RUNTIME_SOURCE_SUFFIXES):
+            continue
+        for line, spelling, path in include_directives(file.lexed.code):
+            quoted = spelling.startswith('"')
+            if quoted and posixpath.basename(path) != posixpath.basename(RUNTIME_HEADER):
+                result.add("runtime-include", file.path, line, f"includes {spelling}, not weavec_rt.h")
+            elif not quoted and path.startswith("weavec"):
+                result.add("runtime-include", file.path, line, f"includes the WeaveC header {spelling}")
+
+
+_RUNTIME_CALL = re.compile(r'(?<![A-Za-z0-9_])runtime\s*\(\s*"([^"\\\n]*)"')
+_RUNTIME_NAME = re.compile(re.escape(RUNTIME_PREFIX) + r"[A-Za-z0-9_]+")
+_WRAPPER = re.compile(r"(?<![A-Za-z0-9_-])wrapper\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)")
+
+
+def entry_points(tree: Tree) -> dict[str, tuple[str, int]]:
+    """Each runtime entry point the passes name, with where it is first named."""
+    named: dict[str, tuple[str, int]] = {}
+    for file in tree.files(PASS_DIRS):
+        if not file.path.endswith(SOURCE_SUFFIXES):
+            continue
+        code = file.lexed.code
+        for match in _RUNTIME_CALL.finditer(code):
+            named.setdefault(RUNTIME_PREFIX + match.group(1), (file.path, line_at(code, match.start())))
+        for start, _, body in file.lexed.strings:
+            if _RUNTIME_NAME.fullmatch(body):
+                named.setdefault(body, (file.path, line_at(code, start)))
+    spec = tree.get(LIBRARY_SPEC)
+    if spec is not None:
+        for line, text in library_spec_lines(spec.text):
+            for match in _WRAPPER.finditer(text):
+                named.setdefault(RUNTIME_PREFIX + match.group(1), (LIBRARY_SPEC, line))
+    return dict(sorted(named.items()))
+
+
+def check_runtime_entries(tree: Tree, result: Result) -> None:
+    header = tree.get(RUNTIME_HEADER)
+    if header is None:
+        result.add("runtime-entry", RUNTIME_HEADER, None,
+                   "missing or unreadable, so the runtime's entry points are unknown")
+        return
+    declared = set(_RUNTIME_NAME.findall(header.lexed.bare))
+    result.entry_points = {name: name in declared for name in entry_points(tree)}
+    for name, (path, line) in entry_points(tree).items():
+        if name not in declared:
+            result.add("runtime-entry", path, line, f"{name} is not declared in {RUNTIME_HEADER}")
 
 
 # ---------------------------------------------------------------------------
@@ -698,16 +603,6 @@ def check_engine_sink(tree: Tree, result: Result) -> None:
 
 def _over_limit(total: int, limit: int, files: int) -> str:
     return f"{total:,} lines in {files:,} files, {total - limit:,} over the limit of {limit:,}"
-
-
-def check_engine_lines(tree: Tree, result: Result) -> None:
-    for file in tree.files((ENGINE_DIR,)):
-        if _in_engine_dir(file.path, ENGINE_LINE_PATTERNS):
-            result.engine_lines[file.path] = file.lines
-    total = sum(result.engine_lines.values())
-    if total > ENGINE_LINE_LIMIT:
-        result.add("engine-lines", ENGINE_TOTAL, None,
-                   _over_limit(total, ENGINE_LINE_LIMIT, len(result.engine_lines)))
 
 
 def check_library_lines(tree: Tree, result: Result) -> None:
@@ -730,9 +625,8 @@ def check_runtime_lines(tree: Tree, result: Result) -> None:
                    _over_limit(total, RUNTIME_LINE_LIMIT, len(result.runtime_lines)))
 
 
-CHECK_FUNCTIONS = (check_retired_names, check_library_name_tests, check_corpus_words,
-                   check_engine_includes, check_engine_sink, check_engine_lines,
-                   check_library_lines, check_runtime_lines)
+CHECK_FUNCTIONS = (check_library_name_tests, check_corpus_words, check_core_includes, check_runtime_includes,
+                   check_runtime_entries, check_library_lines, check_runtime_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -753,19 +647,18 @@ def run_checks(root: Path) -> Result:
 
 def summary_lines(result: Result) -> list[str]:
     source = "git ls-files" if result.file_source == "git" else "a directory walk (not a git work tree)"
-    engine = sum(result.engine_lines.values())
     library = sum(result.library_lines.values())
     runtime = sum(result.runtime_lines.values())
     lines = [
-        "Summary (RFC 0030 and 0031, gate H2; RFC 0032, gate H1)",
+        "Summary (RFC 0036, gate H1)",
         f"  files:          {result.files:,} from {source}; skipped {len(result.binary)} binary, "
         f"{len(result.unreadable)} unreadable",
     ]
     if result.library_entries is not None:
         lines.append(f"  LibrarySpec:    {result.library_entries:,} entries, {result.library_aliases:,} chk "
                      f"aliases, and their {BUILTIN_PREFIX} spellings")
-    lines.append(f"  engine lines:   {engine:,} / {ENGINE_LINE_LIMIT:,} "
-                 f"({len(result.engine_lines):,} {ENGINE_DIR}/Engine*.{{h,cpp}} files)")
+    declared = sum(result.entry_points.values())
+    lines.append(f"  entry points:   {declared:,} of {len(result.entry_points):,} declared in {RUNTIME_HEADER}")
     lines.append(f"  library lines:  {library:,} / {LIBRARY_LINE_LIMIT:,} "
                  f"({len(result.library_lines):,} code files under lib/, include/ and tools/, "
                  f"{LIBRARY_SPEC} excluded)")
@@ -776,7 +669,7 @@ def summary_lines(result: Result) -> list[str]:
         lines.append(f"  {check:<{width}} {result.count(check):>6}  {description}")
     total = len(result.violations)
     verdict = "PASS" if total == 0 else "FAIL"
-    lines.append(f"H2: {verdict} ({total:,} violation{'' if total == 1 else 's'})")
+    lines.append(f"H1: {verdict} ({total:,} violation{'' if total == 1 else 's'})")
     return lines
 
 
@@ -784,15 +677,14 @@ def document(result: Result) -> dict:
     """The results as JSON."""
     return {
         "schema": "weavec-hygiene",
-        "version": 2,
+        "version": 3,
         "root": str(result.root),
         "passed": not result.violations,
         "files": {"source": result.file_source, "count": result.files,
                   "binarySkipped": result.binary, "unreadable": result.unreadable},
         "librarySpec": {"entries": result.library_entries, "aliases": result.library_aliases},
+        "entryPoints": result.entry_points,
         "lines": {
-            "engine": {"total": sum(result.engine_lines.values()), "limit": ENGINE_LINE_LIMIT,
-                       "files": result.engine_lines},
             "library": {"total": sum(result.library_lines.values()), "limit": LIBRARY_LINE_LIMIT,
                         "files": len(result.library_lines)},
             "runtime": {"total": sum(result.runtime_lines.values()), "limit": RUNTIME_LINE_LIMIT,

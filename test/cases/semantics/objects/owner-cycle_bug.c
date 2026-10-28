@@ -21,6 +21,6 @@ int main(void) {
   if (!n) abort();
   n->v = 1;
   n->next = n;
-  free_list(n); // BUG: use-after-free // MISS: an owning cycle is not reported by the analysis; the guard stops at the use after free in the callee
+  free_list(n);
   return 0;
 }

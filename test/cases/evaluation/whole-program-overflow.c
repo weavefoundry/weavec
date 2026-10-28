@@ -8,7 +8,7 @@
 void run(void) {
   struct box *b = box_new();
   if (!b) return;
-  b->data[4] = 0; // BUG: out-of-bounds
+  b->data[4] = 0; // TRAP: heap-buffer-overflow
   free(b->data);
   free(b);
 }

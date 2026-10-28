@@ -6,7 +6,7 @@
 #include <string.h>
 struct message { size_t len; char data[]; };
 static void put(struct message *m, const char *p) {
-  memcpy(m->data, p, strlen(p)); // BUG: out-of-bounds // TRAP
+  memcpy(m->data, p, strlen(p)); // TRAP
 }
 int main(int argc, char **argv) {
   if (argc < 2) return 2;

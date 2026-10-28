@@ -59,5 +59,4 @@ add_custom_target(
   USES_TERMINAL)
 
 add_subdirectory(Core)
-add_subdirectory(Analysis)
 add_subdirectory(Frontend)

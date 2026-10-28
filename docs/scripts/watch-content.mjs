@@ -10,9 +10,7 @@ export function watchContent() {
     hooks: {
       'astro:server:setup': ({ server, logger }) => {
         const docs = fileURLToPath(new URL('../', import.meta.url));
-        const directories = ['pages', 'rfcs', 'examples', 'data'].map((name) =>
-          path.join(docs, name),
-        );
+        const directories = ['pages', 'rfcs', 'examples'].map((name) => path.join(docs, name));
         const files = readdirSync(docs)
           .filter((name) => name.endsWith('.md'))
           .map((name) => path.join(docs, name));

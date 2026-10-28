@@ -4,7 +4,6 @@
 // intended (RFC 0030 section 3.2): the maybe-null dereference is a checked facet, with no
 // diagnostic and no trap; the out-of-memory leak may stay a warning, hence the ALLOW.
 // CLEAN
-// ALLOW: leak
 // ASAN
 #include <stdlib.h>
 typedef struct node { struct node *next, *prev; } node;

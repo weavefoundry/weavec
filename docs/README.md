@@ -32,7 +32,7 @@ content. Author new site-specific content in `pages/`.
 
 - [Developer guide](development.md)
 - [Architecture](architecture.md)
-- [Annotations and diagnostics](annotations.md)
+- [The `weavec.h` header](annotations.md) (`WEAVEC_UNSAFE`)
 - [RFCs](rfcs/README.md)
 - [Roadmap](roadmap.md)
 

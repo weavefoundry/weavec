@@ -1,19 +1,28 @@
 # Soundness probes
 
-The 113 soundness probes of RFC 0030 (*Motivation*, *Projected outcomes on the
-soundness probes*, gate G4): 85 programs with a real memory-safety bug
-(`*_bug.c`) and 28 correct twins (`*_ok.c`, plus the two correct programs
-`41e_infeasible_double_free_fp.c` and `48_simple_sum_fp.c`). They were
-imported unchanged in S0 apart from their markers, a header comment on each
-extra unit and one added unit; the file names are the original ones. `scripts/run-cases.py` runs them
-(`test/cases/README.md` has the marker grammar):
+The 113 soundness probes of RFC 0030: 85 programs with a real memory-safety
+bug (`*_bug.c`) and 28 correct twins (`*_ok.c`, plus the two correct
+programs `41e_infeasible_double_free_fp.c` and `48_simple_sum_fp.c`).
+`scripts/run-cases.py` runs them (`test/cases/README.md` has the marker
+grammar):
 
 ```sh
-scripts/run-cases.py --filter 'soundness/**' --asan                     # gate G4
-WEAVEC_GOLDEN_DIR=<golden> scripts/run-cases.py --legacy --filter 'soundness/**'   # S0
+scripts/run-cases.py --filter 'soundness/**' --asan
 ```
 
-## Markers
+Today each bug probe pins where the default `weavec-cc` build stops it with
+`TRAP`, and each twin is `CLEAN`. Six bug probes are `XFAIL`, with the
+reason in their file: three uses after return (11, 12, 27), which RFC 0036
+leaves to a later RFC; two bugs in units built without WeaveC (14b, c13);
+and one inside a `WEAVEC_UNSAFE` region (45). Two read an uninitialised
+value that zero-initialisation defines (08, 32) and are `CLEAN`.
+
+The rest of this page is the record of the import (RFC 0030, S0): the
+markers the probes had then, and the classification of each probe by
+v0.10.0 and by RFC 0030's projection. The analysis those columns describe
+was deleted by RFC 0036.
+
+## History: the markers at the import
 
 - Every bug probe has one `BUG` marker with the probe's *matching id*, the
   id v0.10.0 reports for the caught probes, on the line where RFC 0030

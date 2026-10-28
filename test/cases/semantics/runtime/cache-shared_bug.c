@@ -18,7 +18,7 @@ static int probe(long k) {
   for (j = 0; j < 2; j++) {
     hook();
     total += p->a;
-    total += p[k].a; // BUG: out-of-bounds // TRAP
+    total += p[k].a; // TRAP
   }
   return total;
 }

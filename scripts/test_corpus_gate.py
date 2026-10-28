@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for scripts/corpus-gate.py (RFC 0035, section 11).
 
-Synthetic data only: fake tools written by the tests stand in for weavec,
+Synthetic data only: fake tools written by the tests stand in for
 weavec-cc and the reference compiler (the "programs" they build are shell
 scripts), and a local git repository stands in for a corpus project, so the
 tests need neither the network, a compiler nor a WeaveC build. The checks
@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import contextlib
 import difflib
-import fnmatch
 import importlib.util
 import io
 import json
@@ -41,10 +40,6 @@ def proc(returncode=0, stdout="", stderr="", timed_out=False, error=""):
     return gate.ProcResult("cmd", returncode, stdout, stderr, 0.1, timed_out=timed_out, error=error)
 
 
-def diag(file="a.c", line=1, id_="use-after-free", severity="error", message="use of 'p' after it was freed"):
-    return gate.Diagnostic(file=file, line=line, col=1, severity=severity, id=id_, message=message)
-
-
 def ledger_document(*summaries, version=3, rows=()):
     return {"schema": "weavec-ledger", "version": version, "producer": {"name": "weavec-cc"},
             "units": [{"source": "a.c", "object": "a.o", "summary": s, "rows": list(rows)} for s in summaries]}
@@ -65,49 +60,6 @@ def report(kind="heap-use-after-free", file="a.c", line=3, col=5, proven=False):
 
 
 class ParsingTest(unittest.TestCase):
-    def test_diagnostics_are_relative_to_the_checkout(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "src").mkdir()
-            text = "\n".join([
-                f"{root}/src/a.c:3:5: error: 'p' is freed twice [weavec::double-free]",
-                "src/b.c:7:1: warning: 'q' is leaked [weavec::leak]",
-                f"{root}/src/a.c:9:1: error: unknown type name 'foo'",
-                "    3 |   free(p);",
-                "In file included from x.h:1:",
-            ])
-            diagnostics, clang_errors = gate.parse_diagnostics(text, root)
-        self.assertEqual([(d.file, d.line, d.id, d.severity) for d in diagnostics],
-                         [("src/a.c", 3, "double-free", "error"), ("src/b.c", 7, "leak", "warning")])
-        self.assertEqual(clang_errors, 1)
-        self.assertEqual(diagnostics[0].render(), "src/a.c:3:5: error: 'p' is freed twice [weavec::double-free]")
-
-    def test_summary_lines(self):
-        text = "\n".join([
-            "weavec: cJSON.c: 1,221 sites: 858 proven, 361 not proven, 0 violations, 2 trusted; 0 errors, 4 warnings",
-            "weavec: b.c: 1 site: 0 proven, 0 not proven, 1 violation, 0 trusted; 1 error, 1 warning; "
-            "2 functions over budget (f, g)",
-            "weavec: program program: 1,745 sites in 2 units: 1,109 proven, 634 not proven, 0 violations, "
-            "2 trusted; 0 errors, 10 warnings",
-            "weavec: a.c: 812 accesses: 431 proven, 381 guarded, 0 unguarded",
-        ])
-        units, program = gate.parse_summaries(text)
-        self.assertEqual([u["source"] for u in units], ["cJSON.c", "b.c"])
-        self.assertEqual(units[0]["sites"], 1221)
-        self.assertEqual((units[1]["violations"], units[1]["errors"], units[1]["overBudget"]), (1, 1, 2))
-        self.assertEqual((program["sites"], program["proven"], program["warnings"]), (1745, 1109, 10))
-
-    def test_failures_never_look_clean(self):
-        ok = gate.classify_failure
-        self.assertEqual(ok(proc(), [], 0, 1), "")
-        self.assertEqual(ok(proc(1), [diag()], 0, 1), "")  # a definite error is a result
-        self.assertIn("without a WeaveC error", ok(proc(1), [], 0, 1))
-        self.assertIn("SIGSEGV", ok(proc(-11), [], 0, 1))
-        self.assertIn("Clang error", ok(proc(1), [], 2, 1))
-        self.assertIn("timeout", ok(proc(timed_out=True), [], 0, 1))
-        self.assertEqual(ok(proc(error="No such file"), [], 0, 1), "No such file")
-        self.assertIn("no summary line", ok(proc(), [], 0, 0))
-
     def test_reports(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -209,15 +161,11 @@ class LedgerTest(unittest.TestCase):
         quick.add_compile(gate.CompileRun("a.c", {"accesses": 8, "proven": 2, "guarded": 6, "unguarded": 0},
                                           gate.collections.Counter({"proven:in-bounds": 2}), 0.5, 2 ** 20, 0.4))
         quick.add_compile(gate.CompileRun("b.c", {}, gate.collections.Counter(), 0.1, None, failure="exit status 1"))
-        quick.add_analysis(gate.AnalysisRun(["a.c"], {"sites": 5, "errors": 1, "warnings": 2}, [diag()], 0.2))
-        quick.add_analysis(gate.AnalysisRun(["b.c"], {"sites": 9}, [], 0.2, failure="timeout"))
-        measured = quick.measured()
-        self.assertEqual(measured["ledger"], {"accesses": 8, "proven": 2, "guarded": 6, "unguarded": 0,
-                                              "provenShare": 0.25})
-        self.assertEqual((measured["analysis"]["sites"], measured["analysis"]["errors"]), (5, 1))
-        self.assertEqual(len(quick.failures), 2)
+        self.assertEqual(quick.measured(), {"ledger": {"accesses": 8, "proven": 2, "guarded": 6, "unguarded": 0,
+                                                       "provenShare": 0.25}})
+        self.assertEqual(quick.failures, ["b.c: exit status 1"])
         self.assertEqual(quick.units["a.c"]["referenceCpuSeconds"], 0.4)
-        self.assertEqual(len(quick.to_json()["diagnostics"]), 1)
+        self.assertEqual(quick.to_json()["reasons"], {"proven:in-bounds": 2})
         self.assertIsNone(gate.Quick(config="empty").proven_share)
 
 
@@ -239,8 +187,8 @@ class ManifestTest(unittest.TestCase):
     def test_repository_manifest(self):
         manifest = gate.load_manifest(CORPUS / "manifest.json", CORPUS / "support")
         names = {c.name for c in manifest.configs}
-        for name in ("sds", "cJSON", "cJSON-program", "jsmn", "log.c", "printf", "linenoise",
-                     "linenoise-program", "zlib", "lua", "jansson"):
+        for name in ("sds", "cJSON", "jsmn", "log.c", "printf", "linenoise", "linenoise-program", "zlib", "lua",
+                     "jansson"):
             self.assertIn(name, names)
             self.assertEqual(manifest.config(name).set, "original")
         self.assertTrue(set(c.set for c in manifest.configs) <= set(gate.SETS))
@@ -281,6 +229,7 @@ class ManifestTest(unittest.TestCase):
         cases = [
             ({"name": "a", "compile": {"files": ["a.c"]}, "lowered": []}, "unknown field"),
             ({"name": "a", "compile": {"files": ["a.c"]}, "link": {"args": []}}, "unknown field"),
+            ({"name": "a", "compile": {"files": ["a.c"]}, "wholeProgram": True}, "unknown field"),
             ({"name": "a", "compile": {}}, "compile.files is missing"),
             ({"name": "a", "compile": {"files": ["a.c"]}, "set": "fresh35"}, "needs heldOut true"),
             ({"name": "a", "compile": {"files": ["a.c"]}, "heldOut": True, "set": "fresh36"}, "set must be one of"),
@@ -300,7 +249,8 @@ class ManifestTest(unittest.TestCase):
             self.load(bad_sha)
 
     def test_arguments(self):
-        for argv, message in ((["--weavec", "x"], "choose a mode"),
+        for argv, message in ((["--weavec-cc", "x"], "choose a mode"),
+                              (["--quick", "--weavec", "x"], "unrecognized"),
                               (["--quick", "--reference-only"], "no --quick"),
                               (["--full", "--reference-only", "--update"], "not recorded"),
                               (["--bench", "--update"], "--update records"),
@@ -317,11 +267,9 @@ class ManifestTest(unittest.TestCase):
 # -- the ratchet -----------------------------------------------------------------------
 
 
-def measured(proven=50, accesses=100, unguarded=0, errors=0, warnings=2, sites=40):
+def measured(proven=50, accesses=100, unguarded=0):
     return {"ledger": {"accesses": accesses, "proven": proven, "guarded": accesses - proven - unguarded,
-                       "unguarded": unguarded, "provenShare": gate.share(proven, accesses)},
-            "analysis": {"sites": sites, "proven": 30, "notProven": 10, "violations": 0, "trusted": 0,
-                         "errors": errors, "warnings": warnings, "overBudget": 0}}
+                       "unguarded": unguarded, "provenShare": gate.share(proven, accesses)}}
 
 
 class RatchetTest(unittest.TestCase):
@@ -337,18 +285,16 @@ class RatchetTest(unittest.TestCase):
 
     def test_worse_fails(self):
         expected = self.expected(a=measured())
-        for now, field in ((measured(proven=49), "provenShare"), (measured(unguarded=1), "unguarded"),
-                           (measured(errors=1), "errors"), (measured(warnings=3), "warnings")):
+        for now, field in ((measured(proven=49), "provenShare"), (measured(unguarded=1), "unguarded")):
             result = gate.compare_ratchet({"a": now}, expected, self.platform)
             self.assertTrue(result.failed, field)
-            self.assertIn(f"a.{'analysis' if field in ('errors', 'warnings') else 'ledger'}.{field}",
-                          result.regressions[0])
+            self.assertIn(f"a.ledger.{field}", result.regressions[0])
 
     def test_better_and_changed_counts_are_notes(self):
         expected = self.expected(a=measured())
-        result = gate.compare_ratchet({"a": measured(proven=60, warnings=1)}, expected, self.platform)
+        result = gate.compare_ratchet({"a": measured(proven=60)}, expected, self.platform)
         self.assertFalse(result.failed)
-        self.assertEqual(len(result.improvements), 2)
+        self.assertEqual(result.improvements, ["a.ledger.provenShare: 0.5 -> 0.6 (better)"])
         self.assertIn("a.ledger.proven: 50 -> 60", result.changes)
         result = gate.compare_ratchet({"a": measured(proven=100, accesses=200)}, expected, self.platform)
         self.assertFalse(result.failed)  # the same share of more accesses
@@ -388,57 +334,32 @@ class RatchetTest(unittest.TestCase):
         for platform, section in expected["platforms"].items():
             for name, record in section["configs"].items():
                 self.assertIn(name, names, f"{platform}: {name}")
-                self.assertEqual(set(record), {"ledger", "analysis"})
+                self.assertEqual(set(record), {"ledger"})
                 self.assertEqual(set(record["ledger"]), set(gate.LEDGER_COUNTS) | {"provenShare"})
-                self.assertEqual(set(record["analysis"]), set(gate.ANALYSIS_COUNTS))
 
 
 # -- triage ----------------------------------------------------------------------------
 
 
-def entry(config="c", file="a.c", line=1, id_="use-after-free", certainty="definite", verdict="true"):
-    return {"config": config, "id": id_, "certainty": certainty, "file": file, "line": line,
-            "verdict": verdict, "note": "n"}
-
-
 class TriageTest(unittest.TestCase):
-    def test_findings(self):
-        findings = gate.findings_of("c", [diag(), diag(), diag(line=2, severity="warning", id_="leak")])
-        self.assertEqual([(f["certainty"], f["line"]) for f in findings], [("definite", 1), ("possible", 2)])
-
-    def test_definite_errors_need_a_true_verdict(self):
-        findings = gate.findings_of("c", [diag(line=1), diag(line=2), diag(line=3), diag(line=4, severity="warning")])
-        result = gate.check_triage(findings, [entry(line=1), entry(line=2, verdict="false"), entry(line=9),
-                                              entry(config="other", line=9)], {"c"})
-        self.assertEqual([f["line"] for f in result.untriaged], [3])
-        self.assertEqual([f["line"] for f in result.false_errors], [2])
-        self.assertEqual((len(result.definite), result.possible), (3, 1))
-        self.assertEqual([e["line"] for e in result.stale], [9])  # the other config did not run
-        self.assertTrue(result.failed)
-        ok = gate.check_triage(gate.findings_of("c", [diag(file="./a.c")]), [entry()], {"c"})
-        self.assertFalse(ok.failed)
-
     def test_load_triage(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "triage.json"
-            self.assertEqual(gate.load_triage(path).entries, [])
+            self.assertEqual(gate.load_triage(path).guard_failures, [])
 
-            def write(entries=(), failures=(), version=2):
+            def write(failures=(), version=2, **extra):
                 path.write_text(json.dumps({"schema": gate.TRIAGE_SCHEMA, "version": version,
-                                            "entries": list(entries), "guardFailures": list(failures)}))
+                                            "guardFailures": list(failures), **extra}))
 
-            write([entry()], [{"config": "c", "file": "a.c", "line": 1, "verdict": "true", "note": "n",
-                               "kind": "heap-buffer-overflow"}])
+            good = {"config": "c", "file": "a.c", "line": 1, "verdict": "true", "note": "n"}
+            write([{**good, "kind": "heap-buffer-overflow"}])
             self.assertEqual(len(gate.load_triage(path).guard_failures), 1)
-            for entries, failures, message in (
-                    ([{**entry(), "verdict": "maybe"}], [], "verdict must be"),
-                    ([{**entry(), "certainty": "likely"}], [], "certainty must be"),
-                    ([{k: v for k, v in entry().items() if k != "note"}], [], "missing note"),
-                    ([], [{"config": "c", "file": "a.c", "line": 1, "verdict": "false", "note": "n"}],
-                     "must be \"true\""),
-                    ([], [{"config": "c", "file": "a.c", "line": 1, "verdict": "true", "note": "n", "kind": "object"}],
-                     "unknown kind")):
-                write(entries, failures)
+            for failures, extra, message in (
+                    ([{**good, "verdict": "false"}], {}, "must be \"true\""),
+                    ([{k: v for k, v in good.items() if k != "note"}], {}, "missing note"),
+                    ([{**good, "kind": "object"}], {}, "unknown kind"),
+                    ([good], {"entries": []}, "unknown field\\(s\\) entries")):
+                write(failures, **extra)
                 with self.assertRaisesRegex(gate.GateError, message):
                     gate.load_triage(path)
             write(version=1)
@@ -460,15 +381,11 @@ class TriageTest(unittest.TestCase):
         triage = gate.load_triage(CORPUS / "triage.json")
         manifest = gate.load_manifest(CORPUS / "manifest.json", CORPUS / "support")
         names = {c.name for c in manifest.configs}
-        keys = set()
-        for e in triage.entries + triage.guard_failures:
+        # Empty since RFC 0036: jansson's word-at-a-time hash, the last entry,
+        # takes its exact path when it sees AddressSanitizer's macros.
+        for e in triage.guard_failures:
             self.assertIn(e["config"], names)
-        for e in triage.entries:
-            key = (e["config"], e["file"], e["line"], e["id"])
-            self.assertNotIn(key, keys, key)
-            keys.add(key)
-            self.assertTrue(any(fnmatch.fnmatch(e["file"], p) for p in manifest.config(e["config"]).files),
-                            f"{key}: not a file the config analyses")
+            self.assertTrue(manifest.config(e["config"]).build, e)
 
 
 # -- injections ------------------------------------------------------------------------
@@ -648,43 +565,13 @@ class GateFunctionTest(unittest.TestCase):
 
 # -- end to end, with fake tools ------------------------------------------------------------
 
-FAKE_WEAVEC = r'''#!PYTHON
-"""A stand-in for weavec: a diagnostic per BUG line, a summary line per file."""
-import os, sys
-args = sys.argv[1:]
-if args == ["--version"]:
-    print("weavec version fake"); sys.exit(0)
-files = [a for a in args[:args.index("--")] if a.endswith(".c")]
-status = 0
-totals = [0, 0, 0]
-for f in files:
-    errors = warnings = 0
-    lines = open(f).read().splitlines()
-    for number, line in enumerate(lines, 1):
-        if "BUG!" in line:
-            print(f"{os.path.abspath(f)}:{number}:1: error: 'p' is freed twice [weavec::double-free]", file=sys.stderr)
-            errors += 1
-        elif "BUG" in line:
-            print(f"{os.path.abspath(f)}:{number}:1: warning: 'p' may be freed twice [weavec::double-free]",
-                  file=sys.stderr)
-            warnings += 1
-    sites = len(lines) + int(os.environ.get("FAKE_SITES", "0"))
-    print(f"weavec: {os.path.basename(f)}: {sites:,} sites: {sites} proven, 0 not proven, 0 violations, "
-          f"0 trusted; {errors} errors, {warnings} warnings", file=sys.stderr)
-    totals = [totals[0] + sites, totals[1] + errors, totals[2] + warnings]
-    status = status or (1 if errors else 0)
-if "--whole-program" in args:
-    print(f"weavec: program program: {totals[0]} sites in {len(files)} units: {totals[0]} proven, 0 not proven, "
-          f"0 violations, 0 trusted; {totals[1]} errors, {totals[2]} warnings", file=sys.stderr)
-sys.exit(status)
-'''
-
 FAKE_CC = r'''#!PYTHON
 """A stand-in for weavec-cc (and, named fake-clang, for the reference compiler).
 
 -c writes an "object" that lists its source and, for weavec-cc with
 -fweavec-ledger=, a version 3 ledger: one access per line, FAKE_PROVEN of
-them proven. Linking writes a shell script: the program. A source line
+them proven. Linking writes a shell script: the program. A source that
+contains FAKE_FAIL fails to compile with weavec-cc. A source line
 `REPORT kind` makes it report that guard at that line when FAKE_TRAP is set
 at run time, `REPORT! kind` always; `PROVEN kind` reports a weavec.proven
 monitor in verify mode when FAKE_MONITOR is set. In trap and verify mode a
@@ -704,6 +591,9 @@ for obj in (a for a in args if a.endswith(".o") and a != out):
     sources += open(obj).read().split()
 sources = [os.path.abspath(s) if os.path.exists(s) else s for s in sources]
 if "-c" in args:
+    fail = os.environ.get("FAKE_FAIL")
+    if fail and not reference and any(fail in open(s).read() for s in sources):
+        print(f"{os.path.basename(sources[0])}: error: injected failure", file=sys.stderr); sys.exit(1)
     with open(out, "w") as f:
         f.write("\n".join(sources))
     if ledger and not reference:
@@ -756,25 +646,23 @@ class EndToEndTest(unittest.TestCase):
         self.root = Path(self.directory.name)
         self.upstream = self.root / "upstream"
         self.upstream.mkdir()
-        (self.upstream / "a.c").write_text("int helper(int i) {\n    return i; /* BUG! */\n}\n")
-        (self.upstream / "b.c").write_text("int other(void) { return 1; }\n/* BUG */\n")
+        (self.upstream / "a.c").write_text("int helper(int i) {\n    return i;\n}\n")
+        (self.upstream / "b.c").write_text("int other(void) { return 1; }\nint another(void) { return 2; }\n")
         (self.upstream / "prog.c").write_text(PROGRAM)
         self.sha = self.commit()
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
-        self.weavec = bin_dir / "fake-weavec"
-        self.weavec.write_text(FAKE_WEAVEC.replace("#!PYTHON", f"#!{sys.executable}"))
         self.weavec_cc = bin_dir / "fake-weavec-cc"
         self.weavec_cc.write_text(FAKE_CC.replace("#!PYTHON", f"#!{sys.executable}"))
         self.clang = bin_dir / "fake-clang"
         self.clang.write_text(FAKE_CC.replace("#!PYTHON", f"#!{sys.executable}"))
-        for tool in (self.weavec, self.weavec_cc, self.clang):
+        for tool in (self.weavec_cc, self.clang):
             tool.chmod(0o755)
         self.manifest_data = manifest_data(
             {"name": "units", "compile": {"files": ["a.c", "b.c"], "args": ["-I."]},
              "build": ['"$CC" -c a.c -o a.o', '"$CC" prog.c a.o -o prog'], "test": ["./prog"],
              "bench": {"name": "b", "build": ['"$CC" b.c -o benchprog'], "command": "./benchprog", "repeat": 2}},
-            {"name": "whole", "compile": {"files": ["*.c"]}, "wholeProgram": True},
+            {"name": "glob", "compile": {"files": ["*.c"]}},
             {"name": "held", "heldOut": True, "set": "fresh35", "compile": {"files": ["b.c"]}},
             gates={"buildTime": {"maxBuildRatio": 1000}})
         self.manifest_data["projects"][0].update(url=str(self.upstream), sha=self.sha)
@@ -785,7 +673,7 @@ class EndToEndTest(unittest.TestCase):
         self.injections = self.root / "injections" / "injections.json"
         self.injections.parent.mkdir()
         self.write_injections([])
-        self.write_triage([entry(config=name, file="a.c", line=2, id_="double-free") for name in ("units", "whole")])
+        self.write_triage([])
 
     def commit(self) -> str:
         env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
@@ -795,8 +683,8 @@ class EndToEndTest(unittest.TestCase):
         return subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.upstream, check=True, capture_output=True,
                               text=True).stdout.strip()
 
-    def write_triage(self, entries, failures=()):
-        self.triage.write_text(json.dumps({"schema": gate.TRIAGE_SCHEMA, "version": 2, "entries": entries,
+    def write_triage(self, failures):
+        self.triage.write_text(json.dumps({"schema": gate.TRIAGE_SCHEMA, "version": 2,
                                            "guardFailures": list(failures)}))
 
     def write_injections(self, items):
@@ -816,7 +704,7 @@ class EndToEndTest(unittest.TestCase):
         argv = ["--manifest", str(self.manifest), "--expected", str(self.expected), "--triage", str(self.triage),
                 "--injections", str(self.injections), "--workdir", str(self.root / "work"),
                 "--support-dir", str(self.root), "--bench-dir", str(self.root), "--jobs", "2",
-                "--weavec", str(self.weavec), "--weavec-cc", str(self.weavec_cc), "--cc", str(self.clang),
+                "--weavec-cc", str(self.weavec_cc), "--cc", str(self.clang),
                 "--json", str(self.root / "results.json"), *extra]
         saved = {k: os.environ.get(k) for k in (env or {})}
         os.environ.update(env or {})
@@ -838,18 +726,19 @@ class EndToEndTest(unittest.TestCase):
     def recorded(self):
         return json.loads(self.expected.read_text())["platforms"][gate.platform_key()]["configs"]
 
-    def test_quick_ratchet_and_triage(self):
+    def test_quick_ratchet(self):
         status, output = self.run_gate("--quick", "--update")
         self.assertEqual(status, 0, output)
         self.assertNotIn("held", self.recorded())  # --quick leaves the held-out configs out
         self.assertEqual(self.recorded()["units"]["ledger"],
                          {"accesses": 5, "proven": 2, "guarded": 3, "unguarded": 0, "provenShare": 0.4})
-        self.assertEqual(self.recorded()["units"]["analysis"]["errors"], 1)
-        self.assertEqual(self.recorded()["whole"]["analysis"]["warnings"], 1)
+        self.assertEqual(set(self.recorded()["units"]), {"ledger"})
         status, output = self.run_gate("--quick")
         self.assertEqual(status, 0, output)
-        self.assertEqual(self.results()["gates"]["triage"]["status"], "pass")
-        self.assertEqual(self.results()["configs"]["whole"]["quick"]["analysis"]["sites"], 11)
+        self.assertEqual(self.results()["gates"], {})
+        quick = self.results()["configs"]["glob"]["quick"]
+        self.assertEqual(quick["ledger"]["accesses"], 11)
+        self.assertEqual(sorted(quick["units"]), ["a.c", "b.c", "prog.c"])
         # More proven accesses: a note, not a failure.
         status, output = self.run_gate("--quick", env={"FAKE_PROVEN": "3"})
         self.assertEqual(status, 0, output)
@@ -862,28 +751,24 @@ class EndToEndTest(unittest.TestCase):
         status, output = self.run_gate("--update-from", str(self.root / "results.json"))
         self.assertEqual(status, 0, output)
         self.assertEqual(self.recorded()["units"]["ledger"]["proven"], 0)
-        # A definite error needs a verdict, and not a false one.
-        self.write_triage([entry(config="units", file="a.c", line=2, id_="double-free")])
-        status, output = self.run_gate("--quick", env={"FAKE_PROVEN": "0"})
-        self.assertEqual(status, 1, output)
-        self.assertIn("untriaged definite double-free in whole at a.c:2", output)
-        self.write_triage([entry(config=name, file="a.c", line=2, id_="double-free", verdict="false")
-                           for name in ("units", "whole")])
-        status, output = self.run_gate("--quick", env={"FAKE_PROVEN": "0"})
-        self.assertEqual(status, 1, output)
-        self.assertIn("definite double-free triaged false in units at a.c:2", output)
         # The held-out configs run when asked for.
-        self.write_triage([entry(config=name, file="a.c", line=2, id_="double-free") for name in ("units", "whole")])
         status, output = self.run_gate("--quick", "--held-out", env={"FAKE_PROVEN": "0"})
         self.assertEqual(status, 0, output)
         self.assertIn("held: not recorded", output)
-        self.assertEqual(self.results()["sets"], {"original": ["units", "whole"], "fresh35": ["held"]})
+        self.assertEqual(self.results()["sets"], {"original": ["glob", "units"], "fresh35": ["held"]})
 
     def test_a_tool_failure_is_not_recorded(self):
-        (self.root / "bin" / "fake-weavec").write_text(f"#!{sys.executable}\nimport sys; sys.exit(3)\n")
+        (self.root / "bin" / "fake-weavec-cc").write_text(f"#!{sys.executable}\nimport sys; sys.exit(3)\n")
         status, output = self.run_gate("--quick", "--update")
         self.assertEqual(status, 2, output)  # the probe sees it first
-        self.assertIn("prints no summary line", output)
+        self.assertIn("does not write a weavec-ledger version 3 ledger", output)
+        self.assertFalse(self.expected.exists())
+
+    def test_a_failed_compile_is_not_recorded(self):
+        status, output = self.run_gate("--quick", "--update", env={"FAKE_FAIL": "another"})
+        self.assertEqual(status, 1, output)
+        self.assertIn("units: b.c: weavec-cc -c: exit status 1: b.c: error: injected failure", output)
+        self.assertIn("nothing to record in expected.json", output)
         self.assertFalse(self.expected.exists())
 
     def test_a_modified_checkout_is_refused(self):
@@ -917,8 +802,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(self.results()["gates"]["drop-in"]["status"], "fail")
         self.assertEqual(self.results()["configs"]["units"]["traps"], 1)
         # A true bug of the project, triaged: not a trap.
-        self.write_triage([entry(config=name, file="a.c", line=2, id_="double-free") for name in ("units", "whole")],
-                          [{"config": "units", "file": "prog.c", "line": 3, "verdict": "true", "note": "n"}])
+        self.write_triage([{"config": "units", "file": "prog.c", "line": 3, "verdict": "true", "note": "n"}])
         status, output = self.run_gate("--full", "--only", "units", "--no-asan", env={"FAKE_TRAP": "1"})
         self.assertEqual(status, 0, output)
         self.assertIn("trapped only at guard failures triaged as true bugs", output)
@@ -935,10 +819,9 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(self.results()["gates"]["verify"]["status"], "fail")
 
     def test_injections(self):
-        self.write_patch("stops.patch", "a.c", "    return i; /* BUG! */\n",
-                         "    return i; /* BUG! */\n    /* REPORT! heap-buffer-overflow INJECTED */\n")
-        self.write_patch("elsewhere.patch", "a.c", "    return i; /* BUG! */\n",
-                         "    return i; /* BUG! */\n    /* INJECTED */\n")
+        self.write_patch("stops.patch", "a.c", "    return i;\n",
+                         "    return i;\n    /* REPORT! heap-buffer-overflow INJECTED */\n")
+        self.write_patch("elsewhere.patch", "a.c", "    return i;\n", "    return i;\n    /* INJECTED */\n")
         self.write_injections([
             {"id": "stops", "config": "units", "patch": "stops.patch", "file": "a.c", "line": 3},
             {"id": "wrong-kind", "config": "units", "patch": "stops.patch", "file": "a.c", "line": 3,

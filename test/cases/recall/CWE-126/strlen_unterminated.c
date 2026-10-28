@@ -6,13 +6,13 @@
 
 int bad(void) {
   char data[4] = {'a', 'b', 'c', 'd'};
-  return (int)strlen(data); // BUG: out-of-bounds // TRAP
+  return (int)strlen(data); // TRAP
 }
 
 void bad_copy(void) {
   char data[4] = {'a', 'b', 'c', 'd'};
   char out[16];
-  strcpy(out, data); // BUG: out-of-bounds // TRAP
+  strcpy(out, data); // TRAP
   print_line(out);
 }
 

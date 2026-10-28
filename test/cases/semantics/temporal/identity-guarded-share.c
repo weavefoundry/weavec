@@ -7,7 +7,6 @@
 // of `held` is possible, never definite, and `drop(held)` is at most a
 // possible double free.
 // CLEAN
-// ALLOW: double-free
 #include <stdlib.h>
 
 struct obj {

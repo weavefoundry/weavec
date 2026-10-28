@@ -12,7 +12,7 @@ int main(int argc, char **argv) {
   int *a = &x, *b = &y;
   int **p = argc > 1 ? &a : &b;
   *p = NULL;
-  int r = *a; // BUG: null-dereference // TRAP
+  int r = *a; // TRAP
   printf("%d\n", r);
   return 0;
 }

@@ -5,7 +5,7 @@ int main(void) {
   if (!p) return 1;
   char *q = realloc(p, 2);
   if (!q) { free(p); return 1; }
-  int r = q[5]; // BUG: out-of-bounds
+  int r = q[5]; // TRAP: heap-buffer-overflow
   free(q);
   return r;
 }

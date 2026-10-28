@@ -16,7 +16,8 @@
 // (the calls whose bytes only the call computes, those that read less than
 // their terms state, and `mmap` and `munmap`, whose versions clear the
 // shadow of what they map); a call that only computes a string's length is
-// replaced by the string guard that computes it.
+// replaced by the string guard that computes it. RFC 0036 §6: a fortified
+// form's object size bounds what the call writes, inline or in the wrapper.
 //
 //===----------------------------------------------------------------------===//
 
@@ -71,6 +72,48 @@ struct LibraryCall {
                         bytes, LedgerRow::Outcome::Guarded, reason);
   }
 
+  /// RFC 0036 §6: the object size a fortified form passes (an i64), or
+  /// null when the call is no fortified form or the size is unknown (-1).
+  [[nodiscard]] llvm::Value *objectSize() const {
+    const int at = match.sizeArgument();
+    if (at < 0 || static_cast<unsigned>(at) >= call.arg_size())
+      return nullptr;
+    llvm::Value *size = call.getArgOperand(static_cast<unsigned>(at));
+    if (!size->getType()->isIntegerTy())
+      return nullptr;
+    if (const auto *constant = llvm::dyn_cast<llvm::ConstantInt>(size);
+        constant != nullptr && constant->isMinusOne())
+      return nullptr;
+    llvm::IRBuilder<> builder(&call);
+    llvm::Value *bytes = builder.CreateZExtOrTrunc(size, context.i64);
+    // A wide row's size counts wchar_t elements.
+    if (match.entry->wide)
+      bytes = builder.CreateMul(
+          bytes, llvm::ConstantInt::get(context.i64, wcharSize()));
+    return bytes;
+  }
+
+  /// Whether the row's wrapper takes a limit: some fortified form of the
+  /// row passes an object size.
+  [[nodiscard]] bool wrapperTakesLimit() const {
+    return llvm::any_of(match.entry->chk, [](const core::LibraryChk &chk) {
+      return chk.sizeArgument >= 0;
+    });
+  }
+
+  /// RFC 0036 §6: `bytes` written at `pointer` within the object size.
+  void checkLimit(llvm::Value *pointer, llvm::Value *bytes,
+                  llvm::Value *limit) const {
+    llvm::IRBuilder<> builder(&call);
+    llvm::Value *over = builder.CreateICmpUGT(bytes, limit);
+    llvm::Instruction *slow =
+        llvm::SplitBlockAndInsertIfThen(over, &call, false);
+    llvm::IRBuilder<> at(slow);
+    ModuleContext::callSlow(
+        at, context.limitFailFunction(),
+        {at.CreatePtrToInt(pointer, context.i64), bytes, limit, site(true)});
+  }
+
   /// The bytes of a `wchar_t` (the module's `wchar_size`, 4 by default).
   [[nodiscard]] std::uint64_t wcharSize() const {
     if (const auto *size = llvm::mdconst::extract_or_null<llvm::ConstantInt>(
@@ -106,7 +149,7 @@ struct LibraryCall {
   }
 
   /// A term's value as an unsigned 64-bit integer, saturated; null when a
-  /// leaf has no value in the IR (`fmtlen`, a macro). `bound` bounds the
+  /// leaf has no value in the IR (a wide string's length). `bound` bounds the
   /// `strlen` leaves (inside `min`).
   llvm::Value *evaluate(const core::LibTerm &term, llvm::IRBuilder<> &builder,
                         llvm::Value *bound = nullptr) const {
@@ -136,9 +179,6 @@ struct LibraryCall {
       return stringLength(builder, pointer, bound,
                           nullOk(term.arg) ? MarkerNullOk : 0);
     }
-    case Kind::FormatLength:
-    case Kind::Macro:
-      return nullptr;
     case Kind::Product:
     case Kind::Sum: {
       llvm::Value *left = evaluate(term.operands[0], builder, bound);
@@ -227,6 +267,7 @@ struct LibraryCall {
 
 void LibraryCall::guardArguments() const {
   const core::LibraryEntry &entry = *match.entry;
+  llvm::Value *limit = objectSize();
   for (unsigned index = 0; index < entry.params.size(); ++index) {
     const core::LibraryParam &param = entry.params[index];
     if (param.type != core::LibraryParam::Type::Pointer ||
@@ -280,6 +321,12 @@ void LibraryCall::guardArguments() const {
           builder.CreateSelect(builder.CreateIsNull(pointer),
                                llvm::ConstantInt::get(module().i64, 0), bytes);
     guardBytes(pointer, bytes, write);
+    // The object a fortified form writes is the first it writes; its bytes
+    // are addressable by now, so a failure is within an object.
+    if (limit != nullptr && write) {
+      checkLimit(pointer, bytes, limit);
+      limit = nullptr;
+    }
   }
   // The operands a copy must not overlap.
   for (const core::LibDisjoint &disjoint : entry.disjoint) {
@@ -463,7 +510,18 @@ static bool redirect(LibraryCall &call, bool late) {
   }
   // A read's site: the wrapper marks what it writes.
   llvm::Constant *site = call.site(false);
+  // RFC 0036 §6: the object size of a fortified form, or no limit.
+  llvm::Value *limit = nullptr;
+  if (call.wrapperTakesLimit()) {
+    limit = call.objectSize();
+    if (limit == nullptr)
+      limit = llvm::ConstantInt::getAllOnesValue(module.i64);
+  }
   if (entry.variadic) {
+    if (limit != nullptr) {
+      arguments.insert(arguments.begin(), limit);
+      types.insert(types.begin(), module.i64);
+    }
     arguments.insert(arguments.begin(), site);
     types.insert(types.begin(), module.ptr);
     // The variadic arguments follow the row's last named one.
@@ -474,6 +532,10 @@ static bool redirect(LibraryCall &call, bool late) {
          ++at)
       arguments.push_back(call.call.getArgOperand(at));
   } else {
+    if (limit != nullptr) {
+      arguments.push_back(limit);
+      types.push_back(module.i64);
+    }
     arguments.push_back(site);
     types.push_back(module.ptr);
   }
@@ -493,20 +555,18 @@ static bool redirect(LibraryCall &call, bool late) {
 }
 
 /// Whether the row only computes its `value` from what it reads: pointer
-/// arguments read or untouched and kept by nothing, no clause and no
-/// format. Such a call (`strlen`) is replaced by what its value term
-/// evaluates to, the string guards included.
+/// arguments read or untouched, no clause and no format. Such a call
+/// (`strlen`) is replaced by what its value term evaluates to, the string
+/// guards included.
 static bool computesItsValue(const core::LibraryEntry &entry) {
-  if (!entry.result.value || entry.wide || entry.variadic || entry.format ||
-      entry.wrapper || !entry.disjoint.empty() || !entry.copies.empty() ||
-      !entry.fills.empty() || !entry.writesString.empty() ||
-      !entry.invalidates.empty() || !entry.reads.empty() || entry.noreturn)
+  if (!entry.value || entry.wide || entry.variadic || entry.format ||
+      entry.wrapper || !entry.disjoint.empty())
     return false;
   return llvm::all_of(entry.params, [](const core::LibraryParam &param) {
     return param.type != core::LibraryParam::Type::Pointer ||
            ((param.access == core::LibraryParam::Access::Read ||
              param.access == core::LibraryParam::Access::None) &&
-            param.effect == core::LibraryParam::Effect::Borrow && !param.out);
+            param.effect == core::LibraryParam::Effect::Borrow);
   });
 }
 
@@ -537,7 +597,8 @@ void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
     const llvm::StringRef name = cName(call->getCalledFunction()->getName());
     if (module.isUnsafe(call->getDebugLoc()))
       continue;
-    const std::optional<core::LibraryMatch> match = spec.lookup(name);
+    const std::optional<core::LibraryMatch> match =
+        spec.lookup(name, call->arg_size());
     if (!match || match->entry == nullptr)
       continue;
     LibraryCall library{.context = module,
@@ -577,8 +638,7 @@ void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
     if (match->alias == nullptr && computesItsValue(*match->entry) &&
         call->getType()->isIntegerTy(64)) {
       llvm::IRBuilder<> builder(call);
-      if (llvm::Value *value =
-              library.evaluate(*match->entry->result.value, builder);
+      if (llvm::Value *value = library.evaluate(*match->entry->value, builder);
           value != nullptr && value->getType() == call->getType()) {
         call->replaceAllUsesWith(value);
         call->eraseFromParent();

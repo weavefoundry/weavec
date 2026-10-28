@@ -7,7 +7,6 @@
 // literal, and a release the callee may not perform makes that a possible
 // `invalid-release`, not an error that would drop the object.
 // CLEAN
-// ALLOW: invalid-release
 #include <stdlib.h>
 #include <string.h>
 

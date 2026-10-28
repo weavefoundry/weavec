@@ -1,26 +1,26 @@
 ---
 import { Code } from '@astrojs/starlight/components';
 import project from '../../.generated/project.json';
-import example from '../../examples/use-after-free.c?raw';
+import example from '../../examples/vec.c?raw';
 const paths = [
   {
     number: '01',
     title: 'Run your first check',
-    description: 'Install WeaveC, find a lifetime bug, and understand the fix.',
+    description: 'Install WeaveC, build a program, and watch a bad access stop with a report.',
     href: '/getting-started/first-check/',
     label: 'GET STARTED',
   },
   {
     number: '02',
     title: 'Bring your codebase',
-    description: 'Use your compilation database or build with weavec-cc.',
+    description: 'Build with CC=weavec-cc under Make, CMake or a configure script.',
     href: '/guides/build-integration/',
     label: 'INTEGRATE',
   },
   {
     number: '03',
     title: 'Adopt it',
-    description: 'Run your tests under guarded builds, fix what traps, and add the analysis to CI.',
+    description: 'Run your tests under the guarded build, fix what traps, and measure the cost.',
     href: '/guides/adoption/',
     label: 'GO DEEPER',
   },
@@ -36,8 +36,8 @@ const paths = [
       >
       <h1 id="_top">C, with more<br /><span>certainty.</span></h1>
       <p class="hero-description">
-        Memory safety for the C you already write. WeaveC guards every memory access at run time,
-        stops at the first bad one, and reports ownership bugs before the program runs.
+        Memory safety for the C you already write. WeaveC is a drop-in C compiler that guards every
+        memory access and stops the program at the first bad one, with a precise report.
       </p>
       <div class="hero-actions">
         <a class="button-primary" href="/getting-started/installation/"
@@ -48,35 +48,28 @@ const paths = [
       </div>
       <div class="hero-footnote"><span>BUILT ON CLANG + LLVM</span><span>OPEN SOURCE</span></div>
     </div>
-    <div class="hero-demo" aria-label="WeaveC catches a use after free through an alias">
+    <div class="hero-demo" aria-label="WeaveC stops a read past the end of a heap block">
       <div class="demo-label">
-        <span class="demo-dot"></span> FOLLOW THE OWNERSHIP <span>C17</span>
+        <span class="demo-dot"></span> STOP AT THE FIRST BAD ACCESS <span>C17</span>
       </div>
-      <Code
-        code={example}
-        lang="c"
-        title="example.c"
-        mark="node_free(alias);"
-        del="return n->value;"
-      />
-      <div class="diagnostic-output">
+      <Code code={example} lang="c" title="vec.c" mark="return v->data[i];" />
+      <div class="report-output">
         <div>
-          <span class="error-marker">ERROR</span><a href="/reference/diagnostics/use-after-free/"
-            >weavec::use-after-free</a
-          >
-        </div><p>use of 'n' after it was freed</p><span class="diagnostic-note"
-          >↳ freed here, through 'alias'</span
+          <span class="trap-marker">TRAP</span><span>./vec 4</span>
+        </div><p>weavec: heap-buffer-overflow at vec.c:9:43: read of 4 bytes</p><span
+          class="report-note">↳ 0 bytes after the 16-byte heap object</span
         >
       </div>
       <div class="demo-caption">
-        <span aria-hidden="true">✓</span> Ownership inferred. No annotations needed for this example.
+        <span aria-hidden="true">✓</span> No source changes. Built with weavec-cc, as Clang builds it.
       </div>
     </div>
   </section>
   <div class="principle-strip" aria-label="WeaveC principles">
-    <span>YOUR C SOURCE</span><span aria-hidden="true">→</span><strong>INFER OWNERSHIP</strong><span
+    <span>YOUR C SOURCE</span><span aria-hidden="true">→</span><strong>GUARD EVERY ACCESS</strong
+    ><span aria-hidden="true">→</span><strong>STOP AT THE FIRST BAD ONE</strong><span
       aria-hidden="true">→</span
-    ><strong>GUARD EVERY ACCESS</strong><span aria-hidden="true">→</span><span>CLANG + LLVM</span>
+    ><span>CLANG + LLVM</span>
   </div>
   <section class="home-section" aria-labelledby="start-title">
     <div class="section-heading">
@@ -85,7 +78,7 @@ const paths = [
           Start small. Build confidence.
         </h2>
       </div><p>
-        From one source file to a whole program.<br />Choose the next step for your project.
+        From one source file to a whole build.<br />Choose the next step for your project.
       </p>
     </div>
     <div class="path-grid">
@@ -112,35 +105,36 @@ const paths = [
   </section>
   <section class="home-section model-section" aria-labelledby="model-title">
     <div>
-      <span class="eyebrow">A MODEL YOU CAN REASON ABOUT</span><h2 id="model-title">
-        The intent is already<br />in your code.
+      <span class="eyebrow">A GUARANTEE YOU CAN REASON ABOUT</span><h2 id="model-title">
+        Same code.<br />Same build.
       </h2><p>
-        Allocators, cleanup functions, aliases, and control flow tell a story. WeaveC follows it
-        across functions and source files.
-      </p><a class="text-link" href="/guides/ownership/"
-        >Understand ownership and borrowing <span aria-hidden="true">→</span></a
+        Point CC at weavec-cc and keep your sources, your build and your ABI. Every access is
+        checked against the object its pointer came from, and freed memory is reused only once
+        nothing points to it.
+      </p><a class="text-link" href="/reference/guarantees/"
+        >Read the safety guarantees <span aria-hidden="true">→</span></a
       >
     </div>
     <div class="model-list">
       <div>
         <span>01</span><section>
-          <h3>Infer first</h3><p>
-            Function bodies reveal what they free, store, borrow, and return. Add annotations where
-            an interface needs a contract.
+          <h3>Guard every access</h3><p>
+            Loads, stores, memory intrinsics and library calls are checked, however far an index
+            jumps, and however long ago a block was freed.
           </p>
         </section>
       </div><div>
         <span>02</span><section>
           <h3>Keep your toolchain</h3><p>
-            Analyze C with libTooling or use weavec-cc in a normal build. Clang handles parsing and
-            code generation.
+            weavec-cc is Clang's driver: configure scripts, Make and CMake see a C compiler, and
+            code written to be clean under AddressSanitizer is clean under WeaveC.
           </p>
         </section>
       </div><div>
         <span>03</span><section>
           <h3>Know the boundary</h3><p>
-            Every access is guarded unless a local rule proves it redundant, and the ledger lists
-            each one. WEAVEC_UNSAFE marks the code you choose to leave unguarded.
+            A guard is removed only where a local rule proves it redundant, and the ledger lists
+            each access. WEAVEC_UNSAFE marks the code you choose to leave unguarded.
           </p>
         </section>
       </div>
@@ -152,17 +146,17 @@ const paths = [
         Keep the reference close.
       </h2>
     </div><div class="reference-links">
-      <a href="/reference/diagnostics/">Diagnostics <span>Understand the message ↗</span></a><a
-        href="/reference/annotations/">Annotations <span>Express a contract ↗</span></a
-      ><a href="/reference/cli/">Command line <span>Find the right flag ↗</span></a><a href="/rfcs/"
-        >Design RFCs <span>Read the reasoning ↗</span></a
+      <a href="/reference/cli/">Command line <span>Find the right flag ↗</span></a><a
+        href="/reference/guarantees/">Safety guarantees <span>Know what is caught ↗</span></a
+      ><a href="/reference/troubleshooting/">Troubleshooting <span>Read a report ↗</span></a><a
+        href="/rfcs/">Design RFCs <span>Read the reasoning ↗</span></a
       >
     </div>
   </section>
   <section class="scope-note">
     <span class="scope-icon" aria-hidden="true">i</span><p>
       <strong>Early software. Explicit guarantees.</strong> The guarantee covers every guarded access,
-      under five named assumptions; the scope page lists what it does not catch. <a
+      under named assumptions; the scope page lists what it does not catch. <a
         href="/reference/guarantees/">Read the scope and limits →</a
       >
     </p>

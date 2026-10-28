@@ -1,7 +1,6 @@
 // RFC 0032 §3: the correct twin of release-interior_bug.c: offset 0 is the start of the block.
 // STAGE: S5
 // CLEAN
-// ALLOW: invalid-release
 // RUN-INPUT: 0
 // ASAN
 #include <stdlib.h>

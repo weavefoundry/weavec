@@ -5,7 +5,6 @@
 // pointer anywhere in the mapping, and the middle stays usable. What remains
 // are possible findings, hence the ALLOW.
 // CLEAN
-// ALLOW: double-free use-after-free
 #include <stdio.h>
 #include <sys/mman.h>
 

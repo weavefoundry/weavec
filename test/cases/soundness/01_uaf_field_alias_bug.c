@@ -12,7 +12,7 @@ int main(void) {
   a->buf = p;
   b->buf = p;
   free(a->buf);
-  int r = b->buf[0]; // BUG: use-after-free
+  int r = b->buf[0]; // TRAP: heap-use-after-free
   free(a); free(b);
   return r;
 }

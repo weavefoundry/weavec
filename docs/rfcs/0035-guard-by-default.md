@@ -16,6 +16,16 @@
   the shadow encoding, the slow path, stack objects, library-call guards)
   and §6 (confirmed errors as build failures). The analysis those RFCs
   define (RFCs 0030 §2–§9, 0031) stays, as an advisory analysis (§8).
+  Superseded in part by RFC 0036: §3.2's layout (amended), §5.1's
+  quarantine, §8 and the analysis parts of §7, §10 and §11.
+
+> [RFC 0036](0036-deterministic-heap-reuse.md) supersedes this RFC where
+> they differ: a released block is reused only after a sweep finds no
+> pointer to it (§5.1's quarantine), locals whose scopes never overlap share
+> frame space (§3.2), and the advisory analysis is deleted (§8, and the
+> analysis parts of §7, §10 and §11). The guards, the shadow, frames and
+> globals, the library-call guards, the removal rules, the modes and the
+> ledger stay, as RFC 0036 amends them.
 
 This RFC was drafted before implementation. On 2026-10-06 the project
 owner accepted the recommendation of the milestone analysis (invert the

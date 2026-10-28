@@ -57,7 +57,7 @@
       "line": 266,
       "unlocated": "invalid-release",
       "run": "ctest --test-dir out --output-on-failure -R '^(cJSON_test|parse_examples|misc_tests)$'",
-      "description": "cJSON_Delete frees the value string twice through the deallocate hook; the analysis of the unit alone does not see through the hook, and the runtime's allocator refuses the second release"
+      "description": "cJSON_Delete frees the value string twice through the deallocate hook, and the runtime's allocator refuses the second release"
     },
     {
       "id": "cjson-oob-number",

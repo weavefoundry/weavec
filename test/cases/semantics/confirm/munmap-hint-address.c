@@ -5,7 +5,6 @@
 // warning (RFC 0034, Diagnostics); and the leak report the runner asks for
 // (-Wweavec-leak) takes map_at's MAP_FAILED return for a mapping.
 // CLEAN
-// ALLOW: use-after-free leak
 /* LMDB mdb_env_set_mapsize: after munmap, the old base address is passed
  * as an address hint to mmap (never dereferenced). weavec-cc reports
  * use-after-free and fails the build. */

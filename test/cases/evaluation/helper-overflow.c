@@ -4,7 +4,7 @@
 void run(void) {
   struct box *b = box_new();
   if (!b) return;
-  b->data[4] = 0; // BUG: out-of-bounds // TRAP
+  b->data[4] = 0; // TRAP
   free(b->data);
   free(b);
 }

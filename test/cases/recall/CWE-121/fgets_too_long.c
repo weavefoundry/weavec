@@ -4,7 +4,7 @@
 
 void bad(void *stream) {
   char line[64];
-  if (fgets(line, 128, stream)) // BUG: out-of-bounds // TRAP
+  if (fgets(line, 128, stream)) // TRAP
     print_line(line);
 }
 

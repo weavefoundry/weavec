@@ -9,14 +9,12 @@
 #include "weavec/Frontend/Driver.h"
 
 #include "weavec/Config/Version.h"
-#include "weavec/Core/Ledger.h"
-#include "weavec/Frontend/AnalysisStats.h"
 #include "weavec/Frontend/EnforcementLedger.h"
-#include "weavec/Frontend/FrontendAction.h"
 #include "weavec/Frontend/GuardPass.h"
 #include "weavec/Frontend/ResourceDir.h"
 #include "weavec/Frontend/UnsafeRegions.h"
 
+#include "clang/AST/ASTConsumer.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/DiagnosticIDs.h"
 #include "clang/Basic/DiagnosticOptions.h"
@@ -35,6 +33,7 @@
 #include "clang/Frontend/TextDiagnosticBuffer.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/FrontendTool/Utils.h"
+#include "clang/Lex/PreprocessorOptions.h"
 
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/STLExtras.h"
@@ -83,9 +82,8 @@ static std::string invalidValue(llvm::StringRef arg, llvm::StringRef value,
 /// then says what is wrong with it, if anything.
 static bool consumeValueFlag(DriverOptions &options, llvm::StringRef arg,
                              std::string &error) {
-  static constexpr std::array<llvm::StringLiteral, 5> Names{
-      "-fweavec-analysis-stats", "-fweavec-checks", "-fweavec-ledger",
-      "-fweavec-budget", "-fweavec-unit-budget"};
+  static constexpr std::array<llvm::StringLiteral, 2> Names{"-fweavec-checks",
+                                                            "-fweavec-ledger"};
   const auto [flag, value] = arg.split('=');
   if (!llvm::is_contained(Names, flag))
     return false;
@@ -93,11 +91,7 @@ static bool consumeValueFlag(DriverOptions &options, llvm::StringRef arg,
     error = "missing value for '" + flag.str() + "'";
     return true;
   }
-  if (flag == "-fweavec-analysis-stats") {
-    options.analysisStatsPath = value.str();
-    if (!options.stats)
-      options.stats = std::make_shared<core::AnalysisStats>();
-  } else if (flag == "-fweavec-checks") {
+  if (flag == "-fweavec-checks") {
     if (value == "trap")
       options.checks = DriverOptions::Checks::Trap;
     else if (value == "report")
@@ -108,16 +102,8 @@ static bool consumeValueFlag(DriverOptions &options, llvm::StringRef arg,
       options.checks = DriverOptions::Checks::None;
     else
       error = invalidValue(arg, value, "trap, report, verify or none");
-  } else if (flag == "-fweavec-ledger") {
-    options.ledger = value.str();
   } else {
-    std::uint64_t budget = 0;
-    if (value.getAsInteger(10, budget))
-      error = invalidValue(arg, value, "a number");
-    else if (flag == "-fweavec-budget")
-      options.budget = budget;
-    else
-      options.unitBudget = budget;
+    options.ledger = value.str();
   }
   options.spellings.push_back(arg.str());
   return true;
@@ -131,18 +117,12 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
   if (name.consume_front("-fno-")) {
     value = false;
   } else if (!name.consume_front("-f")) {
-    if (control.parse(arg, error)) {
-      spellings.push_back(arg.str());
-      return true;
-    }
     return false;
   }
   if (name == "weavec") {
     enabled = value;
-  } else if (name == "weavec-diagnose") {
-    diagnose = value;
-  } else if (name == "weavec-dump-analysis") {
-    dumpAnalysis = value;
+  } else if (name == "weavec-asan-compat") {
+    asanCompat = value;
   } else if (name == "weavec-zero-init") {
     zeroInit = value;
   } else if (name == "weavec-summary") {
@@ -158,7 +138,7 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
 }
 
 llvm::StringRef driverFlagsHelp() {
-  return R"(WeaveC flags of weavec-cc (RFC 0035); every other flag is Clang's.
+  return R"(WeaveC flags of weavec-cc (RFC 0036); every other flag is Clang's.
 
   -fweavec, -fno-weavec
       Guard memory accesses (the default), or compile as plain Clang.
@@ -174,16 +154,9 @@ llvm::StringRef driverFlagsHelp() {
       receives <object>.ledger.json per unit; a file receives one ledger.
   -fweavec-summary, -fno-weavec-summary
       Print the summary line on stderr (default: when a ledger is written).
-  -fweavec-diagnose
-      Also run WeaveC's ownership and lifetime analysis and print what it
-      finds as warnings (-Werror=weavec makes them errors).
-  -fweavec-budget=<n>, -fweavec-unit-budget=<n>
-      The analysis's work budgets per function and per unit.
-  -fweavec-dump-analysis, -fweavec-analysis-stats=<path>
-      Debugging output of the analysis.
-  -Wno-weavec-<id>, -Wweavec-<id>, -Werror=weavec[-<id>],
-  -Wno-error=weavec[-<id>], -Wweavec, -Wno-weavec
-      Control the analysis's diagnostics.
+  -fweavec-asan-compat, -fno-weavec-asan-compat
+      Compile as AddressSanitizer would for the source: __SANITIZE_ADDRESS__
+      and __has_feature(address_sanitizer) (default: on).
 )";
 }
 
@@ -208,15 +181,29 @@ static bool isCodeGenAction(clang::frontend::ActionKind action) {
 
 namespace {
 
-/// Clang's action for the job with the unsafe-region collector and, under
-/// `-fweavec-diagnose`, the analysis running beside its code generator.
+/// RFC 0036 §1: the unit is parsed with AddressSanitizer in its language
+/// options (its macros, `__has_feature(address_sanitizer)`); at the end of
+/// the unit, before the code generator's backend reads them, this takes it
+/// out again, so that ASan's own instrumentation never runs.
+class AsanOptionsReset final : public clang::ASTConsumer {
+public:
+  explicit AsanOptionsReset(clang::LangOptions &lang) : lang(lang) {}
+  void HandleTranslationUnit(clang::ASTContext & /*context*/) override {
+    lang.Sanitize.set(clang::SanitizerKind::Address, false);
+  }
+
+private:
+  clang::LangOptions &lang;
+};
+
+/// Clang's action for the job with the unsafe-region collector running
+/// beside its code generator.
 class WeaveCWrapperAction final : public clang::WrapperFrontendAction {
 public:
   WeaveCWrapperAction(std::unique_ptr<clang::FrontendAction> wrapped,
-                      std::shared_ptr<UnsafeRegions> unsafe,
-                      std::optional<FrontendOptions> analysis)
+                      std::shared_ptr<UnsafeRegions> unsafe, bool asanCompat)
       : WrapperFrontendAction(std::move(wrapped)), unsafe(std::move(unsafe)),
-        analysis(std::move(analysis)) {}
+        asanCompat(asanCompat) {}
 
 protected:
   std::unique_ptr<clang::ASTConsumer>
@@ -225,8 +212,9 @@ protected:
     std::vector<std::unique_ptr<clang::ASTConsumer>> consumers;
     if (unsafe)
       consumers.push_back(createUnsafeRegionCollector(compiler, unsafe));
-    if (analysis)
-      consumers.push_back(createWeaveCConsumer(compiler, *analysis));
+    if (asanCompat)
+      consumers.push_back(
+          std::make_unique<AsanOptionsReset>(compiler.getLangOpts()));
     std::unique_ptr<clang::ASTConsumer> inner =
         WrapperFrontendAction::CreateASTConsumer(compiler, inFile);
     if (!inner)
@@ -239,7 +227,7 @@ protected:
 
 private:
   std::shared_ptr<UnsafeRegions> unsafe;
-  std::optional<FrontendOptions> analysis;
+  bool asanCompat;
 };
 
 } // namespace
@@ -253,30 +241,6 @@ static void initializeTargets() {
     return true;
   }();
   (void)Initialized;
-}
-
-/// The analysis's options under `-fweavec-diagnose` (RFC 0035 §8): every
-/// finding a warning.
-static FrontendOptions analysisOptions(const DriverOptions &weavec) {
-  FrontendOptions options;
-  options.engine.stats = weavec.stats.get();
-  options.analysisStatsPath = weavec.analysisStatsPath;
-  options.engine.dumpStream = weavec.dumpAnalysis ? &llvm::outs() : nullptr;
-  options.engine.zeroInit = weavec.zeroInitialises();
-  if (weavec.budget)
-    options.engine.budget = *weavec.budget;
-  options.engine.unitBudget = weavec.unitBudget;
-  // Warnings, unless the command line's own -W flags, applied after, say
-  // otherwise.
-  DiagnosticControl control;
-  control.turnOffByDefault(core::diag::Leak);
-  std::string ignored;
-  (void)control.parse("-Wno-error=weavec", ignored);
-  for (const std::string &flag : weavec.spellings)
-    if (DiagnosticControl::isWeaveCFlag(flag))
-      (void)control.parse(flag, ignored);
-  options.control = std::move(control);
-  return options;
 }
 
 /// The guard pass's mode for a `-fweavec-checks` mode.
@@ -372,8 +336,30 @@ static bool emitEnforcementLedger(const clang::CompilerInstance &compiler,
   return ok;
 }
 
-static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0,
-                     const DriverOptions *driver = nullptr) {
+/// RFC 0036 §5: ASan's macros for the source (`__SANITIZE_ADDRESS__`,
+/// `__has_feature(address_sanitizer)`) unless a sanitizer of the command
+/// line already gives them; whether it did.
+static bool applyAsanCompat(clang::CompilerInstance &compiler,
+                            const DriverOptions &weavec) {
+  if (!weavec.enforces() || !weavec.asanCompat ||
+      compiler.getLangOpts().Sanitize.hasOneOf(
+          clang::SanitizerKind::Address | clang::SanitizerKind::KernelAddress |
+          clang::SanitizerKind::HWAddress))
+    return false;
+  compiler.getLangOpts().Sanitize.set(clang::SanitizerKind::Address, true);
+  // Clang predefines _FORTIFY_SOURCE=0 for ASan on Darwin (ASan intercepts
+  // the C library there); WeaveC checks the fortified forms (§5.5), so the
+  // SDK's own default applies unless the command line chose a level.
+  clang::PreprocessorOptions &preprocessor = compiler.getPreprocessorOpts();
+  const bool chosen = llvm::any_of(preprocessor.Macros, [](const auto &macro) {
+    return llvm::StringRef(macro.first).starts_with("_FORTIFY_SOURCE");
+  });
+  if (llvm::Triple(compiler.getTargetOpts().Triple).isOSDarwin() && !chosen)
+    preprocessor.addMacroUndef("_FORTIFY_SOURCE");
+  return true;
+}
+
+static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   DriverOptions weavec;
   std::vector<const char *> cc1Args;
   for (const char *arg : argv) {
@@ -442,8 +428,12 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0,
       clang::CreateFrontendAction(*compiler);
   if (!inner)
     return 1;
-  if (inner->usesPreprocessorOnly())
+  if (inner->usesPreprocessorOnly()) {
+    // The same macros as the compile that follows (ccache's preprocessor
+    // mode, Autoconf's CPP checks).
+    (void)applyAsanCompat(*compiler, weavec);
     return compiler->ExecuteAction(*inner) ? 0 : 1;
+  }
 
   const bool codegen =
       isCodeGenAction(compiler->getFrontendOpts().ProgramAction);
@@ -453,20 +443,15 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0,
     unsafe = std::make_shared<UnsafeRegions>();
     ledger = configureEnforcement(*compiler, weavec, unsafe);
   }
-  if (driver != nullptr && driver->stats)
-    weavec.stats = driver->stats;
-  std::optional<FrontendOptions> analysis;
-  if (weavec.diagnose)
-    analysis = analysisOptions(weavec);
-
-  WeaveCWrapperAction action(std::move(inner), unsafe, std::move(analysis));
+  // Only code generation takes ASan out at the end of the unit: a
+  // precompiled header or module keeps it in its options, as the compiles
+  // that read it have it.
+  const bool asanCompat = applyAsanCompat(*compiler, weavec) && codegen;
+  WeaveCWrapperAction action(std::move(inner), unsafe, asanCompat);
   success = compiler->ExecuteAction(action);
   if (success && ledger)
     success = emitEnforcementLedger(*compiler, weavec, *ledger);
-  const bool statsOK =
-      driver != nullptr ||
-      writeAnalysisStats(weavec.analysisStatsPath, weavec.stats.get());
-  return success && statsOK ? 0 : 1;
+  return success ? 0 : 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -597,6 +582,30 @@ static std::string runtimeObstacle(llvm::ArrayRef<const char *> args) {
   if (!target.isArch64Bit() || !(target.isOSDarwin() || target.isOSLinux()))
     return "the runtime supports 64-bit Darwin and Linux targets";
   return {};
+}
+
+/// RFC 0036 §1: whether the build should define `_FORTIFY_SOURCE=3`: a glibc
+/// target, an optimising compile (glibc fortifies only then, and warns
+/// otherwise), and a command line that does not define or undefine it.
+static bool wantsFortification(llvm::ArrayRef<const char *> args) {
+  std::string triple = llvm::sys::getDefaultTargetTriple();
+  bool optimises = false;
+  for (std::size_t i = 1; i < args.size(); ++i) {
+    llvm::StringRef arg = args[i];
+    if (arg.starts_with("-D_FORTIFY_SOURCE") ||
+        arg.starts_with("-U_FORTIFY_SOURCE") ||
+        ((arg == "-D" || arg == "-U") && i + 1 < args.size() &&
+         llvm::StringRef(args[i + 1]).starts_with("_FORTIFY_SOURCE")))
+      return false;
+    if (arg.starts_with("-O"))
+      optimises = arg != "-O0";
+    if (arg.consume_front("--target="))
+      triple = arg.str();
+    else if ((arg == "-target" || arg == "--target") && i + 1 < args.size())
+      triple = args[++i];
+  }
+  const llvm::Triple target(llvm::Triple::normalize(triple));
+  return optimises && target.isOSLinux() && target.isGNUEnvironment();
 }
 
 /// RFC 0035 §7: adds the runtime archives to every link job, before the
@@ -849,7 +858,9 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
       printJobsOnly = true;
     if (text.starts_with("-isysroot") || text.starts_with("--sysroot"))
       hasSysroot = true;
-    if (looksLikeSource(text))
+    // A source file, or `-` (standard input) other than `-o`'s operand.
+    if (looksLikeSource(text) ||
+        (text == "-" && llvm::StringRef(clangArgs.back()) != "-o"))
       hasSource = true;
     clangArgs.push_back(arg);
   }
@@ -881,6 +892,8 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
         add(include);
       }
       add("-D__WEAVEC__=1");
+      if (weavec.enforces() && wantsFortification(clangArgs))
+        add("-D_FORTIFY_SOURCE=3");
     }
   }
   if (!hasSysroot) {
@@ -908,8 +921,8 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
                                diags, "weavec-cc: WeaveC C compiler");
   driver.setTargetAndMode(
       clang::driver::ToolChain::getTargetAndModeFromProgramName("clang"));
-  const auto cc1 = [&weavec](llvm::SmallVectorImpl<const char *> &args) {
-    return runCc1Job(llvm::ArrayRef(args).drop_front(2), args[0], &weavec);
+  const auto cc1 = [](llvm::SmallVectorImpl<const char *> &args) {
+    return runCc1Job(llvm::ArrayRef(args).drop_front(2), args[0]);
   };
   driver.CC1Main = cc1;
   if (const std::string resources = getClangResourceDir(); !resources.empty())
@@ -974,9 +987,7 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
       break;
     }
   }
-  const bool statsOK =
-      writeAnalysisStats(weavec.analysisStatsPath, weavec.stats.get());
-  return statsOK ? status : 1;
+  return status;
 }
 
 } // namespace weavec::frontend

@@ -1,23 +1,26 @@
 # RFC 0011: Spatial safety: derived pointers, extents and bounds
 
-- **Status**: Accepted
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-04
 - **Accepted**: 2026-09-04
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: lifts the RFC 0001 exclusion of *bounds*
-  from the model (*Deliberately not caught*); replaces the boolean
-  *interior* attribute of RFC 0006's alias edges, RFC 0007's resource
-  records, RFC 0003's `copy` sources and the analysis layer's value
-  origins with a *pointer offset*; moves RFC 0002's `lifetime-too-short`
-  check from the store that creates the borrow to the death of the
-  borrowed object (RFC 0006's *Loans end at the last use of their holder*,
-  applied to the other end of the loan); amends RFC 0004's *Pointer
-  identity* so that taking the address of a field or element of an object
-  reached through a pointer derives a pointer to the *same object*; adds
-  a widening step to RFC 0005's whole-program fixpoint (as amended by RFC
-  0010). Bumps the summary text format (RFC 0003) and the sidecar format
-  (RFC 0005) from 6 to 7.
+- **Supersedes / superseded by**: Superseded by RFC 0036; lifts the RFC 0001
+  exclusion of *bounds* from the model (*Deliberately not caught*); replaces
+  the boolean *interior* attribute of RFC 0006's alias edges, RFC 0007's
+  resource records, RFC 0003's `copy` sources and the analysis layer's value
+  origins with a *pointer offset*; moves RFC 0002's `lifetime-too-short` check
+  from the store that creates the borrow to the death of the borrowed object
+  (RFC 0006's *Loans end at the last use of their holder*, applied to the
+  other end of the loan); amends RFC 0004's *Pointer identity* so that taking
+  the address of a field or element of an object reached through a pointer
+  derives a pointer to the *same object*; adds a widening step to RFC 0005's
+  whole-program fixpoint (as amended by RFC 0010). Bumps the summary text
+  format (RFC 0003) and the sidecar format (RFC 0005) from 6 to 7.
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Accepted
+> until then; it is kept as a record of the design.
 
 ## Summary
 

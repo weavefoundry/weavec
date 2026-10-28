@@ -225,6 +225,10 @@ static llvm::Value *nullBaseOf(llvm::Value *pointer,
 }
 
 void insertGuards(ModuleContext &module, llvm::Function &function) {
+  // RFC 0036 §1: the unit was parsed with AddressSanitizer's language
+  // options for its macros; nothing else of ASan's applies, and the
+  // attribute would keep the optimiser from its usual work.
+  function.removeFnAttr(llvm::Attribute::SanitizeAddress);
   std::vector<Found> found;
   for (llvm::BasicBlock &block : function)
     for (llvm::Instruction &instruction : block)

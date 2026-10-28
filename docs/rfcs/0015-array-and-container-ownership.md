@@ -1,12 +1,17 @@
 # RFC 0015: Array elements, range operations, and container ownership
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-07
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Amends RFC 0002's array places, RFC 0006's
-  element witnesses, RFC 0008's element consumption, RFC 0013's heap
-  descriptions, and RFC 0014's complete memory copies and coverage.
+- **Supersedes / superseded by**: Superseded by RFC 0036; amends RFC 0002's
+  array places, RFC 0006's element witnesses, RFC 0008's element consumption,
+  RFC 0013's heap descriptions, and RFC 0014's complete memory copies and
+  coverage.
+
+> Superseded by [RFC 0036](0036-deterministic-heap-reuse.md), which
+> deletes the advisory analysis this RFC specified. The RFC was Implemented
+> until then; it is kept as a record of the design.
 
 ## Summary
 

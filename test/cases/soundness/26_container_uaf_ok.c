@@ -8,7 +8,6 @@
 // place is not, and both exits report it as a possible leak. Recognising a
 // fill loop that bails out on a failed allocation would retire it; that is an
 // engine change RFC 0030 has not made, so the warning is tolerated here.
-// ALLOW: leak
 // ASAN
 #include <stdlib.h>
 int main(void) {

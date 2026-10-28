@@ -24,8 +24,11 @@
 |* A request takes a slot of the smallest class strictly larger than it, so
 |* at least one byte after every object belongs to no object. Slot words,
 |* the free lists and the quarantine queues live in the metadata, never in
-|* freed memory. Released slots wait in a quarantine before they are reused;
-|* requests no class can hold are mapped on their own and kept in a table.
+|* freed memory. RFC 0036 section 3: a released slot waits in its class's
+|* quarantine until a sweep (weavec_sweep.c) finds no pointer to it; only
+|* then does it join the free list. Requests no class can hold are mapped on
+|* their own and kept in a table; a released one stays reserved, without
+|* access, until a sweep finds no pointer to it either.
 |*
 |* The allocator needs nothing from the C library's allocator, so it can
 |* replace it: it maps its own memory and takes its own locks.
@@ -42,6 +45,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 #if defined(__APPLE__)
@@ -80,6 +84,8 @@ typedef struct {
   /* The quarantine queue: slot index + 1 of its oldest and newest slot. */
   uint32_t deadHead;
   uint32_t deadTail;
+  /* The sweep's marks, one bit per slot, mapped on the first sweep. */
+  uint64_t *marks;
   /* Bytes of the region, and of its metadata, that are accessible. */
   uintptr_t committed;
   uintptr_t metaCommitted;
@@ -95,6 +101,8 @@ typedef struct {
   size_t mapBytes;
   /* 0 while live; else the order of its release. */
   unsigned long long dead;
+  /* A pointer to the released block was found by the running sweep. */
+  int marked;
 } HugeBlock;
 
 static WeavecRtLock initLock;
@@ -105,18 +113,32 @@ static size_t hugeCapacity;
 /* The lowest and highest address a huge block has had: a quick rejection. */
 static uintptr_t hugeLow = ~(uintptr_t)0;
 static uintptr_t hugeHigh;
-/* Released huge blocks stay mapped, without access, until this many newer
- * ones were released: a stale pointer then finds a dead block, and nothing
+/* Released huge blocks stay reserved, without access, until a sweep finds
+ * no pointer to them: a stale pointer then finds a dead block, and nothing
  * else can be mapped there. */
-enum { HugeTombstones = 32 };
 static size_t hugeDeadCount;
+/* Their bytes, which count toward the quarantine's for when a sweep runs
+ * (RFC 0036 amendment 10): they hold address space and, on Linux, a
+ * mapping each. */
+static size_t hugeDeadBytes;
 static unsigned long long hugeReleases;
 
 static size_t pageBytes;
-/* RFC 0034, section 5.3. */
+/* RFC 0036 section 3.3: the configured quarantine (`Q`), the bytes it
+ * holds, what the last sweep left in it (pointers still reach them), and
+ * the bytes of live blocks. */
 static size_t quarantineBudget = (size_t)16 << 20;
 static size_t quarantineBytes;
-static unsigned sweepCursor;
+static size_t retainedBytes;
+static size_t liveBytes;
+/* WEAVEC_RT_STATS=1: the most the live heap and the quarantine held. */
+static size_t peakLive;
+static size_t peakQuarantine;
+/* The pacing of section 3.3: when the last sweep ended and how long it
+ * took, and the released bytes at which the time is looked at next. */
+static uint64_t lastSweepEnd;
+static uint64_t lastSweepTook;
+static size_t nextPacingCheck;
 
 enum { DataChunk = 1 << 20, MetaChunk = 64 * 1024 };
 
@@ -233,6 +255,7 @@ static void reserveShadow(void) {
     return;
   }
   dumpable(map, bytes + 64, 0);
+  weavecRtInternal((uintptr_t)map, (uintptr_t)map + bytes + 64);
   __weavec_rt_shadow.bits = bits;
   __atomic_store_n(&__weavec_rt_shadow.base, (uintptr_t)map, __ATOMIC_RELEASE);
   /* An access near null fails its guard even when the optimiser moved
@@ -242,10 +265,33 @@ static void reserveShadow(void) {
   __atomic_store_n(&__weavec_rt_shadow.mask, bytes - 1, __ATOMIC_RELEASE);
 }
 
+/* Writes `n` shadow bytes of `value`: a small object's few bytes with
+ * stores (each release and allocation writes them), larger runs with
+ * memset. */
+static inline void fill(unsigned char *at, unsigned char value, size_t n) {
+  if (n > 16) {
+    memset(at, value, n);
+    return;
+  }
+  if (n >= 8) {
+    const uint64_t pattern = 0x0101010101010101ULL * value;
+    memcpy(at, &pattern, sizeof pattern);
+    memcpy(at + n - 8, &pattern, sizeof pattern);
+  } else if (n >= 4) {
+    const uint32_t pattern = 0x01010101U * value;
+    memcpy(at, &pattern, sizeof pattern);
+    memcpy(at + n - 4, &pattern, sizeof pattern);
+  } else if (n != 0) {
+    at[0] = value;
+    at[n - 1] = value;
+    at[n / 2] = value;
+  }
+}
+
 void weavecRtShadowSet(uintptr_t base, size_t size, unsigned char value) {
   if (!weavecRtShadowReady() || size == 0 || !weavecRtInWindow(base))
     return;
-  memset(weavecRtShadowOf(base), value, (size + 15) >> 4);
+  fill(weavecRtShadowOf(base), value, (size + 15) >> 4);
 }
 
 void weavecRtShadowObject(uintptr_t base, size_t size, unsigned char tail) {
@@ -258,7 +304,7 @@ void weavecRtShadowObject(uintptr_t base, size_t size, unsigned char tail) {
   if (whole >= 4 * pageBytes)
     weavecRtShadowClear(base, base + (whole << 4));
   else if (whole != 0)
-    memset(weavecRtShadowOf(base), WeavecRtShadowAddressable, whole);
+    fill(weavecRtShadowOf(base), WeavecRtShadowAddressable, whole);
   /* A partial last granule says how many of its bytes are the object's; an
    * empty object's granule is all tail. */
   if (rest != 0)
@@ -373,6 +419,8 @@ static int reserve(unsigned shift) {
   if (map == MAP_FAILED)
     return 0;
   dumpable(map, total, 0);
+  /* The sweep scans the arena's live slots, not the reservation. */
+  weavecRtInternal((uintptr_t)map, (uintptr_t)map + total);
   /* Regions start at multiples of their size, so that the slots of a
    * power-of-two class are aligned to it. */
   start = ((uintptr_t)map + WeavecRtShadowGranule + align - 1) & ~(align - 1);
@@ -458,19 +506,19 @@ static int commit(uintptr_t start, uintptr_t *committed, uintptr_t end,
   return 1;
 }
 
-/* A slot of `region` for an object of `size` bytes, live; null when the
- * region is exhausted or memory is. `recycled` says the slot was used
- * before, so its bytes are not known to be zero. */
-static void *takeSlot(unsigned region, size_t size, int *recycled) {
+/* Takes a slot of `region` off its free list, or a fresh one; false when
+ * the region is exhausted or memory is. The class's lock is held.
+ * `recycled` says the slot was used before, so its bytes are not known to
+ * be zero. */
+static int popSlot(unsigned region, uint32_t *taken, int *recycled) {
   const struct __weavec_rt_class *entry = &__weavec_rt_heap.table[region];
   ClassState *state = &classState[region];
   uint32_t *words = slotWords(region);
   uint32_t slot;
   *recycled = 0;
-  weavecRtLock(&state->lock);
   if (state->freeHead != 0) {
     slot = state->freeHead - 1;
-    state->freeHead = loadWord(&words[slot]) >> 2;
+    state->freeHead = weavecRtWordValue(loadWord(&words[slot]));
     *recycled = 1;
   } else {
     const uintptr_t limit = (uintptr_t)1 << __weavec_rt_heap.shift;
@@ -481,10 +529,8 @@ static void *takeSlot(unsigned region, size_t size, int *recycled) {
                 ((uintptr_t)slot + 1) * entry->size, DataChunk, limit) ||
         !commit((uintptr_t)words, &state->metaCommitted,
                 ((uintptr_t)slot + 1) * sizeof(uint32_t), MetaChunk,
-                limit >> 2)) {
-      weavecRtUnlock(&state->lock);
-      return NULL;
-    }
+                limit >> 2))
+      return 0;
     /* RFC 0035 section 5.1: slots the region has not handed out yet are
      * no object's, so an index that jumps past an object's slot into them
      * fails; each is written again when it is allocated. */
@@ -503,8 +549,30 @@ static void *takeSlot(unsigned region, size_t size, int *recycled) {
                         WeavecRtShadowGranule, WeavecRtShadowHeapTail);
     __atomic_store_n(&state->bump, slot + 1, __ATOMIC_RELAXED);
   }
-  storeWord(&words[slot], ((uint32_t)size << 2) | WeavecRtLive);
+  *taken = slot;
+  return 1;
+}
+
+/* A slot of `region` for an object of `size` bytes, live; null when the
+ * region is exhausted or memory is. */
+static void *takeSlot(unsigned region, size_t size, int *recycled) {
+  const struct __weavec_rt_class *entry = &__weavec_rt_heap.table[region];
+  ClassState *state = &classState[region];
+  uint32_t slot;
+  weavecRtLock(&state->lock);
+  if (!popSlot(region, &slot, recycled)) {
+    weavecRtUnlock(&state->lock);
+    return NULL;
+  }
+  storeWord(&slotWords(region)[slot],
+            ((uint32_t)size << WeavecRtWordShift) | WeavecRtLive);
   weavecRtUnlock(&state->lock);
+  {
+    const size_t live =
+        __atomic_add_fetch(&liveBytes, entry->size, __ATOMIC_RELAXED);
+    if (live > peakLive)
+      peakLive = live;
+  }
   return (void *)(regionStart(region) + (uintptr_t)slot * entry->size);
 }
 
@@ -549,38 +617,62 @@ __attribute__((constructor)) static void readQuarantineBudget(void) {
     quarantineBudget = (size_t)strtoull(text, NULL, 10);
 }
 
-/* Moves the oldest dead slot of a class to its free list. The class's lock
- * is held. False when the class has none. */
-static int recycleOldest(unsigned region) {
-  ClassState *state = &classState[region];
-  uint32_t *words = slotWords(region);
-  uint32_t slot;
-  if (state->deadHead == 0)
+static uint64_t nanoseconds(void) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+}
+
+/* RFC 0036 section 3.3: whether the quarantine should be swept. `gained`,
+ * the bytes released since the last sweep, is past the hard budget
+ * max(2 Q, live / 2); or past the soft budget max(Q, live / 4) with the
+ * last sweep at least eight of its durations ago, so that sweeps take at
+ * most about a ninth of the run time. The clock is read once per sixteenth
+ * of the soft budget released. */
+static int overBudget(void) {
+  const size_t held = __atomic_load_n(&quarantineBytes, __ATOMIC_RELAXED) +
+                      __atomic_load_n(&hugeDeadBytes, __ATOMIC_RELAXED);
+  const size_t kept = __atomic_load_n(&retainedBytes, __ATOMIC_RELAXED);
+  const size_t live = __atomic_load_n(&liveBytes, __ATOMIC_RELAXED);
+  const size_t gained = held > kept ? held - kept : 0;
+  const size_t soft = quarantineBudget > live / 4 ? quarantineBudget : live / 4;
+  const size_t hard =
+      2 * quarantineBudget > live / 2 ? 2 * quarantineBudget : live / 2;
+  if (gained < soft ||
+      gained < __atomic_load_n(&nextPacingCheck, __ATOMIC_RELAXED))
     return 0;
-  slot = state->deadHead - 1;
-  state->deadHead = loadWord(&words[slot]) >> 2;
-  if (state->deadHead == 0)
-    state->deadTail = 0;
-  storeWord(&words[slot], (state->freeHead << 2) | WeavecRtFree);
-  state->freeHead = slot + 1;
-  weavecRtCount(WeavecRtStatRecycled);
-  (void)__atomic_sub_fetch(&quarantineBytes, __weavec_rt_heap.table[region].size,
-                           __ATOMIC_RELAXED);
-  return 1;
+  if (gained >= hard ||
+      nanoseconds() - __atomic_load_n(&lastSweepEnd, __ATOMIC_RELAXED) >=
+          8 * __atomic_load_n(&lastSweepTook, __ATOMIC_RELAXED))
+    return 1;
+  __atomic_store_n(&nextPacingCheck, gained + soft / 16, __ATOMIC_RELAXED);
+  return 0;
 }
 
-static inline int overBudget(void) {
-  return __atomic_load_n(&quarantineBytes, __ATOMIC_RELAXED) > quarantineBudget;
+void weavecRtPeaks(size_t *live, size_t *quarantine) {
+  *live = peakLive;
+  *quarantine = peakQuarantine;
 }
 
-/* Gives the whole pages inside a dead slot back to the system. */
+void weavecRtSwept(uint64_t ended, uint64_t took) {
+  __atomic_store_n(&lastSweepEnd, ended, __ATOMIC_RELAXED);
+  __atomic_store_n(&lastSweepTook, took, __ATOMIC_RELAXED);
+  __atomic_store_n(&nextPacingCheck, 0, __ATOMIC_RELAXED);
+}
+
+/* Gives the whole pages inside a dead slot back to the system, at once: a
+ * released slot waits for a sweep while fresh slots are taken, so its pages
+ * must not stay resident meanwhile (Darwin's MADV_FREE leaves them resident
+ * until the system needs memory; a fresh mapping drops them). */
 static void giveBack(uintptr_t base, size_t bytes) {
   const uintptr_t first = (base + pageBytes - 1) & ~(uintptr_t)(pageBytes - 1);
   const uintptr_t last = (base + bytes) & ~(uintptr_t)(pageBytes - 1);
   if (last <= first)
     return;
 #if defined(__APPLE__)
-  (void)madvise((void *)first, last - first, MADV_FREE);
+  if (mmap((void *)first, last - first, PROT_READ | PROT_WRITE,
+           MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED)
+    (void)madvise((void *)first, last - first, MADV_FREE);
 #else
   (void)madvise((void *)first, last - first, MADV_DONTNEED);
 #endif
@@ -590,12 +682,13 @@ static void giveBack(uintptr_t base, size_t bytes) {
  * released, and a page given back would read 0, addressable. */
 static void decommit(uintptr_t base, size_t bytes) { giveBack(base, bytes); }
 
-/* Makes the live slot `ref` dead and queues it. */
+/* Makes the live slot `ref` dead and queues it in its class's quarantine;
+ * sweeps when the quarantine is over budget. */
 static void retire(SlotRef ref) {
   const struct __weavec_rt_class *entry = &__weavec_rt_heap.table[ref.region];
   ClassState *state = &classState[ref.region];
   uint32_t *words = slotWords(ref.region);
-  /* Before the slot is queued: once it is, another thread may recycle it. */
+  /* Before the slot is queued: a sweep may recycle it once it is. */
   shadowDead(ref.base, entry->size);
   if (entry->size >= WeavecRtDecommitBytes)
     decommit(ref.base, entry->size);
@@ -603,27 +696,20 @@ static void retire(SlotRef ref) {
   storeWord(&words[ref.slot], WeavecRtDead);
   if (state->deadTail != 0)
     storeWord(&words[state->deadTail - 1],
-              ((ref.slot + 1) << 2) | WeavecRtDead);
+              ((ref.slot + 1) << WeavecRtWordShift) | WeavecRtDead);
   else
     state->deadHead = ref.slot + 1;
   state->deadTail = ref.slot + 1;
-  (void)__atomic_add_fetch(&quarantineBytes, entry->size, __ATOMIC_RELAXED);
-  while (overBudget() && recycleOldest(ref.region)) {
-  }
-  weavecRtUnlock(&state->lock);
-  /* Other classes hold the rest of an exceeded budget. */
   {
-    unsigned tries;
-    for (tries = 0; overBudget() && tries < __weavec_rt_heap.classes; ++tries) {
-      const unsigned victim =
-          __atomic_fetch_add(&sweepCursor, 1, __ATOMIC_RELAXED) %
-          __weavec_rt_heap.classes;
-      weavecRtLock(&classState[victim].lock);
-      while (overBudget() && recycleOldest(victim)) {
-      }
-      weavecRtUnlock(&classState[victim].lock);
-    }
+    const size_t held =
+        __atomic_add_fetch(&quarantineBytes, entry->size, __ATOMIC_RELAXED);
+    if (held > peakQuarantine)
+      peakQuarantine = held;
   }
+  (void)__atomic_sub_fetch(&liveBytes, entry->size, __ATOMIC_RELAXED);
+  weavecRtUnlock(&state->lock);
+  if (overBudget())
+    weavecRtSweep();
 }
 
 /*===-- Huge blocks ---------------------------------------------------------===*/
@@ -685,8 +771,12 @@ static void *hugeAlloc(size_t size, size_t alignment) {
     }
     if (hugeCount != 0)
       memcpy(grown, hugeBlocks, hugeCount * sizeof(HugeBlock));
-    if (hugeBlocks != NULL)
+    weavecRtInternal((uintptr_t)grown,
+                     (uintptr_t)grown + capacity * sizeof(HugeBlock));
+    if (hugeBlocks != NULL) {
+      weavecRtInternalDrop((uintptr_t)hugeBlocks);
       (void)munmap(hugeBlocks, hugeCapacity * sizeof(HugeBlock));
+    }
     hugeBlocks = grown;
     hugeCapacity = capacity;
   }
@@ -698,6 +788,7 @@ static void *hugeAlloc(size_t size, size_t alignment) {
   hugeBlocks[at].map = map;
   hugeBlocks[at].mapBytes = mapBytes;
   hugeBlocks[at].dead = 0;
+  hugeBlocks[at].marked = 0;
   ++hugeCount;
   shadowLive(base, size, bytes);
   if (map < __atomic_load_n(&hugeLow, __ATOMIC_RELAXED))
@@ -732,10 +823,8 @@ static int hugeFind(uintptr_t address, HugeBlock *out) {
 /* Releases the live huge block that starts at `address`; false when there
  * is none. */
 static int hugeFree(uintptr_t address) {
-  HugeBlock gone;
   long index;
   int ok = 0;
-  int unmap = 0;
   if (!maybeHuge(address))
     return 0;
   weavecRtLock(&hugeLock);
@@ -755,31 +844,15 @@ static int hugeFree(uintptr_t address) {
     } else {
       shadowDead(block->base, block->size);
     }
-    /* The memory goes back; the address range stays this block's. */
+    /* The memory goes back; the address range stays this block's until a
+     * sweep finds no pointer to it. */
     (void)mmap((void *)block->map, block->mapBytes, PROT_NONE,
                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
     ok = 1;
-    if (++hugeDeadCount > HugeTombstones) {
-      size_t i;
-      size_t oldest = hugeCount;
-      for (i = 0; i < hugeCount; ++i)
-        if (hugeBlocks[i].dead != 0 &&
-            (oldest == hugeCount ||
-             hugeBlocks[i].dead < hugeBlocks[oldest].dead))
-          oldest = i;
-      gone = hugeBlocks[oldest];
-      memmove(&hugeBlocks[oldest], &hugeBlocks[oldest + 1],
-              (hugeCount - oldest - 1) * sizeof(HugeBlock));
-      --hugeCount;
-      --hugeDeadCount;
-      unmap = 1;
-    }
+    ++hugeDeadCount;
+    (void)__atomic_add_fetch(&hugeDeadBytes, block->size, __ATOMIC_RELAXED);
   }
   weavecRtUnlock(&hugeLock);
-  if (unmap) {
-    weavecRtShadowClear(gone.base, gone.base + gone.size + 16);
-    (void)munmap((void *)gone.map, gone.mapBytes);
-  }
   return ok;
 }
 
@@ -900,6 +973,12 @@ void *__weavec_rt_alloc(size_t size, size_t alignment) {
   weavecRtCount(WeavecRtStatAllocations);
   if (region < __weavec_rt_heap.classes) {
     block = takeSlot(region, size, &recycled);
+    /* A full region whose quarantine holds slots: a sweep may free some. */
+    if (block == NULL &&
+        __atomic_load_n(&classState[region].deadHead, __ATOMIC_RELAXED) != 0) {
+      weavecRtSweep();
+      block = takeSlot(region, size, &recycled);
+    }
     if (block != NULL) {
       if (recycled && size != 0)
         zeroFill((uintptr_t)block, size);
@@ -918,9 +997,9 @@ static int ownedSize(const void *p, size_t *size) {
   if (inArena(address)) {
     const SlotRef ref = slotOf(address);
     const uint32_t word = wordOf(ref);
-    if (ref.base != address || (word & 3) != WeavecRtLive)
+    if (ref.base != address || (word & WeavecRtWordState) != WeavecRtLive)
       return 0;
-    *size = word >> 2;
+    *size = weavecRtWordValue(word);
     return 1;
   }
   {
@@ -936,9 +1015,9 @@ static int ownedSize(const void *p, size_t *size) {
 static const char *whyNotReleasable(uintptr_t address) {
   const SlotRef ref = slotOf(address);
   const uint32_t word = wordOf(ref);
-  if ((word & 3) == WeavecRtDead)
+  if ((word & WeavecRtWordState) == WeavecRtDead)
     return "the block was already released";
-  if ((word & 3) != WeavecRtLive)
+  if ((word & WeavecRtWordState) != WeavecRtLive)
     return "no block is allocated there";
   return "not the start of its block";
 }
@@ -951,14 +1030,17 @@ void __weavec_rt_free(void *p) {
   if (inArena(address)) {
     const SlotRef ref = slotOf(address);
     const uint32_t word = wordOf(ref);
-    if (ref.base != address || (word & 3) != WeavecRtLive)
+    if (ref.base != address || (word & WeavecRtWordState) != WeavecRtLive)
       __weavec_rt_fatal("invalid release", p, whyNotReleasable(address));
     weavecRtCount(WeavecRtStatReleases);
     retire(ref);
     return;
   }
-  if (hugeFree(address))
+  if (hugeFree(address)) {
+    if (overBudget())
+      weavecRtSweep();
     return;
+  }
   {
     HugeBlock block;
     if (hugeFind(address, &block))
@@ -980,15 +1062,15 @@ void *__weavec_rt_realloc(void *p, size_t size) {
     const SlotRef ref = slotOf(address);
     uint32_t *word = &slotWords(ref.region)[ref.slot];
     const uint32_t value = wordOf(ref);
-    if (ref.base != address || (value & 3) != WeavecRtLive)
+    if (ref.base != address || (value & WeavecRtWordState) != WeavecRtLive)
       __weavec_rt_fatal("invalid release", p, whyNotReleasable(address));
-    old = value >> 2;
+    old = weavecRtWordValue(value);
     if (classFor(size) == ref.region) {
       /* The block stays; bytes it gains are zero (section 2.3). */
       if (size > old)
         memset((char *)p + old, 0, size - old);
       shadowLive(address, size, __weavec_rt_heap.table[ref.region].size);
-      storeWord(word, ((uint32_t)size << 2) | WeavecRtLive);
+      storeWord(word, ((uint32_t)size << WeavecRtWordShift) | WeavecRtLive);
       return p;
     }
   } else if (!ownedSize(p, &old)) {
@@ -1030,10 +1112,12 @@ struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address) {
   if (inArena(address)) {
     const SlotRef ref = slotOf(address);
     const uint32_t word = wordOf(ref);
-    object.found = (word & 3) != WeavecRtNever;
-    object.live = (word & 3) == WeavecRtLive;
+    object.found = (word & WeavecRtWordState) != WeavecRtNever;
+    object.live = (word & WeavecRtWordState) == WeavecRtLive;
     object.base = ref.base;
-    object.size = object.live ? word >> 2 : 0;
+    /* A released slot: its whole extent. */
+    object.size = object.live ? weavecRtWordValue(word)
+                              : __weavec_rt_heap.table[ref.region].size;
     return object;
   }
   {
@@ -1050,7 +1134,7 @@ struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address) {
 
 /*===-- fork ----------------------------------------------------------------===*/
 
-static void lockAll(void) {
+void weavecRtLockAll(void) {
   unsigned i;
   weavecRtLock(&initLock);
   for (i = 0; i < WeavecRtClassCount; ++i)
@@ -1058,7 +1142,7 @@ static void lockAll(void) {
   weavecRtLock(&hugeLock);
 }
 
-static void unlockAll(void) {
+void weavecRtUnlockAll(void) {
   unsigned i;
   weavecRtUnlock(&hugeLock);
   for (i = WeavecRtClassCount; i-- > 0;)
@@ -1066,9 +1150,164 @@ static void unlockAll(void) {
   weavecRtUnlock(&initLock);
 }
 
-static void forkPrepare(void) { lockAll(); }
-static void forkParent(void) { unlockAll(); }
-static void forkChild(void) { unlockAll(); }
+/* The sweep's lock comes first, so that a fork never copies a sweep in
+ * progress. */
+static void forkPrepare(void) {
+  weavecRtSweepLock();
+  weavecRtLockAll();
+}
+static void forkParent(void) {
+  weavecRtUnlockAll();
+  weavecRtSweepUnlock();
+}
+static void forkChild(void) {
+  weavecRtUnlockAll();
+  weavecRtSweepUnlock();
+}
+
+/*===-- The allocator's side of the sweep (RFC 0036 section 3.4) -----------===*/
+
+/* Whether the quarantine or the released huge blocks hold anything. */
+int weavecRtSweepWanted(void) {
+  return __atomic_load_n(&quarantineBytes, __ATOMIC_RELAXED) != 0 ||
+         __atomic_load_n(&hugeDeadCount, __ATOMIC_RELAXED) != 0;
+}
+
+/* Maps the marks of each class whose quarantine holds slots. Every lock is
+ * held. */
+int weavecRtPrepareMarks(void) {
+  unsigned region;
+  for (region = 0; region < __weavec_rt_heap.classes; ++region) {
+    ClassState *state = &classState[region];
+    if (state->deadHead == 0 || state->marks != NULL)
+      continue;
+    {
+      const size_t bytes =
+          ((size_t)__weavec_rt_heap.table[region].capacity + 63) / 64 * 8;
+      void *map = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+      if (map == MAP_FAILED)
+        return 0;
+      weavecRtInternal((uintptr_t)map, (uintptr_t)map + bytes);
+      state->marks = (uint64_t *)map;
+    }
+  }
+  return 1;
+}
+
+/* Marks the quarantined slot or released huge block `value` points into. */
+static inline void markAddress(uintptr_t value) {
+  if (value - __weavec_rt_heap.base < __weavec_rt_heap.bytes) {
+    /* A class with nothing in its quarantine needs no slot index. */
+    const ClassState *quick =
+        &classState[(value - __weavec_rt_heap.base) >> __weavec_rt_heap.shift];
+    SlotRef ref;
+    if (quick->marks == NULL || quick->deadHead == 0)
+      return;
+    ref = slotOf(value);
+    if ((wordOf(ref) & WeavecRtWordState) == WeavecRtDead)
+      classState[ref.region].marks[ref.slot >> 6] |= (uint64_t)1
+                                                     << (ref.slot & 63);
+    return;
+  }
+  if (hugeDeadCount != 0 && value >= hugeLow && value < hugeHigh) {
+    const long index = hugeIndex(value);
+    if (index >= 0 && hugeBlocks[index].dead != 0 &&
+        value < hugeBlocks[index].map + hugeBlocks[index].mapBytes)
+      hugeBlocks[index].marked = 1;
+  }
+}
+
+void weavecRtMarkWords(uintptr_t low, uintptr_t high) {
+  const uintptr_t *word = (const uintptr_t *)((low + 7) & ~(uintptr_t)7);
+  const uintptr_t *end = (const uintptr_t *)(high & ~(uintptr_t)7);
+  for (; word < end; ++word)
+    markAddress(*word);
+}
+
+void weavecRtMarkHeap(void) {
+  unsigned region;
+  size_t i;
+  for (region = 0; region < __weavec_rt_heap.classes; ++region) {
+    const struct __weavec_rt_class *entry = &__weavec_rt_heap.table[region];
+    const uint32_t *words = slotWords(region);
+    const uint32_t bump = classState[region].bump;
+    uint32_t slot;
+    for (slot = 0; slot < bump; ++slot) {
+      const uint32_t word = loadWord(&words[slot]);
+      if ((word & WeavecRtWordState) == WeavecRtLive) {
+        const uintptr_t base = regionStart(region) + (uintptr_t)slot * entry->size;
+        weavecRtMarkWords(base, base + weavecRtWordValue(word));
+      }
+    }
+  }
+  for (i = 0; i < hugeCount; ++i)
+    if (hugeBlocks[i].dead == 0)
+      weavecRtMarkWords(hugeBlocks[i].base,
+                        hugeBlocks[i].base + hugeBlocks[i].size);
+}
+
+void weavecRtRecycle(struct weavecRtSweepCounts *counts, int recycle) {
+  unsigned region;
+  size_t i;
+  for (region = 0; region < __weavec_rt_heap.classes; ++region) {
+    ClassState *state = &classState[region];
+    uint32_t *words = slotWords(region);
+    const size_t size = __weavec_rt_heap.table[region].size;
+    uint32_t keptHead = 0;
+    uint32_t slot;
+    if (state->marks == NULL || state->deadHead == 0)
+      continue;
+    /* By slot, from the last: the free list and the quarantine come out in
+     * address order, so that slots are reused, and their words read, in
+     * order. */
+    for (slot = state->bump; slot-- > 0;) {
+      if ((loadWord(&words[slot]) & WeavecRtWordState) != WeavecRtDead)
+        continue;
+      if (!recycle || (state->marks[slot >> 6] >> (slot & 63) & 1) != 0) {
+        if (keptHead == 0)
+          state->deadTail = slot + 1;
+        storeWord(&words[slot],
+                  (keptHead << WeavecRtWordShift) | WeavecRtDead);
+        keptHead = slot + 1;
+        ++counts->retained;
+        counts->retainedBytes += size;
+      } else {
+        storeWord(&words[slot],
+                  (state->freeHead << WeavecRtWordShift) | WeavecRtFree);
+        state->freeHead = slot + 1;
+        quarantineBytes -= size;
+        ++counts->recycled;
+        weavecRtCount(WeavecRtStatRecycled);
+      }
+    }
+    state->deadHead = keptHead;
+    if (keptHead == 0)
+      state->deadTail = 0;
+    memset(state->marks, 0, ((size_t)state->bump + 63) / 64 * 8);
+  }
+  for (i = 0; i < hugeCount;) {
+    HugeBlock *block = &hugeBlocks[i];
+    if (block->dead == 0 || block->marked || !recycle) {
+      if (block->dead != 0) {
+        ++counts->retained;
+        counts->retainedBytes += block->size;
+      }
+      block->marked = 0;
+      ++i;
+      continue;
+    }
+    weavecRtShadowClear(block->base, block->base + block->size + 16);
+    (void)munmap((void *)block->map, block->mapBytes);
+    hugeDeadBytes -= block->size;
+    memmove(block, block + 1, (hugeCount - i - 1) * sizeof(HugeBlock));
+    --hugeCount;
+    --hugeDeadCount;
+    ++counts->recycled;
+  }
+  __atomic_store_n(&retainedBytes, quarantineBytes + hugeDeadBytes,
+                   __ATOMIC_RELAXED);
+}
 
 /*===-- The Darwin zone (section 2.5) ---------------------------------------===*/
 

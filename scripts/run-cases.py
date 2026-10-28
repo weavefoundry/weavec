@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""Run the test/cases suites (RFC 0035 section 11).
+"""Run the test/cases suites (RFC 0035 section 11, RFC 0036 section 9).
 
 Each case is a C file under test/cases/<suite>/ whose expectations are
 written as line-comment markers (test/cases/README.md has the grammar). For
 every selected case the runner
 
-1. analyses it with the `weavec` tool (`--whole-program` when it has
-   several units) and checks the diagnostics against the BUG, CLEAN and
-   ALLOW markers;
-2. builds it with `weavec-cc` and its FLAGS (trap mode, or verify mode under
+1. builds it with `weavec-cc` and its FLAGS (trap mode, or verify mode under
    `--checks verify`), writing the enforcement ledger when a marker reads
    it, and checks the ledger against the GUARDED, PROVEN, UNGUARDED and
    EXPECT-LEDGER markers;
-3. runs the executable once per RUN-INPUT and attributes every stop to a
+2. runs the executable once per RUN-INPUT and attributes every stop to a
    line and a kind: a `weavec: <kind> at <file>:<line>:<col>` report, an
    invalid release the allocator stopped (no location), or a fault (no
    location, a null dereference). Every stop must be one a TRAP marker
-   expects, and every TRAP marker must be hit by some run;
-4. runs the ASan oracle (`--asan` or an ASAN marker);
-5. with `--checks verify`, fails any case that reports `weavec.proven`.
+   expects, and every TRAP marker must be hit by some run; a CLEAN case
+   must not stop;
+3. runs the ASan oracle (`--asan` or an ASAN marker);
+4. with `--checks verify`, fails any case that reports `weavec.proven`.
 
 A DETECT case is judged instead by whether its bug stops (its first report
 is on a STOP line, or it faults) and whether its fixed twin runs clean;
@@ -58,44 +56,35 @@ DEFAULT_CASES = ROOT / "test" / "cases"
 RESOURCE_INCLUDE = ROOT / "resources" / "include"
 
 # ---------------------------------------------------------------------------
-# Vocabulary (RFC 0035 sections 5.3 and 9, and the Diagnostics section)
+# Vocabulary (RFC 0035 sections 5.3 and 9, RFC 0036 Diagnostics)
 # ---------------------------------------------------------------------------
 
 # The `version` of the enforcement ledger this runner reads.
 LEDGER_VERSION = 3
-# Run-time report kinds (runtime/weavec_report.c, section 5.3).
+# Run-time report kinds (runtime/weavec_report.c).
 KINDS = (
     "heap-buffer-overflow", "heap-use-after-free", "stack-buffer-overflow",
     "stack-use-after-scope", "dynamic-stack-buffer-overflow", "global-buffer-overflow",
-    "buffer-overflow", "null-dereference", "unterminated-string", "index-out-of-bounds",
-    "invalid-release", "invalid-access", "overlapping-copy",
+    "intra-object-overflow", "use-after-poison", "null-dereference", "unterminated-string",
+    "index-out-of-bounds", "invalid-release", "invalid-access", "overlapping-copy",
 )
-# The diagnostic ids of the analysis (include/weavec/Core/Diagnostic.h).
-IDS = frozenset((
-    "use-after-free", "double-free", "use-after-move", "conflicting-borrow",
-    "lifetime-too-short", "unsafe-operation", "annotation-mismatch", "invalid-annotation",
-    "leak", "mismatched-release", "null-dereference", "use-of-uninitialized",
-    "invalid-release", "out-of-bounds", "invalid-integer-operation",
-    "contradicted-assumption", "allocation-failure",
-))
 LEDGER_REASONS = {
     "GUARDED": ("access", "range", "string", "checked-call", "loop-range"),
     "PROVEN": ("in-bounds", "dominated", "merged", "optimized"),
     "UNGUARDED": ("unsafe",),
 }
 
-FILE_MARKERS = frozenset(("CLEAN", "ALLOW", "RUN-INPUT", "EXPECT-LEDGER", "FLAGS", "UNITS",
-                          "ASAN", "TOOL", "DETECT", "XFAIL", "TRAP-AT"))
-LINE_MARKERS = frozenset(("BUG", "TRAP", "GUARDED", "PROVEN", "UNGUARDED", "NEUTRALISED",
-                          "MISS", "STOP"))
+FILE_MARKERS = frozenset(("CLEAN", "RUN-INPUT", "EXPECT-LEDGER", "FLAGS", "UNITS", "ASAN",
+                          "DETECT", "XFAIL", "TRAP-AT"))
+LINE_MARKERS = frozenset(("TRAP", "GUARDED", "PROVEN", "UNGUARDED", "MISS", "STOP"))
 MARKERS = FILE_MARKERS | LINE_MARKERS
-NO_ARGUMENT_MARKERS = frozenset(("CLEAN", "ASAN", "TOOL", "STOP"))
+NO_ARGUMENT_MARKERS = frozenset(("CLEAN", "ASAN", "STOP"))
 # A TRAP and the ledger markers may name a kind or a reason, or not.
 OPTIONAL_ARGUMENT_MARKERS = frozenset(("TRAP", "GUARDED", "PROVEN", "UNGUARDED"))
 # Markers a detection case (DETECT) cannot have: it is judged by whether its
 # bug stops, not by what is reported where.
-NOT_IN_DETECTION = frozenset(("CLEAN", "ALLOW", "TOOL", "BUG", "TRAP", "GUARDED", "PROVEN",
-                              "UNGUARDED", "NEUTRALISED", "EXPECT-LEDGER"))
+NOT_IN_DETECTION = frozenset(("CLEAN", "TRAP", "GUARDED", "PROVEN", "UNGUARDED",
+                              "EXPECT-LEDGER"))
 LEDGER_MARKERS = frozenset(("GUARDED", "PROVEN", "UNGUARDED"))
 EXPECTATION_MARKERS = frozenset(("CLEAN", "EXPECT-LEDGER")) | LINE_MARKERS
 COMPARISONS = ("==", "!=", "<=", ">=", "<", ">")
@@ -248,13 +237,6 @@ class Expectation:
 
 def parse_argument(kind: str, argument: str, directory: Path) -> Any:
     """Validate a marker argument and return its parsed form."""
-    if kind == "BUG":
-        parts = argument.split()
-        if len(parts) not in (1, 2) or (len(parts) == 2 and parts[1] not in ("definite", "possible")):
-            raise ValueError("BUG takes '<id> [definite|possible]'")
-        if parts[0] not in IDS:
-            raise ValueError(f"unknown diagnostic id '{parts[0]}'")
-        return (parts[0], parts[1] if len(parts) == 2 else None)
     if kind == "TRAP":
         if argument and argument not in KINDS:
             raise ValueError(f"unknown report kind '{argument}' (one of {', '.join(KINDS)})")
@@ -263,18 +245,8 @@ def parse_argument(kind: str, argument: str, directory: Path) -> Any:
         if argument and argument not in LEDGER_REASONS[kind]:
             raise ValueError(f"unknown {kind.lower()} reason '{argument}'")
         return argument or None
-    if kind == "NEUTRALISED":
-        if argument != "zero-init":
-            raise ValueError("NEUTRALISED takes 'zero-init'")
-        return argument
     if kind == "MISS":
         return argument
-    if kind == "ALLOW":
-        ids = argument.split()
-        unknown = [i for i in ids if i not in IDS]
-        if unknown:
-            raise ValueError(f"unknown diagnostic id '{unknown[0]}'")
-        return tuple(ids)
     if kind == "RUN-INPUT":
         try:
             tokens = shlex.split(argument)
@@ -383,8 +355,6 @@ class Case:
     unit_flags: dict[Path, tuple[str, ...]]
     flags: tuple[str, ...]
     clean: bool
-    allow: frozenset[str]
-    tool: bool
     asan: bool
     run_inputs: list[RunInput]
     expectations: list[Expectation]
@@ -400,23 +370,12 @@ class Case:
         return [m for m in self.markers if m.kind == kind]
 
     @property
-    def bugs(self) -> list[Marker]:
-        return self.line_markers("BUG")
-
-    @property
     def traps(self) -> list[Marker]:
         return self.line_markers("TRAP")
 
-    def bug_lines(self) -> set[tuple[Path, int]]:
-        return {(m.file, m.line) for m in self.markers if m.kind in ("BUG", "MISS", "NEUTRALISED", "TRAP")}
-
     @property
     def is_bug_case(self) -> bool:
-        return bool(self.bug_lines())
-
-    def analysed_units(self) -> list[Path]:
-        """Units the analysis sees: those not compiled with -fno-weavec."""
-        return [u for u in self.units if "-fno-weavec" not in self.unit_flags.get(u, ())]
+        return bool(self.traps)
 
 
 def relative(path: Path | str | None) -> str:
@@ -484,9 +443,7 @@ def load_case(path: Path, cases_root: Path, parsed: dict[Path, SourceMarkers] | 
         errors.append(f"{path.name}: FLAGS of a case's main file cannot contain -fno-weavec")
     case = Case(
         path=path, rel=rel, suite=rel.split("/", 1)[0], units=units, unit_flags=unit_flags,
-        flags=main_flags, clean=bool(file_markers["CLEAN"]),
-        allow=frozenset(i for marker in file_markers["ALLOW"] for i in marker.value),
-        tool=bool(file_markers["TOOL"]), asan=bool(file_markers["ASAN"]),
+        flags=main_flags, clean=bool(file_markers["CLEAN"]), asan=bool(file_markers["ASAN"]),
         run_inputs=[marker.value for marker in file_markers["RUN-INPUT"]],
         expectations=[marker.value for marker in file_markers["EXPECT-LEDGER"]],
         markers=markers, has_main=any(defines_main(t) for t in texts.values()), errors=errors,
@@ -508,17 +465,20 @@ def load_case(path: Path, cases_root: Path, parsed: dict[Path, SourceMarkers] | 
             if marker.kind == "MISS" and (marker.file, marker.line) not in stops:
                 errors.append(f"{marker.file.name}:{marker.line}: in a DETECT case MISS marks a STOP line "
                               f"as a known miss")
-    elif "STOP" in kinds:
-        errors.append(f"{path.name}: STOP needs a DETECT file marker")
+    else:
+        if "STOP" in kinds:
+            errors.append(f"{path.name}: STOP needs a DETECT file marker")
+        if "MISS" in kinds:
+            errors.append(f"{path.name}: MISS marks a STOP line of a DETECT case")
     if not kinds & EXPECTATION_MARKERS:
         errors.append(f"{path.name}: no expectation (CLEAN, EXPECT-LEDGER or a line marker)")
-    if case.clean and {"BUG", "MISS", "NEUTRALISED", "TRAP"} & kinds:
-        errors.append(f"{path.name}: CLEAN contradicts its BUG, MISS, NEUTRALISED or TRAP markers")
-    if case.allow and not case.clean:
-        errors.append(f"{path.name}: ALLOW only applies to a CLEAN case")
-    if case.tool and (case.run_inputs or case.asan):
-        errors.append(f"{path.name}: a TOOL case is not run (no RUN-INPUT or ASAN)")
-    if case.asan and not case.tool and not case.has_main:
+    if case.clean and "TRAP" in kinds:
+        errors.append(f"{path.name}: CLEAN contradicts its TRAP markers")
+    if (not case.has_main and case.detect is None and not case.expectations
+            and not kinds & LEDGER_MARKERS):
+        errors.append(f"{path.name}: a case without main has nothing to run: it needs "
+                      f"EXPECT-LEDGER or a ledger marker")
+    if case.asan and not case.has_main:
         errors.append(f"{path.name}: ASAN needs a unit that defines main")
     if case.run_inputs and not case.has_main:
         errors.append(f"{path.name}: RUN-INPUT needs a unit that defines main")
@@ -558,52 +518,14 @@ def select(cases: list[Case], filters: list[str]) -> list[Case]:
 # Flags
 # ---------------------------------------------------------------------------
 
-_W_FLAG = re.compile(r"^-W(?:no-)?(?:error=)?weavec(?:-[a-z0-9-]+)?$")
-
-
-def tool_flags(flags: tuple[str, ...] | list[str]) -> tuple[list[str], list[str]]:
-    """Split a case's FLAGS into the `weavec` tool's own options and the compiler flags."""
-    own: list[str] = []
-    compiler: list[str] = []
-    for flag in flags:
-        if flag.startswith("-fweavec-budget="):
-            own.append("--budget=" + flag.split("=", 1)[1])
-        elif flag == "-fno-weavec-zero-init":
-            own.append("--no-zero-init")
-        elif _W_FLAG.match(flag):
-            own.append(flag)
-        elif flag.startswith("-fweavec") or flag.startswith("-fno-weavec"):
-            continue
-        else:
-            compiler.append(flag)
-    return own, compiler
-
-
 def plain_flags(flags: tuple[str, ...] | list[str]) -> list[str]:
     """The flags another compiler accepts: WeaveC's own dropped."""
-    return [f for f in flags if not (f.startswith("-fweavec") or f.startswith("-fno-weavec")
-                                     or _W_FLAG.match(f))]
+    return [f for f in flags if not (f.startswith("-fweavec") or f.startswith("-fno-weavec"))]
 
 
 # ---------------------------------------------------------------------------
 # Evidence
 # ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass(frozen=True)
-class Diagnostic:
-    file: str
-    line: int
-    column: int
-    severity: str  # "error" or "warning"
-    id: str
-    message: str
-
-    def text(self) -> str:
-        return f"{relative(self.file)}:{self.line}:{self.column}: {self.severity}: {self.message} [weavec::{self.id}]"
-
-
-_DIAGNOSTIC = re.compile(r"^(.+?):(\d+):(\d+): (error|warning): (.*) \[weavec::([a-z0-9-]+)\]$")
 
 
 def resolve(file: str, cwd: Path | None) -> str:
@@ -614,17 +536,6 @@ def resolve(file: str, cwd: Path | None) -> str:
         return str(path.resolve())
     except OSError:
         return str(path)
-
-
-def parse_diagnostics(output: str, cwd: Path | None = None) -> list[Diagnostic]:
-    result: list[Diagnostic] = []
-    for line in output.splitlines():
-        match = _DIAGNOSTIC.match(line.strip())
-        if match:
-            file, number, column, severity, message, ident = match.groups()
-            result.append(Diagnostic(resolve(file, cwd), int(number), int(column), severity,
-                                     ident, message))
-    return result
 
 
 @dataclasses.dataclass(frozen=True)
@@ -708,7 +619,6 @@ class Evidence:
     commands: list[str] = dataclasses.field(default_factory=list)
     failures: list[str] = dataclasses.field(default_factory=list)
     notes: list[str] = dataclasses.field(default_factory=list)
-    diagnostics: list[Diagnostic] = dataclasses.field(default_factory=list)
     built: bool = False
     runs: list[Run] = dataclasses.field(default_factory=list)
     ledger: dict | None = None
@@ -751,7 +661,6 @@ def compare(actual: Any, op: str, expected: Any) -> bool:
 
 @dataclasses.dataclass
 class Config:
-    weavec: Path
     weavec_cc: Path
     clang: str
     checks: str
@@ -802,27 +711,6 @@ def first_line(text: str) -> str:
 # ---------------------------------------------------------------------------
 # The steps
 # ---------------------------------------------------------------------------
-
-
-def analyse(case: Case, cfg: Config, ev: Evidence, directory: Path) -> None:
-    """The `weavec` tool over the case's analysed units."""
-    units = case.analysed_units()
-    if not units:
-        return
-    own, compiler = tool_flags(case.flags)
-    command = [str(cfg.weavec), *own]
-    if len(units) > 1:
-        command.append("--whole-program")
-    command.extend(str(u) for u in units)
-    command.extend(["--", f"-I{RESOURCE_INCLUDE}", *compiler])
-    ev.commands.append(shlex.join(command))
-    code, out, err, timed_out = run_process(command, directory, cfg.compile_timeout)
-    if timed_out:
-        ev.failures.append("the analysis timed out")
-        return
-    ev.diagnostics = parse_diagnostics(out + "\n" + err, directory)
-    if code not in (0, 1):
-        ev.failures.append(f"the analysis crashed ({code}): {first_line(err)}")
 
 
 def build(case: Case, cfg: Config, ev: Evidence, directory: Path, extra: list[str],
@@ -905,66 +793,6 @@ def run_asan(case: Case, cfg: Config, ev: Evidence, directory: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-# A BUG marker of these ids is also satisfied by a run that stops on its line:
-# the analysis is advisory, and the guards catch what it does not report.
-STOPPABLE_IDS = frozenset(("out-of-bounds", "null-dereference", "use-after-free", "double-free",
-                           "invalid-release", "use-of-uninitialized", "mismatched-release",
-                           "lifetime-too-short", "use-after-move", "allocation-failure",
-                           "contradicted-assumption", "unsafe-operation"))
-
-
-def stopped_lines(ev: Evidence) -> set[tuple[str, int]]:
-    lines = set()
-    for run in ev.runs:
-        for report in run.reports:
-            if report.file is not None:
-                lines.add((report.file, report.line))
-    return lines
-
-
-def judge_diagnostics(case: Case, ev: Evidence, failures: list[str], ran: bool) -> None:
-    stops = stopped_lines(ev)
-    by_line: dict[tuple[str, int], list[Diagnostic]] = collections.defaultdict(list)
-    for diagnostic in ev.diagnostics:
-        by_line[(diagnostic.file, diagnostic.line)].append(diagnostic)
-    expected = set()
-    # `BUG: <id> // MISS: <reason>`: the analysis is known not to report it;
-    # `// NEUTRALISED: zero-init`: zero-initialisation defines it away.
-    missed = {located(m.file, m.line) for m in case.markers
-              if m.kind in ("MISS", "NEUTRALISED")}
-    # A stop with no location (the allocator's, a fault) of the BUG's kind.
-    unlocated = {run.stop.kind for run in ev.runs
-                 if run.stop is not None and run.stop.file is None}
-    for bug in case.bugs:
-        ident, certainty = bug.value
-        key = located(bug.file, bug.line)
-        expected.add(key)
-        if key in missed:
-            continue
-        found = [d for d in by_line.get(key, []) if d.id == ident]
-        if certainty == "definite":
-            found = [d for d in found if d.severity == "error"]
-        elif certainty == "possible":
-            found = [d for d in found if d.severity == "warning"]
-        if not found and ident in STOPPABLE_IDS and (key in stops or not ran
-                                                     or ident in unlocated):
-            continue
-        if not found:
-            failures.append(f"{loc(bug)}: expected weavec::{ident}"
-                            + (f" ({certainty})" if certainty else "")
-                            + " from the analysis or a stop on its line")
-    expected |= {located(m.file, m.line) for m in case.markers if m.kind in ("MISS", "NEUTRALISED")}
-    for diagnostic in ev.diagnostics:
-        key = (diagnostic.file, diagnostic.line)
-        if key in expected:
-            continue
-        # ALLOW excuses warnings only: an error always fails a CLEAN case.
-        if case.clean and (diagnostic.id not in case.allow or diagnostic.severity == "error"):
-            failures.append(f"unexpected diagnostic in a CLEAN case: {diagnostic.text()}")
-        elif diagnostic.severity == "error" and not case.clean:
-            failures.append(f"unexpected error: {diagnostic.text()}")
-
-
 def judge_runs(case: Case, ev: Evidence, failures: list[str], notes: list[str]) -> None:
     traps = case.traps
     hit: set[Marker] = set()
@@ -983,9 +811,7 @@ def judge_runs(case: Case, ev: Evidence, failures: list[str], notes: list[str]) 
         matching = [m for m in traps
                     if (m.value is None or m.value == stop.kind)
                     and (stop.file is None or located(m.file, m.line) == (stop.file, stop.line))]
-        on_bug_line = stop.file is None and bool(case.bugs) or any(
-            located(m.file, m.line) == (stop.file, stop.line) for m in case.bugs)
-        if not matching and not on_bug_line:
+        if not matching:
             failures.append(f"{label}: unexpected stop: {stop.text()} ({run.describe()})")
         hit.update(matching)
     if ev.runs:
@@ -1062,34 +888,24 @@ def run_markers(case: Case, cfg: Config) -> dict:
                 "notes": [], "kind": "markers"}
     directory = scratch_for(case, cfg)
     try:
-        analysed = bool(case.bugs or case.clean or case.tool)
-        if analysed:
-            analyse(case, cfg, ev, directory)
-        if not case.tool:
-            ledger = bool([m for m in case.markers if m.kind in LEDGER_MARKERS]
-                          or case.expectations)
-            exe = build(case, cfg, ev, directory / "build", [], ledger)
-            judge_ledger(case, ev, failures)
-            if exe is not None and not cfg.no_run:
-                run_all(case, cfg, ev, exe, directory / "build")
-                judge_runs(case, ev, failures, ev.notes)
-                if case.clean:
-                    for run in ev.runs:
-                        if run.reports or run.signal is not None:
-                            failures.append(f"run {shlex.join(run.args) or '(no arguments)'}: "
-                                            f"{run.describe()} in a CLEAN case")
-            if (cfg.asan or case.asan) and case.has_main and not cfg.no_run:
-                run_asan(case, cfg, ev, directory / "asan")
-                bug_case = case.is_bug_case
-                if bug_case and case.asan and ev.asan_ran and ev.asan_report is None:
-                    failures.append("ASan reported nothing")
-                if not bug_case and ev.asan_report is not None:
-                    failures.append(f"ASan reported {ev.asan_report} in a case without a bug")
-        if analysed:
-            # A case that cannot run (no main, TOOL) has no stop to excuse
-            # a BUG the analysis does not report.
-            runnable = case.has_main and not case.tool
-            judge_diagnostics(case, ev, failures, bool(ev.runs) or not runnable)
+        ledger = bool([m for m in case.markers if m.kind in LEDGER_MARKERS] or case.expectations)
+        exe = build(case, cfg, ev, directory / "build", [], ledger)
+        judge_ledger(case, ev, failures)
+        if exe is not None and not cfg.no_run:
+            run_all(case, cfg, ev, exe, directory / "build")
+            judge_runs(case, ev, failures, ev.notes)
+            if case.clean:
+                for run in ev.runs:
+                    if run.reports or run.signal is not None:
+                        failures.append(f"run {shlex.join(run.args) or '(no arguments)'}: "
+                                        f"{run.describe()} in a CLEAN case")
+        if (cfg.asan or case.asan) and case.has_main and not cfg.no_run:
+            run_asan(case, cfg, ev, directory / "asan")
+            bug_case = case.is_bug_case
+            if bug_case and case.asan and ev.asan_ran and ev.asan_report is None:
+                failures.append("ASan reported nothing")
+            if not bug_case and ev.asan_report is not None:
+                failures.append(f"ASan reported {ev.asan_report} in a case without a bug")
         failures.extend(ev.failures)
     finally:
         if not cfg.keep:
@@ -1097,7 +913,6 @@ def run_markers(case: Case, cfg: Config) -> dict:
     return {
         "case": case.rel, "suite": case.suite, "status": "fail" if failures else "pass",
         "failures": failures, "notes": ev.notes, "kind": "markers",
-        "diagnostics": [d.text() for d in ev.diagnostics],
         "runs": [{"args": list(r.args), "result": r.describe(),
                   "reports": [x.text() for x in r.reports]} for r in ev.runs],
         "asan": ev.asan_report, "commands": ev.commands,
@@ -1231,7 +1046,6 @@ def main(argv: list[str] | None = None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter,
                                      epilog=__doc__.split("\n\n", 1)[1])
     parser.add_argument("--weavec-cc", type=Path, help="weavec-cc to test (default: <build-dir>/bin)")
-    parser.add_argument("--weavec", type=Path, help="weavec to test (default: <build-dir>/bin)")
     parser.add_argument("--build-dir", type=Path,
                         help="where bin/ is (default: build/release, else build/dev)")
     parser.add_argument("--clang", default=None, help="the reference compiler for --asan")
@@ -1241,7 +1055,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--checks", choices=("trap", "verify"), default="trap",
                         help="the -fweavec-checks mode of the builds")
     parser.add_argument("--asan", action="store_true", help="run the ASan oracle for every case")
-    parser.add_argument("--no-run", action="store_true", help="analyse and build only")
+    parser.add_argument("--no-run", action="store_true", help="build only")
     parser.add_argument("--filter", action="append", default=[], metavar="GLOB",
                         help="select cases by path under the cases tree (repeatable)")
     parser.add_argument("--json", type=Path, metavar="OUT", help="write the results as JSON")
@@ -1255,12 +1069,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     build_dir = args.build_dir or default_build_dir()
-    weavec = args.weavec or build_dir / "bin" / "weavec"
     weavec_cc = args.weavec_cc or build_dir / "bin" / "weavec-cc"
-    for tool in (weavec, weavec_cc):
-        if not tool.exists():
-            print(f"run-cases: {tool} does not exist; build it first", file=sys.stderr)
-            return 2
+    if not weavec_cc.exists():
+        print(f"run-cases: {weavec_cc} does not exist; build it first", file=sys.stderr)
+        return 2
     clang = args.clang or shutil.which("clang") or "clang"
     if args.clang is None:
         prefix = os.environ.get("WEAVEC_LLVM_PREFIX")
@@ -1272,7 +1084,7 @@ def main(argv: list[str] | None = None) -> int:
         print("run-cases: no case selected", file=sys.stderr)
         return 2
     scratch = Path(tempfile.mkdtemp(prefix="weavec-cases."))
-    cfg = Config(weavec=weavec.resolve(), weavec_cc=weavec_cc.resolve(), clang=clang,
+    cfg = Config(weavec_cc=weavec_cc.resolve(), clang=clang,
                  checks=args.checks, asan=args.asan, no_run=args.no_run, keep=args.keep,
                  compile_timeout=args.timeout, run_timeout=args.run_timeout, scratch=scratch)
     results: list[dict] = []

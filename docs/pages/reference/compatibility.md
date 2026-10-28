@@ -1,19 +1,15 @@
 ---
 title: Compatibility
-description: Supported toolchains and platforms, what weavec-cc changes in compiled code (the allocator, redzones, zero-initialised locals, the shadow reservation, traps on deliberate over-reads), sanitizers, external code, and version changes.
+description: Supported toolchains and platforms, what weavec-cc changes in compiled code (the allocator and its sweep, frames and redzones, fortification, AddressSanitizer's macros, zero-initialised locals, the shadow reservation, traps on deliberate over-reads), sanitizers, external code, and version changes.
 ---
 
 ## C and Clang
 
 WeaveC uses Clang for C parsing, semantic analysis, target layout, optimisation and code generation. Pass the language standard and target flags used by your project. `weavec-cc` guards the C units it compiles; C++, Objective-C, OpenCL and CUDA sources are compiled as Clang compiles them, without guards, and link with the guarded C code as usual.
 
-The advisory analysis (`weavec`, `weavec-cc -fweavec-diagnose`) reads C. Clang accepting a construct does not mean the analysis can prove anything about it; what it cannot decide counts as not proven and never changes the generated code. Use [checker coverage](/reference/checker-coverage/) to see what the analysis understands.
+## weavec.h
 
-## Annotations remain portable
-
-Annotations live in `weavec.h`. Under Clang they use the `annotate` attribute; under compilers without that attribute they expand away. Check [annotation placement](/reference/annotation-placement/) for syntax and [compatibility with other annotation schemes](/reference/annotation-compatibility/) for current integration boundaries. The analysis also reads Clang's own `counted_by`, `sized_by`, `alloc_size`, `nonnull` and ownership attributes.
-
-`WEAVEC_UNSAFE` is the only annotation that changes the generated code: the accesses in its function or block are not guarded and its array indexes are not checked. The others are read by the advisory analysis only. `WEAVEC_ASSUME(expr)` is a statement to the analysis; it is not checked at run time. Under WeaveC its expression is evaluated and discarded, and under other compilers it is not evaluated at all, so it must be free of side effects.
+`weavec.h` (version 1.0, `WEAVEC_H_VERSION_MAJOR` and `WEAVEC_H_VERSION_MINOR`) provides one macro, `WEAVEC_UNSAFE`, which marks a function or a block whose accesses are not guarded and whose array indexes are not checked. Under Clang it uses the `annotate` attribute; under compilers without that attribute it expands to nothing, so the code stays buildable with any C toolchain. `weavec-cc` puts the header's directory on the system include path; a project that also builds with other compilers can copy the header into its tree. A function marked `no_sanitize("address")` is an unsafe region too, without the header.
 
 ## What changes in compiled code
 
@@ -21,12 +17,18 @@ With the default `-fweavec-checks=trap`, `weavec-cc` compiles each C unit as Cla
 
 A guarded compile also turns on some of Clang's own options: `-fsanitize=array-bounds` for typed array indexes, reported through WeaveC's runtime (unless the command line already asks for a sanitizer); source locations for the reports, without emitting debug information when there is no `-g`; lifetime markers at every optimisation level, so that a use after scope is caught at `-O0` too; and, on AArch64, no conditional compares in the backend. Object code is larger and compiles take longer than with Clang alone.
 
+### Preprocessor macros and fortification
+
+In the enforcing modes a C unit sees what it would see under AddressSanitizer: `__SANITIZE_ADDRESS__` is defined and `__has_feature(address_sanitizer)` is true, so a project's ASan-specific code (poisoning in a pool allocator, a scan kept from ASan) is compiled in, and the runtime implements ASan's poisoning interface for it. `__WEAVEC__` is defined whenever WeaveC is on. `-fno-weavec-asan-compat` leaves the ASan macros undefined. A precompiled header or module built by `weavec-cc` records the same setting, so the compiles that read it with the same flags accept it. See [AddressSanitizer compatibility](/reference/cli/#addresssanitizer-compatibility).
+
+On glibc targets an optimising compile whose command line does not set `_FORTIFY_SOURCE` gets `-D_FORTIFY_SOURCE=3`, so string and `printf`-family calls carry the size of the object they write, which the guards check (glibc's inline wrappers state the rest of the object even for a field, so a write into the next field is not stopped there). Darwin's SDK fortifies optimising compiles at level 2, and keeps doing so under WeaveC although Clang turns it off under ASan.
+
 ### The allocator
 
 With the runtime, the image's `malloc`, `calloc`, `realloc`, `free`, `reallocarray`, `aligned_alloc`, `posix_memalign`, `valloc`, `free_sized`, `free_aligned_sized` and the platform's `memalign`, `pvalloc`, `malloc_usable_size`, `malloc_size`, `malloc_good_size` and `reallocf` are WeaveC's. What a program can observe:
 
 - Every block is zero-filled, and its usable size is its requested size: `malloc_usable_size` and `malloc_size` return what was asked for, and the bytes after it are not addressable. `malloc(0)` and `realloc(p, 0)` return a block of zero bytes; `realloc(p, 0)` does not free `p` and return null.
-- A freed block is not reused until it leaves the quarantine (16 MiB by default; `WEAVEC_RT_QUARANTINE=<bytes>`), so a program that frees and allocates heavily can hold more memory than the same program on the system allocator.
+- A freed block is not reused until a _sweep_ finds no pointer to it in the program's stacks, registers, writable data and live heap. A sweep is due when the bytes released since the last one exceed 16 MiB (`WEAVEC_RT_QUARANTINE=<bytes>`) and a quarter of the live heap, and runs once the last sweep ended at least eight of its durations ago (at once past twice that budget and half the live heap). It stops every thread of the process for a time that grows with the live heap; on Linux it does so with a signal, `SIGPWR` by default (`WEAVEC_RT_SWEEP_SIGNAL=<n>` names another). A program that frees and allocates heavily can hold more memory than on the system allocator, and a block that a stale pointer still points to stays allocated as long as the pointer does.
 - An invalid `free` or `realloc` (a double free, an interior, stack or global pointer) stops the program, in whichever object of the image it happens.
 - On ELF targets the executable's allocator serves every shared library in the process, the C library included. On Darwin one runtime serves the process (the copy the dynamic loader finds first; the others forward to it), and its malloc zone becomes the default zone, so the system libraries' own allocations (`strdup`, `getline`, `asprintf`) come from it too. Blocks the system allocated before that are handed back to the zone that owns them.
 - Speed, fragmentation and address layout are those of WeaveC's allocator, not the system's. Programs that depend on the system allocator's identity (a `malloc_zone_t` of their own, allocator introspection, `mallopt`) see WeaveC's allocator.
@@ -35,9 +37,9 @@ A program that defines `malloc`, `calloc`, `realloc` or `free` itself keeps its 
 
 ### Frames and globals
 
-Each local that a guard can reach, `alloca` blocks and variable-length arrays included, is followed by a redzone of at least 32 bytes (more for large objects) and aligned to 32 bytes, so stack frames are larger: deeply recursive code may need a larger stack. Locals proven to need no tracking keep Clang's layout.
+Each local that a guard can reach or whose address escapes is laid out in one frame with redzones between the locals, and `alloca` blocks and variable-length arrays get a redzone after them; in a frame larger than 512 bytes, locals whose lifetimes never overlap (the arms of a `switch`) share space, as in Clang's own frames, so the frame grows by the redzones rather than by the locals. Deep recursion through such locals reaches a lower depth than with Clang, as it does under AddressSanitizer. Before a call that does not return (`longjmp`, `exit`'s kin aside), the stack's shadow below the caller is cleared, so `setjmp` and `longjmp` work as usual.
 
-Each global or static variable a unit defines is followed by a redzone and aligned to 32 bytes, so the data sections grow and their layout changes. `sizeof` and the variable's own bytes are unchanged, but code that relies on two globals being adjacent (walking from one into the next) traps. Thread-local variables, variables in a named section, string literals, common symbols and a few other kinds are left as they are, so linker sets placed in a named section keep working.
+Each global or static variable a unit defines is followed by a redzone and aligned to 32 bytes, so the data sections grow and their layout changes. `sizeof` and the variable's own bytes are unchanged, but code that relies on two globals being adjacent (walking from one into the next) traps. Thread-local variables, variables in a named section, string literals, common symbols and a few other kinds are left as they are, so linker sets placed in a named section keep working. The globals of shared libraries and bundles built by `weavec-cc` are protected as the executable's are.
 
 ### Zero-initialisation
 
@@ -49,15 +51,15 @@ At start-up the runtime reserves address space, without committing memory: the s
 
 ### Code that can trap
 
-A program that reads past an object on purpose traps, as it does under AddressSanitizer: a word-at-a-time string scan, a hash that reads whole words of a key, a conservative collector's stack scan, or code that uses the slack after a heap block's requested size. So does an index past an inner bound of a multidimensional array (`int m[4][4]; m[0][k]` with `k ≥ 4`). Keep such code in a narrow `WEAVEC_UNSAFE` region; a function already marked `no_sanitize("address")` (or `no_sanitize_address`, `disable_sanitizer_instrumentation`) is left unguarded without a change. The [guarantees reference](/reference/guarantees/#false-traps) lists what is accepted.
+A program that reads past an object on purpose traps, as it does under AddressSanitizer: a word-at-a-time string scan, a hash that reads whole words of a key, or code that uses the slack after a heap block's requested size. So does an index past an inner bound of a multidimensional array (`int m[4][4]; m[0][k]` with `k ≥ 4`). Code that keeps such reads from ASan behind `__SANITIZE_ADDRESS__` or `__has_feature(address_sanitizer)`, or in a function marked `no_sanitize("address")` (or `no_sanitize_address`, `disable_sanitizer_instrumentation`), needs no change; other code needs a narrow `WEAVEC_UNSAFE` region. The [guarantees reference](/reference/guarantees/#false-traps) lists what is accepted.
 
 ### Run-time cost
 
-A guarded program runs slower than a plain Clang build and uses more memory. [RFC 0035's acceptance gates](/rfcs/0035-guard-by-default/#acceptance-gates) set the targets: each workload at most twice the reference compiler's run time, or AddressSanitizer's ratio where that is larger, 1.8 times on average, and a build within 1.5 times the reference compiler's CPU time. These are targets; the RFC records the measurements when its gates are run. See [troubleshooting](/reference/troubleshooting/#the-program-is-slower-or-uses-more-memory) for what to do when a program is too slow.
+A guarded program runs slower than a plain Clang build and uses more memory. [RFC 0036's acceptance gates](/rfcs/0036-deterministic-heap-reuse/#acceptance-gates) set the targets against the previous release (v0.16.0): the corpus benchmarks' geometric mean at most 1.1 times its run time and no benchmark above 1.25 times; peak memory at most 1.5 times its, or 64 MiB more; the longest sweep pause at most 150 ms with 256 MiB of live heap; and a build at most 1.1 times as long as its. The RFC's measured gates record the results. See [troubleshooting](/reference/troubleshooting/#the-program-is-slower-or-uses-more-memory) for what to do when a program is too slow or holds too much memory.
 
 ### Sanitizers
 
-The runtime is not used with a sanitizer that replaces the allocator (`-fsanitize=address`, `hwaddress`, `memory`, `thread`, `leak`, `kernel-address`), with `-ffreestanding`, `-nostdlib`, `-nodefaultlibs` or `-nolibc`, or on targets other than 64-bit Darwin and Linux. `weavec-cc` then compiles every unit without guards, as with `-fweavec-checks=none`, and the link prints `weavec-cc: note: building without the WeaveC runtime (<reason>): memory accesses are not guarded`. Other sanitizers, such as `-fsanitize=undefined`, work alongside the guards; a program that links UBSan's runtime reports array-bounds failures through UBSan's handlers rather than WeaveC's.
+The runtime is not used with a sanitizer that replaces the allocator (`-fsanitize=address`, `hwaddress`, `memory`, `thread`, `leak`, `kernel-address`), with `-ffreestanding`, `-nostdlib`, `-nodefaultlibs` or `-nolibc`, or on targets other than 64-bit Darwin and Linux. `weavec-cc` then compiles every unit without guards, as with `-fweavec-checks=none`, and the link prints `weavec-cc: note: building without the WeaveC runtime (<reason>): memory accesses are not guarded`. Other sanitizers, such as `-fsanitize=undefined`, work alongside the guards; a program that links UBSan's runtime reports array-bounds failures through UBSan's handlers rather than WeaveC's. LeakSanitizer's interface is accepted and does nothing: WeaveC does not check for leaks.
 
 ## LLVM versions and platforms
 
@@ -69,12 +71,17 @@ Current releases are source archives. Portable binary packages and package-manag
 
 ## External code and object files
 
-Only code that `weavec-cc` compiles is guarded. Code built by another compiler, precompiled static and shared libraries, and assembly make their accesses unchecked; their stack frames and globals are untracked, and an access into them from guarded code passes. Their heap allocations still come from WeaveC's allocator when the program links the runtime, so a guarded access to a block they allocated is checked against its size and a release of it is validated. Link inputs need no WeaveC metadata: objects from any compiler link as they are.
+Only code that `weavec-cc` compiles is guarded. Code built by another compiler, precompiled static and shared libraries, and assembly make their accesses unchecked; their stack frames and globals are untracked, and an access into them from guarded code passes. Their heap allocations still come from WeaveC's allocator when the program links the runtime, so a guarded access to a block they allocated is checked, a release of it is validated, and the sweep scans their memory for pointers like the rest of the program's. Link inputs need no WeaveC metadata: objects from any compiler link as they are.
 
 The library table (`lib/Core/LibrarySpec.txt`) describes the C library, POSIX and platform functions WeaveC models: allocation, release, string, stream and runtime operations. A call to one of them has its memory arguments guarded over the bytes the row says it accesses, or is replaced by a checked wrapper in the runtime. Each row states what every supported C library (Darwin's and glibc) accepts, not the strictest reading of a standard: where one of them documents accepting a null pointer (`gettimeofday(NULL, &tz)`, `setgroups(0, NULL)`), the row allows it. A call to a function outside the table is not checked at the call; its own accesses are guarded if WeaveC built it. Wide-character string arguments are not scanned.
 
-The advisory analysis sees only the source it is given. Functions it cannot see are treated conservatively as possibly freeing or keeping their pointer arguments; analyse the program's files together with `weavec --whole-program` to see across them.
-
 ## Version changes
 
-WeaveC is in early 0.x development. Flags, diagnostics, run-time reports and the ledger schema can change between minor versions. [RFC 0035](/rfcs/0035-guard-by-default/) replaced the earlier enforcement: the enforcement ledger is now `weavec-ledger` version 3, `weavec.h` is at version 0.10, objects carry no WeaveC records, and objects compiled by an earlier version call runtime entry points this version no longer has, so rebuild them. Its removed options are errors rather than aliases; see [removed options](/reference/cli/#removed-options). Check the [release notes](/project/releases/) before upgrading.
+WeaveC is in early 0.x development. Flags, run-time reports and the ledger schema can change between minor versions. [RFC 0036](/rfcs/0036-deterministic-heap-reuse/) changed the model of [RFC 0035](/rfcs/0035-guard-by-default/): released memory is reused only after a sweep, fortified calls are checked against their object size, code is compiled as AddressSanitizer would compile it, and locals whose lifetimes never overlap share frame space. With it:
+
+- The advisory ownership and lifetime analysis is gone: the `weavec` tool, `weavec-cc -fweavec-diagnose`, whole-program analysis, every diagnostic and its identifier. WeaveC reports nothing before the program runs; its guarantees are those of the guarded program.
+- `weavec.h` is version 1.0 and provides only `WEAVEC_UNSAFE`. A program that uses one of the other annotation macros fails to compile, with `weavec-cc` and other compilers alike, until it stops using it.
+- The runtime's entry points and the table its copies share on Darwin changed, so objects compiled by an earlier `weavec-cc` must be rebuilt: they call entry points this runtime no longer has, and on Darwin a shared image built by an earlier version keeps a runtime, heap and shadow of its own.
+- The report kind `buffer-overflow` is no longer reported (a partial granule the program poisoned is `use-after-poison`); `intra-object-overflow` and `use-after-poison` are new.
+
+The removed `-fweavec-*` options are errors rather than aliases; see [removed options](/reference/cli/#removed-options). Check the [release notes](/project/releases/) before upgrading.

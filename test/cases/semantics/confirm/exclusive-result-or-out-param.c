@@ -3,7 +3,6 @@
 // path and returns another on the other, so the result and *a never hold
 // the same object. Freeing both is correct for every argument count.
 // CLEAN
-// ALLOW: double-free
 // RUN-INPUT:
 // RUN-INPUT: x
 #include <stdlib.h>

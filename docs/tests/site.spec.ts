@@ -7,7 +7,7 @@ test('homepage, onboarding, and both themes are accessible without horizontal ov
   for (const route of [
     '/',
     '/getting-started/installation/',
-    '/reference/diagnostics/use-after-free/',
+    '/guides/build-integration/',
     '/reference/cli/',
   ]) {
     await page.goto(route);
@@ -40,11 +40,11 @@ test('homepage, onboarding, and both themes are accessible without horizontal ov
   }
 });
 
-test('search finds a diagnostic and opens a result', async ({ page }) => {
+test('search finds a report kind and opens a result', async ({ page }) => {
   await page.goto('/');
   await page.locator('button[data-open-modal]').click();
   const search = page.locator('.pagefind-ui__search-input');
-  await search.fill('use-after-free');
+  await search.fill('heap-use-after-free');
   const results = page.locator('.pagefind-ui__result-link');
   await expect(results.first()).toBeVisible();
   await results.first().click();
@@ -60,8 +60,8 @@ test('RFC library filters by title, number, status, and empty state', async ({ p
   await page.locator('#rfc-query').fill('no-such-design');
   await expect(page.locator('#rfc-empty')).toBeVisible();
   await page.locator('#rfc-query').fill('');
-  await page.locator('#rfc-status').selectOption('Accepted');
-  await expect(page.locator('.rfc-list li:visible').first()).toContainText('Accepted');
+  await page.locator('#rfc-status').selectOption('Superseded');
+  await expect(page.locator('.rfc-list li:visible').first()).toContainText('Superseded');
   const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(result.violations).toEqual([]);
 });
@@ -71,8 +71,11 @@ test('documentation navigation and copy controls work', async ({ page, isMobile,
   const copy = page.locator('.expressive-code .copy button').first();
   await expect(copy).toBeVisible();
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const firstLine = (await page.locator('.expressive-code pre').first().innerText())
+    .trim()
+    .split('\n')[0];
   await copy.click();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain('node_free(alias)');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(firstLine);
   if (isMobile) await page.getByRole('button', { name: 'Menu', exact: true }).click();
   await page
     .locator('#starlight__sidebar a')
