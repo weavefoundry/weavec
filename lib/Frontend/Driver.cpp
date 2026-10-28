@@ -443,7 +443,10 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
     unsafe = std::make_shared<UnsafeRegions>();
     ledger = configureEnforcement(*compiler, weavec, unsafe);
   }
-  const bool asanCompat = applyAsanCompat(*compiler, weavec);
+  // Only code generation takes ASan out at the end of the unit: a
+  // precompiled header or module keeps it in its options, as the compiles
+  // that read it have it.
+  const bool asanCompat = applyAsanCompat(*compiler, weavec) && codegen;
   WeaveCWrapperAction action(std::move(inner), unsafe, asanCompat);
   success = compiler->ExecuteAction(action);
   if (success && ledger)

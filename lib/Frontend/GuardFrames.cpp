@@ -142,22 +142,12 @@ static void layoutStatic(FunctionContext &context,
   // RFC 0036 §2: two objects may share bytes when their lifetimes never
   // overlap. An object without lifetime markers is live throughout.
   // (Amendment 8: only in a frame that would be large without sharing.)
-  std::uint64_t unshared = LeftZone;
-  for (const FrameObject &object : objects)
-    unshared +=
-        paddedSize(object.size) +
-        std::max<std::uint64_t>(FrameAlign, object.alloca->getAlign().value());
-  const bool scoped = unshared > ShareAbove &&
-                      llvm::any_of(objects, [](const FrameObject &object) {
-                        return !object.starts.empty();
-                      });
   llvm::SmallVector<const llvm::AllocaInst *, 8> lifetimeAllocas;
   for (const FrameObject &object : objects)
     lifetimeAllocas.push_back(object.alloca);
   llvm::StackLifetime lifetimes(function, lifetimeAllocas,
                                 llvm::StackLifetime::LivenessType::May);
-  if (scoped)
-    lifetimes.run();
+  bool scoped = false;
   auto together = [&](const FrameObject &a, const FrameObject &b) {
     return !scoped || a.starts.empty() || b.starts.empty() ||
            lifetimes.getLiveRange(a.alloca).overlaps(
@@ -167,26 +157,39 @@ static void layoutStatic(FunctionContext &context,
     return object.offset + paddedSize(object.size);
   };
   // Each object at the lowest aligned offset where its extent (the object
-  // and its redzone) meets no extent of an object live with it.
-  std::uint64_t frameSize = LeftZone;
-  for (std::size_t i = 0; i < objects.size(); ++i) {
-    FrameObject &object = objects[i];
-    const std::uint64_t align =
-        std::max<std::uint64_t>(FrameAlign, object.alloca->getAlign().value());
-    const std::uint64_t extent = paddedSize(object.size);
-    std::uint64_t offset = (LeftZone + align - 1) & ~(align - 1);
-    for (bool clash = true; clash;) {
-      clash = false;
-      for (std::size_t j = 0; j < i; ++j)
-        if (offset < extentEnd(objects[j]) &&
-            objects[j].offset < offset + extent &&
-            together(objects[j], object)) {
-          offset = (extentEnd(objects[j]) + align - 1) & ~(align - 1);
-          clash = true;
-        }
+  // and its redzone) meets no extent of an object live with it; the frame's
+  // size.
+  auto place = [&] {
+    std::uint64_t size = LeftZone;
+    for (std::size_t i = 0; i < objects.size(); ++i) {
+      FrameObject &object = objects[i];
+      const std::uint64_t align = std::max<std::uint64_t>(
+          FrameAlign, object.alloca->getAlign().value());
+      const std::uint64_t extent = paddedSize(object.size);
+      std::uint64_t offset = (LeftZone + align - 1) & ~(align - 1);
+      for (bool clash = true; clash;) {
+        clash = false;
+        for (std::size_t j = 0; j < i; ++j)
+          if (offset < extentEnd(objects[j]) &&
+              objects[j].offset < offset + extent &&
+              together(objects[j], object)) {
+            offset = (extentEnd(objects[j]) + align - 1) & ~(align - 1);
+            clash = true;
+          }
+      }
+      object.offset = offset;
+      size = std::max(size, offset + extent);
     }
-    object.offset = offset;
-    frameSize = std::max(frameSize, offset + extent);
+    return size;
+  };
+  std::uint64_t frameSize = place();
+  if (frameSize > ShareAbove &&
+      llvm::any_of(objects, [](const FrameObject &object) {
+        return !object.starts.empty();
+      })) {
+    scoped = true;
+    lifetimes.run();
+    frameSize = place();
   }
 
   // The shadow at entry: redzones, objects in scope or not yet. An object
