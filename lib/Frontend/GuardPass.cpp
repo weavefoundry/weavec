@@ -593,12 +593,12 @@ void FunctionContext::emitGuard(llvm::Instruction *before, llvm::Value *pointer,
   const bool little = module.layout.isLittleEndian();
   if (width == 0)
     return;
-  // RFC 0037 §8.2: all but the one-granule form test the colour apart.
+  // RFC 0037 §8.2: all but the one-granule form test the color apart.
   const bool oneGranule =
       width <= 16 && llvm::isPowerOf2_64(width) && alignment.value() >= width;
   if (root && !oneGranule) {
-    colourCheck(before, address, llvm::ConstantInt::get(module.i64, width),
-                site, root);
+    colorCheck(before, address, llvm::ConstantInt::get(module.i64, width), site,
+               root);
     builder.SetInsertPoint(before);
   }
   if (width > 113 || (!little && width > 16)) {
@@ -615,7 +615,7 @@ void FunctionContext::emitGuard(llvm::Instruction *before, llvm::Value *pointer,
   const bool single =
       width <= 16 && llvm::isPowerOf2_64(width) && alignment.value() >= width;
   llvm::Value *nullTest = nullptr;
-  // A null root's shadow is poison, so the colour test sends it to the
+  // A null root's shadow is poison, so the color test sends it to the
   // check block, where the null test can wait.
   const bool nullInCheck =
       single && root && nullBase != nullptr && root.root == nullBase;
@@ -664,9 +664,9 @@ void FunctionContext::emitGuard(llvm::Instruction *before, llvm::Value *pointer,
       bad = builder.CreateAnd(
           builder.CreateICmpSLT(value, llvm::ConstantInt::get(module.i8, 0)),
           bad);
-    // RFC 0037 §8.2: with a root, a byte of another colour joins the cold
-    // call, which decides the guard and the colour at once; a partial
-    // granule of the root's colour class needs no call.
+    // RFC 0037 §8.2: with a root, a byte of another color joins the cold
+    // call, which decides the guard and the color at once; a partial
+    // granule of the root's color class needs no call.
     if (root && root.monitorSite == nullptr && members.empty()) {
       llvm::Value *rootByte = builder.CreateTrunc(root.shadow, module.i8);
       auto classOf = [&](llvm::Value *byte) {
@@ -783,9 +783,9 @@ void FunctionContext::emitGuard(llvm::Instruction *before, llvm::Value *pointer,
              nullTest, shadowAt, {}, members);
 }
 
-void FunctionContext::colourCheck(llvm::Instruction *before,
-                                  llvm::Value *address, llvm::Value *width,
-                                  llvm::Constant *site, RootCheck root) {
+void FunctionContext::colorCheck(llvm::Instruction *before,
+                                 llvm::Value *address, llvm::Value *width,
+                                 llvm::Constant *site, RootCheck root) {
   llvm::IRBuilder<> builder(before);
   llvm::LoadInst *value =
       builder.CreateLoad(module.i8, shadowAddress(builder, address));

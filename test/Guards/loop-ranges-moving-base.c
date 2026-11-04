@@ -1,14 +1,14 @@
 // RFC 0035 §6.4, RFC 0037 §8.5: a loop whose accesses are computed from a
-// pointer the loop moves is versioned when colours are off; with colours
-// its root's colour cannot be tested once before the loop, and it runs as
+// pointer the loop moves is versioned when colors are off; with colors
+// its root's color cannot be tested once before the loop, and it runs as
 // the guarded loop. Either way an access past the block stops.
-// RUN: %weavec_cc -O2 -fno-weavec-colours -S -emit-llvm %s -o - | FileCheck %s --check-prefix=IR
-// RUN: %weavec_cc -O2 -fno-weavec-colours %s -o %t
+// RUN: %weavec_cc -O2 -fno-weavec-colors -S -emit-llvm %s -o - | FileCheck %s --check-prefix=IR
+// RUN: %weavec_cc -O2 -fno-weavec-colors %s -o %t
 // RUN: %t 30 10
 // RUN: not --crash %t 30 11 2>&1 | FileCheck %s --check-prefix=PAST
-// RUN: %weavec_cc -O2 %s -o %t.colours
-// RUN: %t.colours 30 10
-// RUN: not --crash %t.colours 30 11 2>&1 | FileCheck %s --check-prefix=PAST
+// RUN: %weavec_cc -O2 %s -o %t.colors
+// RUN: %t.colors 30 10
+// RUN: not --crash %t.colors 30 11 2>&1 | FileCheck %s --check-prefix=PAST
 #include <stdlib.h>
 
 // IR-LABEL: define {{.*}}@walk(

@@ -14,8 +14,8 @@ that runs clean.
 | `asan-pool` | an over-read of a pool object the pool poisons through ASan's interface | stops (§5) |
 | `escaping-oob` | a 1-based array read one past its end in another function | stops (the slot's tail) |
 | `shared-frame` | (twin only) recursion through locals in disjoint `switch` arms to 10,000 frames | runs (shared frame space, §2) |
-| `heap-jump` | an index from one heap block that lands in a neighbouring live block | stops (colours, RFC 0037 §8) |
-| `global-jump` | a read through a pointer from one global into the next | stops (colours, RFC 0037 §8) |
+| `heap-jump` | an index from one heap block that lands in a neighbouring live block | stops (colors, RFC 0037 §8) |
+| `global-jump` | a read through a pointer from one global into the next | stops (colors, RFC 0037 §8) |
 | `use-after-return` | a read through the address of a returned function's local | stops (returned frames, RFC 0037 §9) |
 | `use-after-longjmp` | a read through a local of a frame `longjmp` abandoned | `XFAIL`: the jump clears the stack's shadow |
 | `loop-range-wrap` | a loop whose range wraps 64 bits over a block whose size wrapped | stops (RFC 0037 §4) |

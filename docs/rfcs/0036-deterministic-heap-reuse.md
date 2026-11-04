@@ -2,7 +2,7 @@
 
 - **Status**: Implemented (its sweep's roots completed, and its pacing's
   default and full-class sweep superseded, by
-  [RFC 0037](0037-complete-sweep-and-colours.md))
+  [RFC 0037](0037-complete-sweep-and-colors.md))
 - **Authors**: WeaveC authors
 - **Created**: 2026-10-07 (revised 2026-10-08)
 - **Tracking issue**: TBD
@@ -741,7 +741,7 @@ does it; a later RFC starts from that budget.
   finds no pointer to it.
 - **AddressSanitizer**: the shadow, the poisoning interface, stack slot
   reuse by lifetime (`-fsanitize-address-use-after-scope` with Clang's
-  stack colouring).
+  stack coloring).
 - **`_FORTIFY_SOURCE`**: subobject sizes for string functions.
 - **Boehm–Demers–Weiser GC**: stopping threads by signal, conservative
   root scanning, finding roots in loaded images' data segments.

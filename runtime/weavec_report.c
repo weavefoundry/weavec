@@ -312,7 +312,7 @@ void weavecRtFailJump(const char *kind, uintptr_t address, uint64_t width,
   struct Line line = {text, text + sizeof text - 1};
   if (!reportLine(kind, address, width, site))
     return;
-  /* RFC 0037: the second line of a colour mismatch. */
+  /* RFC 0037: the second line of a color mismatch. */
   put(&line, "weavec: ");
   putHex(&line, address);
   put(&line, " is ");

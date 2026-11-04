@@ -3,7 +3,7 @@
 // flags, as is every unknown -fweavec-*. The analysis's -W flags are Clang's
 // to judge.
 // RUN: rm -rf %t && mkdir -p %t
-// RUN: %weavec_cc -fweavec-checks=report -fno-weavec-zero-init -fweavec-zero-init -fno-weavec-summary -fweavec-summary -fno-weavec-asan-compat -fweavec-asan-compat -fno-weavec-colours -fweavec-colours -fsyntax-only %s 2>&1 | FileCheck --allow-empty --check-prefix=ACCEPTED %s
+// RUN: %weavec_cc -fweavec-checks=report -fno-weavec-zero-init -fweavec-zero-init -fno-weavec-summary -fweavec-summary -fno-weavec-asan-compat -fweavec-asan-compat -fno-weavec-colors -fweavec-colors -fsyntax-only %s 2>&1 | FileCheck --allow-empty --check-prefix=ACCEPTED %s
 // RUN: %weavec_cc -fweavec-checks=none -fsyntax-only %s 2>&1 | FileCheck --allow-empty --check-prefix=ACCEPTED %s
 // RUN: not %weavec_cc -fweavec-ledger= -fsyntax-only %s 2>&1 | FileCheck --check-prefix=EMPTY %s
 // RUN: not %weavec_cc -fweavec-checks -fsyntax-only %s 2>&1 | FileCheck --check-prefix=NOVALUE %s
@@ -37,7 +37,7 @@
 // HELP: -fweavec-checks=trap|report|verify|none
 // HELP: -fweavec-ledger=<path>
 // HELP: -fweavec-asan-compat
-// HELP: -fweavec-colours
+// HELP: -fweavec-colors
 // HELP-NOT: -fweavec-diagnose
 // JOBS: "-cc1"
 // JOBS-SAME: "-fweavec-checks=verify" "-fno-weavec-zero-init" "-fweavec-ledger={{.*}}ledgers/" "-fno-weavec-asan-compat"

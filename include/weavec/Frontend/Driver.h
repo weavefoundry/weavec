@@ -45,9 +45,9 @@ struct DriverOptions {
   /// `-f[no-]weavec-asan-compat` (RFC 0036 §1): parse with
   /// AddressSanitizer's language options, so the unit sees ASan's macros.
   bool asanCompat = true;
-  /// `-f[no-]weavec-colours` (RFC 0037 §8): check arithmetic from a pointer
-  /// against its object's colour.
-  bool colours = true;
+  /// `-f[no-]weavec-colors` (RFC 0037 §8): check arithmetic from a pointer
+  /// against its object's color.
+  bool colors = true;
   /// `-fweavec-ledger=<path>` (RFC 0035 §9).
   std::string ledger;
   /// `-f[no-]weavec-summary`; unset means on exactly when a ledger is

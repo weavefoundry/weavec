@@ -123,8 +123,8 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
     enabled = value;
   } else if (name == "weavec-asan-compat") {
     asanCompat = value;
-  } else if (name == "weavec-colours") {
-    colours = value;
+  } else if (name == "weavec-colors") {
+    colors = value;
   } else if (name == "weavec-zero-init") {
     zeroInit = value;
   } else if (name == "weavec-summary") {
@@ -159,8 +159,8 @@ llvm::StringRef driverFlagsHelp() {
   -fweavec-asan-compat, -fno-weavec-asan-compat
       Compile as AddressSanitizer would for the source: __SANITIZE_ADDRESS__
       and __has_feature(address_sanitizer) (default: on).
-  -fweavec-colours, -fno-weavec-colours
-      Check an access computed from a pointer against the colour of the
+  -fweavec-colors, -fno-weavec-colors
+      Check an access computed from a pointer against the color of the
       pointer's object, so that a jump into a neighbour traps (default: on).
 )";
 }
@@ -312,7 +312,7 @@ configureEnforcement(clang::CompilerInstance &compiler,
   registerGuardPasses(codegen, GuardOptions{.mode = guardMode(weavec.checks),
                                             .unsafe = std::move(unsafe),
                                             .ledger = ledger,
-                                            .colours = weavec.colours});
+                                            .colors = weavec.colors});
   return ledger;
 }
 

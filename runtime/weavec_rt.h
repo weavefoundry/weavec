@@ -58,9 +58,9 @@ WEAVEC_RT_API extern struct __weavec_rt_shadow_t __weavec_rt_shadow;
 /* Shadow values. 0: the granule's 16 bytes are addressable; 1-15: its first
  * k bytes are; the rest name why bytes are not. */
 /* RFC 0037 section 7.1: 0x00-0x7F, the whole granule is addressable, in an
- * object of this colour (0: untracked or uncoloured); 0x80-0xEF, `1ccc
- * kkkk`, its first k bytes (1-15) are, in an object whose colour's low three
- * bits are ccc (a colour's are never 111); 0xF0-0xFF, poison. */
+ * object of this color (0: untracked or uncolored); 0x80-0xEF, `1ccc
+ * kkkk`, its first k bytes (1-15) are, in an object whose color's low three
+ * bits are ccc (a color's are never 111); 0xF0-0xFF, poison. */
 enum {
   WeavecRtShadowAddressable = 0x00,
   WeavecRtShadowGranule = 16,
@@ -88,17 +88,17 @@ static inline int weavecRtShadowPoison(unsigned char v) {
 }
 /* The addressable bytes of a granule that is neither whole nor poison. */
 static inline unsigned weavecRtShadowBytes(unsigned char v) { return v & 15U; }
-static inline unsigned char weavecRtShadowPartialOf(unsigned colour,
+static inline unsigned char weavecRtShadowPartialOf(unsigned color,
                                                     unsigned k) {
-  return (unsigned char)(0x80 | ((colour & 7U) << 4) | k);
+  return (unsigned char)(0x80 | ((color & 7U) << 4) | k);
 }
-/* The low three bits of a granule's colour, whole or partial. */
+/* The low three bits of a granule's color, whole or partial. */
 static inline unsigned weavecRtShadowClass(unsigned char v) {
   return v < 0x80 ? (v & 7U) : ((v >> 4) & 7U);
 }
-/* The n-th colour: 1 <= colour <= 126, low bits never 7; n apart by less
+/* The n-th color: 1 <= color <= 126, low bits never 7; n apart by less
  * than 111 differ. */
-static inline unsigned char weavecRtColour(uint64_t n) {
+static inline unsigned char weavecRtColor(uint64_t n) {
   const unsigned m = (unsigned)(n % 111) + 1;
   return (unsigned char)(((m / 7) << 3) | (m % 7));
 }
@@ -148,13 +148,13 @@ static inline int weavecRtQuickOk(uintptr_t address, uint64_t n) {
  * whole granules (the last one partial counts whole). */
 void weavecRtShadowSet(uintptr_t base, size_t size, unsigned char value);
 
-/* Marks [base, base + size) addressable, in an object of `colour`, and the
+/* Marks [base, base + size) addressable, in an object of `color`, and the
  * rest of its last granule not, with `tail`; base is 16-aligned. */
 void weavecRtShadowObject(uintptr_t base, size_t size, unsigned char tail,
-                          unsigned char colour);
-/* RFC 0037 section 7.2: the colour of the heap slot that holds `address`, or
+                          unsigned char color);
+/* RFC 0037 section 7.2: the color of the heap slot that holds `address`, or
  * 0 outside the arena. */
-unsigned char weavecRtColourOfHeap(uintptr_t address);
+unsigned char weavecRtColorOfHeap(uintptr_t address);
 
 /* Clears the shadow of [low, high), rounded outwards to granules; whole
  * pages of it by mapping them afresh. */
@@ -282,19 +282,19 @@ WEAVEC_RT_API WEAVEC_RT_SLOW void
 __weavec_rt_guard(uintptr_t address, uint64_t width,
                   const struct __weavec_rt_site *site);
 /* RFC 0037 section 8.3: the access's granule and its root's differ in
- * colour; `rootShadow` is the root's shadow byte as the guard read it. */
+ * color; `rootShadow` is the root's shadow byte as the guard read it. */
 WEAVEC_RT_API WEAVEC_RT_SLOW void
 __weavec_rt_jump(uintptr_t address, uint64_t width, uintptr_t root,
                  uint64_t rootShadow, const struct __weavec_rt_site *site);
 /* An inline check with a root whose byte was poison, a partial granule's
- * end, or of another colour: __weavec_rt_guard, then __weavec_rt_jump. */
+ * end, or of another color: __weavec_rt_guard, then __weavec_rt_jump. */
 WEAVEC_RT_API WEAVEC_RT_SLOW void
 __weavec_rt_guard_jump(uintptr_t address, uint64_t width, uintptr_t root,
                        uint64_t rootShadow,
                        const struct __weavec_rt_site *site);
 /* RFC 0037 section 8.5: whether a loop range from `root` starting at
- * `address` may run without its colour checks. */
-WEAVEC_RT_API int __weavec_rt_colour_ok(uintptr_t root, uintptr_t address);
+ * `address` may run without its color checks. */
+WEAVEC_RT_API int __weavec_rt_color_ok(uintptr_t root, uintptr_t address);
 /* A guard of a base that may be null (section 2.4). */
 WEAVEC_RT_API WEAVEC_RT_SLOW void
 __weavec_rt_null(uintptr_t address, const struct __weavec_rt_site *site);

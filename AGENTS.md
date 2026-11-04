@@ -11,9 +11,9 @@ LLVM passes (`lib/Frontend/Guard*.cpp`) put a guard before every load,
 store, atomic operation, memory intrinsic and library-call memory argument,
 remove a guard only where a local rule proves it redundant, lay out stack
 frames (locals whose lifetimes never overlap share space) and globals with
-redzones and colours, check fortified and field-bounded calls against their
+redzones and colors, check fortified and field-bounded calls against their
 sizes, and expand each remaining guard into an inline check of the runtime's
-shadow memory (an access computed from a pointer also against the colour of
+shadow memory (an access computed from a pointer also against the color of
 the pointer's object); the program traps at the first bad access with a
 report. `runtime/` is the C
 runtime every enforcing link carries: the shadow, the arena allocator (with
@@ -27,9 +27,9 @@ table, `LibrarySpec`; **no Clang/LLVM includes allowed**) and
 ledger, the compiler driver). `tools/weavec-cc` is Clang's driver with
 WeaveC inside; there is no other tool and no static analysis. Full
 picture: `docs/architecture.md`. Design and the reasoning behind it:
-`docs/rfcs/`. Read `0037-complete-sweep-and-colours.md`, the current
+`docs/rfcs/`. Read `0037-complete-sweep-and-colors.md`, the current
 design (the sweep's complete roots, thread caches, parallel marking, the
-guards' holes closed, library wrappers, fault reports, object colours,
+guards' holes closed, library wrappers, fault reports, object colors,
 returned frames, field limits, self-relative site records; its
 *Alternatives* record why cutting the guards' cost was measured and not
 taken), then `0036-deterministic-heap-reuse.md` for sweep-before-reuse,
@@ -132,7 +132,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Change how a library call is guarded, fortified limits included | `lib/Frontend/GuardLibrary.cpp` (row-driven guards, `wrapper(…)` redirection, `chk` object sizes, field limits and `limit` arguments, `wide` rows scanned by `__weavec_rt_wcslen`, `%s`/`%n` arguments, thunks of library functions whose address is taken; RFC 0037 §5, §10); the rows and their clauses in `lib/Core/LibrarySpec.txt` (one unit test per row in `unittests/Core/LibrarySpecTest.cpp`); the wrappers, their limits and the number parsers in `runtime/weavec_libc.c` (RFC 0035 §2.5, amendment 7; RFC 0036 §6); tests `test/Guards/checked-calls.c`, `intra-object.c` |
 | Change the rules that remove guards  | `GuardPrune` (`PeepholeEP`; `pruneGuards` in `lib/Frontend/GuardInsert.cpp`: rule 6.1 after inlining) and `GuardExpand` (`OptimizerLastEP`; `lib/Frontend/GuardExpand.cpp`: rules 6.1–6.3); the passes' entry points are in `GuardPass.cpp`; `lib/Frontend/GuardLoops.cpp` (`GuardLoop`, `VectorizerStartEP`: loop versioning, rule 6.4); each removal must stay monitored by `verify` mode |
 | Change the inline checks (fast paths, null bases) | `lib/Frontend/GuardPass.cpp`, `GuardPassImpl.h`; the shadow encoding in `runtime/weavec_rt.h` (RFC 0035 §2.2–§2.4, amendments 3–4; RFC 0037 §7); tests `test/Guards/ir-inline-check.c`, `null-base.c` |
-| Change colours (who gets which, which accesses are checked, the slow path) | `loadRootShadows` in `lib/Frontend/GuardExpand.cpp`, the frame colours in `GuardFrames.cpp`, the loop ranges' colour test in `GuardLoops.cpp`; `weavecRtColourOfHeap` in `runtime/weavec_alloc.c`, `__weavec_rt_jump` and `__weavec_rt_colour_ok` in `weavec_guard.c` (RFC 0037 §7–§8); tests `test/Guards/colour-jump.c`, cases `test/cases/semantics/colours/` |
+| Change colors (who gets which, which accesses are checked, the slow path) | `loadRootShadows` in `lib/Frontend/GuardExpand.cpp`, the frame colors in `GuardFrames.cpp`, the loop ranges' color test in `GuardLoops.cpp`; `weavecRtColorOfHeap` in `runtime/weavec_alloc.c`, `__weavec_rt_jump` and `__weavec_rt_color_ok` in `weavec_guard.c` (RFC 0037 §7–§8); tests `test/Guards/color-jump.c`, cases `test/cases/semantics/colors/` |
 | Change returned frames (use after return) | the exit shadow in `lib/Frontend/GuardFrames.cpp`, `settle` in `runtime/weavec_guard.c` (RFC 0037 §9); test `test/Guards/use-after-return.c` |
 | Change stack frames, shared frame space, scopes, dynamic allocas, non-local exits | `lib/Frontend/GuardFrames.cpp` (RFC 0035 §3, amendment 5; RFC 0036 §2: `StackLifetime`); tests `test/Guards/ir-frames.c`, `shared-frame.c`, `stack-overflow.c`, `use-after-scope*.c`, `vla-overflow.c`, `alloca-entry.c`, `longjmp.c`, `ir-noreturn.c`; case `test/cases/determinism/shared-frame_ok.c` |
 | Change global redzones and registration | `lib/Frontend/GuardGlobals.cpp`; `__weavec_rt_globals_register` in `runtime/weavec_guard.c`, which a shared image's copy of the runtime forwards to the process's owner (RFC 0035 §4, RFC 0036 §4); tests `test/Guards/ir-globals.c`, `global-overflow.c`, `test/Driver/image-globals.c` |

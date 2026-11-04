@@ -4,16 +4,16 @@ Rough ordering of the major pieces of work. This page is the one-screen view;
 the design detail and the reasoning live in the [RFCs](rfcs/README.md) each
 milestone links to. Everything here is subject to change as we learn.
 
-The design today is [RFC 0037](rfcs/0037-complete-sweep-and-colours.md),
+The design today is [RFC 0037](rfcs/0037-complete-sweep-and-colors.md),
 over the reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
 and the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
 milestones before it are summarised under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
-## Now: RFC 0037 — A complete sweep and object colours
+## Now: RFC 0037 — A complete sweep and object colors
 
-Design: [RFC 0037 — A complete sweep and object colours](rfcs/0037-complete-sweep-and-colours.md)
+Design: [RFC 0037 — A complete sweep and object colors](rfcs/0037-complete-sweep-and-colors.md)
 (Accepted; being implemented on `rfc0037-complete-sweep`, and Implemented
 once its _Acceptance gates_ pass on the final tree). A measurement of
 v0.17.0 found RFC 0036's guarantees broken where the sweep did not read a
@@ -25,7 +25,7 @@ every allocation, and a sweep over a pointer-dense gigabyte paused the
 program for a third of a second. RFC 0037 completes the sweep's roots, gives
 the allocator thread caches and spare regions, marks in parallel, closes
 the guards' holes, wraps the library calls, reports faults, and catches
-jumps into a neighbour (object colours in the shadow) and uses after
+jumps into a neighbour (object colors in the shadow) and uses after
 return (returned frames stay poisoned). Cutting the guards' cost was
 measured and not taken (its _Alternatives_). The stages:
 
@@ -37,7 +37,7 @@ measured and not taken (its _Alternatives_). The stages:
 - [x] **S4 The guards' holes** (loop ranges, tags, atomics, dynamic objects,
       large frames) and fault reports.
 - [x] **S5 Library calls.**
-- [x] **S6 Colours.**
+- [x] **S6 Colors.**
 - [x] **S7 Returned frames and field limits.**
 - [x] **S8 Site records.**
 - [ ] **S9 Fresh iterations**: the gates (recorded in the RFC's _Measured
@@ -79,7 +79,7 @@ analysis ledger.
 From RFC 0037's _Future work_:
 
 - Concurrent marking, if parallel marking leaves pauses too long.
-- Pointers checked where they leave a function, and colours carried by a
+- Pointers checked where they leave a function, and colors carried by a
   moved pointer.
 - Hardware memory tagging (Arm MTE, Apple MIE) where the processor has it.
 - Adoption: relocatable installs, packages, a vendored `weavec.h`.

@@ -414,25 +414,25 @@ void weavecRtShadowSet(uintptr_t base, size_t size, unsigned char value) {
 }
 
 void weavecRtShadowObject(uintptr_t base, size_t size, unsigned char tail,
-                          unsigned char colour) {
+                          unsigned char color) {
   const size_t whole = size >> 4;
   const unsigned rest = (unsigned)(size & 15);
   if (!weavecRtShadowReady() || !weavecRtInWindow(base))
     return;
   /* A huge block's shadow is mapped afresh rather than written, so that
-   * the pages of a block nothing touches cost nothing: it is uncoloured
+   * the pages of a block nothing touches cost nothing: it is uncolored
    * (RFC 0037 section 7.2). */
   if (whole >= 4 * pageBytes) {
-    colour = 0;
+    color = 0;
     weavecRtShadowClear(base, base + (whole << 4));
   } else if (whole != 0) {
-    fill(weavecRtShadowOf(base), colour, whole);
+    fill(weavecRtShadowOf(base), color, whole);
   }
   /* A partial last granule says how many of its bytes are the object's; an
    * empty object's granule is all tail. */
   if (rest != 0)
     *weavecRtShadowOf(base + (whole << 4)) =
-        weavecRtShadowPartialOf(colour, rest);
+        weavecRtShadowPartialOf(color, rest);
   else if (size == 0)
     *weavecRtShadowOf(base) = tail;
 }
@@ -490,7 +490,7 @@ static void zeroFill(uintptr_t base, size_t size) {
 static void shadowLive(uintptr_t base, size_t size, size_t slot) {
   const size_t used = (size + 15) & ~(size_t)15;
   weavecRtShadowObject(base, size, WeavecRtShadowHeapTail,
-                       weavecRtColourOfHeap(base));
+                       weavecRtColorOfHeap(base));
   if (slot > used)
     weavecRtShadowSet(base + used,
                       slot - used < TailLimit ? slot - used : TailLimit,
@@ -685,15 +685,15 @@ static inline SlotRef slotOf(uintptr_t address) {
   return ref;
 }
 
-/* RFC 0037 section 7.2: a slot's colour, from its index and its region's:
+/* RFC 0037 section 7.2: a slot's color, from its index and its region's:
  * neighbours in a region differ, and so do any two slots fewer than 111
  * apart. */
-unsigned char weavecRtColourOfHeap(uintptr_t address) {
+unsigned char weavecRtColorOfHeap(uintptr_t address) {
   SlotRef ref;
   if (!inArena(address))
     return 0;
   ref = slotOf(address);
-  return weavecRtColour((uint64_t)ref.slot + (uint64_t)ref.region * 41);
+  return weavecRtColor((uint64_t)ref.slot + (uint64_t)ref.region * 41);
 }
 
 /* The word of a slot; "never allocated" for one the region has not

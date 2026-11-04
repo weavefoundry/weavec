@@ -9,7 +9,7 @@ void use(char *);
 // At entry: the left redzone (four granules of 0xF1), the object out of
 // scope (0xF8) and the right redzone (0xF3), little-endian in one store. Its lifetime
 // start makes its 10 bytes addressable (a partial granule of 10 in the
-// local's colour, 1ccc 1010, RFC 0037 §7), its end puts it out of scope
+// local's color, 1ccc 1010, RFC 0037 §7), its end puts it out of scope
 // again, and the return marks the frame returned (0xF5, RFC 0037 §9).
 // CHECK: store i64 -868082052615769615, ptr
 // CHECK: store i8 -{{[0-9]+}}, ptr

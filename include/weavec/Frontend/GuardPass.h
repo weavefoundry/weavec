@@ -69,8 +69,8 @@ struct GuardOptions {
   /// Where the rows go; null to collect nothing.
   std::shared_ptr<EnforcementLedger> ledger;
   /// RFC 0037 §8: whether arithmetic from a pointer is checked against its
-  /// object's colour (`-fno-weavec-colours` turns it off).
-  bool colours = true;
+  /// object's color (`-fno-weavec-colors` turns it off).
+  bool colors = true;
 };
 
 /// RFC 0035 §2.1, §2.5: guards before the optimiser.

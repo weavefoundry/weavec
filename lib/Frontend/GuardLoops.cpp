@@ -55,7 +55,7 @@ struct Ranged {
   const llvm::SCEV *bytes;
   /// The base the guard tests for null, defined before the loop, or null.
   llvm::Value *nullBase = nullptr;
-  /// RFC 0037 §8.5: the pointer the address is computed from, whose colour
+  /// RFC 0037 §8.5: the pointer the address is computed from, whose color
   /// the range's first granule must have, or null when the range starts at
   /// a constant offset near it (its guard would meet the redzone first).
   llvm::Value *root = nullptr;
@@ -81,12 +81,12 @@ static constexpr unsigned MinTrip = 16;
 
 /// The range of the bytes `marker` guards over the trip of `loop`; none
 /// when its address is neither invariant nor affine with a constant step,
-/// or, with `colours`, when its root changes in the loop (the range's
-/// colour test is made once, before it).
+/// or, with `colors`, when its root changes in the loop (the range's
+/// color test is made once, before it).
 static std::optional<Ranged> rangeOf(llvm::CallInst &marker,
                                      const llvm::Loop &loop,
                                      llvm::ScalarEvolution &evolution,
-                                     bool colours) {
+                                     bool colors) {
   const std::optional<llvm::StringRef> name = ModuleContext::markerOf(marker);
   if (!name || (*name != MarkerGuard && *name != MarkerRange))
     return std::nullopt;
@@ -112,8 +112,8 @@ static std::optional<Ranged> rangeOf(llvm::CallInst &marker,
   // The root (as GuardExpand finds it), which must be there before the loop.
   llvm::Value *root = nullptr;
   if (auto *gep =
-          colours ? llvm::dyn_cast<llvm::GEPOperator>(marker.getArgOperand(0))
-                  : nullptr) {
+          colors ? llvm::dyn_cast<llvm::GEPOperator>(marker.getArgOperand(0))
+                 : nullptr) {
     llvm::Value *value = gep->getPointerOperand();
     while (auto *inner =
                llvm::dyn_cast<llvm::GEPOperator>(value->stripPointerCasts()))
@@ -256,10 +256,10 @@ static llvm::Value *rangesAddressable(ModuleContext &module,
     function->setOnlyReadsMemory();
     function->setWillReturn();
   }
-  llvm::FunctionCallee colourOk = module.runtime(
-      "colour_ok",
+  llvm::FunctionCallee colorOk = module.runtime(
+      "color_ok",
       llvm::FunctionType::get(module.i32, {module.i64, module.i64}, false));
-  if (auto *function = llvm::dyn_cast<llvm::Function>(colourOk.getCallee())) {
+  if (auto *function = llvm::dyn_cast<llvm::Function>(colorOk.getCallee())) {
     function->setOnlyReadsMemory();
     function->setWillReturn();
   }
@@ -304,11 +304,11 @@ static llvm::Value *rangesAddressable(ModuleContext &module,
             llvm::ConstantInt::get(module.i32, 0)));
     if (range.nullBase != nullptr)
       ok = builder.CreateAnd(ok, builder.CreateIsNotNull(range.nullBase));
-    if (range.root != nullptr && module.options.colours)
+    if (range.root != nullptr && module.options.colors)
       ok = builder.CreateAnd(
           ok, builder.CreateICmpNE(
                   builder.CreateCall(
-                      colourOk,
+                      colorOk,
                       {builder.CreatePtrToInt(range.root, module.i64), low}),
                   llvm::ConstantInt::get(module.i32, 0)));
     all = all == nullptr ? ok : builder.CreateAnd(all, ok);
@@ -427,7 +427,7 @@ bool versionLoops(ModuleContext &module, llvm::Function &function,
       for (llvm::Instruction &instruction : *block)
         if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction))
           if (std::optional<Ranged> range = rangeOf(
-                  *call, *loop, analyses.evolution, module.options.colours);
+                  *call, *loop, analyses.evolution, module.options.colors);
               range && expander.isSafeToExpand(range->start) &&
               expander.isSafeToExpand(range->bytes) &&
               expander.isSafeToExpand(count))

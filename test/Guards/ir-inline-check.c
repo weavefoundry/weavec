@@ -3,7 +3,7 @@
 // a branch per access, with the runtime's slow path behind it. RFC 0037
 // §7–§8: a whole granule is any byte below 0x80 (its sign bit is clear);
 // an access computed from a pointer compares its granule's byte with the
-// pointer's, and a mismatch goes to the runtime's colour check.
+// pointer's, and a mismatch goes to the runtime's color check.
 // RUN: %weavec_cc -O2 -S -emit-llvm %s -o - | FileCheck %s
 
 // CHECK-LABEL: define {{.*}}@load(
@@ -20,7 +20,7 @@ int load(const int *p) { return *p; }
 
 // CHECK-LABEL: define {{.*}}@get(
 // The root's shadow byte, then the access's, compared; poison, a partial
-// granule's end and another colour share one cold call.
+// granule's end and another color share one cold call.
 // CHECK: load i8, ptr
 // CHECK: sext i8 %{{.*}} to i32
 // CHECK: load i8, ptr

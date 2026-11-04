@@ -177,11 +177,11 @@ WEAVEC_RT_SLOW void __weavec_rt_guard(uintptr_t address, uint64_t width,
   guardSlow(address, width, site, (uintptr_t)__builtin_frame_address(0));
 }
 
-/*===-- Colours (RFC 0037 section 8.3) -------------------------------------===*/
+/*===-- Colors (RFC 0037 section 8.3) -------------------------------------===*/
 
 /* Set once a non-local exit cleared the stack's shadow (and with it the
- * colours of frames that live on). */
-static int stackLostColours;
+ * colors of frames that live on). */
+static int stackLostColors;
 
 /* Whether `address` lies on the calling thread's stack, above `here`. */
 static int onStack(uintptr_t address, uintptr_t here) {
@@ -189,8 +189,8 @@ static int onStack(uintptr_t address, uintptr_t here) {
   return address >= here && address < top;
 }
 
-/* A colour mismatch is decided exactly where it can be (the heap) and by
- * colour where it cannot (frames, globals). A root outside any object (one
+/* A color mismatch is decided exactly where it can be (the heap) and by
+ * color where it cannot (frames, globals). A root outside any object (one
  * past it, before it, released) cannot be compared. */
 /* The kind of the failure of an access to `address` computed from `root`,
  * whose shadow byte was `rootShadow`, or null when it passes. */
@@ -206,14 +206,14 @@ static const char *jumpKind(uintptr_t address, uintptr_t root,
       ((!weavecRtShadowFull(v) || !weavecRtShadowFull(rootShadow)) &&
        weavecRtShadowClass(v) == weavecRtShadowClass(rootShadow)))
     return NULL;
-  /* A root in uncoloured memory (untracked memory, a huge block, dead
+  /* A root in uncolored memory (untracked memory, a huge block, dead
    * stack, a frame a non-local exit cleared) has no object to hold the
    * access to. */
   if (rootShadow == 0)
     return NULL;
   /* A frame that lives on after a non-local exit cleared the stack's shadow
-   * has lost its locals' colours. */
-  if (v == 0 && stackLostColours && onStack(address, here))
+   * has lost its locals' colors. */
+  if (v == 0 && stackLostColors && onStack(address, here))
     return NULL;
   {
     const struct weavecRtHeapObject target = weavecRtHeapObjectAt(address);
@@ -221,7 +221,7 @@ static const char *jumpKind(uintptr_t address, uintptr_t root,
     /* One heap object; or a root inside a live heap object other than at
      * its start, which the program biased or moved on purpose (a one-based
      * array, a compressor's window base): only an object's start is held to
-     * its colour on the heap (RFC 0037 amendment 12). */
+     * its color on the heap (RFC 0037 amendment 12). */
     if (from.found && (target.base == from.base || from.base != root))
       return NULL;
     if (target.found)
@@ -245,15 +245,15 @@ jumpSlow(uintptr_t address, uint64_t width, uintptr_t root,
 }
 
 /* RFC 0037 section 8.5: whether a loop range starting at `address`, from
- * `root`, may run without its colour checks. */
-int __weavec_rt_colour_ok(uintptr_t root, uintptr_t address) {
+ * `root`, may run without its color checks. */
+int __weavec_rt_color_ok(uintptr_t root, uintptr_t address) {
   if (!weavecRtShadowReady() || !weavecRtInWindow(root))
     return 1;
   return jumpKind(address, root, *weavecRtShadowOf(root),
                   (uintptr_t)__builtin_frame_address(0)) == NULL;
 }
 
-/* An inline check with a root: the guard first, then the colour. */
+/* An inline check with a root: the guard first, then the color. */
 __attribute__((noinline)) static void
 guardJumpSlow(uintptr_t address, uint64_t width, uintptr_t root,
               unsigned char rootShadow, const struct __weavec_rt_site *site,
@@ -474,7 +474,7 @@ void __weavec_rt_unpoison_stack(void) {
   const uintptr_t low = (uintptr_t)__builtin_frame_address(0);
   const uintptr_t top = weavecRtStackTop();
   weavecRtCount(WeavecRtStatStackUnpoisons);
-  stackLostColours = 1;
+  stackLostColors = 1;
   /* A stack the thread runs on that is not its own (a coroutine's, an
    * alternate signal stack) is left alone: its extent is not known. */
   if (top > low && top - low <= ((uintptr_t)1 << 30))
@@ -505,7 +505,7 @@ void __weavec_rt_alloca_unpoison(uintptr_t low, uintptr_t high) {
 
 /*===-- Globals (section 4) ------------------------------------------------===*/
 
-static uint64_t globalColours;
+static uint64_t globalColors;
 
 void __weavec_rt_globals_register(const struct __weavec_rt_global *globals,
                                   uint64_t n) {
@@ -526,10 +526,10 @@ void __weavec_rt_globals_register(const struct __weavec_rt_global *globals,
     if ((global->address & 15) != 0 || global->padded < used)
       continue;
     /* RFC 0037 section 7.2: the n-th global the process registers takes
-     * the n-th colour, so that a unit's globals differ. */
+     * the n-th color, so that a unit's globals differ. */
     weavecRtShadowObject(global->address, global->size, WeavecRtShadowGlobal,
-                         weavecRtColour(__atomic_fetch_add(
-                             &globalColours, 1, __ATOMIC_RELAXED)));
+                         weavecRtColor(__atomic_fetch_add(
+                             &globalColors, 1, __ATOMIC_RELAXED)));
     if (global->padded > used)
       weavecRtShadowSet(global->address + used, global->padded - used,
                         WeavecRtShadowGlobal);

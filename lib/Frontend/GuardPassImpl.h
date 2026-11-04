@@ -170,9 +170,9 @@ public:
   llvm::FunctionCallee guardFunction();
   llvm::FunctionCallee nullFunction();
   llvm::FunctionCallee rangeFunction();
-  /// RFC 0037 §8.3: the access and its root differ in colour.
+  /// RFC 0037 §8.3: the access and its root differ in color.
   llvm::FunctionCallee jumpFunction();
-  /// The guard's slow path and the colour's in one call.
+  /// The guard's slow path and the color's in one call.
   llvm::FunctionCallee guardJumpFunction();
   llvm::FunctionCallee rangeOkFunction();
   llvm::FunctionCallee strlenFunction();
@@ -249,16 +249,16 @@ inline void appendRun(ShadowRuns &runs, std::uint64_t count,
 std::optional<std::uint64_t> fieldLimit(const llvm::Value *pointer,
                                         const llvm::DataLayout &layout);
 
-/// RFC 0037 §7.1: the n-th colour of the shadow encoding (the runtime's
-/// weavecRtColour): 111 values, never 0, low three bits never 7.
-inline std::uint8_t colourAt(std::uint64_t n) {
+/// RFC 0037 §7.1: the n-th color of the shadow encoding (the runtime's
+/// weavecRtColor): 111 values, never 0, low three bits never 7.
+inline std::uint8_t colorAt(std::uint64_t n) {
   const unsigned m = static_cast<unsigned>(n % 111) + 1;
   return static_cast<std::uint8_t>(((m / 7U) << 3U) | (m % 7U));
 }
 
 /// RFC 0037 §8: the object an access's offset is relative to (its root),
 /// and the root's shadow byte, an i32 (sign-extended: never equal to a
-/// shadow byte zero-extended unless it is a whole granule's colour).
+/// shadow byte zero-extended unless it is a whole granule's color).
 /// `monitor`: a check rule §8.1 would skip, emitted in verify mode, whose
 /// failure reports `weavec.proven`.
 struct RootCheck {
@@ -306,10 +306,10 @@ public:
                  std::uint64_t width, llvm::Align alignment,
                  llvm::Constant *site, llvm::Value *nullBase,
                  llvm::ArrayRef<Member> members = {}, RootCheck root = {});
-  /// RFC 0037 §8.2: compares the colour of `address`'s granule with the
+  /// RFC 0037 §8.2: compares the color of `address`'s granule with the
   /// root's; a mismatch goes to the runtime with the width.
-  void colourCheck(llvm::Instruction *before, llvm::Value *address,
-                   llvm::Value *width, llvm::Constant *site, RootCheck root);
+  void colorCheck(llvm::Instruction *before, llvm::Value *address,
+                  llvm::Value *width, llvm::Constant *site, RootCheck root);
   /// A range guard of `length` (an integer) bytes: inline when it is short.
   void emitRange(llvm::Instruction *before, llvm::Value *pointer,
                  llvm::Value *length, llvm::Constant *site);
@@ -343,8 +343,8 @@ private:
   llvm::Instruction *anchor = nullptr;
 
 public:
-  /// RFC 0037 §7.2: the constant colour of each alloca the frame holds.
-  llvm::DenseMap<const llvm::Value *, std::uint8_t> frameColours;
+  /// RFC 0037 §7.2: the constant color of each alloca the frame holds.
+  llvm::DenseMap<const llvm::Value *, std::uint8_t> frameColors;
 };
 
 /// Section 2.5: guards and redirects the calls of the library table in

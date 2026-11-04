@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check repository hygiene: gate H1 of RFC 0037 (docs/rfcs/0037-complete-sweep-and-colours.md).
+"""Check repository hygiene: gate H1 of RFC 0037 (docs/rfcs/0037-complete-sweep-and-colors.md).
 
 Seven checks, the rules of AGENTS.md that a script can hold the tree to:
 

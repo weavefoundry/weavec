@@ -1,6 +1,6 @@
 // RFC 0037 §8.5: a loop from an attacker's offset that lies wholly in a
 // live neighbour: its versioned copy runs only when the range starts in the
-// root's colour, so the guarded loop runs and stops.
+// root's color, so the guarded loop runs and stops.
 // RUN-INPUT: 1
 #include <stdlib.h>
 

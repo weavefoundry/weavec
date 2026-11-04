@@ -183,21 +183,21 @@ static void testClasses(void) {
 }
 
 static void testShadowEncoding(void) {
-  /* RFC 0037 section 7: a whole granule holds its object's colour, a
-   * partial one 1ccc kkkk; colours are never 0, their low bits never 7. */
+  /* RFC 0037 section 7: a whole granule holds its object's color, a
+   * partial one 1ccc kkkk; colors are never 0, their low bits never 7. */
   unsigned char *p = (unsigned char *)opaque(malloc(20));
   unsigned char *q = (unsigned char *)opaque(malloc(20));
-  const unsigned char colour = weavecRtColourOfHeap((uintptr_t)p);
+  const unsigned char color = weavecRtColorOfHeap((uintptr_t)p);
   unsigned n;
-  CHECK(colour != 0 && colour < 0x80 && (colour & 7) != 7);
-  CHECK(shadowAt(p) == colour);
-  CHECK(shadowAt(p + 16) == weavecRtShadowPartialOf(colour, 4));
-  CHECK(weavecRtShadowClass(shadowAt(p + 16)) == (colour & 7U));
+  CHECK(color != 0 && color < 0x80 && (color & 7) != 7);
+  CHECK(shadowAt(p) == color);
+  CHECK(shadowAt(p + 16) == weavecRtShadowPartialOf(color, 4));
+  CHECK(weavecRtShadowClass(shadowAt(p + 16)) == (color & 7U));
   /* Neighbours differ. */
-  CHECK(weavecRtColourOfHeap((uintptr_t)q) != colour);
+  CHECK(weavecRtColorOfHeap((uintptr_t)q) != color);
   for (n = 0; n < 111; ++n)
-    CHECK(weavecRtColour(n) != weavecRtColour(n + 1) &&
-          weavecRtColour(n) != 0 && (weavecRtColour(n) & 7) != 7);
+    CHECK(weavecRtColor(n) != weavecRtColor(n + 1) &&
+          weavecRtColor(n) != 0 && (weavecRtColor(n) & 7) != 7);
   /* The slot of a 20-byte block is 32 bytes: no granule after it. */
   free(p);
   free(q);

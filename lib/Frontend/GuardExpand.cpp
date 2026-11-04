@@ -414,7 +414,7 @@ static void expand(FunctionContext &context, const Access &access,
   if (access.kind == Access::Kind::String) {
     llvm::IRBuilder<> builder(marker);
     if (access.rootShadow != nullptr) {
-      context.colourCheck(
+      context.colorCheck(
           marker, builder.CreatePtrToInt(access.pointer, module.i64),
           llvm::ConstantInt::get(module.i64, 1),
           module.site(marker->getDebugLoc(), 0),
@@ -461,9 +461,9 @@ static void expand(FunctionContext &context, const Access &access,
     if (access.length != nullptr) {
       if (!removed && access.rootShadow != nullptr) {
         llvm::IRBuilder<> builder(marker);
-        context.colourCheck(marker,
-                            builder.CreatePtrToInt(access.pointer, module.i64),
-                            access.length, site, root);
+        context.colorCheck(marker,
+                           builder.CreatePtrToInt(access.pointer, module.i64),
+                           access.length, site, root);
       }
       context.emitRange(marker, access.pointer, access.length, site);
     } else if (access.state == Access::State::Guard &&
@@ -527,7 +527,7 @@ static bool contiguousOffset(const Access &access, llvm::Value *root,
 /// outside any loop the root does not change in. A stale value is good: the
 /// object is not reused while the root is held (the sweep sees it), and the
 /// access's own shadow byte says whether it is still live. A walk its guard
-/// stops at the object's redzone first has no colour check; in verify mode
+/// stops at the object's redzone first has no color check; in verify mode
 /// it has one as a monitor.
 static void loadRootShadows(FunctionContext &context,
                             std::vector<Access> &accesses,
@@ -535,7 +535,7 @@ static void loadRootShadows(FunctionContext &context,
                             const llvm::DominatorTree &dominators,
                             const llvm::LoopInfo &loops) {
   const ModuleContext &module = context.module;
-  if (!module.options.colours)
+  if (!module.options.colors)
     return;
   llvm::DenseMap<llvm::Value *, llvm::SmallVector<std::size_t, 4>> byRoot;
   llvm::SmallVector<llvm::Value *, 8> order;
@@ -562,7 +562,7 @@ static void loadRootShadows(FunctionContext &context,
     list.push_back(i);
   }
   for (llvm::Value *root : order) {
-    // Allocas: the frame's layout gives the colour.
+    // Allocas: the frame's layout gives the color.
     if (llvm::isa<llvm::AllocaInst>(root))
       continue;
     const auto &list = byRoot[root];
@@ -752,13 +752,12 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
                   analyses.getResult<llvm::LoopAnalysis>(function));
   const llvm::DenseMap<llvm::Value *, llvm::Value *> moved =
       layoutFrame(context, tracked.getArrayRef());
-  // RFC 0037 §7.2: a local's colour is the frame layout's constant.
+  // RFC 0037 §7.2: a local's color is the frame layout's constant.
   for (Access &access : accesses)
     if (access.rootIsAlloca) {
-      const auto colour = context.frameColours.find(access.root);
+      const auto color = context.frameColors.find(access.root);
       access.rootShadow = llvm::ConstantInt::get(
-          module.i32,
-          colour != context.frameColours.end() ? colour->second : 0);
+          module.i32, color != context.frameColors.end() ? color->second : 0);
     }
   if (!moved.empty())
     for (Access &access : accesses) {

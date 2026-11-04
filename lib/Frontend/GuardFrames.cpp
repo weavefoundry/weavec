@@ -8,7 +8,7 @@
 //
 // RFC 0035 §3. The tracked static allocas of a function become offsets into
 // one frame alloca with redzones between them; two whose lifetimes never
-// overlap may share bytes (RFC 0036 §2), as Clang's stack colouring lets
+// overlap may share bytes (RFC 0036 §2), as Clang's stack coloring lets
 // them share stack space. The frame's shadow is written
 // at entry (redzones poisoned, objects whose scope has not begun poisoned as
 // out of scope) and written as returned before each return (RFC 0037 §9,
@@ -57,8 +57,8 @@ struct FrameObject {
   llvm::AllocaInst *alloca = nullptr;
   std::uint64_t size = 0;
   std::uint64_t offset = 0;
-  /// RFC 0037 §7.2: the object's colour.
-  std::uint8_t colour = 0;
+  /// RFC 0037 §7.2: the object's color.
+  std::uint8_t color = 0;
   /// The lifetime markers of the object.
   llvm::SmallVector<llvm::IntrinsicInst *, 2> starts;
   llvm::SmallVector<llvm::IntrinsicInst *, 2> ends;
@@ -67,19 +67,19 @@ struct FrameObject {
 } // namespace
 
 /// The shadow byte of a partial granule of `bytes` (1 to 15) addressable
-/// bytes of an object of `colour` (RFC 0037 §7.1: `1ccc kkkk`).
-static std::uint8_t partialOf(std::uint8_t colour, std::uint64_t bytes) {
+/// bytes of an object of `color` (RFC 0037 §7.1: `1ccc kkkk`).
+static std::uint8_t partialOf(std::uint8_t color, std::uint64_t bytes) {
   return static_cast<std::uint8_t>(
-      0x80U | ((static_cast<unsigned>(colour) & 7U) << 4U) | bytes);
+      0x80U | ((static_cast<unsigned>(color) & 7U) << 4U) | bytes);
 }
 
-/// The shadow of `size` addressable bytes of an object of `colour`: whole
-/// granules the colour, a partial last granule its byte count.
-static void objectRuns(std::uint64_t size, std::uint8_t colour,
+/// The shadow of `size` addressable bytes of an object of `color`: whole
+/// granules the color, a partial last granule its byte count.
+static void objectRuns(std::uint64_t size, std::uint8_t color,
                        ShadowRuns &runs) {
-  appendRun(runs, size / 16, colour);
+  appendRun(runs, size / 16, color);
   if (size % 16 != 0)
-    appendRun(runs, 1, partialOf(colour, size % 16));
+    appendRun(runs, 1, partialOf(color, size % 16));
 }
 
 /// The granules `size` bytes cover.
@@ -202,13 +202,13 @@ static void layoutStatic(FunctionContext &context,
     return size;
   };
   std::uint64_t frameSize = place();
-  // RFC 0037 §7.2: the locals of a frame take consecutive colours, from a
+  // RFC 0037 §7.2: the locals of a frame take consecutive colors, from a
   // hash of the function's name, so that any two of them differ.
   {
     std::uint64_t next = llvm::xxh3_64bits(function.getName());
     for (FrameObject &object : objects) {
-      object.colour = colourAt(next++);
-      context.frameColours[object.alloca] = object.colour;
+      object.color = colorAt(next++);
+      context.frameColors[object.alloca] = object.color;
     }
   }
   if (frameSize > ShareAbove &&
@@ -250,8 +250,8 @@ static void layoutStatic(FunctionContext &context,
           continue;
         const std::uint8_t own =
             g - first < object.size / 16
-                ? object.colour
-                : partialOf(object.colour, object.size % 16);
+                ? object.color
+                : partialOf(object.color, object.size % 16);
         const bool inScope = object.starts.empty();
         if (inScope || value == ShadowMid)
           value = inScope ? own : ShadowScope;
@@ -281,7 +281,7 @@ static void layoutStatic(FunctionContext &context,
     // Scopes: the markers write the object's shadow, then go (they name an
     // alloca, which the object no longer is).
     ShadowRuns live;
-    objectRuns(object.size, object.colour, live);
+    objectRuns(object.size, object.color, live);
     ShadowRuns dead;
     appendRun(dead, granules(object.size), ShadowScope);
     // A redzone that shares bytes with another object's says so again at

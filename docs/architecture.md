@@ -1,8 +1,8 @@
 # Architecture
 
 WeaveC is a drop-in C compiler that enforces memory safety at run time,
-built on Clang and LLVM. [RFC 0037](rfcs/0037-complete-sweep-and-colours.md),
-*A complete sweep and object colours*, defines the design over the reuse
+built on Clang and LLVM. [RFC 0037](rfcs/0037-complete-sweep-and-colors.md),
+*A complete sweep and object colors*, defines the design over the reuse
 after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md) and the
 guards of [RFC 0035](rfcs/0035-guard-by-default.md), *Guard by default*;
 each RFC's *Implementation amendments* override its body.
@@ -161,9 +161,9 @@ amendment 3, RFC 0036 §5, RFC 0037 §7; the values are in
 
 | Value | Meaning |
 | --- | --- |
-| `0x00` | all 16 bytes addressable, untracked or uncoloured memory |
-| `0x01`–`0x7F` | all 16 bytes addressable, in an object of this colour |
-| `0x80`–`0xEF` | `1ccc kkkk`: the first k bytes (1–15) addressable, in an object whose colour's low bits are ccc |
+| `0x00` | all 16 bytes addressable, untracked or uncolored memory |
+| `0x01`–`0x7F` | all 16 bytes addressable, in an object of this color |
+| `0x80`–`0xEF` | `1ccc kkkk`: the first k bytes (1–15) addressable, in an object whose color's low bits are ccc |
 | `0xF1` | a frame's left redzone |
 | `0xF2` | a redzone between a frame's objects |
 | `0xF3` | a frame's right redzone |
@@ -187,10 +187,10 @@ spuriously, and the slow path, which knows the window, lets it pass. When
 the reservation fails, `mask` is 0 and `base` points to zero bytes: every
 guard passes, and the runtime says so once on standard error.
 
-**Colours** (RFC 0037 §7–§8). A colour is one of 111 values that are never
+**Colors** (RFC 0037 §7–§8). A color is one of 111 values that are never
 0 and whose low three bits are never 7: heap slots take
-`colour(slot + 41 × region)`, a frame's locals consecutive colours from a
-hash of the function's name, and the process's globals consecutive colours
+`color(slot + 41 × region)`, a frame's locals consecutive colors from a
+hash of the function's name, and the process's globals consecutive colors
 in the order they register. An access whose address is computed from a
 pointer (its *root*: the value under its chain of `getelementptr`s) loads
 the root's shadow byte once, hoisted out of the loops the root does not
@@ -198,9 +198,9 @@ change in, and compares the access's byte with it; a walk from a constant
 start near the root by a small constant step has no comparison (its guard
 meets the redzone first), and in verify mode has one as a monitor. A
 mismatch calls `__weavec_rt_jump`, which decides exactly for the heap (one
-slot, or any root inside a block but at its start, passes) and by colour
+slot, or any root inside a block but at its start, passes) and by color
 elsewhere. Rule 6.4's
-preheader asks `__weavec_rt_colour_ok` for each range that starts at a
+preheader asks `__weavec_rt_color_ok` for each range that starts at a
 variable offset from its root.
 
 **Fast paths** (RFC 0035 amendment 4). A guard whose bytes lie in one
@@ -285,7 +285,7 @@ left redzone of 64 bytes, then each object at a 32-byte boundary followed
 by its redzone, at least 32 bytes and one eighth of the object up to
 4 KiB, so the object and its redzone fill a multiple of 32 bytes
 (`guard::paddedSize`). At entry the pass writes the frame's shadow with
-constant stores (redzones poisoned, objects in their colours, partial
+constant stores (redzones poisoned, objects in their colors, partial
 granules encoded, objects whose scope has not begun `0xF8`), and writes it
 `0xF5` (*returned*) before each return. A lifetime start of a tracked
 object makes it addressable and a lifetime end poisons it with `0xF8`, so a
@@ -479,7 +479,7 @@ object belongs to no object. Each slot has one 32-bit word of metadata,
 `value << 2 | state`: a live slot's value is its object's size, a free or
 released one's the next slot on its list. Free lists and
 the quarantine queues live in the metadata, never in freed memory. An
-allocation writes the slot's colour over the object's whole granules, the
+allocation writes the slot's color over the object's whole granules, the
 partial byte over a partial last granule and `0xFA` over the rest of its
 slot (up to 64 KiB); a release
 writes `0xFD` over the slot. The shadow of a large object is mapped afresh
