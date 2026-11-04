@@ -1,6 +1,7 @@
 // RFC 0037 §4: an atomic load of an object too large to be lock-free is a
 // call of __atomic_load, whose row guards both objects: a source that ends
 // early stops it.
+// UNITS: Inputs/atomic-load.c
 // RUN-INPUT: 1
 #include <stdlib.h>
 

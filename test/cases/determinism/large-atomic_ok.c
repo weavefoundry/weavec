@@ -1,4 +1,5 @@
 // The twin of large-atomic_bug.c: a source of the object's size.
+// UNITS: Inputs/atomic-load.c
 // RUN-INPUT:
 // CLEAN
 #include <stdlib.h>
