@@ -11,28 +11,34 @@ LLVM passes (`lib/Frontend/Guard*.cpp`) put a guard before every load,
 store, atomic operation, memory intrinsic and library-call memory argument,
 remove a guard only where a local rule proves it redundant, lay out stack
 frames (locals whose lifetimes never overlap share space) and globals with
-redzones, check fortified calls against their object size, and expand each
-remaining guard into an inline check of the runtime's shadow memory; the
-program traps at the first bad access with a report. `runtime/` is the C
-runtime every enforcing link carries: the shadow, the arena allocator whose
-quarantine reuses a released block only after a *sweep* finds no pointer to
-it, the guards' slow paths, the checked library wrappers, ASan's interface
-and the reports (`libweavec_rt.a`), and the `malloc` family over the arena
-(`libweavec_alloc.a`). Two C++ libraries: `weavec::Core` (only the library
+redzones and colours, check fortified and field-bounded calls against their
+sizes, and expand each remaining guard into an inline check of the runtime's
+shadow memory (an access computed from a pointer also against the colour of
+the pointer's object); the program traps at the first bad access with a
+report. `runtime/` is the C
+runtime every enforcing link carries: the shadow, the arena allocator (with
+per-thread caches) whose quarantine reuses a released block only after a
+*sweep* (marked in parallel by worker threads) finds no pointer to it, the
+guards' slow paths, the checked library wrappers, ASan's interface, the
+fault handler and the reports (`libweavec_rt.a`), and the `malloc` family
+over the arena (`libweavec_alloc.a`). Two C++ libraries: `weavec::Core` (only the library
 table, `LibrarySpec`; **no Clang/LLVM includes allowed**) and
 `weavec::Frontend` (the guard passes, unsafe regions, the enforcement
 ledger, the compiler driver). `tools/weavec-cc` is Clang's driver with
 WeaveC inside; there is no other tool and no static analysis. Full
 picture: `docs/architecture.md`. Design and the reasoning behind it:
-`docs/rfcs/`. Read `0036-deterministic-heap-reuse.md`, the current design
-(sweep-before-reuse, shared frame space, fortified sizes, ASan's contract;
-it deleted the advisory ownership analysis, and its *Alternatives* record
-why provenance bounds and frame blocks were measured and left out), and
-then `0035-guard-by-default.md` for what RFC 0036 keeps: the guards, the
-shadow, frames and globals, the library-call guards, the removal rules, the
-modes and the ledger. Read each one's *Implementation amendments* too; they
-override its body. RFCs 0001–0034 record the analysis and the enforcement
-designs that came before.
+`docs/rfcs/`. Read `0037-complete-sweep-and-colours.md`, the current
+design (the sweep's complete roots, thread caches, parallel marking, the
+guards' holes closed, library wrappers, fault reports, object colours,
+returned frames, field limits, self-relative site records; its
+*Alternatives* record why cutting the guards' cost was measured and not
+taken), then `0036-deterministic-heap-reuse.md` for sweep-before-reuse,
+shared frame space, fortified sizes and ASan's contract, and
+`0035-guard-by-default.md` for the guards, the shadow, frames and globals,
+the library-call guards, the removal rules, the modes and the ledger. Read
+each one's *Implementation amendments* too; they override its body. RFCs
+0001–0034 record the analysis and the enforcement designs that came
+before.
 
 ## Before touching the passes or the runtime
 
@@ -102,12 +108,12 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
    the PR. New tests are named by feature (`test/cases/<area>/…`,
    `test/Guards/<feature>.c`); existing `rfcNNNN-` names may stay.
 9. Keep the library table and the runtime clean (`scripts/check-hygiene.py`;
-   RFC 0036 gate H1): library behaviour goes in `lib/Core/LibrarySpec.txt`
+   RFC 0037 gate H1): library behaviour goes in `lib/Core/LibrarySpec.txt`
    (the guards read it through `GuardLibrary.cpp`), never in
    `name == "…"` tests; nothing under `lib/` names a corpus project; the
    library code (`lib/`, `include/`, `tools/`) stays within its line budget
    (9,000), and so does the runtime (`runtime/` without `runtime/test/`,
-   counted apart: 6,000). The runtime is C and includes no WeaveC header
+   counted apart: 7,000). The runtime is C and includes no WeaveC header
    but its own `weavec_rt.h`, and every runtime entry point the passes
    declare (and every `wrapper(NAME)` of the table) must be declared there
    with the same signature. The runtime's `preserve_all` entry points
@@ -123,17 +129,19 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Change what weavec-cc adds to a compile (zero-init, array bounds, locations, the passes) | `configureEnforcement` in `lib/Frontend/Driver.cpp`; `registerGuardPasses` in `lib/Frontend/GuardPass.cpp` (RFC 0035 §1, amendment 1; RFC 0036 §1) |
 | Change fortification or ASan's contract (`_FORTIFY_SOURCE=3`, `__SANITIZE_ADDRESS__`, `-fno-weavec-asan-compat`) | `wantsFortification`, `applyAsanCompat` and `AsanOptionsReset` in `lib/Frontend/Driver.cpp` (RFC 0036 §1, §5); tests `test/Driver/fortify.c`, `asan-compat.c`, `asan-compat-fortify.c` |
 | Change which accesses get a guard    | `lib/Frontend/GuardInsert.cpp` (`GuardInsert`, at `PipelineStartEP`: the markers `__weavec.guard`, `.range`, `.strlen`, `.disjoint`, `.scope`; RFC 0035 §2.1, amendments 1–2) |
-| Change how a library call is guarded, fortified limits included | `lib/Frontend/GuardLibrary.cpp` (row-driven guards, `wrapper(…)` redirection, `chk` object sizes and `limit` arguments, `wide` rows, `%s`/`%n` arguments); the rows and their clauses in `lib/Core/LibrarySpec.txt` (one unit test per row in `unittests/Core/LibrarySpecTest.cpp`); the wrappers, their limits and the number parsers in `runtime/weavec_libc.c` (RFC 0035 §2.5, amendment 7; RFC 0036 §6); tests `test/Guards/checked-calls.c`, `intra-object.c` |
+| Change how a library call is guarded, fortified limits included | `lib/Frontend/GuardLibrary.cpp` (row-driven guards, `wrapper(…)` redirection, `chk` object sizes, field limits and `limit` arguments, `wide` rows scanned by `__weavec_rt_wcslen`, `%s`/`%n` arguments, thunks of library functions whose address is taken; RFC 0037 §5, §10); the rows and their clauses in `lib/Core/LibrarySpec.txt` (one unit test per row in `unittests/Core/LibrarySpecTest.cpp`); the wrappers, their limits and the number parsers in `runtime/weavec_libc.c` (RFC 0035 §2.5, amendment 7; RFC 0036 §6); tests `test/Guards/checked-calls.c`, `intra-object.c` |
 | Change the rules that remove guards  | `GuardPrune` (`PeepholeEP`; `pruneGuards` in `lib/Frontend/GuardInsert.cpp`: rule 6.1 after inlining) and `GuardExpand` (`OptimizerLastEP`; `lib/Frontend/GuardExpand.cpp`: rules 6.1–6.3); the passes' entry points are in `GuardPass.cpp`; `lib/Frontend/GuardLoops.cpp` (`GuardLoop`, `VectorizerStartEP`: loop versioning, rule 6.4); each removal must stay monitored by `verify` mode |
-| Change the inline checks (fast paths, null bases) | `lib/Frontend/GuardPass.cpp`, `GuardPassImpl.h`; the shadow encoding in `runtime/weavec_rt.h` (RFC 0035 §2.2–§2.4, amendments 3–4); tests `test/Guards/ir-inline-check.c`, `null-base.c` |
+| Change the inline checks (fast paths, null bases) | `lib/Frontend/GuardPass.cpp`, `GuardPassImpl.h`; the shadow encoding in `runtime/weavec_rt.h` (RFC 0035 §2.2–§2.4, amendments 3–4; RFC 0037 §7); tests `test/Guards/ir-inline-check.c`, `null-base.c` |
+| Change colours (who gets which, which accesses are checked, the slow path) | `loadRootShadows` in `lib/Frontend/GuardExpand.cpp`, the frame colours in `GuardFrames.cpp`, the loop ranges' colour test in `GuardLoops.cpp`; `weavecRtColourOfHeap` in `runtime/weavec_alloc.c`, `__weavec_rt_jump` and `__weavec_rt_colour_ok` in `weavec_guard.c` (RFC 0037 §7–§8); tests `test/Guards/colour-jump.c`, cases `test/cases/semantics/colours/` |
+| Change returned frames (use after return) | the exit shadow in `lib/Frontend/GuardFrames.cpp`, `settle` in `runtime/weavec_guard.c` (RFC 0037 §9); test `test/Guards/use-after-return.c` |
 | Change stack frames, shared frame space, scopes, dynamic allocas, non-local exits | `lib/Frontend/GuardFrames.cpp` (RFC 0035 §3, amendment 5; RFC 0036 §2: `StackLifetime`); tests `test/Guards/ir-frames.c`, `shared-frame.c`, `stack-overflow.c`, `use-after-scope*.c`, `vla-overflow.c`, `alloca-entry.c`, `longjmp.c`, `ir-noreturn.c`; case `test/cases/determinism/shared-frame_ok.c` |
 | Change global redzones and registration | `lib/Frontend/GuardGlobals.cpp`; `__weavec_rt_globals_register` in `runtime/weavec_guard.c`, which a shared image's copy of the runtime forwards to the process's owner (RFC 0035 §4, RFC 0036 §4); tests `test/Guards/ir-globals.c`, `global-overflow.c`, `test/Driver/image-globals.c` |
 | Change unsafe regions                | `lib/Frontend/UnsafeRegions.cpp` (the AST collector; `no_sanitize("address")` functions too; RFC 0035 §2.6, amendment 8) |
 | Change the enforcement ledger or the summary line | `lib/Frontend/EnforcementLedger.cpp` (`weavec-ledger` version 3, `EnforcementLedgerVersion`; RFC 0035 §9, amendment 10); test `test/Guards/ledger.c` |
-| Change the allocator, the quarantine or when to sweep | `runtime/weavec_alloc.c` (arena, slot words, quarantine, huge blocks, the heap's shadow; the soft and hard budgets and the pacing, `overBudget`; recycling in address order; RFC 0036 §3), `weavec_malloc.c` (the `malloc` family); `rt_test` tests `pacing`, `sweep-*` |
-| Change the sweep                     | `runtime/weavec_sweep.c` (stopping threads: Darwin `thread_suspend`, Linux signals; the roots: stacks, registers, writable mappings with dirty pages, the image table for the dyld shared cache; the conservative mark; RFC 0036 §3.4); `rt_test` tests `sweep-*`, `library-data-is-scanned` |
+| Change the allocator, the quarantine or when to sweep | `runtime/weavec_alloc.c` (arena, slot words, quarantine, huge blocks, the heap's shadow; the soft and hard budgets and the pacing, `overBudget`; recycling in address order; RFC 0036 §3; thread caches, spare regions for full classes, the 64 MiB default, RFC 0037 §2), `weavec_malloc.c` (the `malloc` family); `rt_test` tests `pacing`, `sweep-*`, `thread-caches` |
+| Change the sweep                     | `runtime/weavec_sweep.c` (stopping threads: Darwin `thread_suspend`, Linux signals; the roots: registers and vector registers, stacks, thread-specific data, readable mappings, the image table for the dyld shared cache; the conservative mark and its workers; RFC 0036 §3.4, RFC 0037 §1, §3); `rt_test` tests `sweep-*`, `*-is-scanned`, `vector-registers-are-scanned`, `signals-during-sweeps` |
 | Change ASan's interface              | `runtime/weavec_asan.c` (RFC 0036 §5); test `test/Guards/use-after-poison.c`, case `test/cases/determinism/asan-pool_*.c` |
-| Change the rest of the runtime (slow paths, reports) | `runtime/weavec_guard.c` (slow paths, ranges, strings, frames' helpers, globals, fortified-size failures), `weavec_owner.c` (one runtime per process on Darwin, the dispatch table, version 4), `weavec_report.c` (report formats, `WEAVEC_RT_*` variables), `weavec_rt.h`; its C test `runtime/test/rt_test.c` (CTest `runtime`); cases in `test/cases/semantics/runtime/` |
+| Change the rest of the runtime (slow paths, reports) | `runtime/weavec_guard.c` (slow paths, ranges, strings, frames' helpers, globals, fortified-size failures), the fault handler in `weavec_report.c` (RFC 0037 §6), `weavec_owner.c` (one runtime per process on Darwin, the dispatch table, version 4), `weavec_report.c` (report formats, `WEAVEC_RT_*` variables), `weavec_rt.h`; its C test `runtime/test/rt_test.c` (CTest `runtime`); cases in `test/cases/semantics/runtime/` |
 | Change the runtime's link line and fallbacks | `lib/Frontend/Driver.cpp` (`addRuntimeLibraries`, `runtimeObstacle`, `allocatorDefinedBy`, `dropAllocatorIfDefined`); `test/Driver/runtime-*.c` |
 | Change `weavec-cc` (driver, cc1 wrapping, flags) | `lib/Frontend/Driver.cpp` (`DriverOptions::consume`, `driverFlagsHelp`, `runCc1Job`), `include/weavec/Frontend/Driver.h`, `tools/weavec-cc/main.cpp`; document flags in `docs/pages/reference/cli.md` |
 | Debug what a guarded program did     | the report line names the kind, the access and the address, and, for the heap, a second line the block; `WEAVEC_RT_BACKTRACE=1` prints the stack of the stopping access; `-fweavec-checks=report` prints each failing site once and goes on; `WEAVEC_RT_STATS=1 ./prog` prints the runtime's counters (sweeps and their pauses included) at exit; `-fweavec-ledger=out/ -fweavec-summary` shows which accesses kept their guard |

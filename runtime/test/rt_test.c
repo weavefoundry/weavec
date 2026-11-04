@@ -30,6 +30,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -182,13 +183,26 @@ static void testClasses(void) {
 }
 
 static void testShadowEncoding(void) {
+  /* RFC 0037 section 7: a whole granule holds its object's colour, a
+   * partial one 1ccc kkkk; colours are never 0, their low bits never 7. */
   unsigned char *p = (unsigned char *)opaque(malloc(20));
-  CHECK(shadowAt(p) == 0);
-  CHECK(shadowAt(p + 16) == 4);
+  unsigned char *q = (unsigned char *)opaque(malloc(20));
+  const unsigned char colour = weavecRtColourOfHeap((uintptr_t)p);
+  unsigned n;
+  CHECK(colour != 0 && colour < 0x80 && (colour & 7) != 7);
+  CHECK(shadowAt(p) == colour);
+  CHECK(shadowAt(p + 16) == weavecRtShadowPartialOf(colour, 4));
+  CHECK(weavecRtShadowClass(shadowAt(p + 16)) == (colour & 7U));
+  /* Neighbours differ. */
+  CHECK(weavecRtColourOfHeap((uintptr_t)q) != colour);
+  for (n = 0; n < 111; ++n)
+    CHECK(weavecRtColour(n) != weavecRtColour(n + 1) &&
+          weavecRtColour(n) != 0 && (weavecRtColour(n) & 7) != 7);
   /* The slot of a 20-byte block is 32 bytes: no granule after it. */
   free(p);
+  free(q);
   p = (unsigned char *)opaque(malloc(16));
-  CHECK(shadowAt(p) == 0);
+  CHECK(weavecRtShadowFull(shadowAt(p)) && shadowAt(p) != 0);
   CHECK(shadowAt(p + 16) == WeavecRtShadowHeapTail);
   free(p);
   CHECK(shadowAt(p) == WeavecRtShadowHeapFreed);
@@ -336,6 +350,9 @@ static void testSweepRecycles(void) {
    * bytes are zero again. (A size class no other test or library call
    * uses: a stale copy of an earlier block's address, left in a frame the
    * scan reads, would keep the slot.) */
+  /* Not the class's first slot: its address, the region's start, may lie
+   * in data the sweep reads. */
+  void *volatile first = opaque(malloc(2700));
   volatile uintptr_t hidden = releasedBlock(2700);
   unsigned char *again;
   unsigned i;
@@ -351,6 +368,7 @@ static void testSweepRecycles(void) {
     zero &= again[i] == 0;
   CHECK(zero);
   free(again);
+  free(first);
 }
 
 static void testQuarantineHolds(void) {
@@ -374,6 +392,7 @@ static void testSweepFollowsTheHeap(void) {
   /* A pointer stored in a live heap block keeps its target; once it is
    * overwritten, the target is reused. (A size class of its own, as
    * above.) */
+  void *volatile first = opaque(malloc(5300));
   volatile uintptr_t hidden = releasedBlock(5300);
   heapHolder = (void *volatile *)malloc(64);
   heapHolder[3] = (void *)(hidden ^ Hidden);
@@ -395,6 +414,7 @@ static void testSweepFollowsTheHeap(void) {
   }
   free((void *)heapHolder);
   heapHolder = NULL;
+  free(first);
 }
 
 static void *volatile threadHeld;
@@ -416,10 +436,10 @@ static uint64_t monotonic(void) {
 }
 
 static void testPacing(void) {
-  /* RFC 0036 section 3.3: past the soft budget (16 MiB), a release sweeps
-   * only once eight times the last sweep's duration has passed; the hard
-   * budget (256 MiB) sweeps at once. */
-  enum { Block = 60000, Count = 400 };
+  /* RFC 0036 section 3.3: past the soft budget (64 MiB, RFC 0037 section
+   * 2.4), a release sweeps only once eight times the last sweep's duration
+   * has passed; the hard budget (128 MiB) sweeps at once. */
+  enum { Block = 60000, Count = 1300 };
   static void *blocks[Count];
   unsigned long long before;
   unsigned i;
@@ -464,21 +484,31 @@ static __attribute__((noinline)) void plant(void *volatile *holder,
 }
 
 /* Whether a block whose only pointer is stored at `holder` survives a
- * sweep. */
-static int keptBy(void *volatile *holder, size_t bytes) {
+ * sweep; `then` runs after the store and before the sweep, and again with
+ * `undo` set after it. */
+static int keptByThen(void *volatile *holder, size_t bytes,
+                      void (*then)(void *, int undo), void *argument) {
   /* Not the class's first slot, whose address the heap's table holds. */
   void *volatile first = opaque(malloc(bytes));
   volatile uintptr_t hidden = releasedBlock(bytes);
   unsigned char *again;
   plant(holder, hidden);
+  if (then != NULL)
+    then(argument, 0);
   scrubStack();
   weavecRtSweep();
   again = reuse(hidden ^ Hidden, bytes);
+  if (then != NULL)
+    then(argument, 1);
   *holder = NULL;
   if (again != NULL)
     free(again);
   free(first);
   return again == NULL;
+}
+
+static int keptBy(void *volatile *holder, size_t bytes) {
+  return keptByThen(holder, bytes, NULL, NULL);
 }
 
 static void testSharedMemoryIsScanned(void) {
@@ -538,6 +568,188 @@ static void testSweepStopsThreads(void) {
   __atomic_store_n(&threadRelease, 1, __ATOMIC_RELEASE);
   CHECK(pthread_join(thread, NULL) == 0);
   threadRelease = 0;
+}
+
+/* RFC 0037 section 1: the roots v0.17.0 missed. (Size classes of their
+ * own, as above.) */
+
+static void makeReadOnly(void *page, int undo) {
+  CHECK(mprotect(page, 4096, undo ? PROT_READ | PROT_WRITE : PROT_READ) == 0);
+}
+
+static void writeBack(void *page, int undo) {
+  if (!undo)
+    CHECK(msync(page, 4096, MS_SYNC) == 0);
+}
+
+static void testReadOnlyMemoryIsScanned(void) {
+  /* Memory the program wrote and then made read-only. */
+  void *page = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  CHECK(page != MAP_FAILED);
+  if (page == MAP_FAILED)
+    return;
+  CHECK(keptByThen((void *volatile *)page, 3900, makeReadOnly, page));
+  (void)munmap(page, 4096);
+}
+
+static void testFileMappingIsScanned(void) {
+  /* A shared mapping of a file whose page msync wrote back: clean, and
+   * still holding the pointer. */
+  char path[] = "/tmp/weavec_rt_test_map_XXXXXX";
+  const int fd = mkstemp(path);
+  void *page = MAP_FAILED;
+  CHECK(fd >= 0);
+  if (fd < 0)
+    return;
+  (void)unlink(path);
+  if (ftruncate(fd, 4096) == 0)
+    page = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  (void)close(fd);
+  CHECK(page != MAP_FAILED);
+  if (page == MAP_FAILED)
+    return;
+  CHECK(keptByThen((void *volatile *)page, 4500, writeBack, page));
+  (void)munmap(page, 4096);
+}
+
+static void testStackPoolIsScanned(void) {
+  /* A pointer below another thread's stack pointer, in the mapping that
+   * holds its stack: a pool of stacks given to pthread_attr_setstack (or a
+   * coroutine library's) holds other stacks there. */
+  enum { Pool = 1 << 20 };
+  char *pool = (char *)mmap(NULL, Pool, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  pthread_attr_t attributes;
+  pthread_t thread;
+  CHECK((void *)pool != MAP_FAILED);
+  if ((void *)pool == MAP_FAILED)
+    return;
+  CHECK(pthread_attr_init(&attributes) == 0);
+  CHECK(pthread_attr_setstack(&attributes, pool + Pool / 2, Pool / 2) == 0);
+  CHECK(pthread_create(&thread, &attributes, holder, NULL) == 0);
+  CHECK(keptBy((void *volatile *)(pool + 4096), 5900));
+  __atomic_store_n(&threadRelease, 1, __ATOMIC_RELEASE);
+  CHECK(pthread_join(thread, NULL) == 0);
+  threadRelease = 0;
+  (void)pthread_attr_destroy(&attributes);
+  (void)munmap(pool, Pool);
+}
+
+static pthread_key_t specificKey;
+
+/* Not inlined, as plant. */
+static __attribute__((noinline)) void setSpecific(uintptr_t hidden) {
+  CHECK(pthread_setspecific(specificKey, (void *)(hidden ^ Hidden)) == 0);
+}
+
+static void testThreadDataIsScanned(void) {
+  /* A pointer held only as this (the main) thread's specific value: on
+   * Darwin it lies in libpthread's data in the shared cache. */
+  void *volatile first = opaque(malloc(6500));
+  volatile uintptr_t hidden;
+  unsigned char *again;
+  CHECK(pthread_key_create(&specificKey, NULL) == 0);
+  hidden = releasedBlock(6500);
+  setSpecific(hidden);
+  scrubStack();
+  weavecRtSweep();
+  again = reuse(hidden ^ Hidden, 6500);
+  CHECK(again == NULL);
+  CHECK(pthread_setspecific(specificKey, NULL) == 0);
+  (void)pthread_key_delete(specificKey);
+  if (again != NULL)
+    free(again);
+  free(first);
+}
+
+static volatile int vectorReady;
+
+/* Holds the address `argument` hides only in a vector register until told:
+ * every general register and the stack hold other values. */
+static void *vectorHolder(void *argument) {
+  uintptr_t hidden = (uintptr_t)argument;
+#if defined(__aarch64__)
+  __asm__ volatile("eor %x0, %x0, %x1\n\t"
+                   "fmov d16, %x0\n\t"
+                   "mov %x0, xzr\n\t"
+                   "mov w9, #1\n\t"
+                   "stlr w9, [%2]\n\t"
+                   "1: ldar w9, [%3]\n\t"
+                   "cbz w9, 1b\n\t"
+                   "fmov d16, xzr\n\t"
+                   : "+r"(hidden)
+                   : "r"(Hidden), "r"(&vectorReady), "r"(&threadRelease)
+                   : "x9", "v16", "memory");
+#elif defined(__x86_64__)
+  __asm__ volatile("xorq %1, %0\n\t"
+                   "movq %0, %%xmm8\n\t"
+                   "xorl %k0, %k0\n\t"
+                   "movl $1, (%2)\n\t"
+                   "1: pause\n\t"
+                   "movl (%3), %%eax\n\t"
+                   "testl %%eax, %%eax\n\t"
+                   "jz 1b\n\t"
+                   "pxor %%xmm8, %%xmm8\n\t"
+                   : "+r"(hidden)
+                   : "r"(Hidden), "r"(&vectorReady), "r"(&threadRelease)
+                   : "eax", "xmm8", "memory");
+#else
+  __atomic_store_n(&vectorReady, 1, __ATOMIC_RELEASE);
+  while (!__atomic_load_n(&threadRelease, __ATOMIC_ACQUIRE))
+    sched_yield();
+#endif
+  return (void *)hidden;
+}
+
+static void testVectorRegistersAreScanned(void) {
+  volatile uintptr_t hidden = releasedBlock(7300);
+  pthread_t thread;
+  unsigned char *again;
+  vectorReady = 0;
+  CHECK(pthread_create(&thread, NULL, vectorHolder, (void *)hidden) == 0);
+  while (!__atomic_load_n(&vectorReady, __ATOMIC_ACQUIRE))
+    sched_yield();
+  scrubStack();
+  weavecRtSweep();
+  again = reuse(hidden ^ Hidden, 7300);
+  CHECK(again == NULL);
+  __atomic_store_n(&threadRelease, 1, __ATOMIC_RELEASE);
+  CHECK(pthread_join(thread, NULL) == 0);
+  threadRelease = 0;
+  if (again != NULL)
+    free(again);
+}
+
+static void allocateInHandler(int signal) {
+  (void)signal;
+  free(opaque(malloc(64)));
+}
+
+static void sweepUnderSignals(void) {
+  /* A spinning allocator lock runs out of CPU time instead of hanging. */
+  const struct rlimit cpu = {10, 11};
+  struct sigaction action;
+  struct itimerval every = {{0, 1000}, {0, 1000}};
+  unsigned i;
+  (void)setrlimit(RLIMIT_CPU, &cpu);
+  memset(&action, 0, sizeof action);
+  action.sa_handler = allocateInHandler;
+  action.sa_flags = SA_RESTART;
+  (void)sigaction(SIGALRM, &action, NULL);
+  (void)setitimer(ITIMER_REAL, &every, NULL);
+  for (i = 0; i < 300; ++i) {
+    free(opaque(malloc(1000)));
+    weavecRtSweep();
+  }
+  memset(&every, 0, sizeof every);
+  (void)setitimer(ITIMER_REAL, &every, NULL);
+}
+
+static void testSignalsDuringSweeps(void) {
+  /* A handler that allocates while a sweep holds the allocator's locks
+   * (the sweeping thread is the only one the kernel can deliver to). */
+  CHECK(endOf(sweepUnderSignals, NULL) == 0);
 }
 
 static void doubleFree(void) {
@@ -677,9 +889,9 @@ static void testForeign(void) {
 
 /*===-- Guards --------------------------------------------------------------===*/
 
-static const struct __weavec_rt_site trapSite = {"rt_test.c", 1, 2, 0};
-static const struct __weavec_rt_site reportSite = {"rt_test.c", 3, 4,
-                                                   WeavecRtSiteReport};
+/* (Set in main: a site's file is relative to the record.) */
+static struct __weavec_rt_site trapSite;
+static struct __weavec_rt_site reportSite;
 
 static void overflowRead(void) {
   char *p = (char *)opaque(malloc(20));
@@ -754,8 +966,8 @@ static void testStrings(void) {
   CHECK(trapsIn(unterminated));
   /* A null string is the call's to accept, or an access through null. */
   {
-    static const struct __weavec_rt_site nullOk = {"rt_test.c", 5, 6,
-                                                   WeavecRtSiteNullOk};
+    struct __weavec_rt_site nullOk;
+    weavecRtSiteSet(&nullOk, "rt_test.c", 5, 6, WeavecRtSiteNullOk);
     CHECK(__weavec_rt_strlen(NULL, ~(uint64_t)0, &nullOk) == 0);
   }
   CHECK(trapsIn(nullString));
@@ -1018,6 +1230,33 @@ static void testThreads(void) {
   }
 }
 
+static void *releaseAndExit(void *argument) {
+  /* The block waits in this thread's cache (RFC 0037 section 2.1) until
+   * the thread exits. */
+  *(volatile uintptr_t *)argument = releasedBlock(7700);
+  return NULL;
+}
+
+static void testThreadCaches(void) {
+  /* A block another thread released is recycled once that thread has
+   * exited (its cache moved to the quarantine), and a double free of a
+   * cached block traps. */
+  void *volatile first = opaque(malloc(7700));
+  volatile uintptr_t hidden = 0;
+  pthread_t thread;
+  unsigned char *again;
+  CHECK(pthread_create(&thread, NULL, releaseAndExit, (void *)&hidden) == 0);
+  CHECK(pthread_join(thread, NULL) == 0);
+  scrubStack();
+  weavecRtSweep();
+  again = reuse(hidden ^ Hidden, 7700);
+  CHECK(again != NULL);
+  if (again != NULL)
+    free(again);
+  free(first);
+  CHECK(trapsIn(doubleFree));
+}
+
 static void testFork(void) {
   void *p = opaque(malloc(100));
   int status = 0;
@@ -1054,6 +1293,12 @@ static const struct {
     {"pacing", testPacing},
     {"library-data-is-scanned", testLibraryDataIsScanned},
     {"shared-memory-is-scanned", testSharedMemoryIsScanned},
+    {"read-only-memory-is-scanned", testReadOnlyMemoryIsScanned},
+    {"file-mapping-is-scanned", testFileMappingIsScanned},
+    {"stack-pool-is-scanned", testStackPoolIsScanned},
+    {"thread-data-is-scanned", testThreadDataIsScanned},
+    {"vector-registers-are-scanned", testVectorRegistersAreScanned},
+    {"signals-during-sweeps", testSignalsDuringSweeps},
     {"invalid-releases", testInvalidReleases},
     {"huge", testHuge},
     {"huge-releases-sweep", testHugeReleasesSweep},
@@ -1069,6 +1314,7 @@ static const struct {
     {"mappings", testMappings},
     {"array-bounds", testArrayBounds},
     {"threads", testThreads},
+    {"thread-caches", testThreadCaches},
     {"fork", testFork},
 };
 
@@ -1076,6 +1322,8 @@ int main(int argc, char **argv) {
   unsigned i;
   unsigned ran = 0;
   program = argv[0];
+  weavecRtSiteSet(&trapSite, "rt_test.c", 1, 2, 0);
+  weavecRtSiteSet(&reportSite, "rt_test.c", 3, 4, WeavecRtSiteReport);
   for (i = 0; i < sizeof Tests / sizeof Tests[0]; ++i) {
     int selected = argc < 2;
     int a;

@@ -85,6 +85,7 @@ decision is a new RFC that supersedes the relevant section.
 | [0033](0033-drop-in-by-default.md) | Drop-in by default: no false stops on code WeaveC was never tuned on | Implemented |
 | [0034](0034-fast-enforcement.md) | Fast enforcement, confirmed errors and a bounded analysis | Implemented |
 | [0035](0035-guard-by-default.md) | Guard by default: every access guarded in the backend, the analysis advisory | Implemented (superseded in part by [0036](0036-deterministic-heap-reuse.md)) |
-| [0036](0036-deterministic-heap-reuse.md) | Deterministic heap reuse: reuse after a sweep, the analysis deleted | Accepted |
+| [0036](0036-deterministic-heap-reuse.md) | Deterministic heap reuse: reuse after a sweep, the analysis deleted | Implemented (amended by [0037](0037-complete-sweep-and-colours.md)) |
+| [0037](0037-complete-sweep-and-colours.md) | A complete sweep and object colours | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

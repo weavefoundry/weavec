@@ -203,11 +203,11 @@ configs whose compiles all succeeded; `--update-from RESULTS` records a
 `--json` file written elsewhere, for example the `corpus-gate-quick-<os>`
 artifact of a CI run.
 
-The record holds the original configs (cJSON, jansson, jsmn, linenoise,
-linenoise-program, log.c, lua, printf, sds and zlib) on `darwin-arm64`,
-measured with `weavec-cc` 0.15.0-dev (90dcdf8665ea). The other configs and
-platforms have none yet: record them with `--quick --update` on a quiet
-machine, and from CI's results files with `--update-from`.
+The record holds the 39 configs of the default set on `darwin-arm64`,
+measured with RFC 0037's `weavec-cc` (`--full`, 2026-11-03). The held-out
+configs and the other platforms have none yet: record them with `--quick
+--update` on a quiet machine, and from CI's results files with
+`--update-from`.
 
 ## Triage (`triage.json`)
 

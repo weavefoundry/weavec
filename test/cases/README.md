@@ -104,8 +104,9 @@ Report kinds are those of the runtime (`runtime/weavec_report.c`, RFC 0035
 `stack-buffer-overflow`, `dynamic-stack-buffer-overflow`,
 `stack-use-after-scope`, `global-buffer-overflow`, `intra-object-overflow`,
 `use-after-poison`, `null-dereference`, `unterminated-string`,
-`index-out-of-bounds`, `invalid-release`, `invalid-access` and
-`overlapping-copy`.
+`index-out-of-bounds`, `invalid-release`, `invalid-access`,
+`overlapping-copy`, and RFC 0037's `stack-use-after-return` and
+`memory-fault`.
 
 Rules the grammar leaves implicit, as the runner enforces them:
 

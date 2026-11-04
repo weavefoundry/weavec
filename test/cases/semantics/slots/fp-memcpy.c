@@ -4,7 +4,7 @@
 // extent of 'dst' with the len template. The run copies 8 bytes into 4.
 // RUN-INPUT: 8
 // ASAN
-// XFAIL: a library function called through a pointer is not guarded (RFC 0035 §2.5)
+// RFC 0037 §5: the address of memcpy is a thunk whose call is guarded.
 #include <stdlib.h>
 #include <string.h>
 

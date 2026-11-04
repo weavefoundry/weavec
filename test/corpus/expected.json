@@ -13,9 +13,27 @@
   "platforms": {
     "darwin-arm64": {
       "machine": "darwin-arm64 Apple M3 x8",
-      "producer": "weavec-cc version 0.16.0-dev (1cb608f40912-dirty)",
-      "updated": "2026-10-08",
+      "producer": "weavec-cc version 0.17.0 (1f12e5cd61aa-dirty)",
+      "updated": "2026-11-03",
       "configs": {
+        "brotli": {
+          "ledger": {
+            "accesses": 8902,
+            "proven": 3990,
+            "guarded": 4912,
+            "unguarded": 0,
+            "provenShare": 0.4482
+          }
+        },
+        "bzip2": {
+          "ledger": {
+            "accesses": 4274,
+            "proven": 2425,
+            "guarded": 1849,
+            "unguarded": 0,
+            "provenShare": 0.5674
+          }
+        },
         "cJSON": {
           "ledger": {
             "accesses": 733,
@@ -25,58 +43,229 @@
             "provenShare": 0.5416
           }
         },
+        "cmark": {
+          "ledger": {
+            "accesses": 2979,
+            "proven": 1081,
+            "guarded": 1898,
+            "unguarded": 0,
+            "provenShare": 0.3629
+          }
+        },
+        "curl": {
+          "ledger": {
+            "accesses": 12330,
+            "proven": 4633,
+            "guarded": 7697,
+            "unguarded": 0,
+            "provenShare": 0.3758
+          }
+        },
+        "expat": {
+          "ledger": {
+            "accesses": 5846,
+            "proven": 1788,
+            "guarded": 4058,
+            "unguarded": 0,
+            "provenShare": 0.3059
+          }
+        },
+        "hiredis": {
+          "ledger": {
+            "accesses": 3249,
+            "proven": 1739,
+            "guarded": 1510,
+            "unguarded": 0,
+            "provenShare": 0.5352
+          }
+        },
+        "http-parser": {
+          "ledger": {
+            "accesses": 1340,
+            "proven": 868,
+            "guarded": 472,
+            "unguarded": 0,
+            "provenShare": 0.6478
+          }
+        },
+        "inih": {
+          "ledger": {
+            "accesses": 58,
+            "proven": 27,
+            "guarded": 31,
+            "unguarded": 0,
+            "provenShare": 0.4655
+          }
+        },
+        "janet": {
+          "ledger": {
+            "accesses": 11930,
+            "proven": 4593,
+            "guarded": 7337,
+            "unguarded": 0,
+            "provenShare": 0.385
+          }
+        },
         "jansson": {
           "ledger": {
-            "accesses": 839,
-            "proven": 347,
-            "guarded": 492,
+            "accesses": 840,
+            "proven": 346,
+            "guarded": 494,
             "unguarded": 0,
-            "provenShare": 0.4136
+            "provenShare": 0.4119
           }
         },
         "jsmn": {
           "ledger": {
-            "accesses": 305,
-            "proven": 213,
-            "guarded": 92,
+            "accesses": 323,
+            "proven": 235,
+            "guarded": 88,
             "unguarded": 0,
-            "provenShare": 0.6984
+            "provenShare": 0.7276
+          }
+        },
+        "libdeflate": {
+          "ledger": {
+            "accesses": 974,
+            "proven": 419,
+            "guarded": 555,
+            "unguarded": 0,
+            "provenShare": 0.4302
+          }
+        },
+        "libevent": {
+          "ledger": {
+            "accesses": 9421,
+            "proven": 3684,
+            "guarded": 5737,
+            "unguarded": 0,
+            "provenShare": 0.391
+          }
+        },
+        "libgit2": {
+          "ledger": {
+            "accesses": 12189,
+            "proven": 4979,
+            "guarded": 7210,
+            "unguarded": 0,
+            "provenShare": 0.4085
+          }
+        },
+        "libsodium": {
+          "ledger": {
+            "accesses": 3396,
+            "proven": 2747,
+            "guarded": 649,
+            "unguarded": 0,
+            "provenShare": 0.8089
+          }
+        },
+        "libuv": {
+          "ledger": {
+            "accesses": 5053,
+            "proven": 2306,
+            "guarded": 2747,
+            "unguarded": 0,
+            "provenShare": 0.4564
+          }
+        },
+        "libyaml": {
+          "ledger": {
+            "accesses": 8046,
+            "proven": 5110,
+            "guarded": 2936,
+            "unguarded": 0,
+            "provenShare": 0.6351
           }
         },
         "linenoise": {
           "ledger": {
-            "accesses": 657,
-            "proven": 316,
-            "guarded": 341,
+            "accesses": 661,
+            "proven": 321,
+            "guarded": 340,
             "unguarded": 0,
-            "provenShare": 0.481
+            "provenShare": 0.4856
           }
         },
         "linenoise-program": {
           "ledger": {
-            "accesses": 695,
-            "proven": 330,
-            "guarded": 365,
+            "accesses": 700,
+            "proven": 337,
+            "guarded": 363,
             "unguarded": 0,
-            "provenShare": 0.4748
+            "provenShare": 0.4814
+          }
+        },
+        "lmdb": {
+          "ledger": {
+            "accesses": 5447,
+            "proven": 1961,
+            "guarded": 3486,
+            "unguarded": 0,
+            "provenShare": 0.36
           }
         },
         "log.c": {
           "ledger": {
-            "accesses": 59,
-            "proven": 37,
-            "guarded": 22,
+            "accesses": 50,
+            "proven": 34,
+            "guarded": 16,
             "unguarded": 0,
-            "provenShare": 0.6271
+            "provenShare": 0.68
           }
         },
         "lua": {
           "ledger": {
-            "accesses": 7491,
-            "proven": 2750,
-            "guarded": 4741,
+            "accesses": 7481,
+            "proven": 2753,
+            "guarded": 4728,
             "unguarded": 0,
-            "provenShare": 0.3671
+            "provenShare": 0.368
+          }
+        },
+        "lz4": {
+          "ledger": {
+            "accesses": 1472,
+            "proven": 732,
+            "guarded": 740,
+            "unguarded": 0,
+            "provenShare": 0.4973
+          }
+        },
+        "miniz": {
+          "ledger": {
+            "accesses": 2994,
+            "proven": 1767,
+            "guarded": 1227,
+            "unguarded": 0,
+            "provenShare": 0.5902
+          }
+        },
+        "mujs": {
+          "ledger": {
+            "accesses": 3975,
+            "proven": 1661,
+            "guarded": 2314,
+            "unguarded": 0,
+            "provenShare": 0.4179
+          }
+        },
+        "oniguruma": {
+          "ledger": {
+            "accesses": 7625,
+            "proven": 2668,
+            "guarded": 4957,
+            "unguarded": 0,
+            "provenShare": 0.3499
+          }
+        },
+        "pcre2": {
+          "ledger": {
+            "accesses": 13968,
+            "proven": 7604,
+            "guarded": 6364,
+            "unguarded": 0,
+            "provenShare": 0.5444
           }
         },
         "printf": {
@@ -88,6 +277,24 @@
             "provenShare": 0.4355
           }
         },
+        "quickjs": {
+          "ledger": {
+            "accesses": 14717,
+            "proven": 5117,
+            "guarded": 9600,
+            "unguarded": 0,
+            "provenShare": 0.3477
+          }
+        },
+        "redis": {
+          "ledger": {
+            "accesses": 21060,
+            "proven": 7657,
+            "guarded": 13403,
+            "unguarded": 0,
+            "provenShare": 0.3636
+          }
+        },
         "sds": {
           "ledger": {
             "accesses": 212,
@@ -97,13 +304,67 @@
             "provenShare": 0.2783
           }
         },
+        "sqlite": {
+          "ledger": {
+            "accesses": 32179,
+            "proven": 10797,
+            "guarded": 21382,
+            "unguarded": 0,
+            "provenShare": 0.3355
+          }
+        },
+        "tinyexpr": {
+          "ledger": {
+            "accesses": 567,
+            "proven": 328,
+            "guarded": 239,
+            "unguarded": 0,
+            "provenShare": 0.5785
+          }
+        },
+        "utf8proc": {
+          "ledger": {
+            "accesses": 127,
+            "proven": 49,
+            "guarded": 78,
+            "unguarded": 0,
+            "provenShare": 0.3858
+          }
+        },
+        "xz": {
+          "ledger": {
+            "accesses": 5699,
+            "proven": 2914,
+            "guarded": 2785,
+            "unguarded": 0,
+            "provenShare": 0.5113
+          }
+        },
         "zlib": {
           "ledger": {
             "accesses": 4241,
-            "proven": 2181,
-            "guarded": 2060,
+            "proven": 2175,
+            "guarded": 2066,
             "unguarded": 0,
-            "provenShare": 0.5143
+            "provenShare": 0.5129
+          }
+        },
+        "zlib-ng": {
+          "ledger": {
+            "accesses": 4177,
+            "proven": 2098,
+            "guarded": 2079,
+            "unguarded": 0,
+            "provenShare": 0.5023
+          }
+        },
+        "zstd": {
+          "ledger": {
+            "accesses": 8637,
+            "proven": 3976,
+            "guarded": 4661,
+            "unguarded": 0,
+            "provenShare": 0.4603
           }
         }
       }

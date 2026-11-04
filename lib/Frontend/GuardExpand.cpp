@@ -23,6 +23,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/AssumptionCache.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -30,6 +31,7 @@
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/MDBuilder.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 #include <algorithm>
@@ -70,6 +72,12 @@ struct Access {
   std::size_t leader = 0;
   /// The object `pointer` is based on, if one is known.
   llvm::Value *object = nullptr;
+  /// RFC 0037 §8: the pointer the address is computed from, its shadow
+  /// byte, and whether its check is a monitor (verify mode, §8.1).
+  llvm::Value *root = nullptr;
+  llvm::Value *rootShadow = nullptr;
+  bool rootIsAlloca = false;
+  bool rootMonitor = false;
 
   [[nodiscard]] bool constant() const {
     return kind != Kind::String && length == nullptr;
@@ -405,6 +413,14 @@ static void expand(FunctionContext &context, const Access &access,
   llvm::CallInst *marker = access.marker;
   if (access.kind == Access::Kind::String) {
     llvm::IRBuilder<> builder(marker);
+    if (access.rootShadow != nullptr) {
+      context.colourCheck(
+          marker, builder.CreatePtrToInt(access.pointer, module.i64),
+          llvm::ConstantInt::get(module.i64, 1),
+          module.site(marker->getDebugLoc(), 0),
+          RootCheck{.root = access.root, .shadow = access.rootShadow});
+      builder.SetInsertPoint(marker);
+    }
     // The bound from the marker itself: it may be another string's length,
     // whose marker an earlier expansion replaced.
     llvm::Value *max = marker->getArgOperand(1);
@@ -433,7 +449,22 @@ static void expand(FunctionContext &context, const Access &access,
     const unsigned flags =
         (access.write ? SiteWrite : 0) | (removed ? SiteProven : 0);
     llvm::Constant *site = module.site(marker->getDebugLoc(), flags);
+    const RootCheck root =
+        removed
+            ? RootCheck{}
+            : RootCheck{.root = access.root,
+                        .shadow = access.rootShadow,
+                        .monitorSite = access.rootMonitor
+                                           ? module.site(marker->getDebugLoc(),
+                                                         flags | SiteProven)
+                                           : nullptr};
     if (access.length != nullptr) {
+      if (!removed && access.rootShadow != nullptr) {
+        llvm::IRBuilder<> builder(marker);
+        context.colourCheck(marker,
+                            builder.CreatePtrToInt(access.pointer, module.i64),
+                            access.length, site, root);
+      }
       context.emitRange(marker, access.pointer, access.length, site);
     } else if (access.state == Access::State::Guard &&
                (access.guardOffset != access.offset ||
@@ -443,13 +474,127 @@ static void expand(FunctionContext &context, const Access &access,
           module.i8, access.base,
           llvm::ConstantInt::getSigned(module.i64, access.guardOffset));
       context.emitGuard(marker, hull, access.guardWidth, llvm::Align(1), site,
-                        access.nullBase, members);
+                        access.nullBase, members, root);
     } else {
       context.emitGuard(marker, access.pointer, access.width, access.alignment,
-                        site, access.nullBase);
+                        site, access.nullBase, {}, root);
     }
   }
   marker->eraseFromParent();
+}
+
+/// RFC 0037 §8.1: the pointer an address is computed from (its root): every
+/// getelementptr and cast stripped; null when the address is the pointer
+/// itself, or the root is not a pointer the program holds.
+static llvm::Value *rootOf(llvm::Value *base) {
+  if (base == nullptr || !llvm::isa<llvm::GEPOperator>(base))
+    return nullptr;
+  llvm::Value *value = base;
+  for (;;) {
+    value = value->stripPointerCasts();
+    auto *gep = llvm::dyn_cast<llvm::GEPOperator>(value);
+    if (gep == nullptr)
+      break;
+    value = gep->getPointerOperand();
+  }
+  if (llvm::isa<llvm::ConstantPointerNull, llvm::IntToPtrInst, llvm::UndefValue,
+                llvm::ConstantExpr>(value))
+    return nullptr;
+  return value;
+}
+
+/// RFC 0037 §8.1: whether the offset moves by a small constant step from a
+/// constant start near the root, so that it reaches the object's redzone,
+/// where the guard stops it, before any other object; `anyStart` also takes
+/// a variable start (which then may begin in another object).
+static bool contiguousOffset(const Access &access, llvm::Value *root,
+                             llvm::ScalarEvolution &evolution, bool anyStart) {
+  if (!evolution.isSCEVable(access.pointer->getType()))
+    return false;
+  const llvm::SCEV *offset = evolution.getMinusSCEV(
+      evolution.getSCEV(access.pointer), evolution.getSCEV(root));
+  const auto *rec = llvm::dyn_cast<llvm::SCEVAddRecExpr>(offset);
+  if (rec == nullptr || !rec->isAffine())
+    return false;
+  const auto *step = llvm::dyn_cast<llvm::SCEVConstant>(rec->getOperand(1));
+  const auto *start = llvm::dyn_cast<llvm::SCEVConstant>(rec->getStart());
+  return step != nullptr && step->getAPInt().abs().ule(32) &&
+         (anyStart || (start != nullptr && start->getAPInt().abs().ule(4096)));
+}
+
+/// RFC 0037 §8.1, §8.2: finds each remaining guard's root, and loads each
+/// root's shadow byte once, where it dominates the root's accesses and
+/// outside any loop the root does not change in. A stale value is good: the
+/// object is not reused while the root is held (the sweep sees it), and the
+/// access's own shadow byte says whether it is still live. A walk its guard
+/// stops at the object's redzone first has no colour check; in verify mode
+/// it has one as a monitor.
+static void loadRootShadows(FunctionContext &context,
+                            std::vector<Access> &accesses,
+                            llvm::ScalarEvolution &evolution,
+                            const llvm::DominatorTree &dominators,
+                            const llvm::LoopInfo &loops) {
+  const ModuleContext &module = context.module;
+  if (!module.options.colours)
+    return;
+  llvm::DenseMap<llvm::Value *, llvm::SmallVector<std::size_t, 4>> byRoot;
+  llvm::SmallVector<llvm::Value *, 8> order;
+  for (std::size_t i = 0; i < accesses.size(); ++i) {
+    Access &access = accesses[i];
+    if (access.state != Access::State::Guard || access.pruned)
+      continue;
+    const bool string = access.kind == Access::Kind::String;
+    llvm::Value *root =
+        string ? rootOf(access.pointer->stripInBoundsConstantOffsets())
+               : rootOf(access.base);
+    if (root == nullptr)
+      continue;
+    if (!string && contiguousOffset(access, root, evolution, false)) {
+      if (!module.verify())
+        continue;
+      access.rootMonitor = true;
+    }
+    access.root = root;
+    access.rootIsAlloca = llvm::isa<llvm::AllocaInst>(root);
+    auto &list = byRoot[root];
+    if (list.empty())
+      order.push_back(root);
+    list.push_back(i);
+  }
+  for (llvm::Value *root : order) {
+    // Allocas: the frame's layout gives the colour.
+    if (llvm::isa<llvm::AllocaInst>(root))
+      continue;
+    const auto &list = byRoot[root];
+    llvm::BasicBlock *block = accesses[list[0]].marker->getParent();
+    for (const std::size_t i : list)
+      block = dominators.findNearestCommonDominator(
+          block, accesses[i].marker->getParent());
+    const auto *definition = llvm::dyn_cast<llvm::Instruction>(root);
+    const unsigned depth =
+        definition != nullptr ? loops.getLoopDepth(definition->getParent()) : 0;
+    while (loops.getLoopDepth(block) > depth) {
+      const auto *node = dominators.getNode(block)->getIDom();
+      if (node == nullptr)
+        break;
+      block = node->getBlock();
+    }
+    llvm::Instruction *at = block->getTerminator();
+    for (llvm::Instruction &instruction : *block)
+      if (llvm::any_of(list, [&](std::size_t i) {
+            return accesses[i].marker == &instruction;
+          })) {
+        at = &instruction;
+        break;
+      }
+    llvm::IRBuilder<> builder(at);
+    llvm::Value *address = builder.CreatePtrToInt(root, module.i64);
+    llvm::Value *shadow = builder.CreateSExt(
+        builder.CreateLoad(module.i8, context.shadowAddress(builder, address)),
+        module.i32);
+    for (const std::size_t i : list)
+      accesses[i].rootShadow = shadow;
+  }
 }
 
 /// A copy's disjointness (section 2.5): operands that overlap, unless they
@@ -603,8 +748,18 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
   // The frame first, so that every guard reads the shadow it wrote; the
   // accesses then name what replaced their allocas.
   FunctionContext context(module, function);
+  loadRootShadows(context, accesses, evolution, dominators,
+                  analyses.getResult<llvm::LoopAnalysis>(function));
   const llvm::DenseMap<llvm::Value *, llvm::Value *> moved =
       layoutFrame(context, tracked.getArrayRef());
+  // RFC 0037 §7.2: a local's colour is the frame layout's constant.
+  for (Access &access : accesses)
+    if (access.rootIsAlloca) {
+      const auto colour = context.frameColours.find(access.root);
+      access.rootShadow = llvm::ConstantInt::get(
+          module.i32,
+          colour != context.frameColours.end() ? colour->second : 0);
+    }
   if (!moved.empty())
     for (Access &access : accesses) {
       auto remap = [&](llvm::Value *&value) {
@@ -615,6 +770,7 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
       remap(access.pointer);
       remap(access.base);
       remap(access.nullBase);
+      remap(access.root);
     }
   for (llvm::CallInst *marker : disjoint)
     expandDisjoint(module, *marker);

@@ -203,7 +203,9 @@ define i32 @get(ptr %p, i64 %i) {
   run.expand();
   EXPECT_TRUE(run.valid());
   EXPECT_EQ(run.calls("__weavec.guard"), 0U);
-  EXPECT_EQ(run.calls("__weavec_rt_guard"), 1U);
+  // RFC 0037 §8.2: computed from %p, the access's cold call also decides
+  // its colour.
+  EXPECT_EQ(run.calls("__weavec_rt_guard_jump"), 1U);
   EXPECT_EQ(run.calls("__weavec_rt_null"), 1U);
   run.ledger->finish();
   EXPECT_EQ(run.ledger->guarded, 1U);

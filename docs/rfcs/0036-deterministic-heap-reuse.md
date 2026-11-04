@@ -1,6 +1,8 @@
 # RFC 0036: Deterministic heap reuse
 
-- **Status**: Accepted
+- **Status**: Implemented (its sweep's roots completed, and its pacing's
+  default and full-class sweep superseded, by
+  [RFC 0037](0037-complete-sweep-and-colours.md))
 - **Authors**: WeaveC authors
 - **Created**: 2026-10-07 (revised 2026-10-08)
 - **Tracking issue**: TBD
@@ -637,10 +639,13 @@ override the body.
 
 Measured 2026-10-09 on the branch (darwin-arm64, Apple M3, `release`
 preset, reference `clang` 23.1.0; v0.16.0 built from its tag on the same
-machine). The RFC stays **Accepted**: linux-x86_64 is not measured (the
-local Docker daemon does not answer; CI on the pushed branch measures it),
-and G6 holds for every benchmark but QuickJS, whose excess is the cost of
-the ASan contract (below).
+machine). The RFC stayed **Accepted** at the time: linux-x86_64 was not
+measured (the local Docker daemon did not answer), and G6 holds for every
+benchmark but QuickJS, whose excess is the cost of the ASan contract
+(below). Its pull request's CI then built and tested the tree on
+linux-x86_64, and it shipped as v0.17.0; RFC 0037 marks it Implemented,
+with QuickJS's run time carried forward, and records where its guarantee
+(T) did not hold (pointers its sweep did not read).
 
 | Gate | Result |
 | --- | --- |

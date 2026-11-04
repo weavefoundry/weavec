@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for scripts/check-hygiene.py (RFC 0036 gate H1).
+"""Tests for scripts/check-hygiene.py (RFC 0037 gate H1).
 
 Each test builds a small fake WeaveC tree in a temporary directory. Those
 trees are not git work trees, so the checker walks them; GitSelectionTest
@@ -138,7 +138,7 @@ class CleanTreeTest(TreeTest):
                                                "__weavec_rt_shadow": True, "__weavec_rt_unpoison_stack": True})
         code, output = self.run_main()
         self.assertEqual(code, 0)
-        self.assertTrue(output.startswith("Summary (RFC 0036, gate H1)\n"), output)
+        self.assertTrue(output.startswith("Summary (RFC 0037, gate H1)\n"), output)
         self.assertEqual(output.splitlines()[-1], "H1: PASS (0 violations)")
 
     def test_walk_skips_build_and_tool_output(self):
@@ -391,8 +391,8 @@ class LineLimitTest(TreeTest):
             self.assertEqual(hygiene.count_lines(data), lines, data)
 
     def test_the_real_limits(self):
-        """RFC 0036 gate H1 and RFC 0032 gate H1 (the module docstring)."""
-        self.assertEqual((hygiene.LIBRARY_LINE_LIMIT, hygiene.RUNTIME_LINE_LIMIT), (9_000, 6_000))
+        """RFC 0037 gate H1 and RFC 0032 gate H1 (the module docstring)."""
+        self.assertEqual((hygiene.LIBRARY_LINE_LIMIT, hygiene.RUNTIME_LINE_LIMIT), (9_000, 7_000))
 
     def test_runtime_total_leaves_out_its_tests(self):
         """RFC 0032 gate H1: the runtime is counted apart, without runtime/test/."""
@@ -452,14 +452,14 @@ class MainTest(TreeTest):
         self.assertEqual(lines[0], "lib/Frontend/Notes.txt:2: corpus-word: word 'zlib' at column 1")
         self.assertRegex(lines[1], r"^\{lib,include,tools\}/\*\*: library-lines: "
                                    r"\d+ lines in 8 files, \d+ over the limit of 10$")
-        self.assertEqual(lines[2:4], ["", "Summary (RFC 0036, gate H1)"])
+        self.assertEqual(lines[2:4], ["", "Summary (RFC 0037, gate H1)"])
         self.assertRegex(output, r"\n  files: +12 from a directory walk \(not a git work tree\); "
                                  r"skipped 0 binary, 0 unreadable\n")
         self.assertRegex(output, r"\n  LibrarySpec: +5 entries, 3 chk aliases, and their __builtin_ spellings\n")
         self.assertRegex(output, r"\n  entry points: +4 of 4 declared in runtime/weavec_rt\.h\n")
         self.assertRegex(output, r"\n  library lines: +\d+ / 10 \(8 code files under lib/, include/ and "
                                  r"tools/, lib/Core/LibrarySpec\.txt excluded\)\n")
-        self.assertRegex(output, r"\n  runtime lines: +\d+ / 6,000 \(2 files under runtime/, runtime/test/ "
+        self.assertRegex(output, r"\n  runtime lines: +\d+ / 7,000 \(2 files under runtime/, runtime/test/ "
                                  r"excluded\)\n")
         for check, count in (("library-name-test", 0), ("corpus-word", 1), ("core-include", 0),
                              ("runtime-include", 0), ("runtime-entry", 0), ("library-lines", 1),
