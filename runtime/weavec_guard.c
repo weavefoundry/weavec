@@ -436,22 +436,31 @@ uintptr_t weavecRtStackBottom(void) {
   return stackLow;
 }
 
+/* Whether [address, end) overlaps the calling thread's own stack. Another
+ * stack (a coroutine's, an alternate signal stack) has no known extent: a
+ * frame's or an object's shadow on it is written up to 1 GiB, as
+ * __weavec_rt_unpoison_stack's is. */
+static int onOwnStack(uintptr_t address, uintptr_t end) {
+  const uintptr_t top = weavecRtStackTop();
+  return top != 0 && address < top && end > weavecRtStackBottom();
+}
+
 /* RFC 0037 section 4: a run of a frame's shadow too long for stores, for
  * the part of [address, address + bytes) that lies on the calling thread's
  * stack: a frame larger than the stack cannot be used without leaving it,
  * and its first access faults, as without WeaveC. */
 void __weavec_rt_frame_shadow(uintptr_t address, uint64_t bytes,
                               uint64_t value) {
-  const uintptr_t top = weavecRtStackTop();
-  const uintptr_t bottom = weavecRtStackBottom();
   uintptr_t end;
   if (__builtin_add_overflow(address, (uintptr_t)bytes, &end))
     end = ~(uintptr_t)0;
-  if (top != 0) {
-    if (address < bottom)
-      address = bottom;
-    if (end > top)
-      end = top;
+  if (onOwnStack(address, end)) {
+    if (address < weavecRtStackBottom())
+      address = weavecRtStackBottom();
+    if (end > weavecRtStackTop())
+      end = weavecRtStackTop();
+  } else if (end - address > ((uintptr_t)1 << 30)) {
+    return;
   }
   if (end <= address)
     return;
@@ -475,14 +484,15 @@ void __weavec_rt_unpoison_stack(void) {
 void __weavec_rt_alloca_poison(uintptr_t address, uint64_t size) {
   const uint64_t used = (size + 15) & ~(uint64_t)15;
   const uint64_t padded = ((size + 31) & ~(uint64_t)31) + 32;
-  const uintptr_t top = weavecRtStackTop();
   uintptr_t end;
   /* RFC 0037 section 4: an object that does not fit on the thread's stack
    * (a variable-length array of negative size wraps to one) is not written:
    * its first access leaves the stack and faults, as without WeaveC. */
-  if ((address & 15) != 0 ||
+  if ((address & 15) != 0 || padded < size ||
       __builtin_add_overflow(address, (uintptr_t)padded, &end) ||
-      (top != 0 && (end > top || address < weavecRtStackBottom())))
+      (onOwnStack(address, end)
+           ? end > weavecRtStackTop() || address < weavecRtStackBottom()
+           : padded > ((uint64_t)1 << 30)))
     return;
   weavecRtShadowObject(address, size, WeavecRtShadowStackDynamic, 0);
   weavecRtShadowSet(address + used, padded - used, WeavecRtShadowStackDynamic);

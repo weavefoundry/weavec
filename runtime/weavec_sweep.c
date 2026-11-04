@@ -1065,22 +1065,33 @@ static size_t readMaps(void) {
 }
 
 /* The resident pages of [low, high) (mincore), for the part of a mapping
- * below a stack pointer that is not a thread's own stack. */
-static void scanResident(uintptr_t low, uintptr_t high) {
-  enum { Pages = 4096 };
+ * below a stack pointer that is not a thread's own stack. With `pagemap`
+ * (/proc/self/pagemap), for a private mapping the program cannot write,
+ * the pages present or swapped that are not a file's: what it wrote
+ * before it took the permission away (RFC 0037 section 1), and not the
+ * pages of a mapped file, which every sweep would read again. */
+static void scanResident(uintptr_t low, uintptr_t high, int pagemap) {
+  enum { Pages = 512 };
   const uintptr_t page = (uintptr_t)getpagesize();
   unsigned char vector[Pages];
+  uint64_t entries[Pages];
   low &= ~(page - 1);
   while (low < high) {
     const uintptr_t chunk =
         high - low > Pages * page ? Pages * page : high - low;
     const uintptr_t count = (chunk + page - 1) / page;
+    const int mapped =
+        pagemap >= 0 && pread(pagemap, entries, count * sizeof *entries,
+                              (off_t)(low / page * sizeof *entries)) ==
+                            (ssize_t)(count * sizeof *entries);
     uintptr_t i;
-    if (mincore((void *)low, (size_t)chunk, vector) != 0) {
+    if (!mapped && mincore((void *)low, (size_t)chunk, vector) != 0) {
       scanExcluding(low, low + chunk);
     } else {
       for (i = 0; i < count; ++i)
-        if ((vector[i] & 1) != 0) {
+        /* Bits 63, 62 and 61: present, swapped, a file's page. */
+        if (mapped ? (entries[i] >> 61) == 4 || ((entries[i] >> 62) & 1) != 0
+                   : (vector[i] & 1) != 0) {
           const uintptr_t end = low + (i + 1) * page;
           scanExcluding(low + i * page, end < high ? end : high);
         }
@@ -1097,8 +1108,10 @@ static void scanResident(uintptr_t low, uintptr_t high) {
  * resident pages are read: they may be other stacks of a coroutine pool. */
 static int scanMappings(void) {
   const char *at;
+  int pagemap;
   if (readMaps() == 0)
     return 0;
+  pagemap = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
   at = mapsText;
   while (*at != 0) {
     const uintptr_t low = hex(&at);
@@ -1129,11 +1142,13 @@ static int scanMappings(void) {
                  strncmp(name, "/dev/zero", 9) == 0 ||
                  strncmp(name, "/dev/hugepages/", 15) == 0) {
         const uintptr_t sp = stackIn(low, high);
-        if (sp == 0 || strncmp(name, "[stack]", 7) == 0) {
+        if (!writable) {
+          scanResident(low, high, pagemap);
+        } else if (sp == 0 || strncmp(name, "[stack]", 7) == 0) {
           scanStack(low, high);
         } else {
           const uintptr_t live = sp - RedZone > low ? sp - RedZone : low;
-          scanResident(low, live);
+          scanResident(low, live, -1);
           scanExcluding(live, high);
         }
       }
@@ -1143,6 +1158,8 @@ static int scanMappings(void) {
     if (*at == '\n')
       ++at;
   }
+  if (pagemap >= 0)
+    (void)close(pagemap);
   return 1;
 }
 

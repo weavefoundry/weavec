@@ -467,8 +467,9 @@ static uintptr_t faultPc(const void *context, int *write) {
 }
 
 /* A fault the shadow did not see (a wild access, the inaccessible middle of
- * a huge block): one report, then the default disposition, under which the
- * returning access faults again and ends the program as it would have. */
+ * a huge block): one report, then the signal again under the default
+ * disposition, now restored, which ends the program as it would have when
+ * the handler returns (a signal sent, which no access would retry, too). */
 static void onFault(int signal, siginfo_t *info, void *context) {
   char text[256];
   struct Line line = {text, text + sizeof text - 1};
@@ -476,7 +477,18 @@ static void onFault(int signal, siginfo_t *info, void *context) {
   int write = -1;
   const uintptr_t pc = faultPc(context, &write);
   int size;
-  (void)signal;
+  /* A signal sent (kill, raise) faulted nothing: Linux says who sent it;
+   * Darwin's arm64 syndrome says the thread was in a system call. */
+#if defined(__APPLE__) && defined(__aarch64__)
+  const int sent = ((((const ucontext_t *)context)->uc_mcontext->__es.__esr >>
+                     26) & 0x3F) == 0x15;
+#else
+  const int sent = info->si_code <= 0;
+#endif
+  if (sent) {
+    (void)raise(signal);
+    return;
+  }
   put(&line, "weavec: memory-fault at pc ");
   putHex(&line, pc);
   put(&line, write == 1 ? ": write at " : write == 0 ? ": read at " : ": access at ");
@@ -489,6 +501,7 @@ static void onFault(int signal, siginfo_t *info, void *context) {
     void *frames[64];
     backtrace_symbols_fd(frames, backtrace(frames, 64), 2);
   }
+  (void)raise(signal);
 }
 
 /* The handlers go where the disposition is the default, so that a program's

@@ -1081,6 +1081,26 @@ static void testAllocas(void) {
   CHECK(!addressable(buffer + 64, 1));
   __weavec_rt_alloca_unpoison(at, at + sizeof buffer);
   CHECK(addressable(buffer, sizeof buffer));
+  {
+    /* On a stack the thread does not own (a coroutine's), whose bytes an
+     * earlier frame left poisoned, the object and its frame are written
+     * too. */
+    const size_t bytes = (size_t)1 << 20;
+    unsigned char *other = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
+                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    const uintptr_t object = (uintptr_t)other + 4096;
+    CHECK(other != MAP_FAILED);
+    weavecRtShadowSet(object, 1024, WeavecRtShadowStackMid);
+    __weavec_rt_alloca_poison(object, 40);
+    CHECK(addressable(other + 4096, 40));
+    CHECK(!addressable(other + 4096 + 40, 1));
+    __weavec_rt_frame_shadow(object, 65536, WeavecRtShadowAddressable);
+    CHECK(addressable(other + 4096, 65536));
+    __weavec_rt_frame_shadow(object, 65536, WeavecRtShadowStackMid);
+    CHECK(!addressable(other + 4096, 1));
+    __weavec_rt_frame_shadow(object, 65536, WeavecRtShadowAddressable);
+    (void)munmap(other, bytes);
+  }
 }
 
 static jmp_buf unwound;

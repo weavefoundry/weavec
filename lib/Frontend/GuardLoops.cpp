@@ -80,10 +80,13 @@ static constexpr unsigned MaxInstructions = 1000;
 static constexpr unsigned MinTrip = 16;
 
 /// The range of the bytes `marker` guards over the trip of `loop`; none
-/// when its address is neither invariant nor affine with a constant step.
+/// when its address is neither invariant nor affine with a constant step,
+/// or, with `colours`, when its root changes in the loop (the range's
+/// colour test is made once, before it).
 static std::optional<Ranged> rangeOf(llvm::CallInst &marker,
                                      const llvm::Loop &loop,
-                                     llvm::ScalarEvolution &evolution) {
+                                     llvm::ScalarEvolution &evolution,
+                                     bool colours) {
   const std::optional<llvm::StringRef> name = ModuleContext::markerOf(marker);
   if (!name || (*name != MarkerGuard && *name != MarkerRange))
     return std::nullopt;
@@ -108,7 +111,9 @@ static std::optional<Ranged> rangeOf(llvm::CallInst &marker,
   const llvm::SCEV *at = evolution.getSCEV(marker.getArgOperand(0));
   // The root (as GuardExpand finds it), which must be there before the loop.
   llvm::Value *root = nullptr;
-  if (auto *gep = llvm::dyn_cast<llvm::GEPOperator>(marker.getArgOperand(0))) {
+  if (auto *gep =
+          colours ? llvm::dyn_cast<llvm::GEPOperator>(marker.getArgOperand(0))
+                  : nullptr) {
     llvm::Value *value = gep->getPointerOperand();
     while (auto *inner =
                llvm::dyn_cast<llvm::GEPOperator>(value->stripPointerCasts()))
@@ -421,8 +426,8 @@ bool versionLoops(ModuleContext &module, llvm::Function &function,
     for (llvm::BasicBlock *block : loop->blocks())
       for (llvm::Instruction &instruction : *block)
         if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction))
-          if (std::optional<Ranged> range =
-                  rangeOf(*call, *loop, analyses.evolution);
+          if (std::optional<Ranged> range = rangeOf(
+                  *call, *loop, analyses.evolution, module.options.colours);
               range && expander.isSafeToExpand(range->start) &&
               expander.isSafeToExpand(range->bytes) &&
               expander.isSafeToExpand(count))

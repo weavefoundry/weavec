@@ -1152,22 +1152,30 @@ int __weavec_rt_sprintf_l(const struct __weavec_rt_site *site, char *d,
 
 #endif
 
-/* RFC 0037 section 5: a wide string, as __weavec_rt_strlen scans a narrow
- * one: its length in elements, at most `max`. */
+/* RFC 0037 section 5: a wide string's length in elements, at most `max`,
+ * each element checked before it is read, so that an unterminated string
+ * is reported before a byte past its object is read (wide strings are
+ * rare; a reported one is then measured as the call would). */
 uint64_t __weavec_rt_wcslen(const wchar_t *s, uint64_t max,
                             const struct __weavec_rt_site *site) {
   uint64_t length;
-  uint64_t scanned;
   if (s == NULL) {
     if (site == NULL || (site->flags & WeavecRtSiteNullOk) == 0)
       weavecRtFail("null-dereference", 0, sizeof *s, site);
     return 0;
   }
-  length = wcsnlen(s, max > (size_t)-1 ? (size_t)-1 : (size_t)max);
-  scanned = length < max ? length + 1 : max;
-  if (!weavecRtQuickOk((uintptr_t)s, scanned * sizeof *s) &&
-      !__weavec_rt_range_ok((uintptr_t)s, scanned * sizeof *s))
-    weavecRtFail("unterminated-string", (uintptr_t)s, scanned * sizeof *s,
-                 site);
-  return length;
+  for (length = 0; length < max; ++length) {
+    const uintptr_t at = (uintptr_t)(s + length);
+    if (!weavecRtQuickOk(at, sizeof *s) &&
+        !__weavec_rt_range_ok(at, sizeof *s)) {
+      weavecRtFail("unterminated-string", (uintptr_t)s,
+                   (length + 1) * sizeof *s, site);
+      return length + wcsnlen(s + length, max - length > (size_t)-1
+                                              ? (size_t)-1
+                                              : (size_t)(max - length));
+    }
+    if (s[length] == 0)
+      return length;
+  }
+  return max;
 }

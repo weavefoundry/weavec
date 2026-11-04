@@ -946,6 +946,24 @@ override the body.
     `tgkill` no longer finds while the sweep waits for it to answer. The
     lists before and after are still compared by identity, so a thread
     that started during the sweep still holds up recycling.
+15. **Review fixes (§1, §4–§6, §8.5).** A wide string's elements are each
+    checked before they are read, so an unterminated one is reported
+    before the scan leaves its object (the narrow scan still reads up to
+    the terminator first; it is the hot path). The fault handler raises
+    the signal again under the default disposition before it returns, so
+    a `SIGSEGV` or `SIGBUS` sent with `kill` or `raise` ends the program
+    rather than being taken for a fault that retries; it is not reported
+    where the platform says it was sent (Linux's `si_code`, the arm64
+    syndrome of a system call on Darwin). On Linux a private mapping the
+    program cannot write is read only where `/proc/self/pagemap` says a
+    page is present or swapped and not the file's (resident pages when
+    it cannot be read), as Darwin reads only the pages written: a mapped
+    file is not read again by every sweep. Without colours, a loop whose
+    accesses are computed from a pointer it moves is versioned as on
+    v0.17.0; with colours it stays the guarded loop. A frame's shadow run
+    and an `alloca`'s shadow on a stack the thread does not own (a
+    coroutine's) are written up to 1 GiB, as `__weavec_rt_unpoison_stack`
+    clears one; on the thread's own stack only what fits is.
 
 ## Measured gates
 
