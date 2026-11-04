@@ -937,6 +937,15 @@ override the body.
     constant initializer (a table of function pointers) was replaced in
     place, which corrupted the constant; the thunk now replaces each use
     that takes the address but its own (`test/Guards/library-thunk.c`).
+14. **Threads that exit during a stop (§1).** `pthread_join` can return
+    before the kernel drops the thread from the process's list. The sweep
+    took such a thread for one it could not stop, or for a change in the
+    list, and recycled nothing (the `thread-caches` runtime test failed
+    about one run in five). A thread that has terminated is no root: on
+    Darwin, one whose port is dead when it is suspended; on Linux, one that
+    `tgkill` no longer finds while the sweep waits for it to answer. The
+    lists before and after are still compared by identity, so a thread
+    that started during the sweep still holds up recycling.
 
 ## Measured gates
 

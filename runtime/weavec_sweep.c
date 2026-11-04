@@ -407,6 +407,11 @@ static uintptr_t skipInternal(uintptr_t address) {
 
 static thread_act_array_t threads;
 static mach_msg_type_number_t threadCount;
+/* The threads that terminated before they could be suspended: their port
+ * is dead (a thread that pthread_join has seen exit may still be listed).
+ * Nothing of theirs is a root, and their names stay held until the resume,
+ * so that no new thread takes one. */
+static unsigned char gone[MaxThreads];
 
 static int stopThreads(void) {
   const thread_t self = mach_thread_self();
@@ -421,10 +426,18 @@ static int stopThreads(void) {
   if (threadCount > MaxThreads)
     ok = 0;
   for (i = 0; i < threadCount && ok; ++i) {
+    gone[i] = 0;
     if (threads[i] == self || isWorker(threads[i]))
       continue;
-    if (thread_suspend(threads[i]) != KERN_SUCCESS)
-      ok = 0;
+    if (thread_suspend(threads[i]) != KERN_SUCCESS) {
+      thread_basic_info_data_t basic;
+      mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+      /* A thread terminated; anything else (a thread that cannot be
+       * suspended) holds up recycling. */
+      gone[i] = thread_info(threads[i], THREAD_BASIC_INFO,
+                            (thread_info_t)&basic, &count) != KERN_SUCCESS;
+      ok = gone[i];
+    }
   }
   /* The threads not suspended are not resumed either. */
   for (; i < threadCount; ++i)
@@ -438,7 +451,8 @@ static int stopThreads(void) {
   for (i = 0; i < threadCount; ++i) {
     thread_identifier_info_data_t identity;
     mach_msg_type_number_t count = THREAD_IDENTIFIER_INFO_COUNT;
-    if (threads[i] == MACH_PORT_NULL || isWorker(threads[i]))
+    if (threads[i] == MACH_PORT_NULL || isWorker(threads[i]) ||
+        gone[i])
       continue;
     if (thread_info(threads[i], THREAD_IDENTIFIER_INFO,
                     (thread_info_t)&identity, &count) != KERN_SUCCESS)
@@ -451,7 +465,7 @@ static int stopThreads(void) {
   for (i = 0; i < threadCount; ++i) {
     uintptr_t *words = world->registers[world->registerCount];
     if (threads[i] == self || threads[i] == MACH_PORT_NULL ||
-        isWorker(threads[i]))
+        isWorker(threads[i]) || gone[i])
       continue;
 #if defined(__aarch64__)
     {
@@ -521,7 +535,7 @@ static void resumeThreads(void) {
   for (i = 0; i < threadCount; ++i) {
     if (threads[i] == MACH_PORT_NULL)
       continue;
-    if (threads[i] != self && !isWorker(threads[i]))
+    if (threads[i] != self && !isWorker(threads[i]) && !gone[i])
       (void)thread_resume(threads[i]);
     (void)mach_port_deallocate(mach_task_self(), threads[i]);
   }
@@ -531,18 +545,20 @@ static void resumeThreads(void) {
   threadCount = 0;
 }
 
-/* Whether a thread exists that was not stopped: the lists are compared by
- * identity (a thread that exited while another started keeps the count). */
+/* Whether a thread exists that was not stopped, compared by identity (a
+ * thread that started while another exited keeps the count); one that
+ * exited since is no root. */
 static int threadsChanged(void) {
   thread_act_array_t now;
   mach_msg_type_number_t count;
   mach_msg_type_number_t i;
-  int changed;
+  int changed = 0;
   if (task_threads(mach_task_self(), &now, &count) != KERN_SUCCESS)
     return 1;
-  changed = count != threadCount;
   for (i = 0; i < count && !changed; ++i) {
     mach_msg_type_number_t j = 0;
+    if (!MACH_PORT_VALID(now[i]))
+      continue;
     while (j < threadCount && threads[j] != now[i])
       ++j;
     changed = j == threadCount;
@@ -929,7 +945,8 @@ static int stopThreads(void) {
       stopped[i] = 0;
   }
   /* A thread that does not answer within a second (it blocks the signal)
-   * holds up recycling. */
+   * holds up recycling; one that has exited (pthread_join may return before
+   * it leaves the list, and an exiting thread takes no signal) is no root. */
   deadline = nanoseconds() + 1000000000ULL;
   for (;;) {
     const int now = __atomic_load_n(&stoppedCount, __ATOMIC_ACQUIRE);
@@ -939,6 +956,13 @@ static int stopThreads(void) {
     if (nanoseconds() > deadline)
       return 0;
     (void)futex(&stoppedCount, FUTEX_WAIT_PRIVATE, now, &wait);
+    for (i = 0; i < stopTargets; ++i)
+      if (stopped[i] != 0 &&
+          __atomic_load_n(&stoppedSp[i], __ATOMIC_ACQUIRE) == 0 &&
+          syscall(SYS_tgkill, process, stopped[i], 0) != 0 && errno == ESRCH) {
+        stopped[i] = 0;
+        --sent;
+      }
   }
   for (i = 0; i < stopTargets; ++i) {
     if (stopped[i] == 0 || stoppedSp[i] == 0)
@@ -967,7 +991,8 @@ static int threadsChanged(void) {
   const unsigned count = listTasks(now, MaxThreads, &overflow);
   unsigned i;
   unsigned j;
-  if (overflow || count != taskCount)
+  /* By identity: a thread that exited since is no root. */
+  if (overflow)
     return 1;
   for (i = 0; i < count; ++i) {
     for (j = 0; j < taskCount && tasks[j] != now[i]; ++j) {
