@@ -29,6 +29,10 @@
 |*
 \*===----------------------------------------------------------------------===*/
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1 /* glibc's REG_ERR and REG_RIP */
+#endif
+
 #include "weavec_rt.h"
 
 #include <execinfo.h>
