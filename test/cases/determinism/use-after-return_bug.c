@@ -1,7 +1,5 @@
 // A read through the address of a returned function's local: the frame's
-// shadow is cleared at its return, so the read passes. RFC 0036 leaves use
-// after return to a later RFC; this case pins the bug for it.
-// XFAIL: RFC 0036 leaves spatial determinism and use after return to a later RFC
+// shadow says it returned (RFC 0037 §9), so the read traps.
 // RUN-INPUT:
 #include <stdio.h>
 

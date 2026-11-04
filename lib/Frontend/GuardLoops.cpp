@@ -14,7 +14,9 @@
 // covers over the trip; when every range is addressable, the version
 // without those guards runs (and may be vectorised), and otherwise the
 // guarded loop runs and stops at the access that fails. A range larger
-// than what the loop reads only sends it to the guarded loop.
+// than what the loop reads only sends it to the guarded loop, and so does
+// one whose bounds overflow (RFC 0037 §4): the span is computed from the
+// trip count, the step and the start with overflow checks.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,6 +28,8 @@
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/Dominators.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/LoopSimplify.h"
@@ -34,6 +38,7 @@
 #include "llvm/Transforms/Utils/UnrollLoop.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
 
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -41,13 +46,19 @@ namespace weavec::frontend::guard {
 
 namespace {
 
-/// A guard whose bytes over the whole trip one range covers.
+/// A guard whose bytes over the whole trip one range covers: from `start`,
+/// moving by `step` bytes per iteration (0 when invariant), `bytes` wide.
 struct Ranged {
   llvm::CallInst *marker;
-  const llvm::SCEV *low;
-  const llvm::SCEV *high;
+  const llvm::SCEV *start;
+  std::int64_t step;
+  const llvm::SCEV *bytes;
   /// The base the guard tests for null, defined before the loop, or null.
   llvm::Value *nullBase = nullptr;
+  /// RFC 0037 §8.5: the pointer the address is computed from, whose color
+  /// the range's first granule must have, or null when the range starts at
+  /// a constant offset near it (its guard would meet the redzone first).
+  llvm::Value *root = nullptr;
 };
 
 /// The analyses a loop's versioning uses and keeps up to date.
@@ -68,13 +79,14 @@ static constexpr unsigned MaxInstructions = 1000;
 /// of its ranges; a shorter trip runs the guarded loop.
 static constexpr unsigned MinTrip = 16;
 
-/// The range of the bytes `marker` guards over the trip of `loop`, whose
-/// backedge is taken `count` times (an i64); none when its address is
-/// neither invariant nor affine with a constant step.
+/// The range of the bytes `marker` guards over the trip of `loop`; none
+/// when its address is neither invariant nor affine with a constant step,
+/// or, with `colors`, when its root changes in the loop (the range's
+/// color test is made once, before it).
 static std::optional<Ranged> rangeOf(llvm::CallInst &marker,
                                      const llvm::Loop &loop,
                                      llvm::ScalarEvolution &evolution,
-                                     const llvm::SCEV *count) {
+                                     bool colors) {
   const std::optional<llvm::StringRef> name = ModuleContext::markerOf(marker);
   if (!name || (*name != MarkerGuard && *name != MarkerRange))
     return std::nullopt;
@@ -97,29 +109,52 @@ static std::optional<Ranged> rangeOf(llvm::CallInst &marker,
   if (!evolution.isLoopInvariant(bytes, &loop))
     return std::nullopt;
   const llvm::SCEV *at = evolution.getSCEV(marker.getArgOperand(0));
+  // The root (as GuardExpand finds it), which must be there before the loop.
+  llvm::Value *root = nullptr;
+  if (auto *gep =
+          colors ? llvm::dyn_cast<llvm::GEPOperator>(marker.getArgOperand(0))
+                 : nullptr) {
+    llvm::Value *value = gep->getPointerOperand();
+    while (auto *inner =
+               llvm::dyn_cast<llvm::GEPOperator>(value->stripPointerCasts()))
+      value = inner->getPointerOperand();
+    value = value->stripPointerCasts();
+    if (!llvm::isa<llvm::Constant, llvm::IntToPtrInst>(value)) {
+      if (!loop.isLoopInvariant(value))
+        return std::nullopt;
+      root = value;
+    }
+  }
   if (evolution.isLoopInvariant(at, &loop))
     return Ranged{.marker = &marker,
-                  .low = at,
-                  .high = evolution.getAddExpr(at, bytes),
-                  .nullBase = nullBase};
+                  .start = at,
+                  .step = 0,
+                  .bytes = bytes,
+                  .nullBase = nullBase,
+                  .root = root};
   const auto *recurrence = llvm::dyn_cast<llvm::SCEVAddRecExpr>(at);
   if (recurrence == nullptr || recurrence->getLoop() != &loop ||
       !recurrence->isAffine())
     return std::nullopt;
   const auto *step = llvm::dyn_cast<llvm::SCEVConstant>(
       recurrence->getStepRecurrence(evolution));
-  if (step == nullptr)
+  // (A step of the most negative value has no magnitude in 64 bits.)
+  if (step == nullptr || step->getAPInt().getSignificantBits() > 63)
     return std::nullopt;
-  const llvm::SCEV *first = recurrence->getStart();
-  const llvm::SCEV *last = evolution.getAddExpr(
-      first, evolution.getMulExpr(evolution.getTruncateOrSignExtend(step, i64),
-                                  count));
-  if (step->getAPInt().isNegative())
-    std::swap(first, last);
+  // A start at a constant offset near the root reaches its redzone first.
+  if (root != nullptr && evolution.isSCEVable(root->getType())) {
+    const auto *offset =
+        llvm::dyn_cast<llvm::SCEVConstant>(evolution.getMinusSCEV(
+            recurrence->getStart(), evolution.getSCEV(root)));
+    if (offset != nullptr && offset->getAPInt().abs().ule(4096))
+      root = nullptr;
+  }
   return Ranged{.marker = &marker,
-                .low = first,
-                .high = evolution.getAddExpr(last, bytes),
-                .nullBase = nullBase};
+                .start = recurrence->getStart(),
+                .step = step->getAPInt().getSExtValue(),
+                .bytes = bytes,
+                .nullBase = nullBase,
+                .root = root};
 }
 
 /// The most iterations, and the most instructions over all of them, of a
@@ -202,10 +237,15 @@ static bool versionable(const llvm::Loop &loop,
   return true;
 }
 
-/// The run-time test that every range is addressable, at `before`.
+/// The run-time test that every range is addressable over a trip whose
+/// backedge is taken `count` times (an i64 SCEV), at `before`. A range
+/// whose bounds overflow 64 bits is not: a loop whose trip count wrapped
+/// (a `do … while` of no iterations, an allocation whose size wrapped)
+/// runs the guarded loop.
 static llvm::Value *rangesAddressable(ModuleContext &module,
                                       llvm::ArrayRef<Ranged> ranges,
                                       llvm::ScalarEvolution &evolution,
+                                      const llvm::SCEV *count,
                                       llvm::Instruction *before) {
   llvm::SCEVExpander expander(evolution, "weavec.range");
   llvm::IRBuilder<> builder(before);
@@ -216,22 +256,61 @@ static llvm::Value *rangesAddressable(ModuleContext &module,
     function->setOnlyReadsMemory();
     function->setWillReturn();
   }
+  llvm::FunctionCallee colorOk = module.runtime(
+      "color_ok",
+      llvm::FunctionType::get(module.i32, {module.i64, module.i64}, false));
+  if (auto *function = llvm::dyn_cast<llvm::Function>(colorOk.getCallee())) {
+    function->setOnlyReadsMemory();
+    function->setWillReturn();
+  }
+  llvm::Value *trips = expander.expandCodeFor(count, module.i64, before);
+  auto withOverflow = [&](llvm::Intrinsic::ID id, llvm::Value *a,
+                          llvm::Value *b, llvm::Value *&overflow) {
+    llvm::Value *both = builder.CreateBinaryIntrinsic(id, a, b);
+    llvm::Value *flag = builder.CreateExtractValue(both, 1);
+    overflow = overflow == nullptr ? flag : builder.CreateOr(overflow, flag);
+    return builder.CreateExtractValue(both, 0);
+  };
   llvm::Value *all = nullptr;
   for (const Ranged &range : ranges) {
-    llvm::Value *low = expander.expandCodeFor(range.low, nullptr, before);
-    llvm::Value *high = expander.expandCodeFor(range.high, nullptr, before);
+    llvm::Value *start = expander.expandCodeFor(range.start, nullptr, before);
+    llvm::Value *bytes =
+        expander.expandCodeFor(range.bytes, module.i64, before);
     builder.SetInsertPoint(before);
-    llvm::Value *lowAddress = builder.CreatePtrToInt(low, module.i64);
-    llvm::Value *highAddress = builder.CreatePtrToInt(high, module.i64);
-    // A range that wraps is not addressable.
+    llvm::Value *first = builder.CreatePtrToInt(start, module.i64);
+    llvm::Value *overflow = nullptr;
+    llvm::Value *low = first;
+    llvm::Value *last = first;
+    if (range.step != 0) {
+      const std::uint64_t magnitude =
+          range.step < 0 ? 0 - static_cast<std::uint64_t>(range.step)
+                         : static_cast<std::uint64_t>(range.step);
+      llvm::Value *span =
+          withOverflow(llvm::Intrinsic::umul_with_overflow, trips,
+                       llvm::ConstantInt::get(module.i64, magnitude), overflow);
+      if (range.step > 0)
+        last = withOverflow(llvm::Intrinsic::uadd_with_overflow, first, span,
+                            overflow);
+      else
+        low = withOverflow(llvm::Intrinsic::usub_with_overflow, first, span,
+                           overflow);
+    }
+    llvm::Value *high = withOverflow(llvm::Intrinsic::uadd_with_overflow, last,
+                                     bytes, overflow);
     llvm::Value *ok = builder.CreateAnd(
-        builder.CreateICmpULE(lowAddress, highAddress),
+        builder.CreateNot(overflow),
         builder.CreateICmpNE(
-            builder.CreateCall(
-                test, {lowAddress, builder.CreateSub(highAddress, lowAddress)}),
+            builder.CreateCall(test, {low, builder.CreateSub(high, low)}),
             llvm::ConstantInt::get(module.i32, 0)));
     if (range.nullBase != nullptr)
       ok = builder.CreateAnd(ok, builder.CreateIsNotNull(range.nullBase));
+    if (range.root != nullptr && module.options.colors)
+      ok = builder.CreateAnd(
+          ok, builder.CreateICmpNE(
+                  builder.CreateCall(
+                      colorOk,
+                      {builder.CreatePtrToInt(range.root, module.i64), low}),
+                  llvm::ConstantInt::get(module.i32, 0)));
     all = all == nullptr ? ok : builder.CreateAnd(all, ok);
   }
   return all;
@@ -261,7 +340,7 @@ static void versionLoop(ModuleContext &module, llvm::Loop &loop,
   llvm::BasicBlock *test =
       llvm::SplitBlock(check, check->getTerminator(), &analyses.dominators,
                        &analyses.loops, nullptr, "weavec.ranges");
-  llvm::Value *ok = rangesAddressable(module, ranges, analyses.evolution,
+  llvm::Value *ok = rangesAddressable(module, ranges, analyses.evolution, count,
                                       test->getTerminator());
   llvm::BasicBlock *preheader =
       llvm::SplitBlock(test, test->getTerminator(), &analyses.dominators,
@@ -347,10 +426,11 @@ bool versionLoops(ModuleContext &module, llvm::Function &function,
     for (llvm::BasicBlock *block : loop->blocks())
       for (llvm::Instruction &instruction : *block)
         if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction))
-          if (std::optional<Ranged> range =
-                  rangeOf(*call, *loop, analyses.evolution, count);
-              range && expander.isSafeToExpand(range->low) &&
-              expander.isSafeToExpand(range->high))
+          if (std::optional<Ranged> range = rangeOf(
+                  *call, *loop, analyses.evolution, module.options.colors);
+              range && expander.isSafeToExpand(range->start) &&
+              expander.isSafeToExpand(range->bytes) &&
+              expander.isSafeToExpand(count))
             ranges.push_back(*range);
     if (ranges.empty())
       continue;

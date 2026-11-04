@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check repository hygiene: gate H1 of RFC 0036 (docs/rfcs/0036-deterministic-heap-reuse.md).
+"""Check repository hygiene: gate H1 of RFC 0037 (docs/rfcs/0037-complete-sweep-and-colors.md).
 
 Seven checks, the rules of AGENTS.md that a script can hold the tree to:
 
@@ -35,14 +35,14 @@ Seven checks, the rules of AGENTS.md that a script can hold the tree to:
                      is a missing header. A name the passes compute (passed
                      through a variable) is not seen.
   library-lines      the code under lib/, include/ and tools/ totals at most
-                     9,000 lines (RFC 0036 gate H1; the headers and the
+                     9,000 lines (RFC 0037 gate H1; the headers and the
                      driver's tool count too). lib/Core/LibrarySpec.txt does
                      not count: it is a declarative table, and its growth is
                      coverage, not sprawl. The limit is a ratchet: it is
                      lowered as code is deleted, and raised only by an RFC
                      amendment that records the measurement.
   runtime-lines      the C runtime (runtime/, its tests under runtime/test/
-                     excluded) totals at most 6,000 lines (RFC 0036 gate H1).
+                     excluded) totals at most 7,000 lines (RFC 0037 gate H1).
                      It is counted apart from the libraries: it is linked
                      into compiled programs, not into the compiler.
 
@@ -92,9 +92,9 @@ ROOT = Path(__file__).resolve().parent.parent
 # Gate H1 (RFC 0036, Acceptance gates, Hygiene)
 # ---------------------------------------------------------------------------
 
-# Recorded by RFC 0036 gate H1 and RFC 0032 gate H1 (see the module docstring).
+# Recorded by RFC 0037 gate H1 and RFC 0032 gate H1 (see the module docstring).
 LIBRARY_LINE_LIMIT = 9_000
-RUNTIME_LINE_LIMIT = 6_000
+RUNTIME_LINE_LIMIT = 7_000
 
 # library-name-test
 LIBRARY_SPEC = "lib/Core/LibrarySpec.txt"
@@ -650,7 +650,7 @@ def summary_lines(result: Result) -> list[str]:
     library = sum(result.library_lines.values())
     runtime = sum(result.runtime_lines.values())
     lines = [
-        "Summary (RFC 0036, gate H1)",
+        "Summary (RFC 0037, gate H1)",
         f"  files:          {result.files:,} from {source}; skipped {len(result.binary)} binary, "
         f"{len(result.unreadable)} unreadable",
     ]

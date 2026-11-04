@@ -13,10 +13,11 @@
 |*   1. stop every other thread (Darwin: thread_suspend; Linux: a signal
 |*      whose handler waits), holding every allocator lock;
 |*   2. mark, scanning conservatively word by aligned word: each thread's
-|*      registers and stack, every readable and writable mapping of the
-|*      process but the runtime's own (of the dyld shared cache, only the
-|*      writable segments of the images the process loaded), and every live
-|*      heap block;
+|*      registers (vector ones too), stack and thread-specific data, every
+|*      readable mapping of the process but the runtime's own, code and
+|*      shared files the program cannot write (of the dyld shared cache,
+|*      only the writable segments of the images the process loaded), and
+|*      every live heap block (RFC 0037 section 1);
 |*   3. recycle what nothing marked, and resume.
 |*
 |* A sweep that cannot stop every thread, or that finds a thread it did not
@@ -36,6 +37,8 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -94,8 +97,11 @@ void weavecRtInternalDrop(uintptr_t low) {
 
 /* A stretch of memory to scan, and the stacks: a thread's stack is scanned
  * from its stack pointer (less the red zone below it) to the end of the
- * mapping that holds it. */
+ * mapping that holds it; below it only when the mapping is not a thread's
+ * own stack (RFC 0037 section 1). */
 enum { MaxThreads = 4096 };
+/* Words of a stopped thread's registers: general and vector (Darwin). */
+enum { Registers = 128 };
 #if defined(__x86_64__)
 enum { RedZone = 128 };
 #else
@@ -108,8 +114,11 @@ typedef struct {
   uintptr_t stacks[2 * MaxThreads + 1];
   unsigned stackCount;
   /* Registers of the stopped threads (Darwin), scanned as words. */
-  uintptr_t registers[MaxThreads][34];
+  uintptr_t registers[MaxThreads][Registers];
   unsigned registerCount;
+  /* Each thread's thread-specific data (Darwin: its TSD array). */
+  uintptr_t tsd[MaxThreads + 1];
+  unsigned tsdCount;
 } World;
 
 /* The sweep's state, mapped once: too large for a stack. */
@@ -145,6 +154,204 @@ static void sortInternal(void) {
   }
 }
 
+/*===-- Mark workers (RFC 0037 section 3) ----------------------------------===*/
+
+/* The mark reads every root and every live heap block once, with no
+ * tracing, so it divides without coordination: a large sweep lists its
+ * ranges (words of memory, or runs of a region's slots) first, then the
+ * sweeping thread and the workers take them one by one. Workers are
+ * threads of the runtime's, on stacks of its own, never stopped, with every
+ * signal blocked; they call nothing that takes a lock a stopped thread may
+ * hold. */
+enum {
+  MaxWorkers = 7,
+  WorkerStack = 256 * 1024,
+  MarkChunk = 4 << 20,
+  ParallelBytes = 64 << 20,
+  WorkSlots = 1 << 16,
+  WordsWork = 0xFFFFFFFFu
+};
+
+typedef struct {
+  uintptr_t low;
+  uintptr_t high;
+  /* WordsWork: the words of [low, high); else the slots [low, high) of this
+   * region. */
+  uint32_t region;
+} Work;
+
+static Work *work;
+static unsigned workCount;
+static unsigned workNext;
+static int collecting;
+static unsigned workersWanted;
+static unsigned workerCount;
+static int workersFailed;
+#if defined(__APPLE__)
+static mach_port_t workerThreads[MaxWorkers];
+#else
+static volatile pid_t workerThreads[MaxWorkers];
+#endif
+static pthread_mutex_t workLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t workGo = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t workDone = PTHREAD_COND_INITIALIZER;
+static unsigned workRound;
+static unsigned workersFinished;
+
+__attribute__((constructor)) static void readSweepThreads(void) {
+  const char *text = getenv("WEAVEC_RT_SWEEP_THREADS");
+  const long cores = sysconf(_SC_NPROCESSORS_ONLN);
+  workersWanted = cores > 1 ? (unsigned)(cores - 1) : 0;
+  if (text != NULL && *text >= '0' && *text <= '9')
+    workersWanted = (unsigned)atoi(text);
+  if (workersWanted > MaxWorkers)
+    workersWanted = MaxWorkers;
+}
+
+static void markWork(const Work *item) {
+  if (item->region == WordsWork)
+    weavecRtMarkWords(item->low, item->high);
+  else
+    weavecRtMarkSlots(item->region, (uint32_t)item->low,
+                      (uint32_t)item->high);
+}
+
+/* Lists an item, or marks it at once when the list is full. */
+static void addWork(uintptr_t low, uintptr_t high, uint32_t region) {
+  if (workCount < WorkSlots) {
+    work[workCount].low = low;
+    work[workCount].high = high;
+    work[workCount].region = region;
+    ++workCount;
+  } else {
+    const Work item = {low, high, region};
+    markWork(&item);
+  }
+}
+
+static void addSlots(unsigned region, uint32_t first, uint32_t last) {
+  addWork(first, last, region);
+}
+
+/* Marks from the words of [low, high): now, or listed in chunks while a
+ * parallel sweep collects its ranges. */
+static void markRange(uintptr_t low, uintptr_t high) {
+  if (!collecting) {
+    weavecRtMarkWords(low, high);
+    return;
+  }
+  while (high - low > MarkChunk) {
+    addWork(low, low + MarkChunk, WordsWork);
+    low += MarkChunk;
+  }
+  if (low < high)
+    addWork(low, high, WordsWork);
+}
+
+static void takeWork(void) {
+  for (;;) {
+    const unsigned i = __atomic_fetch_add(&workNext, 1, __ATOMIC_RELAXED);
+    if (i >= workCount)
+      return;
+    markWork(&work[i]);
+  }
+}
+
+static void *markWorker(void *argument) {
+  unsigned seen = 0;
+#if defined(__APPLE__)
+  (void)argument;
+#else
+  workerThreads[(uintptr_t)argument] = (pid_t)syscall(SYS_gettid);
+#endif
+  (void)pthread_mutex_lock(&workLock);
+  for (;;) {
+    while (workRound == seen)
+      (void)pthread_cond_wait(&workGo, &workLock);
+    seen = workRound;
+    (void)pthread_mutex_unlock(&workLock);
+    takeWork();
+    (void)pthread_mutex_lock(&workLock);
+    ++workersFinished;
+    (void)pthread_cond_signal(&workDone);
+  }
+  return NULL;
+}
+
+/* Starts the workers a sweep of a large heap wants, before it stops the
+ * world (signals are blocked, so the workers start with them blocked). */
+static void startWorkers(void) {
+  while (!workersFailed && workerCount < workersWanted &&
+         weavecRtLiveBytes() >= ParallelBytes) {
+    pthread_attr_t attributes;
+    pthread_t thread;
+    void *stack = mmap(NULL, WorkerStack, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    int ok = stack != MAP_FAILED && pthread_attr_init(&attributes) == 0;
+    if (ok) {
+      ok = pthread_attr_setstack(&attributes, stack, WorkerStack) == 0 &&
+           pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED) ==
+               0;
+      /* Its stack holds no program pointer. */
+      if (ok)
+        weavecRtInternal((uintptr_t)stack, (uintptr_t)stack + WorkerStack);
+#if !defined(__APPLE__)
+      workerThreads[workerCount] = 0;
+#endif
+      ok = ok && pthread_create(&thread, &attributes, markWorker,
+                                (void *)(uintptr_t)workerCount) == 0;
+      (void)pthread_attr_destroy(&attributes);
+    }
+    if (!ok) {
+      workersFailed = 1;
+      return;
+    }
+#if defined(__APPLE__)
+    workerThreads[workerCount] = pthread_mach_thread_np(thread);
+#else
+    while (__atomic_load_n(&workerThreads[workerCount], __ATOMIC_ACQUIRE) == 0)
+      sched_yield();
+#endif
+    ++workerCount;
+  }
+}
+
+/* Marks the listed work on the sweeping thread and every worker. */
+static void runWork(void) {
+  (void)pthread_mutex_lock(&workLock);
+  workNext = 0;
+  workersFinished = 0;
+  ++workRound;
+  (void)pthread_cond_broadcast(&workGo);
+  (void)pthread_mutex_unlock(&workLock);
+  takeWork();
+  (void)pthread_mutex_lock(&workLock);
+  while (workersFinished < workerCount)
+    (void)pthread_cond_wait(&workDone, &workLock);
+  (void)pthread_mutex_unlock(&workLock);
+}
+
+#if defined(__APPLE__)
+static int isWorker(mach_port_t thread) {
+#else
+static int isWorker(pid_t thread) {
+#endif
+  unsigned i;
+  for (i = 0; i < workerCount; ++i)
+    if (workerThreads[i] == thread)
+      return 1;
+  return 0;
+}
+
+void weavecRtSweepForkChild(void) {
+  workerCount = 0;
+  workRound = 0;
+  workersFinished = 0;
+  (void)pthread_mutex_init(&workLock, NULL);
+  (void)pthread_cond_init(&workGo, NULL);
+  (void)pthread_cond_init(&workDone, NULL);
+}
+
 /* Scans [low, high) but the runtime's own mappings in it (sorted). */
 static void scanExcluding(uintptr_t low, uintptr_t high) {
   unsigned i;
@@ -154,33 +361,34 @@ static void scanExcluding(uintptr_t low, uintptr_t high) {
     if (b <= low || a >= high)
       continue;
     if (a > low)
-      weavecRtMarkWords(low, a);
+      markRange(low, a);
     low = b;
   }
   if (low < high)
-    weavecRtMarkWords(low, high);
+    markRange(low, high);
 }
 
-/* Scans a writable mapping, a stack only from its stack pointer. */
-static void scanMapping(uintptr_t low, uintptr_t high) {
-  /* The lowest stack pointer in the mapping: threads whose stacks share one
-   * mapping are all scanned from it. */
+/* The lowest stack pointer of a stopped thread inside [low, high), or 0. */
+static uintptr_t stackIn(uintptr_t low, uintptr_t high) {
   uintptr_t sp = 0;
   unsigned i;
   for (i = 0; i < world->stackCount; ++i)
     if (world->stacks[i] >= low && world->stacks[i] < high &&
         (sp == 0 || world->stacks[i] < sp))
       sp = world->stacks[i];
+  return sp;
+}
+
+/* Scans a thread's own stack mapping from its lowest stack pointer: the
+ * bytes below it are dead. Threads whose stacks share one mapping are all
+ * scanned from it. */
+static void scanStack(uintptr_t low, uintptr_t high) {
+  const uintptr_t sp = stackIn(low, high);
   if (sp == 0)
     scanExcluding(low, high);
   else
     scanExcluding(sp - RedZone > low ? sp - RedZone : low, high);
 }
-
-
-#if defined(__APPLE__)
-
-/*===-- Darwin --------------------------------------------------------------===*/
 
 /* The first address at or after `address` outside the runtime's own
  * mappings (sorted). */
@@ -192,8 +400,17 @@ static uintptr_t skipInternal(uintptr_t address) {
   return address;
 }
 
+#if defined(__APPLE__)
+
+/*===-- Darwin --------------------------------------------------------------===*/
+
 static thread_act_array_t threads;
 static mach_msg_type_number_t threadCount;
+/* The threads that terminated before they could be suspended: their port
+ * is dead (a thread that pthread_join has seen exit may still be listed).
+ * Nothing of theirs is a root, and their names stay held until the resume,
+ * so that no new thread takes one. */
+static unsigned char gone[MaxThreads];
 
 static int stopThreads(void) {
   const thread_t self = mach_thread_self();
@@ -208,52 +425,98 @@ static int stopThreads(void) {
   if (threadCount > MaxThreads)
     ok = 0;
   for (i = 0; i < threadCount && ok; ++i) {
-    if (threads[i] == self)
+    gone[i] = 0;
+    if (threads[i] == self || isWorker(threads[i]))
       continue;
-    if (thread_suspend(threads[i]) != KERN_SUCCESS)
-      ok = 0;
+    if (thread_suspend(threads[i]) != KERN_SUCCESS) {
+      thread_basic_info_data_t basic;
+      mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+      /* A thread terminated; anything else (a thread that cannot be
+       * suspended) holds up recycling. */
+      gone[i] = thread_info(threads[i], THREAD_BASIC_INFO,
+                            (thread_info_t)&basic, &count) != KERN_SUCCESS;
+      ok = gone[i];
+    }
   }
   /* The threads not suspended are not resumed either. */
   for (; i < threadCount; ++i)
-    if (threads[i] != self) {
+    if (threads[i] != self && !isWorker(threads[i])) {
       (void)mach_port_deallocate(mach_task_self(), threads[i]);
       threads[i] = MACH_PORT_NULL;
     }
   if (!ok)
     return 0;
-  /* Each stopped thread's registers and stack pointer. */
+  /* Each thread's thread-specific data, the sweeping thread's too. */
   for (i = 0; i < threadCount; ++i) {
-    if (threads[i] == self || threads[i] == MACH_PORT_NULL)
+    thread_identifier_info_data_t identity;
+    mach_msg_type_number_t count = THREAD_IDENTIFIER_INFO_COUNT;
+    if (threads[i] == MACH_PORT_NULL || isWorker(threads[i]) ||
+        gone[i])
+      continue;
+    if (thread_info(threads[i], THREAD_IDENTIFIER_INFO,
+                    (thread_info_t)&identity, &count) != KERN_SUCCESS)
+      return 0;
+    world->tsd[world->tsdCount++] = (uintptr_t)identity.thread_handle;
+  }
+  /* Each stopped thread's registers, general and vector, and stack
+   * pointer: a pointer may live only in a vector register (RFC 0037
+   * section 1). */
+  for (i = 0; i < threadCount; ++i) {
+    uintptr_t *words = world->registers[world->registerCount];
+    if (threads[i] == self || threads[i] == MACH_PORT_NULL ||
+        isWorker(threads[i]) || gone[i])
       continue;
 #if defined(__aarch64__)
     {
       arm_thread_state64_t state;
+      arm_neon_state64_t vector;
       mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
       unsigned r;
       if (thread_get_state(threads[i], ARM_THREAD_STATE64,
                            (thread_state_t)&state, &count) != KERN_SUCCESS)
         return 0;
       for (r = 0; r < 29; ++r)
-        world->registers[world->registerCount][r] = state.__x[r];
-      world->registers[world->registerCount][29] =
-          (uintptr_t)arm_thread_state64_get_fp(state);
-      world->registers[world->registerCount][30] =
-          (uintptr_t)arm_thread_state64_get_lr(state);
+        words[r] = state.__x[r];
+      words[29] = (uintptr_t)arm_thread_state64_get_fp(state);
+      words[30] = (uintptr_t)arm_thread_state64_get_lr(state);
       world->stacks[world->stackCount] =
           (uintptr_t)arm_thread_state64_get_sp(state);
+      count = ARM_NEON_STATE64_COUNT;
+      if (thread_get_state(threads[i], ARM_NEON_STATE64,
+                           (thread_state_t)&vector, &count) != KERN_SUCCESS)
+        return 0;
+      memcpy(words + 31, vector.__v, sizeof vector.__v);
     }
 #elif defined(__x86_64__)
     {
       x86_thread_state64_t state;
+      x86_avx_state64_t vector;
       mach_msg_type_number_t count = x86_THREAD_STATE64_COUNT;
-      const uint64_t *raw = (const uint64_t *)&state;
-      unsigned r;
+      const size_t general = sizeof state / sizeof(uintptr_t);
       if (thread_get_state(threads[i], x86_THREAD_STATE64,
                            (thread_state_t)&state, &count) != KERN_SUCCESS)
         return 0;
-      for (r = 0; r < sizeof state / sizeof(uint64_t) && r < 34; ++r)
-        world->registers[world->registerCount][r] = raw[r];
+      memcpy(words, &state, general * sizeof(uintptr_t));
       world->stacks[world->stackCount] = state.__rsp;
+      count = x86_AVX_STATE64_COUNT;
+      if (thread_get_state(threads[i], x86_AVX_STATE64,
+                           (thread_state_t)&vector, &count) != KERN_SUCCESS) {
+        /* No AVX: the SSE registers. */
+        x86_float_state64_t sse;
+        count = x86_FLOAT_STATE64_COUNT;
+        if (thread_get_state(threads[i], x86_FLOAT_STATE64,
+                             (thread_state_t)&sse, &count) != KERN_SUCCESS)
+          return 0;
+        memcpy(words + general, &sse,
+               sizeof sse < (Registers - general) * sizeof(uintptr_t)
+                   ? sizeof sse
+                   : (Registers - general) * sizeof(uintptr_t));
+      } else {
+        memcpy(words + general, &vector,
+               sizeof vector < (Registers - general) * sizeof(uintptr_t)
+                   ? sizeof vector
+                   : (Registers - general) * sizeof(uintptr_t));
+      }
     }
 #else
     return 0;
@@ -271,7 +534,7 @@ static void resumeThreads(void) {
   for (i = 0; i < threadCount; ++i) {
     if (threads[i] == MACH_PORT_NULL)
       continue;
-    if (threads[i] != self)
+    if (threads[i] != self && !isWorker(threads[i]) && !gone[i])
       (void)thread_resume(threads[i]);
     (void)mach_port_deallocate(mach_task_self(), threads[i]);
   }
@@ -281,15 +544,24 @@ static void resumeThreads(void) {
   threadCount = 0;
 }
 
-/* Whether a thread exists that was not stopped. */
+/* Whether a thread exists that was not stopped, compared by identity (a
+ * thread that started while another exited keeps the count); one that
+ * exited since is no root. */
 static int threadsChanged(void) {
   thread_act_array_t now;
   mach_msg_type_number_t count;
   mach_msg_type_number_t i;
-  int changed;
+  int changed = 0;
   if (task_threads(mach_task_self(), &now, &count) != KERN_SUCCESS)
     return 1;
-  changed = count != threadCount;
+  for (i = 0; i < count && !changed; ++i) {
+    mach_msg_type_number_t j = 0;
+    if (!MACH_PORT_VALID(now[i]))
+      continue;
+    while (j < threadCount && threads[j] != now[i])
+      ++j;
+    changed = j == threadCount;
+  }
   for (i = 0; i < count; ++i)
     (void)mach_port_deallocate(mach_task_self(), now[i]);
   (void)vm_deallocate(mach_task_self(), (vm_address_t)now,
@@ -298,8 +570,10 @@ static int threadsChanged(void) {
 }
 
 /* The pages of [low, high) the program may have written (mincore); a page
- * never touched, or a file's page never modified, holds nothing it wrote. */
-static void scanResident(uintptr_t low, uintptr_t high) {
+ * never touched, or a private file page never modified, holds nothing it
+ * wrote. With `resident`, every resident page: a shared file's page that
+ * msync wrote back is clean but holds what the program stored. */
+static void scanResident(uintptr_t low, uintptr_t high, int resident) {
   enum { Pages = 4096 };
   const uintptr_t page = (uintptr_t)getpagesize();
   char vector[Pages];
@@ -310,7 +584,7 @@ static void scanResident(uintptr_t low, uintptr_t high) {
     uintptr_t i;
     uintptr_t run = 0;
     if (mincore((void *)low, (size_t)chunk, vector) != 0) {
-      scanMapping(low, low + chunk);
+      scanExcluding(low, low + chunk);
       low += chunk;
       continue;
     }
@@ -323,13 +597,14 @@ static void scanResident(uintptr_t low, uintptr_t high) {
           i < count &&
           ((vector[i] & (MINCORE_MODIFIED | MINCORE_PAGED_OUT)) != 0 ||
            (vector[i] & (MINCORE_INCORE | MINCORE_ANONYMOUS)) ==
-               (MINCORE_INCORE | MINCORE_ANONYMOUS));
+               (MINCORE_INCORE | MINCORE_ANONYMOUS) ||
+           (resident && (vector[i] & MINCORE_INCORE) != 0));
       if (touched)
         continue;
       if (i > run) {
         const uintptr_t end = low + i * page < low + chunk ? low + i * page
                                                            : low + chunk;
-        scanMapping(low + run * page, end);
+        scanExcluding(low + run * page, end);
       }
       run = i + 1;
     }
@@ -341,27 +616,29 @@ static void scanResident(uintptr_t low, uintptr_t high) {
 #define VM_MEMORY_VM_RECLAIM 22
 #endif
 
-/* Whether a region may hold what the program wrote: readable and writable,
- * with pages written or paged out (an untouched page reads zero, a clean
- * page of a file holds the file), and not the kernel's reclaim ring, which
- * holds only the system allocator's free ranges. The page counts cost one
- * call per region; mincore then finds the pages, at about a microsecond
- * each. */
-static int worthScanning(const vm_region_submap_info_data_64_t *info) {
-  return (info->protection & (VM_PROT_READ | VM_PROT_WRITE)) ==
-             (VM_PROT_READ | VM_PROT_WRITE) &&
-         info->share_mode != SM_EMPTY &&
-         (info->pages_dirtied != 0 || info->pages_swapped_out != 0) &&
-         info->user_tag != VM_MEMORY_VM_RECLAIM;
-}
+enum { ScanNone, ScanTouched, ScanResident };
 
-/* The stack pointer of a stopped thread inside [low, high), or 0. */
-static uintptr_t stackIn(uintptr_t low, uintptr_t high) {
-  unsigned i;
-  for (i = 0; i < world->stackCount; ++i)
-    if (world->stacks[i] >= low && world->stacks[i] < high)
-      return world->stacks[i];
-  return 0;
+/* Which pages of a region may hold what the program wrote (RFC 0037
+ * section 1): none of code it cannot write or of the kernel's reclaim ring
+ * (the system allocator's free ranges); every resident page of a file
+ * mapping it can write (a shared file's page that msync wrote back is
+ * clean; the kernel reports a file mapped once as private, so a private
+ * one is read so too); otherwise, whatever the protection now (memory made
+ * read-only after it was written), the pages written or paged out (an
+ * untouched page reads zero, a clean page of a file holds the file, and a
+ * shared file mapping the program cannot write through has none). The
+ * page counts cost one call per region; mincore then finds the pages, at
+ * about a microsecond each. */
+static int scanKind(const vm_region_submap_info_data_64_t *info) {
+  const int writable = (info->protection & VM_PROT_WRITE) != 0;
+  if ((info->protection & VM_PROT_READ) == 0 ||
+      ((info->protection & VM_PROT_EXECUTE) != 0 && !writable) ||
+      info->share_mode == SM_EMPTY || info->user_tag == VM_MEMORY_VM_RECLAIM)
+    return ScanNone;
+  if (info->external_pager && writable && info->pages_resident != 0)
+    return ScanResident;
+  return info->pages_dirtied != 0 || info->pages_swapped_out != 0 ? ScanTouched
+                                                                   : ScanNone;
 }
 
 /* RFC 0036 section 3.4: the writable segments of the images the process
@@ -465,20 +742,53 @@ static int scanMappings(void) {
       break;
     if (result != KERN_SUCCESS)
       return 0;
-    if (!info.is_submap && worthScanning(&info) &&
-        (address + size <= cacheLow || address >= cacheHigh)) {
+    if (!info.is_submap && (address + size <= cacheLow || address >= cacheHigh)) {
+      const int kind = scanKind(&info);
       const uintptr_t low = (uintptr_t)address;
       const uintptr_t high = (uintptr_t)(address + size);
-      /* A stack is resident from its stack pointer up. */
-      if (stackIn(low, high) != 0)
-        scanMapping(low, high);
-      else
-        scanResident(low, high);
+      /* A thread's own stack (libpthread and the kernel tag it) is
+       * resident from its stack pointer up, and dead below; any other
+       * mapping holding a stack pointer (a coroutine's, a fiber pool's, a
+       * stack the program gave pthread_attr_setstack) holds other stacks
+       * below it. */
+      if (kind != ScanNone && info.user_tag == VM_MEMORY_STACK &&
+          stackIn(low, high) != 0)
+        scanStack(low, high);
+      else if (kind != ScanNone)
+        scanResident(low, high, kind == ScanResident);
     }
     address += size;
   }
   for (i = 0; i < imageSegmentCount; ++i)
-    scanResident(imageSegments[i].low, imageSegments[i].high);
+    scanResident(imageSegments[i].low, imageSegments[i].high, 0);
+  /* Thread-specific data outside the stacks and the images' segments (the
+   * main thread's lies in libpthread's data in the shared cache): each
+   * thread's TSD array, up to the end of the region that holds it. */
+  for (i = 0; i < world->tsdCount; ++i) {
+    enum { TsdSlots = 1024 };
+    mach_vm_address_t at = world->tsd[i];
+    mach_vm_size_t size = 0;
+    natural_t depth = 0;
+    vm_region_submap_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
+    uintptr_t high;
+    if (world->tsd[i] < cacheLow || world->tsd[i] >= cacheHigh)
+      continue;
+    while (mach_vm_region_recurse(mach_task_self(), &at, &size, &depth,
+                                  (vm_region_recurse_info_t)&info,
+                                  &count) == KERN_SUCCESS &&
+           info.is_submap) {
+      ++depth;
+      at = world->tsd[i];
+      count = VM_REGION_SUBMAP_INFO_COUNT_64;
+    }
+    if (at > world->tsd[i] || (info.protection & VM_PROT_READ) == 0)
+      continue;
+    high = world->tsd[i] + TsdSlots * sizeof(uintptr_t);
+    if (high > (uintptr_t)(at + size))
+      high = (uintptr_t)(at + size);
+    weavecRtMarkWords(world->tsd[i], high);
+  }
   return 1;
 }
 
@@ -614,13 +924,13 @@ static int stopThreads(void) {
   taskCount = listTasks(tasks, MaxThreads, &overflow);
   if (overflow || taskCount == 0)
     return 0;
-  if (taskCount == 1)
+  if (taskCount == 1 + workerCount)
     return 1;
   if (!installHandler())
     return 0;
   stopTargets = 0;
   for (i = 0; i < taskCount; ++i)
-    if (tasks[i] != self) {
+    if (tasks[i] != self && !isWorker(tasks[i])) {
       stoppedSp[stopTargets] = 0;
       stoppedInterruptedSp[stopTargets] = 0;
       stopped[stopTargets++] = tasks[i];
@@ -634,7 +944,8 @@ static int stopThreads(void) {
       stopped[i] = 0;
   }
   /* A thread that does not answer within a second (it blocks the signal)
-   * holds up recycling. */
+   * holds up recycling; one that has exited (pthread_join may return before
+   * it leaves the list, and an exiting thread takes no signal) is no root. */
   deadline = nanoseconds() + 1000000000ULL;
   for (;;) {
     const int now = __atomic_load_n(&stoppedCount, __ATOMIC_ACQUIRE);
@@ -644,6 +955,13 @@ static int stopThreads(void) {
     if (nanoseconds() > deadline)
       return 0;
     (void)futex(&stoppedCount, FUTEX_WAIT_PRIVATE, now, &wait);
+    for (i = 0; i < stopTargets; ++i)
+      if (stopped[i] != 0 &&
+          __atomic_load_n(&stoppedSp[i], __ATOMIC_ACQUIRE) == 0 &&
+          syscall(SYS_tgkill, process, stopped[i], 0) != 0 && errno == ESRCH) {
+        stopped[i] = 0;
+        --sent;
+      }
   }
   for (i = 0; i < stopTargets; ++i) {
     if (stopped[i] == 0 || stoppedSp[i] == 0)
@@ -672,7 +990,8 @@ static int threadsChanged(void) {
   const unsigned count = listTasks(now, MaxThreads, &overflow);
   unsigned i;
   unsigned j;
-  if (overflow || count != taskCount)
+  /* By identity: a thread that exited since is no root. */
+  if (overflow)
     return 1;
   for (i = 0; i < count; ++i) {
     for (j = 0; j < taskCount && tasks[j] != now[i]; ++j) {
@@ -744,41 +1063,103 @@ static size_t readMaps(void) {
   return used;
 }
 
-/* Every readable, writable mapping but a device's; whether
- * /proc/self/maps could be read. */
+/* The resident pages of [low, high) (mincore), for the part of a mapping
+ * below a stack pointer that is not a thread's own stack. With `pagemap`
+ * (/proc/self/pagemap), for a private mapping the program cannot write,
+ * the pages present or swapped that are not a file's: what it wrote
+ * before it took the permission away (RFC 0037 section 1), and not the
+ * pages of a mapped file, which every sweep would read again. */
+static void scanResident(uintptr_t low, uintptr_t high, int pagemap) {
+  enum { Pages = 512 };
+  const uintptr_t page = (uintptr_t)getpagesize();
+  unsigned char vector[Pages];
+  uint64_t entries[Pages];
+  low &= ~(page - 1);
+  /* (Not the runtime's own: its reservations are large.) */
+  while ((low = skipInternal(low)) < high) {
+    const uintptr_t chunk =
+        high - low > Pages * page ? Pages * page : high - low;
+    const uintptr_t count = (chunk + page - 1) / page;
+    const int mapped =
+        pagemap >= 0 && pread(pagemap, entries, count * sizeof *entries,
+                              (off_t)(low / page * sizeof *entries)) ==
+                            (ssize_t)(count * sizeof *entries);
+    uintptr_t i;
+    if (!mapped && mincore((void *)low, (size_t)chunk, vector) != 0) {
+      scanExcluding(low, low + chunk);
+    } else {
+      for (i = 0; i < count; ++i)
+        /* Bits 63, 62 and 61: present, swapped, a file's page. */
+        if (mapped ? (entries[i] >> 61) == 4 || ((entries[i] >> 62) & 1) != 0
+                   : (vector[i] & 1) != 0) {
+          const uintptr_t end = low + (i + 1) * page;
+          scanExcluding(low + i * page, end < high ? end : high);
+        }
+    }
+    low += chunk;
+  }
+}
+
+/* Every readable mapping but code the program cannot write, a shared
+ * mapping it cannot write through, a device's and the kernel's (RFC 0037
+ * section 1); whether /proc/self/maps could be read. The main thread's
+ * stack ("[stack]") is dead below its stack pointer; a thread's stack that
+ * glibc mapped is not named, so below a stack pointer anywhere else the
+ * resident pages are read: they may be other stacks of a coroutine pool. */
 static int scanMappings(void) {
   const char *at;
+  int pagemap;
   if (readMaps() == 0)
     return 0;
+  pagemap = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
   at = mapsText;
   while (*at != 0) {
     const uintptr_t low = hex(&at);
     uintptr_t high;
     int readable;
     int writable;
+    int executable;
+    int shared;
     ++at;
     high = hex(&at);
     ++at;
     readable = at[0] == 'r';
     writable = at[1] == 'w';
-    if (readable && writable) {
-      /* [vvar] and [vsyscall] are never rw; a device mapping might be. Shared
-       * memory under /dev is memory: POSIX shared memory (/dev/shm), shared
-       * anonymous mappings ("/dev/zero (deleted)") and hugetlbfs. */
+    executable = at[2] == 'x';
+    shared = at[3] == 's';
+    if (readable && (writable || (!executable && !shared))) {
+      /* [vvar] and [vsyscall] hold the kernel's data; a device mapping
+       * might be readable. Shared memory under /dev is memory: POSIX
+       * shared memory (/dev/shm), shared anonymous mappings ("/dev/zero
+       * (deleted)") and hugetlbfs. */
       const char *name = at;
       while (*name != 0 && *name != '\n' && *name != '[' && *name != '/')
         ++name;
-      if (strncmp(name, "/dev/", 5) != 0 ||
-          strncmp(name, "/dev/shm/", 9) == 0 ||
-          strncmp(name, "/dev/zero", 9) == 0 ||
-          strncmp(name, "/dev/hugepages/", 15) == 0)
-        scanMapping(low, high);
+      if (strncmp(name, "[vvar", 5) == 0 || strncmp(name, "[vsys", 5) == 0) {
+        /* The kernel's. */
+      } else if (strncmp(name, "/dev/", 5) != 0 ||
+                 strncmp(name, "/dev/shm/", 9) == 0 ||
+                 strncmp(name, "/dev/zero", 9) == 0 ||
+                 strncmp(name, "/dev/hugepages/", 15) == 0) {
+        const uintptr_t sp = stackIn(low, high);
+        if (!writable) {
+          scanResident(low, high, pagemap);
+        } else if (sp == 0 || strncmp(name, "[stack]", 7) == 0) {
+          scanStack(low, high);
+        } else {
+          const uintptr_t live = sp - RedZone > low ? sp - RedZone : low;
+          scanResident(low, live, -1);
+          scanExcluding(live, high);
+        }
+      }
     }
     while (*at != 0 && *at != '\n')
       ++at;
     if (*at == '\n')
       ++at;
   }
+  if (pagemap >= 0)
+    (void)close(pagemap);
   return 1;
 }
 
@@ -803,6 +1184,12 @@ static int mapWorld(void) {
     return 0;
   weavecRtInternal((uintptr_t)map, (uintptr_t)map + sizeof(World));
   world = (World *)map;
+  map = mmap(NULL, WorkSlots * sizeof(Work), PROT_READ | PROT_WRITE,
+             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (map != MAP_FAILED) {
+    weavecRtInternal((uintptr_t)map, (uintptr_t)map + WorkSlots * sizeof(Work));
+    work = (Work *)map;
+  }
   return 1;
 }
 
@@ -810,21 +1197,37 @@ void weavecRtSweep(void) {
   uint64_t started;
   struct weavecRtSweepCounts counts = {0, 0, 0};
   int stoppedAll;
+  sigset_t every;
+  sigset_t saved;
   /* The calling thread's callee-saved registers are spilled to this frame,
    * which its stack scan covers: it is scanned from `here`. */
   volatile uintptr_t here = 0;
   __builtin_unwind_init();
-  if (weavecRtForward() != 0 || !weavecRtSweepWanted() || !trySweepLock())
+  if (weavecRtForward() != 0 || weavecRtAllocatorNested())
+    return;
+  /* The sweeping thread's released slots join the quarantine, and its free
+   * ones the free lists, so that what it released is recycled now and
+   * slots are reused in address order after. */
+  weavecRtFlushThread();
+  if (!weavecRtSweepWanted() || !trySweepLock())
     return;
   if (!mapWorld()) {
     weavecRtSweepUnlock();
     return;
   }
+  /* While it holds the allocator's locks the sweeping thread is the only
+   * one running, so the kernel delivers the process's signals to it: a
+   * handler that allocated would wait for itself (RFC 0037 section 1). */
+  sigfillset(&every);
+  (void)pthread_sigmask(SIG_BLOCK, &every, &saved);
+  if (work != NULL)
+    startWorkers();
   started = nanoseconds();
   lockImages();
   weavecRtLockAll();
   world->stackCount = 0;
   world->registerCount = 0;
+  world->tsdCount = 0;
   stoppedAll = stopThreads();
   if (stoppedAll && weavecRtPrepareMarks()) {
     unsigned i;
@@ -833,10 +1236,23 @@ void weavecRtSweep(void) {
     sortInternal();
     for (i = 0; i < world->registerCount; ++i)
       weavecRtMarkWords((uintptr_t)world->registers[i],
-                        (uintptr_t)(world->registers[i] + 34));
-    /* Without every root, nothing is recycled. */
-    const int scanned = scanMappings();
-    weavecRtMarkHeap();
+                        (uintptr_t)(world->registers[i] + Registers));
+    /* Without every root, nothing is recycled. A large heap is marked by
+     * the workers too (RFC 0037 section 3). */
+    const int parallel = workerCount != 0 && weavecRtLiveBytes() >= ParallelBytes;
+    int scanned;
+    if (parallel) {
+      workCount = 0;
+      collecting = 1;
+      scanned = scanMappings();
+      collecting = 0;
+      weavecRtHeapWork(addSlots, MarkChunk);
+      runWork();
+      weavecRtMarkHuge();
+    } else {
+      scanned = scanMappings();
+      weavecRtMarkHeap();
+    }
     weavecRtRecycle(&counts, scanned && !threadsChanged());
     weavecRtCount(WeavecRtStatSweeps);
     lastCounts = counts;
@@ -844,6 +1260,7 @@ void weavecRtSweep(void) {
   resumeThreads();
   weavecRtUnlockAll();
   unlockImages();
+  (void)pthread_sigmask(SIG_SETMASK, &saved, NULL);
   {
     const uint64_t ended = nanoseconds();
     const uint64_t took = ended - started;

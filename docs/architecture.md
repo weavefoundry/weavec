@@ -1,10 +1,11 @@
 # Architecture
 
 WeaveC is a drop-in C compiler that enforces memory safety at run time,
-built on Clang and LLVM. [RFC 0036](rfcs/0036-deterministic-heap-reuse.md),
-*Deterministic heap reuse*, defines the design over the guards of
-[RFC 0035](rfcs/0035-guard-by-default.md), *Guard by default*; each RFC's
-*Implementation amendments* override its body.
+built on Clang and LLVM. [RFC 0037](rfcs/0037-complete-sweep-and-colors.md),
+*A complete sweep and object colors*, defines the design over the reuse
+after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md) and the
+guards of [RFC 0035](rfcs/0035-guard-by-default.md), *Guard by default*;
+each RFC's *Implementation amendments* override its body.
 
 `weavec-cc` guards every memory access of the C code it compiles, in LLVM
 IR, against the runtime's shadow memory. It removes a guard only where a
@@ -50,7 +51,7 @@ The arrows point from a layer to what it may depend on.
   there match the ones the passes declare (`scripts/check-hygiene.py`
   checks that each one the passes name is declared).
 
-RFC 0036 is Accepted and being implemented; the [roadmap](roadmap.md) says
+RFC 0037 is Accepted and being implemented; the [roadmap](roadmap.md) says
 which stages have landed. This page describes the tree as it is. Earlier
 designs (the advisory ownership analysis and the `weavec` tool, checked
 mode, checks planned from the analysis, unit records and the link step) are
@@ -155,17 +156,19 @@ as C++, Objective-C, OpenCL or CUDA, is compiled as Clang compiles it.
 ## Guards and the shadow
 
 The runtime keeps one shadow byte per 16-byte granule (RFC 0035 §2.2 and
-amendment 3, RFC 0036 §5; the values are in
+amendment 3, RFC 0036 §5, RFC 0037 §7; the values are in
 [`weavec_rt.h`](../runtime/weavec_rt.h)):
 
 | Value | Meaning |
 | --- | --- |
-| `0x00` | all 16 bytes addressable |
-| `0x01`–`0x0F` | the first k bytes addressable, the rest not |
+| `0x00` | all 16 bytes addressable, untracked or uncolored memory |
+| `0x01`–`0x7F` | all 16 bytes addressable, in an object of this color |
+| `0x80`–`0xEF` | `1ccc kkkk`: the first k bytes (1–15) addressable, in an object whose color's low bits are ccc |
 | `0xF1` | a frame's left redzone |
 | `0xF2` | a redzone between a frame's objects |
 | `0xF3` | a frame's right redzone |
 | `0xF4` | a dynamic stack object's redzone |
+| `0xF5` | a frame that returned (RFC 0037 §9) |
 | `0xF7` | poisoned by the program through ASan's interface |
 | `0xF8` | a tracked local out of scope |
 | `0xF9` | a tracked global's redzone |
@@ -184,9 +187,26 @@ spuriously, and the slow path, which knows the window, lets it pass. When
 the reservation fails, `mask` is 0 and `base` points to zero bytes: every
 guard passes, and the runtime says so once on standard error.
 
+**Colors** (RFC 0037 §7–§8). A color is one of 111 values that are never
+0 and whose low three bits are never 7: heap slots take
+`color(slot + 41 × region)`, a frame's locals consecutive colors from a
+hash of the function's name, and the process's globals consecutive colors
+in the order they register. An access whose address is computed from a
+pointer (its *root*: the value under its chain of `getelementptr`s) loads
+the root's shadow byte once, hoisted out of the loops the root does not
+change in, and compares the access's byte with it; a walk from a constant
+start near the root by a small constant step has no comparison (its guard
+meets the redzone first), and in verify mode has one as a monitor. A
+mismatch calls `__weavec_rt_jump`, which decides exactly for the heap (one
+slot, or any root inside a block but at its start, passes) and by color
+elsewhere. Rule 6.4's
+preheader asks `__weavec_rt_color_ok` for each range that starts at a
+variable offset from its root.
+
 **Fast paths** (RFC 0035 amendment 4). A guard whose bytes lie in one
 granule is three instructions: the shift and mask, the shadow load, and a
-branch on a nonzero byte, weighted cold. The partial-granule test (whether
+branch on the byte's sign bit (four with a root: a compare with the
+root's byte), weighted cold. The partial-granule test (whether
 the access ends within the first k bytes) is on the slow side of the
 branch, before the call. An access of up to 16 bytes that may cross a
 granule loads the two shadow bytes it may touch at once; a range of
@@ -265,11 +285,17 @@ left redzone of 64 bytes, then each object at a 32-byte boundary followed
 by its redzone, at least 32 bytes and one eighth of the object up to
 4 KiB, so the object and its redzone fill a multiple of 32 bytes
 (`guard::paddedSize`). At entry the pass writes the frame's shadow with
-constant stores (redzones poisoned, partial granules encoded, objects whose
-scope has not begun `0xF8`), and clears it before each return. A lifetime
-start of a tracked object makes it addressable and a lifetime end poisons
-it with `0xF8`, so a use after scope traps; a use after return is not
-caught. A function with a `musttail` call or `localescape` keeps its locals
+constant stores (redzones poisoned, objects in their colors, partial
+granules encoded, objects whose scope has not begun `0xF8`), and writes it
+`0xF5` (*returned*) before each return. A lifetime start of a tracked
+object makes it addressable and a lifetime end poisons it with `0xF8`, so a
+use after scope traps. A slow path that meets `0xF5` below its caller's
+stack pointer on the thread's own stack reports `stack-use-after-return`;
+any other `0xF5` is stale (a frame without tracked locals, or of code
+without WeaveC, holds the bytes now) and is cleared (RFC 0037 §9). Runs of
+4,096 granules or more go to `__weavec_rt_frame_shadow`, which writes only
+what lies on the thread's stack, so the compiler's and the program's cost
+grows with a frame's objects, not its size. A function with a `musttail` call or `localescape` keeps its locals
 in place, without redzones.
 
 **Shared space** (RFC 0036 §2, amendment 8). In a frame that would be
@@ -453,15 +479,23 @@ object belongs to no object. Each slot has one 32-bit word of metadata,
 `value << 2 | state`: a live slot's value is its object's size, a free or
 released one's the next slot on its list. Free lists and
 the quarantine queues live in the metadata, never in freed memory. An
-allocation writes 0 over the object's whole granules, k over a partial last
-granule and `0xFA` over the rest of its slot (up to 64 KiB); a release
+allocation writes the slot's color over the object's whole granules, the
+partial byte over a partial last granule and `0xFA` over the rest of its
+slot (up to 64 KiB); a release
 writes `0xFD` over the slot. The shadow of a large object is mapped afresh
 rather than written, so untouched large blocks cost no memory. Every block
 is zero-filled.
 
 A released slot joins its class's *quarantine* and is never reused from
 there: only a sweep moves it to the free list (RFC 0036 §3.2), in address
-order, so that slots are reused in order. A request no class
+order, so that slots are reused in order. Each thread caches, per small
+class (up to 32 KiB), up to 32 free slots it takes from the free lists at
+once and up to 32 released ones it gives the quarantine at once (RFC 0037
+§2.1): a release claims the slot's word by compare-and-swap, so a racing
+second release is a double free; a cached released slot is quarantined, and
+a sweep leaves it in its cache. A class whose region is full takes one of 64
+spare regions, unless a quarter of a region was released into it since the
+last sweep, when it sweeps first (§2.3). A request no class
 can hold is mapped on its own as a *huge block*, kept in a table, with at
 least one poisoned granule after it; at release its mapping is replaced by
 an inaccessible reservation, unmapped only by a sweep that finds no pointer
@@ -487,7 +521,7 @@ Let `gained` be the bytes the quarantine gained since the last sweep (what
 the last sweep retained is not counted; released huge blocks count at
 their size, so a program that frees only huge blocks still sweeps and
 gives their address space back, RFC 0036 amendment 10), `Q` the configured quarantine
-(`WEAVEC_RT_QUARANTINE`, 16 MiB by default) and `live` the bytes of live
+(`WEAVEC_RT_QUARANTINE`, 64 MiB by default) and `live` the bytes of live
 heap blocks. A release (or an allocation) sweeps before it returns
 (RFC 0036 §3.3) when `gained` reaches the *hard* budget `max(2 Q, live /
 2)`; when it reaches the *soft* budget `max(Q, live / 4)` and the last sweep
@@ -502,7 +536,7 @@ The sweep (RFC 0036 §3.4, `weavec_sweep.c`):
 
 1. **Stop.** Take the image table's lock, every allocator lock and the
    sweep lock, then stop every other thread: on Darwin with `task_threads`
-   and `thread_suspend`, reading each thread's registers with
+   and `thread_suspend`, reading each thread's general and vector registers with
    `thread_get_state`; on Linux by signalling each task of
    `/proc/self/task` (`SIGPWR`, `SIGXCPU` when the program handles
    `SIGPWR`, or `WEAVEC_RT_SWEEP_SIGNAL`), whose handler records its stack
@@ -510,9 +544,13 @@ The sweep (RFC 0036 §3.4, `weavec_sweep.c`):
    sweep without recycling: safety never depends on a sweep running.
 2. **Mark.** Scan conservatively, word by aligned word, for addresses of
    quarantined slots and released huge blocks (interior addresses count):
-   - each thread's registers, and its stack from its stack pointer;
-   - every other readable, writable mapping of the process but the
-     runtime's own. On Linux, of the files under `/dev` only shared memory
+   - each thread's registers, and its stack from its stack pointer (a
+     mapping that holds a stack pointer but is not a thread's own stack,
+     such as a coroutine pool, whole); on Darwin the main thread's TSD
+     array, which lies outside every stack and image segment;
+   - every other readable mapping of the process but the runtime's own,
+     code it cannot write and shared files it cannot write through (memory
+     the program made read-only is read; RFC 0037 §1). On Linux, of the files under `/dev` only shared memory
      is scanned (`/dev/shm`, shared anonymous mappings, which show as
      `/dev/zero`, and hugetlbfs), not device memory; a sweep that cannot
      read `/proc/self/maps` recycles nothing. On Darwin a mapping is asked first for its count of
@@ -525,7 +563,10 @@ The sweep (RFC 0036 §3.4, `weavec_sweep.c`):
      and scans those;
    - every live heap block and live huge block.
 
-   Released blocks are not scanned. Marks go to a bitmap per class.
+   Released blocks are not scanned. Marks go to a bitmap per region, set
+   atomically: with 64 MiB of live heap or more the ranges are listed first
+   and marked by the sweeping thread and up to seven worker threads of the
+   runtime's, which are never stopped (RFC 0037 §3).
 3. **Recycle** each quarantined slot without a mark to its class's free
    list, and unmap each released huge block without one; marked blocks stay.
 4. **Resume** the threads and release the locks.
@@ -722,7 +763,7 @@ hygiene H1–H2) are measured with these tools. `scripts/check-hygiene.py`
 implements gate H1: no libc name comparisons outside the library table, no
 corpus project named under `lib/`, Core free of Clang and LLVM, the
 runtime's includes, its entry points declared in `weavec_rt.h`, and the
-line budgets of the library (9,000) and of the runtime (6,000).
+line budgets of the library (9,000) and of the runtime (7,000).
 [`scripts/codegen-identity.py`](../scripts/codegen-identity.py) checks that
 objects built with `-fweavec-checks=none` are byte-identical to Clang's.
 

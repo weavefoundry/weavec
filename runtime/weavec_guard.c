@@ -26,9 +26,9 @@
 
 /*===-- Deciding (section 2.3) ---------------------------------------------===*/
 
-/* Whether a shadow value is a poison (not a granule's addressable count). */
+/* Whether a shadow value is a poison (not an addressable granule's). */
 static inline int isPoison(unsigned char value) {
-  return value >= WeavecRtShadowGranule;
+  return weavecRtShadowPoison(value);
 }
 
 /* The name of a failure whose first unaddressable byte has shadow `value`;
@@ -59,6 +59,8 @@ static const char *kindOf(unsigned char value, uintptr_t granule) {
     return "stack-buffer-overflow";
   case WeavecRtShadowStackDynamic:
     return "dynamic-stack-buffer-overflow";
+  case WeavecRtShadowReturned:
+    return "stack-use-after-return";
   case WeavecRtShadowStackScope:
     return "stack-use-after-scope";
   case WeavecRtShadowUser:
@@ -72,13 +74,37 @@ static const char *kindOf(unsigned char value, uintptr_t granule) {
   }
 }
 
+/* RFC 0037 section 9: a granule a returned frame left (0xF5) below `here`
+ * (the frame of the runtime's entry point, just below its caller's) on the
+ * calling thread's own stack is a frame that returned; any other is stale
+ * (a frame of code without WeaveC, or one with no tracked locals, holds the
+ * bytes now, or the access runs on another stack): it is cleared, and the
+ * access decided as if it were addressable. */
+static unsigned char settle(uintptr_t granule, unsigned char v,
+                            uintptr_t here) {
+  if (v != WeavecRtShadowReturned)
+    return v;
+  if (granule + 16 <= here && granule >= weavecRtStackBottom() &&
+      here < weavecRtStackTop())
+    return v;
+  *weavecRtShadowOf(granule) = WeavecRtShadowAddressable;
+  return WeavecRtShadowAddressable;
+}
+
 /* The first byte of [address, address + n) that is not addressable: 0 when
  * there is none (or the shadow cannot say: before it exists, outside the
  * window). `value` receives its shadow byte. */
 static int firstUnaddressable(uintptr_t address, uint64_t n, uintptr_t *bad,
-                              unsigned char *value) {
+                              unsigned char *value, uintptr_t here) {
   uintptr_t end;
   uintptr_t granule;
+#if defined(__aarch64__)
+  /* RFC 0037 section 4: the hardware ignores an address's top byte, so a
+   * tagged address outside the window is decided as the one it reaches. */
+  if (!weavecRtInWindow(address) &&
+      weavecRtInWindow(address & ~((uintptr_t)0xFF << 56)))
+    address &= ~((uintptr_t)0xFF << 56);
+#endif
   if (n == 0 || !weavecRtShadowReady() || !weavecRtInWindow(address))
     return 0;
   if (__builtin_add_overflow(address, (uintptr_t)n, &end) ||
@@ -89,20 +115,20 @@ static int firstUnaddressable(uintptr_t address, uint64_t n, uintptr_t *bad,
   }
   granule = address & ~(uintptr_t)15;
   while (granule < end) {
-    unsigned char v = *weavecRtShadowOf(granule);
-    if (v == WeavecRtShadowAddressable) {
-      /* Eight granules at a time while they are all addressable. */
+    unsigned char v = settle(granule, *weavecRtShadowOf(granule), here);
+    if (weavecRtShadowFull(v)) {
+      /* Eight granules at a time while they are all whole. */
       while (granule + 128 <= end && (granule & 127) == 0) {
         uint64_t eight;
         memcpy(&eight, weavecRtShadowOf(granule), sizeof eight);
-        if (eight != 0)
+        if ((eight & 0x8080808080808080ULL) != 0)
           break;
         granule += 128;
       }
       if (granule >= end)
         break;
-      v = *weavecRtShadowOf(granule);
-      if (v == WeavecRtShadowAddressable) {
+      v = settle(granule, *weavecRtShadowOf(granule), here);
+      if (weavecRtShadowFull(v)) {
         granule += 16;
         continue;
       }
@@ -111,12 +137,13 @@ static int firstUnaddressable(uintptr_t address, uint64_t n, uintptr_t *bad,
       const uintptr_t low = granule > address ? granule : address;
       const uintptr_t high = granule + 16 < end ? granule + 16 : end;
       if (!isPoison(v)) {
-        /* The first v bytes are addressable. */
-        if (high <= granule + v) {
+        /* The first k bytes are addressable. */
+        const unsigned k = weavecRtShadowBytes(v);
+        if (high <= granule + k) {
           granule += 16;
           continue;
         }
-        *bad = low > granule + v ? low : granule + v;
+        *bad = low > granule + k ? low : granule + k;
       } else {
         *bad = low;
       }
@@ -135,13 +162,118 @@ static void failAt(uintptr_t bad, unsigned char value, uintptr_t address,
   weavecRtFail(kindOf(value, bad & ~(uintptr_t)15), address, width, site);
 }
 
-WEAVEC_RT_SLOW void __weavec_rt_guard(uintptr_t address, uint64_t width,
-                       const struct __weavec_rt_site *site) {
+__attribute__((noinline)) static void
+guardSlow(uintptr_t address, uint64_t width,
+          const struct __weavec_rt_site *site, uintptr_t here) {
   uintptr_t bad;
   unsigned char value;
   weavecRtCount(WeavecRtStatSlowGuards);
-  if (firstUnaddressable(address, width, &bad, &value))
+  if (firstUnaddressable(address, width, &bad, &value, here))
     failAt(bad, value, address, width, site);
+}
+
+WEAVEC_RT_SLOW void __weavec_rt_guard(uintptr_t address, uint64_t width,
+                       const struct __weavec_rt_site *site) {
+  guardSlow(address, width, site, (uintptr_t)__builtin_frame_address(0));
+}
+
+/*===-- Colors (RFC 0037 section 8.3) -------------------------------------===*/
+
+/* Set once a non-local exit cleared the stack's shadow (and with it the
+ * colors of frames that live on). */
+static int stackLostColors;
+
+/* Whether `address` lies on the calling thread's stack, above `here`. */
+static int onStack(uintptr_t address, uintptr_t here) {
+  const uintptr_t top = weavecRtStackTop();
+  return address >= here && address < top;
+}
+
+/* A color mismatch is decided exactly where it can be (the heap) and by
+ * color where it cannot (frames, globals). A root outside any object (one
+ * past it, before it, released) cannot be compared. */
+/* The kind of the failure of an access to `address` computed from `root`,
+ * whose shadow byte was `rootShadow`, or null when it passes. */
+static const char *jumpKind(uintptr_t address, uintptr_t root,
+                            unsigned char rootShadow, uintptr_t here) {
+  unsigned char v;
+  if (!weavecRtShadowReady() || !weavecRtInWindow(address))
+    return NULL;
+  v = *weavecRtShadowOf(address);
+  if (isPoison(v) || isPoison(rootShadow))
+    return NULL;
+  if (v == rootShadow ||
+      ((!weavecRtShadowFull(v) || !weavecRtShadowFull(rootShadow)) &&
+       weavecRtShadowClass(v) == weavecRtShadowClass(rootShadow)))
+    return NULL;
+  /* A root in uncolored memory (untracked memory, a huge block, dead
+   * stack, a frame a non-local exit cleared) has no object to hold the
+   * access to. */
+  if (rootShadow == 0)
+    return NULL;
+  /* A frame that lives on after a non-local exit cleared the stack's shadow
+   * has lost its locals' colors. */
+  if (v == 0 && stackLostColors && onStack(address, here))
+    return NULL;
+  {
+    const struct weavecRtHeapObject target = weavecRtHeapObjectAt(address);
+    const struct weavecRtHeapObject from = weavecRtHeapObjectAt(root);
+    /* One heap object; or a root inside a live heap object other than at
+     * its start, which the program biased or moved on purpose (a one-based
+     * array, a compressor's window base): only an object's start is held to
+     * its color on the heap (RFC 0037 amendment 12). */
+    if (from.found && (target.base == from.base || from.base != root))
+      return NULL;
+    if (target.found)
+      return "heap-buffer-overflow";
+    if (onStack(address, here))
+      return "stack-buffer-overflow";
+  }
+  return "global-buffer-overflow";
+}
+
+__attribute__((noinline)) static void
+jumpSlow(uintptr_t address, uint64_t width, uintptr_t root,
+         unsigned char rootShadow, const struct __weavec_rt_site *site,
+         uintptr_t here) {
+  const char *kind;
+  if (width == 0)
+    return;
+  kind = jumpKind(address, root, rootShadow, here);
+  if (kind != NULL)
+    weavecRtFailJump(kind, address, width, root, site);
+}
+
+/* RFC 0037 section 8.5: whether a loop range starting at `address`, from
+ * `root`, may run without its color checks. */
+int __weavec_rt_color_ok(uintptr_t root, uintptr_t address) {
+  if (!weavecRtShadowReady() || !weavecRtInWindow(root))
+    return 1;
+  return jumpKind(address, root, *weavecRtShadowOf(root),
+                  (uintptr_t)__builtin_frame_address(0)) == NULL;
+}
+
+/* An inline check with a root: the guard first, then the color. */
+__attribute__((noinline)) static void
+guardJumpSlow(uintptr_t address, uint64_t width, uintptr_t root,
+              unsigned char rootShadow, const struct __weavec_rt_site *site,
+              uintptr_t here) {
+  guardSlow(address, width, site, here);
+  jumpSlow(address, width, root, rootShadow, site, here);
+}
+
+WEAVEC_RT_SLOW void __weavec_rt_guard_jump(uintptr_t address, uint64_t width,
+                                           uintptr_t root, uint64_t rootShadow,
+                                           const struct __weavec_rt_site *site) {
+  guardJumpSlow(address, width, root, (unsigned char)rootShadow, site,
+                (uintptr_t)__builtin_frame_address(0));
+}
+
+WEAVEC_RT_SLOW void __weavec_rt_jump(uintptr_t address, uint64_t width,
+                                     uintptr_t root, uint64_t rootShadow,
+                                     const struct __weavec_rt_site *site) {
+  jumpSlow(address, width, root, (unsigned char)rootShadow, site,
+           (uintptr_t)__builtin_frame_address(0));
 }
 
 void __weavec_rt_overlap(uintptr_t destination, uintptr_t source, uint64_t n,
@@ -174,15 +306,15 @@ static int allAddressable(uintptr_t address, uint64_t n) {
   for (; i + 8 < granules; i += 8) {
     uint64_t eight;
     memcpy(&eight, shadow + i, sizeof eight);
-    if (eight != 0)
+    if ((eight & 0x8080808080808080ULL) != 0)
       return 0;
   }
   for (; i + 1 < granules; ++i)
-    if (shadow[i] != 0)
+    if (!weavecRtShadowFull(shadow[i]))
       return 0;
   value = shadow[granules - 1];
-  return value == WeavecRtShadowAddressable ||
-         (value < WeavecRtShadowGranule && (last & 15) < value);
+  return weavecRtShadowFull(value) ||
+         (!isPoison(value) && (last & 15) < weavecRtShadowBytes(value));
 }
 
 void __weavec_rt_range(uintptr_t address, uint64_t n,
@@ -192,7 +324,8 @@ void __weavec_rt_range(uintptr_t address, uint64_t n,
   if (weavecRtQuickOk(address, n) || allAddressable(address, n))
     return;
   weavecRtCount(WeavecRtStatRanges);
-  if (firstUnaddressable(address, n, &bad, &value))
+  if (firstUnaddressable(address, n, &bad, &value,
+                         (uintptr_t)__builtin_frame_address(0)))
     failAt(bad, value, address, n, site);
 }
 
@@ -202,7 +335,8 @@ int __weavec_rt_range_ok(uintptr_t address, uint64_t n) {
   if (weavecRtQuickOk(address, n) || allAddressable(address, n))
     return 1;
   weavecRtCount(WeavecRtStatRanges);
-  return !firstUnaddressable(address, n, &bad, &value);
+  return !firstUnaddressable(address, n, &bad, &value,
+                             (uintptr_t)__builtin_frame_address(0));
 }
 
 /* The C library's scan, then the shadow of what it scanned: a sixteenth of
@@ -215,7 +349,8 @@ static uint64_t stringLength(const char *s, uint64_t max,
   uintptr_t bad;
   unsigned char value;
   if (!weavecRtQuickOk((uintptr_t)s, scanned) &&
-      firstUnaddressable((uintptr_t)s, scanned, &bad, &value))
+      firstUnaddressable((uintptr_t)s, scanned, &bad, &value,
+                         (uintptr_t)__builtin_frame_address(0)))
     weavecRtFail(value == WeavecRtShadowHeapFreed ? "heap-use-after-free"
                                                   : "unterminated-string",
                  (uintptr_t)s, scanned, site);
@@ -245,7 +380,8 @@ uint64_t __weavec_rt_strlen(const char *s, uint64_t max,
   if (max >= 32 && (start & 4095) <= 4096 - 32 && weavecRtShadowReady() &&
       weavecRtInWindow(start + 32)) {
     const unsigned char *shadow = weavecRtShadowOf(start);
-    if ((shadow[0] | shadow[1] | ((start & 15) != 0 ? shadow[2] : 0)) == 0) {
+    if (((shadow[0] | shadow[1] | ((start & 15) != 0 ? shadow[2] : 0)) &
+         0x80) == 0) {
       uint64_t words[4];
       unsigned i;
       memcpy(words, s, sizeof words);
@@ -263,32 +399,82 @@ uint64_t __weavec_rt_strlen(const char *s, uint64_t max,
 
 /*===-- Frames (section 3) -------------------------------------------------===*/
 
-uintptr_t weavecRtStackTop(void) {
-  static __thread uintptr_t top;
-  if (top == 0) {
-    pthread_t self = pthread_self();
+/* The calling thread's own stack, [low, top), cached per thread. */
+static __thread uintptr_t stackLow;
+static __thread uintptr_t stackHigh;
+
+static void readStack(void) {
+  pthread_t self = pthread_self();
 #if defined(__APPLE__)
-    top = (uintptr_t)pthread_get_stackaddr_np(self);
+  stackHigh = (uintptr_t)pthread_get_stackaddr_np(self);
+  stackLow = stackHigh - pthread_get_stacksize_np(self);
 #elif defined(__linux__)
-    pthread_attr_t attributes;
-    void *low = NULL;
-    size_t size = 0;
-    if (pthread_getattr_np(self, &attributes) == 0) {
-      if (pthread_attr_getstack(&attributes, &low, &size) == 0 && low != NULL)
-        top = (uintptr_t)low + size;
-      (void)pthread_attr_destroy(&attributes);
+  pthread_attr_t attributes;
+  void *low = NULL;
+  size_t size = 0;
+  if (pthread_getattr_np(self, &attributes) == 0) {
+    if (pthread_attr_getstack(&attributes, &low, &size) == 0 && low != NULL) {
+      stackLow = (uintptr_t)low;
+      stackHigh = (uintptr_t)low + size;
     }
-#else
-    (void)self;
-#endif
+    (void)pthread_attr_destroy(&attributes);
   }
-  return top;
+#else
+  (void)self;
+#endif
+}
+
+uintptr_t weavecRtStackTop(void) {
+  if (stackHigh == 0)
+    readStack();
+  return stackHigh;
+}
+
+uintptr_t weavecRtStackBottom(void) {
+  if (stackHigh == 0)
+    readStack();
+  return stackLow;
+}
+
+/* Whether [address, end) overlaps the calling thread's own stack. Another
+ * stack (a coroutine's, an alternate signal stack) has no known extent: a
+ * frame's or an object's shadow on it is written up to 1 GiB, as
+ * __weavec_rt_unpoison_stack's is. */
+static int onOwnStack(uintptr_t address, uintptr_t end) {
+  const uintptr_t top = weavecRtStackTop();
+  return top != 0 && address < top && end > weavecRtStackBottom();
+}
+
+/* RFC 0037 section 4: a run of a frame's shadow too long for stores, for
+ * the part of [address, address + bytes) that lies on the calling thread's
+ * stack: a frame larger than the stack cannot be used without leaving it,
+ * and its first access faults, as without WeaveC. */
+void __weavec_rt_frame_shadow(uintptr_t address, uint64_t bytes,
+                              uint64_t value) {
+  uintptr_t end;
+  if (__builtin_add_overflow(address, (uintptr_t)bytes, &end))
+    end = ~(uintptr_t)0;
+  if (onOwnStack(address, end)) {
+    if (address < weavecRtStackBottom())
+      address = weavecRtStackBottom();
+    if (end > weavecRtStackTop())
+      end = weavecRtStackTop();
+  } else if (end - address > ((uintptr_t)1 << 30)) {
+    return;
+  }
+  if (end <= address)
+    return;
+  if (value == WeavecRtShadowAddressable)
+    weavecRtShadowClear(address, end);
+  else
+    weavecRtShadowSet(address, end - address, (unsigned char)value);
 }
 
 void __weavec_rt_unpoison_stack(void) {
   const uintptr_t low = (uintptr_t)__builtin_frame_address(0);
   const uintptr_t top = weavecRtStackTop();
   weavecRtCount(WeavecRtStatStackUnpoisons);
+  stackLostColors = 1;
   /* A stack the thread runs on that is not its own (a coroutine's, an
    * alternate signal stack) is left alone: its extent is not known. */
   if (top > low && top - low <= ((uintptr_t)1 << 30))
@@ -298,9 +484,17 @@ void __weavec_rt_unpoison_stack(void) {
 void __weavec_rt_alloca_poison(uintptr_t address, uint64_t size) {
   const uint64_t used = (size + 15) & ~(uint64_t)15;
   const uint64_t padded = ((size + 31) & ~(uint64_t)31) + 32;
-  if ((address & 15) != 0)
+  uintptr_t end;
+  /* RFC 0037 section 4: an object that does not fit on the thread's stack
+   * (a variable-length array of negative size wraps to one) is not written:
+   * its first access leaves the stack and faults, as without WeaveC. */
+  if ((address & 15) != 0 || padded < size ||
+      __builtin_add_overflow(address, (uintptr_t)padded, &end) ||
+      (onOwnStack(address, end)
+           ? end > weavecRtStackTop() || address < weavecRtStackBottom()
+           : padded > ((uint64_t)1 << 30)))
     return;
-  weavecRtShadowObject(address, size, WeavecRtShadowStackDynamic);
+  weavecRtShadowObject(address, size, WeavecRtShadowStackDynamic, 0);
   weavecRtShadowSet(address + used, padded - used, WeavecRtShadowStackDynamic);
 }
 
@@ -310,6 +504,8 @@ void __weavec_rt_alloca_unpoison(uintptr_t low, uintptr_t high) {
 }
 
 /*===-- Globals (section 4) ------------------------------------------------===*/
+
+static uint64_t globalColors;
 
 void __weavec_rt_globals_register(const struct __weavec_rt_global *globals,
                                   uint64_t n) {
@@ -329,7 +525,11 @@ void __weavec_rt_globals_register(const struct __weavec_rt_global *globals,
     const uint64_t used = (global->size + 15) & ~(uint64_t)15;
     if ((global->address & 15) != 0 || global->padded < used)
       continue;
-    weavecRtShadowObject(global->address, global->size, WeavecRtShadowGlobal);
+    /* RFC 0037 section 7.2: the n-th global the process registers takes
+     * the n-th color, so that a unit's globals differ. */
+    weavecRtShadowObject(global->address, global->size, WeavecRtShadowGlobal,
+                         weavecRtColor(__atomic_fetch_add(
+                             &globalColors, 1, __ATOMIC_RELAXED)));
     if (global->padded > used)
       weavecRtShadowSet(global->address + used, global->padded - used,
                         WeavecRtShadowGlobal);
@@ -383,16 +583,18 @@ __ubsan_handle_out_of_bounds_abort(void *data, uintptr_t index);
 void __ubsan_handle_out_of_bounds(void *data, uintptr_t index) {
   const struct weavecRtUbsanOutOfBounds *bounds =
       (const struct weavecRtUbsanOutOfBounds *)data;
-  struct __weavec_rt_site site = {bounds->location.file, bounds->location.line,
-                                  bounds->location.column, WeavecRtSiteReport};
+  struct __weavec_rt_site site;
+  weavecRtSiteSet(&site, bounds->location.file, bounds->location.line,
+                  bounds->location.column, WeavecRtSiteReport);
   weavecRtFail("index-out-of-bounds", index, 0, &site);
 }
 
 void __ubsan_handle_out_of_bounds_abort(void *data, uintptr_t index) {
   const struct weavecRtUbsanOutOfBounds *bounds =
       (const struct weavecRtUbsanOutOfBounds *)data;
-  struct __weavec_rt_site site = {bounds->location.file, bounds->location.line,
-                                  bounds->location.column, 0};
+  struct __weavec_rt_site site;
+  weavecRtSiteSet(&site, bounds->location.file, bounds->location.line,
+                  bounds->location.column, 0);
   weavecRtFail("index-out-of-bounds", index, 0, &site);
   __builtin_trap();
 }

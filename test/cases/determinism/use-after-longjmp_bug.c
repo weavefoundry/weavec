@@ -1,7 +1,7 @@
 // A read through a local of a frame `longjmp` abandoned: the stack's shadow
 // is cleared before the jump (RFC 0035 §3.5), so the read passes. A use
 // after return, left to a later RFC (RFC 0036).
-// XFAIL: RFC 0036 leaves spatial determinism and use after return to a later RFC
+// XFAIL: longjmp clears the stack's shadow below its target, the abandoned frames too (RFC 0037 §9)
 // RUN-INPUT:
 #include <setjmp.h>
 #include <stdio.h>

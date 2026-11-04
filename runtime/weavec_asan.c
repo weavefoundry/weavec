@@ -69,17 +69,17 @@ void __asan_unpoison_memory_region(const volatile void *address, size_t size) {
   const uintptr_t start = (uintptr_t)address;
   const uintptr_t low = start & ~(uintptr_t)15;
   const uintptr_t end = start + size;
+  /* RFC 0037 section 7.2: in the color of the heap slot that holds it. */
+  const unsigned char color = weavecRtColorOfHeap(start);
   if (size == 0 || !weavecRtShadowReady() || !weavecRtInWindow(start))
     return;
   if ((end & ~(uintptr_t)15) > low)
-    memset(weavecRtShadowOf(low), WeavecRtShadowAddressable,
-           ((end & ~(uintptr_t)15) - low) >> 4);
+    memset(weavecRtShadowOf(low), color, ((end & ~(uintptr_t)15) - low) >> 4);
   if ((end & 15) != 0) {
     unsigned char *last = weavecRtShadowOf(end);
-    if (*last != WeavecRtShadowAddressable && *last < (end & 15))
-      *last = (unsigned char)(end & 15);
-    else if (*last >= WeavecRtShadowGranule)
-      *last = (unsigned char)(end & 15);
+    if (weavecRtShadowPoison(*last) ||
+        (!weavecRtShadowFull(*last) && weavecRtShadowBytes(*last) < (end & 15)))
+      *last = weavecRtShadowPartialOf(color, (unsigned)(end & 15));
   }
 }
 

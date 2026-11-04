@@ -123,6 +123,8 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
     enabled = value;
   } else if (name == "weavec-asan-compat") {
     asanCompat = value;
+  } else if (name == "weavec-colors") {
+    colors = value;
   } else if (name == "weavec-zero-init") {
     zeroInit = value;
   } else if (name == "weavec-summary") {
@@ -138,7 +140,7 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
 }
 
 llvm::StringRef driverFlagsHelp() {
-  return R"(WeaveC flags of weavec-cc (RFC 0036); every other flag is Clang's.
+  return R"(WeaveC flags of weavec-cc (RFC 0037); every other flag is Clang's.
 
   -fweavec, -fno-weavec
       Guard memory accesses (the default), or compile as plain Clang.
@@ -157,6 +159,9 @@ llvm::StringRef driverFlagsHelp() {
   -fweavec-asan-compat, -fno-weavec-asan-compat
       Compile as AddressSanitizer would for the source: __SANITIZE_ADDRESS__
       and __has_feature(address_sanitizer) (default: on).
+  -fweavec-colors, -fno-weavec-colors
+      Check an access computed from a pointer against the color of the
+      pointer's object, so that a jump into a neighbour traps (default: on).
 )";
 }
 
@@ -306,7 +311,8 @@ configureEnforcement(clang::CompilerInstance &compiler,
   auto ledger = std::make_shared<EnforcementLedger>();
   registerGuardPasses(codegen, GuardOptions{.mode = guardMode(weavec.checks),
                                             .unsafe = std::move(unsafe),
-                                            .ledger = ledger});
+                                            .ledger = ledger,
+                                            .colors = weavec.colors});
   return ledger;
 }
 

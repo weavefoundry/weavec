@@ -28,8 +28,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <arpa/inet.h>
+#include <net/if.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/uio.h>
+#include <sys/utsname.h>
+#include <time.h>
+#include <unistd.h>
+#include <wchar.h>
+#if defined(__APPLE__)
+#include <libgen.h>
+#include <sys/param.h>
+#include <sys/sysctl.h>
+#include <xlocale.h>
+#endif
 
 /* A range guard, inline when one shadow load decides it. */
 static inline void checkRange(uintptr_t address, uint64_t n,
@@ -48,20 +63,21 @@ static inline void checkLimit(const char *d, uint64_t n, size_t limit,
 }
 
 /* The site of a write: the pass marks the site of the call as a read. */
-static struct __weavec_rt_site writeSite(const struct __weavec_rt_site *site) {
-  struct __weavec_rt_site write = {0, 0, 0, WeavecRtSiteWrite};
-  if (site != NULL) {
-    write = *site;
-    write.flags |= WeavecRtSiteWrite;
-  }
-  return write;
+/* (Filled in place: a site's file is relative to the record, so a copy
+ * returned by value would lose it.) */
+static void writeSite(struct __weavec_rt_site *write,
+                      const struct __weavec_rt_site *site) {
+  weavecRtSiteSet(write, weavecRtSiteFile(site), site ? site->line : 0,
+                  site ? site->column : 0,
+                  (site ? site->flags : 0) | WeavecRtSiteWrite);
 }
 
 /* Copies the string at s and its terminator to d, checked; its length. */
 static uint64_t copyString(char *d, const char *s, size_t limit,
                            const struct __weavec_rt_site *site) {
   const uint64_t n = __weavec_rt_strlen(s, ~(uint64_t)0, site);
-  const struct __weavec_rt_site write = writeSite(site);
+  struct __weavec_rt_site write;
+  writeSite(&write, site);
   checkRange((uintptr_t)s, n + 1, site);
   checkRange((uintptr_t)d, n + 1, &write);
   checkLimit(d, n + 1, limit, &write);
@@ -87,7 +103,8 @@ char *__weavec_rt_strcat(char *d, const char *s, size_t limit,
                          const struct __weavec_rt_site *site) {
   const uint64_t at = __weavec_rt_strlen(d, ~(uint64_t)0, site);
   const uint64_t n = __weavec_rt_strlen(s, ~(uint64_t)0, site);
-  const struct __weavec_rt_site write = writeSite(site);
+  struct __weavec_rt_site write;
+  writeSite(&write, site);
   checkRange((uintptr_t)d, at + n + 1, &write);
   checkLimit(d, at + n + 1, limit, &write);
   memcpy(d + at, s, (size_t)n + 1);
@@ -151,7 +168,7 @@ static int use(struct FormatUse *uses, int *count, int index,
 static void checkFormat(const char *format, va_list arguments,
                         const struct __weavec_rt_site *site) {
   struct __weavec_rt_site string = {0, 0, 0, WeavecRtSiteNullOk};
-  struct __weavec_rt_site target = writeSite(site);
+  struct __weavec_rt_site target;
   struct FormatUse uses[FormatArguments];
   intptr_t values[FormatArguments];
   const char *at;
@@ -161,10 +178,10 @@ static void checkFormat(const char *format, va_list arguments,
   va_list walk;
   if (format == NULL)
     return;
-  if (site != NULL) {
-    string = *site;
-    string.flags |= WeavecRtSiteNullOk;
-  }
+  writeSite(&target, site);
+  if (site != NULL)
+    weavecRtSiteSet(&string, weavecRtSiteFile(site), site->line, site->column,
+                    site->flags | WeavecRtSiteNullOk);
   memset(uses, 0, sizeof uses);
   /* The arguments the format reads, and how. */
   for (at = format; *at != 0; ++at) {
@@ -332,7 +349,8 @@ static void checkFormat(const char *format, va_list arguments,
  * conversion it does not know) is checked up to there. */
 static void checkScanned(const char *format, va_list arguments, int assigned,
                          const struct __weavec_rt_site *site) {
-  const struct __weavec_rt_site write = writeSite(site);
+  struct __weavec_rt_site write;
+  writeSite(&write, site);
   const char *at;
   int index = 0;
   va_list walk;
@@ -503,7 +521,8 @@ int __weavec_rt_vsnprintf(char *d, size_t n, const char *format,
     if (length >= 0) {
       const uint64_t written =
           (uint64_t)length + 1 < n ? (uint64_t)length + 1 : n;
-      const struct __weavec_rt_site write = writeSite(site);
+      struct __weavec_rt_site write;
+  writeSite(&write, site);
       checkRange((uintptr_t)d, written, &write);
       checkLimit(d, written, limit, &write);
     }
@@ -532,7 +551,8 @@ int __weavec_rt_vsprintf(char *d, const char *format, va_list arguments,
   if (length < 0)
     return length;
   {
-    const struct __weavec_rt_site write = writeSite(site);
+    struct __weavec_rt_site write;
+  writeSite(&write, site);
     checkRange((uintptr_t)d, (uint64_t)length + 1, &write);
     checkLimit(d, (uint64_t)length + 1, limit, &write);
   }
@@ -553,7 +573,8 @@ int __weavec_rt_sprintf(const struct __weavec_rt_site *site, size_t limit,
  * written. */
 char *__weavec_rt_gets(char *d, size_t limit,
                        const struct __weavec_rt_site *site) {
-  const struct __weavec_rt_site write = writeSite(site);
+  struct __weavec_rt_site write;
+  writeSite(&write, site);
   uint64_t n = 0;
   int c;
   /* Byte by byte, each next to the last: the first that is not addressable
@@ -687,7 +708,8 @@ static void parsed(const char *s, char *end, char **out,
   }
   checkRange((uintptr_t)s, read, site);
   if (out != NULL) {
-    const struct __weavec_rt_site write = writeSite(site);
+    struct __weavec_rt_site write;
+  writeSite(&write, site);
     checkRange((uintptr_t)out, sizeof *out, &write);
     *out = end;
   }
@@ -741,4 +763,419 @@ long long __weavec_rt_atoll(const char *s,
 
 double __weavec_rt_atof(const char *s, const struct __weavec_rt_site *site) {
   return __weavec_rt_strtod(s, NULL, site);
+}
+
+/*===-- Bytes a C type or a structure gives (RFC 0037 section 5) -----------===*/
+
+/* The calls whose bytes are a type's size (the runtime is compiled with the
+ * target's headers), a length read through a pointer, or the buffers an
+ * array of iovec names: checked before the call, and the lengths it reports
+ * writing after it. */
+
+static void checkWrite(const void *p, uint64_t n,
+                       const struct __weavec_rt_site *site) {
+  struct __weavec_rt_site write;
+  writeSite(&write, site);
+  checkRange((uintptr_t)p, n, &write);
+}
+
+static void checkVectors(const struct iovec *v, int count, int write,
+                         const struct __weavec_rt_site *site) {
+  int i;
+  if (count <= 0)
+    return;
+  checkRange((uintptr_t)v, (uint64_t)count * sizeof *v, site);
+  for (i = 0; i < count; ++i) {
+    if (write)
+      checkWrite(v[i].iov_base, v[i].iov_len, site);
+    else
+      checkRange((uintptr_t)v[i].iov_base, v[i].iov_len, site);
+  }
+}
+
+long __weavec_rt_readv(int fd, const struct iovec *v, int count,
+                       const struct __weavec_rt_site *site) {
+  checkVectors(v, count, 1, site);
+  return readv(fd, v, count);
+}
+
+long __weavec_rt_writev(int fd, const struct iovec *v, int count,
+                        const struct __weavec_rt_site *site) {
+  checkVectors(v, count, 0, site);
+  return writev(fd, v, count);
+}
+
+long __weavec_rt_preadv(int fd, const struct iovec *v, int count,
+                        int64_t offset, const struct __weavec_rt_site *site) {
+  checkVectors(v, count, 1, site);
+  return preadv(fd, v, count, (off_t)offset);
+}
+
+long __weavec_rt_pwritev(int fd, const struct iovec *v, int count,
+                         int64_t offset, const struct __weavec_rt_site *site) {
+  checkVectors(v, count, 0, site);
+  return pwritev(fd, v, count, (off_t)offset);
+}
+
+/* A message's header, its address, its vectors and its control data. */
+static void checkMessage(const struct msghdr *m, int write,
+                         const struct __weavec_rt_site *site) {
+  if (write)
+    checkWrite(m, sizeof *m, site);
+  else
+    checkRange((uintptr_t)m, sizeof *m, site);
+  if (m->msg_name != NULL) {
+    if (write)
+      checkWrite(m->msg_name, m->msg_namelen, site);
+    else
+      checkRange((uintptr_t)m->msg_name, m->msg_namelen, site);
+  }
+  checkVectors(m->msg_iov, (int)m->msg_iovlen, write, site);
+  if (m->msg_control != NULL) {
+    if (write)
+      checkWrite(m->msg_control, m->msg_controllen, site);
+    else
+      checkRange((uintptr_t)m->msg_control, m->msg_controllen, site);
+  }
+}
+
+long __weavec_rt_recvmsg(int fd, struct msghdr *m, int flags,
+                         const struct __weavec_rt_site *site) {
+  checkMessage(m, 1, site);
+  return recvmsg(fd, m, flags);
+}
+
+long __weavec_rt_sendmsg(int fd, const struct msghdr *m, int flags,
+                         const struct __weavec_rt_site *site) {
+  checkMessage(m, 0, site);
+  return sendmsg(fd, m, flags);
+}
+
+/* A line buffer of the capacity the caller states (the call may write all
+ * of it before it grows it). */
+static void checkLine(char **line, size_t *n,
+                      const struct __weavec_rt_site *site) {
+  checkWrite(line, sizeof *line, site);
+  checkWrite(n, sizeof *n, site);
+  if (*line != NULL && *n != 0)
+    checkWrite(*line, *n, site);
+}
+
+long __weavec_rt_getline(char **line, size_t *n, FILE *stream,
+                         const struct __weavec_rt_site *site) {
+  checkLine(line, n, site);
+  return getline(line, n, stream);
+}
+
+long __weavec_rt_getdelim(char **line, size_t *n, int delimiter, FILE *stream,
+                          const struct __weavec_rt_site *site) {
+  checkLine(line, n, site);
+  return getdelim(line, n, delimiter, stream);
+}
+
+/* The bytes of an address of the family (4 or 16), or 0 for another. */
+static uint64_t familyBytes(int family) {
+  return family == AF_INET ? 4 : family == AF_INET6 ? 16 : 0;
+}
+
+int __weavec_rt_inet_pton(int family, const char *text, void *address,
+                          const struct __weavec_rt_site *site) {
+  (void)__weavec_rt_strlen(text, ~(uint64_t)0, site);
+  checkWrite(address, familyBytes(family), site);
+  return inet_pton(family, text, address);
+}
+
+const char *__weavec_rt_inet_ntop(int family, const void *address, char *text,
+                                  unsigned size,
+                                  const struct __weavec_rt_site *site) {
+  checkRange((uintptr_t)address, familyBytes(family), site);
+  checkWrite(text, size, site);
+  return inet_ntop(family, address, text, (socklen_t)size);
+}
+
+int __weavec_rt_stat(const char *path, struct stat *out,
+                     const struct __weavec_rt_site *site) {
+  (void)__weavec_rt_strlen(path, ~(uint64_t)0, site);
+  checkWrite(out, sizeof *out, site);
+  return stat(path, out);
+}
+
+int __weavec_rt_lstat(const char *path, struct stat *out,
+                      const struct __weavec_rt_site *site) {
+  (void)__weavec_rt_strlen(path, ~(uint64_t)0, site);
+  checkWrite(out, sizeof *out, site);
+  return lstat(path, out);
+}
+
+int __weavec_rt_fstat(int fd, struct stat *out,
+                      const struct __weavec_rt_site *site) {
+  checkWrite(out, sizeof *out, site);
+  return fstat(fd, out);
+}
+
+int __weavec_rt_fstatat(int fd, const char *path, struct stat *out, int flags,
+                        const struct __weavec_rt_site *site) {
+  (void)__weavec_rt_strlen(path, ~(uint64_t)0, site);
+  checkWrite(out, sizeof *out, site);
+  return fstatat(fd, path, out, flags);
+}
+
+struct tm *__weavec_rt_gmtime_r(const long *time, struct tm *out,
+                                const struct __weavec_rt_site *site) {
+  checkRange((uintptr_t)time, sizeof(time_t), site);
+  checkWrite(out, sizeof *out, site);
+  return gmtime_r((const time_t *)time, out);
+}
+
+struct tm *__weavec_rt_localtime_r(const long *time, struct tm *out,
+                                   const struct __weavec_rt_site *site) {
+  checkRange((uintptr_t)time, sizeof(time_t), site);
+  checkWrite(out, sizeof *out, site);
+  return localtime_r((const time_t *)time, out);
+}
+
+int __weavec_rt_uname(struct utsname *out,
+                      const struct __weavec_rt_site *site) {
+  checkWrite(out, sizeof *out, site);
+  return uname(out);
+}
+
+/* A buffer whose length the caller passes through `length` (a socklen_t
+ * the call reads and writes). */
+static void checkLength(const void *buffer, const unsigned *length,
+                        const struct __weavec_rt_site *site) {
+  if (buffer == NULL || length == NULL)
+    return;
+  checkWrite(length, sizeof *length, site);
+  checkWrite(buffer, *length, site);
+}
+
+int __weavec_rt_getsockopt(int fd, int level, int name, void *value,
+                           unsigned *length,
+                           const struct __weavec_rt_site *site) {
+  checkLength(value, length, site);
+  return getsockopt(fd, level, name, value, (socklen_t *)length);
+}
+
+int __weavec_rt_getsockname(int fd, struct sockaddr *address, unsigned *length,
+                            const struct __weavec_rt_site *site) {
+  checkLength(address, length, site);
+  return getsockname(fd, address, (socklen_t *)length);
+}
+
+int __weavec_rt_getpeername(int fd, struct sockaddr *address, unsigned *length,
+                            const struct __weavec_rt_site *site) {
+  checkLength(address, length, site);
+  return getpeername(fd, address, (socklen_t *)length);
+}
+
+int __weavec_rt_accept(int fd, struct sockaddr *address, unsigned *length,
+                       const struct __weavec_rt_site *site) {
+  checkLength(address, length, site);
+  return accept(fd, address, (socklen_t *)length);
+}
+
+long __weavec_rt_recvfrom(int fd, void *buffer, size_t n, int flags,
+                          struct sockaddr *address, unsigned *length,
+                          size_t limit, const struct __weavec_rt_site *site) {
+  struct __weavec_rt_site write;
+  writeSite(&write, site);
+  checkWrite(buffer, n, site);
+  checkLimit((const char *)buffer, n, limit, &write);
+  checkLength(address, length, site);
+  return recvfrom(fd, buffer, n, flags, address, (socklen_t *)length);
+}
+
+char *__weavec_rt_if_indextoname(unsigned index, char *name,
+                                 const struct __weavec_rt_site *site) {
+  checkWrite(name, IF_NAMESIZE, site);
+  return if_indextoname(index, name);
+}
+
+/* The narrow printf family, whose format may not be a constant: its %s and
+ * %n arguments are checked as the format is read. */
+
+int __weavec_rt_vprintf(const char *format, va_list arguments,
+                        const struct __weavec_rt_site *site) {
+  checkFormat(format, arguments, site);
+  return vprintf(format, arguments);
+}
+
+int __weavec_rt_printf(const struct __weavec_rt_site *site, const char *format,
+                       ...) {
+  va_list arguments;
+  int result;
+  va_start(arguments, format);
+  result = __weavec_rt_vprintf(format, arguments, site);
+  va_end(arguments);
+  return result;
+}
+
+int __weavec_rt_vfprintf(FILE *stream, const char *format, va_list arguments,
+                         const struct __weavec_rt_site *site) {
+  checkFormat(format, arguments, site);
+  return vfprintf(stream, format, arguments);
+}
+
+int __weavec_rt_fprintf(const struct __weavec_rt_site *site, FILE *stream,
+                        const char *format, ...) {
+  va_list arguments;
+  int result;
+  va_start(arguments, format);
+  result = __weavec_rt_vfprintf(stream, format, arguments, site);
+  va_end(arguments);
+  return result;
+}
+
+int __weavec_rt_vdprintf(int fd, const char *format, va_list arguments,
+                         const struct __weavec_rt_site *site) {
+  checkFormat(format, arguments, site);
+  return vdprintf(fd, format, arguments);
+}
+
+int __weavec_rt_dprintf(const struct __weavec_rt_site *site, int fd,
+                        const char *format, ...) {
+  va_list arguments;
+  int result;
+  va_start(arguments, format);
+  result = __weavec_rt_vdprintf(fd, format, arguments, site);
+  va_end(arguments);
+  return result;
+}
+
+int __weavec_rt_vasprintf(char **out, const char *format, va_list arguments,
+                          const struct __weavec_rt_site *site) {
+  checkWrite(out, sizeof *out, site);
+  checkFormat(format, arguments, site);
+  return vasprintf(out, format, arguments);
+}
+
+int __weavec_rt_asprintf(const struct __weavec_rt_site *site, char **out,
+                         const char *format, ...) {
+  va_list arguments;
+  int result;
+  va_start(arguments, format);
+  result = __weavec_rt_vasprintf(out, format, arguments, site);
+  va_end(arguments);
+  return result;
+}
+
+#if defined(__APPLE__)
+
+int __weavec_rt_sysctl(int *name, unsigned count, void *old, size_t *length,
+                       void *new_, size_t newLength,
+                       const struct __weavec_rt_site *site) {
+  checkRange((uintptr_t)name, (uint64_t)count * sizeof *name, site);
+  if (old != NULL && length != NULL) {
+    checkWrite(length, sizeof *length, site);
+    checkWrite(old, *length, site);
+  }
+  if (new_ != NULL)
+    checkRange((uintptr_t)new_, newLength, site);
+  return sysctl(name, count, old, length, new_, newLength);
+}
+
+int __weavec_rt_sysctlbyname(const char *name, void *old, size_t *length,
+                             void *new_, size_t newLength,
+                             const struct __weavec_rt_site *site) {
+  (void)__weavec_rt_strlen(name, ~(uint64_t)0, site);
+  if (old != NULL && length != NULL) {
+    checkWrite(length, sizeof *length, site);
+    checkWrite(old, *length, site);
+  }
+  if (new_ != NULL)
+    checkRange((uintptr_t)new_, newLength, site);
+  return sysctlbyname(name, old, length, new_, newLength);
+}
+
+char *__weavec_rt_basename_r(const char *path, char *base,
+                             const struct __weavec_rt_site *site) {
+  if (path != NULL)
+    (void)__weavec_rt_strlen(path, ~(uint64_t)0, site);
+  checkWrite(base, MAXPATHLEN, site);
+  return basename_r(path, base);
+}
+
+char *__weavec_rt_dirname_r(const char *path, char *base,
+                            const struct __weavec_rt_site *site) {
+  if (path != NULL)
+    (void)__weavec_rt_strlen(path, ~(uint64_t)0, site);
+  checkWrite(base, MAXPATHLEN, site);
+  return dirname_r(path, base);
+}
+
+/* Darwin's xlocale forms of the formatted writes. */
+int __weavec_rt_vsnprintf_l(char *d, size_t n, void *locale, const char *format,
+                            va_list arguments,
+                            const struct __weavec_rt_site *site) {
+  checkFormat(format, arguments, site);
+  if (n != 0) {
+    va_list copy;
+    int length;
+    va_copy(copy, arguments);
+    length = vsnprintf_l(NULL, 0, (locale_t)locale, format, copy);
+    va_end(copy);
+    if (length >= 0)
+      checkWrite(d, (uint64_t)length + 1 < n ? (uint64_t)length + 1 : n, site);
+  }
+  return vsnprintf_l(d, n, (locale_t)locale, format, arguments);
+}
+
+int __weavec_rt_snprintf_l(const struct __weavec_rt_site *site, char *d,
+                           size_t n, void *locale, const char *format, ...) {
+  va_list arguments;
+  int result;
+  va_start(arguments, format);
+  result = __weavec_rt_vsnprintf_l(d, n, locale, format, arguments, site);
+  va_end(arguments);
+  return result;
+}
+
+int __weavec_rt_sprintf_l(const struct __weavec_rt_site *site, char *d,
+                          void *locale, const char *format, ...) {
+  va_list arguments;
+  va_list copy;
+  int length;
+  va_start(arguments, format);
+  checkFormat(format, arguments, site);
+  va_copy(copy, arguments);
+  length = vsnprintf_l(NULL, 0, (locale_t)locale, format, copy);
+  va_end(copy);
+  if (length >= 0) {
+    checkWrite(d, (uint64_t)length + 1, site);
+    length = vsnprintf_l(d, (size_t)length + 1, (locale_t)locale, format,
+                         arguments);
+  }
+  va_end(arguments);
+  return length;
+}
+
+#endif
+
+/* RFC 0037 section 5: a wide string's length in elements, at most `max`,
+ * each element checked before it is read, so that an unterminated string
+ * is reported before a byte past its object is read (wide strings are
+ * rare; a reported one is then measured as the call would). */
+uint64_t __weavec_rt_wcslen(const wchar_t *s, uint64_t max,
+                            const struct __weavec_rt_site *site) {
+  uint64_t length;
+  if (s == NULL) {
+    if (site == NULL || (site->flags & WeavecRtSiteNullOk) == 0)
+      weavecRtFail("null-dereference", 0, sizeof *s, site);
+    return 0;
+  }
+  for (length = 0; length < max; ++length) {
+    const uintptr_t at = (uintptr_t)(s + length);
+    if (!weavecRtQuickOk(at, sizeof *s) &&
+        !__weavec_rt_range_ok(at, sizeof *s)) {
+      weavecRtFail("unterminated-string", (uintptr_t)s,
+                   (length + 1) * sizeof *s, site);
+      return length + wcsnlen(s + length, max - length > (size_t)-1
+                                              ? (size_t)-1
+                                              : (size_t)(max - length));
+    }
+    if (s[length] == 0)
+      return length;
+  }
+  return max;
 }

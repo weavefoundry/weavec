@@ -125,13 +125,13 @@ strndup (r:bytes(min(a1,strlen(a0)+1)):null-if-zero(a1), int) -> ptr;
 wcsdup (r:str) -> ptr wide;
 
 asprintf (w:bytes(8), r:str, ...) -> int printf(1,2) \
-    chk(__asprintf_chk:0,_,1,2);
+    chk(__asprintf_chk:0,_,1,2) wrapper(asprintf);
 vasprintf (w:bytes(8), r:str, other) -> int printf(1,2) \
-    chk(__vasprintf_chk:0,_,1,2);
+    chk(__vasprintf_chk:0,_,1,2) wrapper(vasprintf);
 # The buffer is reallocated in place of the old one, and stays allocated
 # after a failed read: it is freed on every path.
-getline (rw:null-ok:bytes(8), rw:null-ok, rw) -> int;
-getdelim (rw:null-ok:bytes(8), rw:null-ok, int, rw) -> int;
+getline (rw:null-ok:bytes(8), rw:null-ok, rw) -> int wrapper(getline);
+getdelim (rw:null-ok:bytes(8), rw:null-ok, int, rw) -> int wrapper(getdelim);
 tempnam (r:str:null-ok, r:str:null-ok) -> ptr;
 
 # getcwd(NULL, n) allocates (glibc, BSD, macOS).
@@ -303,10 +303,12 @@ puts (r:str:null-ok) -> int;
 fputs (r:str:null-ok, rw) -> int;
 perror (r:str:null-ok) -> void;
 printf (r:str, ...) -> int printf(0,1) chk(__builtin___printf_chk:_,0,1) \
-    chk(__printf_chk:_,0,1);
+    chk(__printf_chk:_,0,1) wrapper(printf);
 fprintf (rw, r:str, ...) -> int printf(1,2) \
-    chk(__builtin___fprintf_chk:0,_,1,2) chk(__fprintf_chk:0,_,1,2);
-dprintf (int, r:str, ...) -> int printf(1,2) chk(__dprintf_chk:0,_,1,2);
+    chk(__builtin___fprintf_chk:0,_,1,2) chk(__fprintf_chk:0,_,1,2) \
+    wrapper(fprintf);
+dprintf (int, r:str, ...) -> int printf(1,2) chk(__dprintf_chk:0,_,1,2) \
+    wrapper(dprintf);
 sprintf (w, r:str, ...) -> int printf(1,2) wrapper(sprintf) \
     chk(__builtin___sprintf_chk:0,_,size,1,2) \
     chk(__sprintf_chk:0,_,size,1,2);
@@ -314,10 +316,12 @@ snprintf (w:bytes(a1):null-if-zero(a1), int, r:str, ...) -> int printf(2,3) \
     wrapper(snprintf) chk(__builtin___snprintf_chk:0,1,_,size,2,3) \
     chk(__snprintf_chk:0,1,_,size,2,3);
 vprintf (r:str, other) -> int printf(0,1) chk(__builtin___vprintf_chk:_,0,1) \
-    chk(__vprintf_chk:_,0,1);
+    chk(__vprintf_chk:_,0,1) wrapper(vprintf);
 vfprintf (rw, r:str, other) -> int printf(1,2) \
-    chk(__builtin___vfprintf_chk:0,_,1,2) chk(__vfprintf_chk:0,_,1,2);
-vdprintf (int, r:str, other) -> int printf(1,2) chk(__vdprintf_chk:0,_,1,2);
+    chk(__builtin___vfprintf_chk:0,_,1,2) chk(__vfprintf_chk:0,_,1,2) \
+    wrapper(vfprintf);
+vdprintf (int, r:str, other) -> int printf(1,2) chk(__vdprintf_chk:0,_,1,2) \
+    wrapper(vdprintf);
 vsprintf (w, r:str, other) -> int printf(1,2) wrapper(vsprintf) \
     chk(__builtin___vsprintf_chk:0,_,size,1,2) \
     chk(__vsprintf_chk:0,_,size,1,2);
@@ -478,10 +482,10 @@ open (r:str, int, ...) -> int chk(__open_2:0,1);
 openat (int, r:str, int, ...) -> int chk(__openat_2:0,1,2);
 creat (r:str, int) -> int;
 
-stat (r:str, w) -> int;
-fstat (int, w) -> int;
-lstat (r:str, w) -> int;
-fstatat (int, r:str, w, int) -> int;
+stat (r:str, w) -> int wrapper(stat);
+fstat (int, w) -> int wrapper(fstat);
+lstat (r:str, w) -> int wrapper(lstat);
+fstatat (int, r:str, w, int) -> int wrapper(fstatat);
 chmod (r:str, int) -> int;
 fchmodat (int, r:str, int, int) -> int;
 mkdir (r:str, int) -> int;
@@ -536,8 +540,8 @@ gmtime (r) -> ptr;
 localtime (r) -> ptr;
 asctime_r (r, w:bytes(26)) -> ptr;
 ctime_r (r, w:bytes(26)) -> ptr;
-gmtime_r (r, w) -> ptr;
-localtime_r (r, w) -> ptr;
+gmtime_r (r, w) -> ptr wrapper(gmtime_r);
+localtime_r (r, w) -> ptr wrapper(localtime_r);
 strftime (w:bytes(a1):null-if-zero(a1), int, r:str, r) -> int;
 strftime_l (w:bytes(a1):null-if-zero(a1), int, r:str, r, none:null-ok) -> \
     int;
@@ -629,7 +633,7 @@ openlog (r:str:null-ok, int, int) -> void;
 syslog (int, r:str, ...) -> void printf(1,2) chk(__syslog_chk:0,_,1,2);
 vsyslog (int, r:str, other) -> void printf(1,2) chk(__vsyslog_chk:0,_,1,2);
 
-uname (w) -> int;
+uname (w) -> int wrapper(uname);
 
 getrlimit (int, w) -> int;
 setrlimit (int, r) -> int;
@@ -800,21 +804,21 @@ kevent (int, r:bytes(a2*32):null-if-zero(a2), int, \
 socketpair (int, int, int, w:bytes(8)) -> int;
 bind (int, r:bytes(a2):null-if-zero(a2), int) -> int;
 connect (int, r:bytes(a2):null-if-zero(a2), int) -> int;
-accept (int, w:null-ok, rw:null-ok) -> int;
+accept (int, w:null-ok, rw:null-ok) -> int wrapper(accept);
 accept4 (int, w:null-ok, rw:null-ok, int) -> int;
 send (int, r:bytes(a2):null-if-zero(a2), int, int) -> int;
 sendto (int, r:bytes(a2):null-if-zero(a2), int, int, r:bytes(a5):null-ok, \
     int) -> int;
-sendmsg (int, r, int) -> int;
+sendmsg (int, r, int) -> int wrapper(sendmsg);
 recv (int, w:bytes(a2):null-if-zero(a2), int, int) -> int \
     chk(__recv_chk:0,1,2,size,3);
 recvfrom (int, w:bytes(a2):null-if-zero(a2), int, int, w:null-ok, rw:null-ok) \
-    -> int chk(__recvfrom_chk:0,1,2,size,3,4,5);
-recvmsg (int, rw, int) -> int;
-getsockopt (int, int, int, w:null-ok, rw) -> int;
+    -> int chk(__recvfrom_chk:0,1,2,size,3,4,5) wrapper(recvfrom);
+recvmsg (int, rw, int) -> int wrapper(recvmsg);
+getsockopt (int, int, int, w:null-ok, rw) -> int wrapper(getsockopt);
 setsockopt (int, int, int, r:bytes(a4):null-if-zero(a4), int) -> int;
-getsockname (int, w, rw) -> int;
-getpeername (int, w, rw) -> int;
+getsockname (int, w, rw) -> int wrapper(getsockname);
+getpeername (int, w, rw) -> int wrapper(getpeername);
 
 getaddrinfo (r:str:null-ok, r:str:null-ok, r:null-ok, w:bytes(8)) -> int;
 getnameinfo (r:bytes(a1):null-ok, int, w:bytes(a3):null-ok, int, \
@@ -828,8 +832,8 @@ getprotobyname (r:str) -> ptr;
 herror (r:str:null-ok) -> void;
 
 # The address size depends on the family (4 or 16 bytes): one element.
-inet_ntop (int, r, w:bytes(a3), int) -> ptr;
-inet_pton (int, r:str, w) -> int;
+inet_ntop (int, r, w:bytes(a3), int) -> ptr wrapper(inet_ntop);
+inet_pton (int, r:str, w) -> int wrapper(inet_pton);
 inet_addr (r:str) -> int;
 inet_aton (r:str, w:null-ok) -> int;
 inet_network (r:str) -> int;
@@ -837,13 +841,15 @@ inet_network (r:str) -> int;
 getifaddrs (w:bytes(8)) -> int;
 
 if_nametoindex (r:str) -> int;
-if_indextoname (int, w) -> ptr;
+if_indextoname (int, w) -> ptr wrapper(if_indextoname);
 
-# Only the iovec array is described; the buffers it names are not.
-readv (int, r:bytes(a2*16):null-if-zero(a2), int) -> int;
-writev (int, r:bytes(a2*16):null-if-zero(a2), int) -> int;
-preadv (int, r:bytes(a2*16):null-if-zero(a2), int, int) -> int;
-pwritev (int, r:bytes(a2*16):null-if-zero(a2), int, int) -> int;
+# The wrappers check the iovec array and the buffers it names (RFC 0037
+# section 5).
+readv (int, r:bytes(a2*16):null-if-zero(a2), int) -> int wrapper(readv);
+writev (int, r:bytes(a2*16):null-if-zero(a2), int) -> int wrapper(writev);
+preadv (int, r:bytes(a2*16):null-if-zero(a2), int, int) -> int wrapper(preadv);
+pwritev (int, r:bytes(a2*16):null-if-zero(a2), int, int) -> int \
+    wrapper(pwritev);
 
 sendfile (int, int, rw:null-ok, int) -> int;
 
@@ -858,7 +864,17 @@ signalfd (int, r, int) -> int;
 
 sysinfo (w) -> int;
 
-sysctlbyname (r:str, w:null-ok, rw:null-ok, r:null-ok, int) -> int;
+sysctlbyname (r:str, w:null-ok, rw:null-ok, r:null-ok, int) -> int \
+    wrapper(sysctlbyname);
+# Darwin.
+sysctl (r, int, w:null-ok, rw:null-ok, r:null-ok, int) -> int wrapper(sysctl);
+basename_r (r:str:null-ok, w) -> ptr wrapper(basename_r);
+dirname_r (r:str:null-ok, w) -> ptr wrapper(dirname_r);
+sprintf_l (w, none:null-ok, r:str, ...) -> int printf(2,3) wrapper(sprintf_l);
+snprintf_l (w:bytes(a1):null-if-zero(a1), int, none:null-ok, r:str, ...) -> \
+    int printf(3,4) wrapper(snprintf_l);
+vsnprintf_l (w:bytes(a1):null-if-zero(a1), int, none:null-ok, r:str, other) \
+    -> int printf(3,4) wrapper(vsnprintf_l);
 
 shmctl (int, int, rw:null-ok) -> int;
 
@@ -945,9 +961,11 @@ wcstod (r:str, w:null-ok:bytes(8)) -> int wide;
 wcstof (r:str, w:null-ok:bytes(8)) -> int wide;
 wcstold (r:str, w:null-ok:bytes(8)) -> int wide;
 mbsinit (r:null-ok) -> int wide;
-mbrlen (r:bytes(min(a1,strlen(a0)+1)):null-ok, int, rw:null-ok) -> int wide;
+# Their strings are multibyte (narrow): not 'wide' (RFC 0037 §5 scans wide
+# strings in elements).
+mbrlen (r:bytes(min(a1,strlen(a0)+1)):null-ok, int, rw:null-ok) -> int;
 mbrtowc (w:null-ok, r:bytes(min(a2,strlen(a1)+1)):null-ok, int, rw:null-ok) \
-    -> int wide;
+    -> int;
 wcrtomb (w:null-ok, int, rw:null-ok) -> int chk(__wcrtomb_chk:0,1,2,size) \
     wide;
 mbsrtowcs (w:count(a2):null-ok, rw, int, rw:null-ok) -> int \
@@ -1025,6 +1043,18 @@ sincos (other, w, w) -> void;
 sincosf (other, w, w) -> void;
 sincosl (other, w, w) -> void;
 lgamma_r (other, w) -> int;
+
+#============================================================================
+# Generic atomics (RFC 0037 section 4)
+#============================================================================
+
+# The calls Clang emits for an atomic operation on an object too large to be
+# lock-free; the first argument is the object's size.
+__atomic_load (int, r:bytes(a0), w:bytes(a0), int) -> void;
+__atomic_store (int, w:bytes(a0), r:bytes(a0), int) -> void;
+__atomic_exchange (int, rw:bytes(a0), r:bytes(a0), w:bytes(a0), int) -> void;
+__atomic_compare_exchange (int, rw:bytes(a0), rw:bytes(a0), r:bytes(a0), \
+    int, int) -> int;
 
 #============================================================================
 # Assertions

@@ -1,7 +1,6 @@
 // A read through a pointer from one global that lands in the next: the
-// bytes are the next global's, so the shadow passes it. Left to the later
-// RFC on provenance bounds (RFC 0036).
-// XFAIL: RFC 0036 leaves spatial determinism and use after return to a later RFC
+// bytes are the next global's, which the redzone guard passes; the next
+// global has another color (RFC 0037 §8), so the read traps.
 // RUN-INPUT:
 #include <stdio.h>
 #include <stdlib.h>

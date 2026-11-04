@@ -67,6 +67,7 @@ KINDS = (
     "stack-use-after-scope", "dynamic-stack-buffer-overflow", "global-buffer-overflow",
     "intra-object-overflow", "use-after-poison", "null-dereference", "unterminated-string",
     "index-out-of-bounds", "invalid-release", "invalid-access", "overlapping-copy",
+    "memory-fault", "stack-use-after-return",
 )
 LEDGER_REASONS = {
     "GUARDED": ("access", "range", "string", "checked-call", "loop-range"),

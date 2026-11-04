@@ -21,12 +21,14 @@
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/MDBuilder.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <utility>
 
 namespace weavec::frontend {
@@ -121,12 +123,52 @@ bool Scopes::mayBeOutOfScope(const llvm::AllocaInst &alloca,
   return state;
 }
 
+std::optional<std::uint64_t> fieldLimit(const llvm::Value *pointer,
+                                        const llvm::DataLayout &layout) {
+  // (Not stripPointerCasts: that strips a first field's all-zero indices.)
+  const auto *gep = llvm::dyn_cast<llvm::GEPOperator>(pointer);
+  // An array's decay to its first element.
+  if (gep != nullptr && gep->getSourceElementType()->isArrayTy() &&
+      gep->hasAllZeroIndices())
+    gep = llvm::dyn_cast<llvm::GEPOperator>(gep->getPointerOperand());
+  if (gep == nullptr || gep->getNumIndices() < 2 ||
+      !gep->getSourceElementType()->isStructTy())
+    return std::nullopt;
+  const auto *first = llvm::dyn_cast<llvm::ConstantInt>(gep->getOperand(1));
+  if (first == nullptr || !first->isZero())
+    return std::nullopt;
+  llvm::Type *type = gep->getSourceElementType();
+  const llvm::StructType *parent = nullptr;
+  std::uint64_t field = 0;
+  for (unsigned i = 2; i < gep->getNumOperands(); ++i) {
+    const auto *index = llvm::dyn_cast<llvm::ConstantInt>(gep->getOperand(i));
+    if (index == nullptr)
+      return std::nullopt;
+    if (const auto *structure = llvm::dyn_cast<llvm::StructType>(type)) {
+      parent = structure;
+      field = index->getZExtValue();
+      type = structure->getElementType(static_cast<unsigned>(field));
+    } else if (const auto *array = llvm::dyn_cast<llvm::ArrayType>(type)) {
+      parent = nullptr;
+      type = array->getElementType();
+    } else {
+      return std::nullopt;
+    }
+  }
+  if (parent == nullptr || !type->isArrayTy() ||
+      field + 1 >= parent->getNumElements())
+    return std::nullopt;
+  return layout.getTypeAllocSize(type).getFixedValue();
+}
+
 bool skips(const llvm::Function &function) {
   // An available_externally body (a C99 inline definition) is guarded too:
   // the inliner copies it into this unit.
+  // A library thunk (RFC 0037 §5) is guarded: its call is the one checked.
   return function.isDeclaration() ||
          function.hasFnAttribute(llvm::Attribute::Naked) ||
-         ModuleContext::isRuntimeName(function.getName());
+         (ModuleContext::isRuntimeName(function.getName()) &&
+          !function.getName().starts_with(ThunkPrefix));
 }
 
 //===----------------------------------------------------------------------===//
@@ -308,6 +350,22 @@ llvm::FunctionCallee ModuleContext::nullFunction() {
   return callee;
 }
 
+llvm::FunctionCallee ModuleContext::jumpFunction() {
+  llvm::FunctionCallee callee = runtime(
+      "jump", llvm::FunctionType::get(llvm::Type::getVoidTy(context),
+                                      {i64, i64, i64, i64, ptr}, false));
+  slowPath(callee, module);
+  return callee;
+}
+
+llvm::FunctionCallee ModuleContext::guardJumpFunction() {
+  llvm::FunctionCallee callee = runtime(
+      "guard_jump", llvm::FunctionType::get(llvm::Type::getVoidTy(context),
+                                            {i64, i64, i64, i64, ptr}, false));
+  slowPath(callee, module);
+  return callee;
+}
+
 llvm::FunctionCallee ModuleContext::rangeFunction() {
   return runtime("range",
                  llvm::FunctionType::get(llvm::Type::getVoidTy(context),
@@ -400,15 +458,23 @@ llvm::Constant *ModuleContext::site(const llvm::DebugLoc &location,
   llvm::Constant *&record = sites[{file, line, column, flags}];
   if (record != nullptr)
     return record;
+  // RFC 0037 §11: the file as an offset from the record, so that the record
+  // is read-only data the loader does not relocate.
+  llvm::Type *i16 = llvm::Type::getInt16Ty(context);
   if (siteType == nullptr)
-    siteType = llvm::StructType::get(context, {ptr, i32, i32, i32});
-  auto *initializer = llvm::ConstantStruct::get(
-      siteType, {file, llvm::ConstantInt::get(i32, line),
-                 llvm::ConstantInt::get(i32, column),
-                 llvm::ConstantInt::get(i32, flags)});
+    siteType = llvm::StructType::get(context, {i64, i32, i16, i16});
   auto *global = new llvm::GlobalVariable(module, siteType, /*isConstant=*/true,
                                           llvm::GlobalValue::PrivateLinkage,
-                                          initializer, "__weavec.site");
+                                          nullptr, "__weavec.site");
+  llvm::Constant *offset =
+      file->isNullValue() ? llvm::ConstantInt::get(i64, 0)
+                          : llvm::ConstantExpr::getSub(
+                                llvm::ConstantExpr::getPtrToInt(file, i64),
+                                llvm::ConstantExpr::getPtrToInt(global, i64));
+  global->setInitializer(llvm::ConstantStruct::get(
+      siteType, {offset, llvm::ConstantInt::get(i32, line),
+                 llvm::ConstantInt::get(i16, std::min(column, 0xFFFFU)),
+                 llvm::ConstantInt::get(i16, flags)}));
   global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
   record = global;
   return record;
@@ -519,13 +585,22 @@ void FunctionContext::slowGuard(llvm::IRBuilder<> &builder,
 void FunctionContext::emitGuard(llvm::Instruction *before, llvm::Value *pointer,
                                 std::uint64_t width, llvm::Align alignment,
                                 llvm::Constant *site, llvm::Value *nullBase,
-                                llvm::ArrayRef<Member> members) {
+                                llvm::ArrayRef<Member> members,
+                                RootCheck root) {
   llvm::LLVMContext &context = module.context;
   llvm::IRBuilder<> builder(before);
   llvm::Value *address = builder.CreatePtrToInt(pointer, module.i64);
   const bool little = module.layout.isLittleEndian();
   if (width == 0)
     return;
+  // RFC 0037 §8.2: all but the one-granule form test the color apart.
+  const bool oneGranule =
+      width <= 16 && llvm::isPowerOf2_64(width) && alignment.value() >= width;
+  if (root && !oneGranule) {
+    colorCheck(before, address, llvm::ConstantInt::get(module.i64, width), site,
+               root);
+    builder.SetInsertPoint(before);
+  }
   if (width > 113 || (!little && width > 16)) {
     if (members.empty()) {
       builder.CreateCall(
@@ -540,21 +615,33 @@ void FunctionContext::emitGuard(llvm::Instruction *before, llvm::Value *pointer,
   const bool single =
       width <= 16 && llvm::isPowerOf2_64(width) && alignment.value() >= width;
   llvm::Value *nullTest = nullptr;
-  if (nullBase != nullptr)
-    nullTest = builder.CreateICmpEQ(
+  // A null root's shadow is poison, so the color test sends it to the
+  // check block, where the null test can wait.
+  const bool nullInCheck =
+      single && root && nullBase != nullptr && root.root == nullBase;
+  auto makeNullTest = [&](llvm::IRBuilder<> &at) {
+    return at.CreateICmpEQ(
         nullBase, llvm::ConstantPointerNull::get(
                       llvm::cast<llvm::PointerType>(nullBase->getType())));
+  };
+  if (nullBase != nullptr && !nullInCheck)
+    nullTest = makeNullTest(builder);
   llvm::Value *shadowAt = shadowAddress(builder, address);
   llvm::Value *offset = builder.CreateAnd(address, 15);
   if (single) {
     llvm::LoadInst *value = builder.CreateLoad(module.i8, shadowAt);
     llvm::Value *nonzero =
-        builder.CreateICmpNE(value, llvm::ConstantInt::get(module.i8, 0));
+        root ? builder.CreateICmpNE(builder.CreateZExt(value, module.i32),
+                                    root.shadow)
+             : builder.CreateICmpSLT(value,
+                                     llvm::ConstantInt::get(module.i8, 0));
     llvm::Value *slowish =
         nullTest != nullptr ? builder.CreateOr(nonzero, nullTest) : nonzero;
     llvm::Instruction *check = llvm::SplitBlockAndInsertIfThen(
         slowish, before, /*Unreachable=*/false, unlikely(context));
     builder.SetInsertPoint(check);
+    if (nullInCheck)
+      nullTest = makeNullTest(builder);
     if (nullTest != nullptr) {
       llvm::Instruction *null = llvm::SplitBlockAndInsertIfThen(
           nullTest, check, false, unlikely(context));
@@ -566,12 +653,65 @@ void FunctionContext::emitGuard(llvm::Instruction *before, llvm::Value *pointer,
         builder.CreateAdd(offset,
                           llvm::ConstantInt::get(module.i64, width - 1)),
         module.i8);
-    llvm::Value *bad = builder.CreateICmpSGE(last, value);
+    // Poison, or a partial granule the access ends past. (Without a root
+    // only a byte with its sign bit set comes here.)
+    llvm::Value *bad = builder.CreateOr(
+        builder.CreateICmpUGE(value, llvm::ConstantInt::get(module.i8, 0xF0)),
+        builder.CreateICmpUGE(
+            last,
+            builder.CreateAnd(value, llvm::ConstantInt::get(module.i8, 15))));
+    if (root)
+      bad = builder.CreateAnd(
+          builder.CreateICmpSLT(value, llvm::ConstantInt::get(module.i8, 0)),
+          bad);
+    // RFC 0037 §8.2: with a root, a byte of another color joins the cold
+    // call, which decides the guard and the color at once; a partial
+    // granule of the root's color class needs no call.
+    if (root && root.monitorSite == nullptr && members.empty()) {
+      llvm::Value *rootByte = builder.CreateTrunc(root.shadow, module.i8);
+      auto classOf = [&](llvm::Value *byte) {
+        return builder.CreateSelect(
+            builder.CreateICmpSLT(byte, llvm::ConstantInt::get(module.i8, 0)),
+            builder.CreateAnd(builder.CreateLShr(byte, 4), 7),
+            builder.CreateAnd(byte, 7));
+      };
+      auto whole = [&](llvm::Value *byte) {
+        return builder.CreateICmpSGE(byte,
+                                     llvm::ConstantInt::get(module.i8, 0));
+      };
+      llvm::Value *differs = builder.CreateOr(
+          builder.CreateAnd(builder.CreateAnd(whole(value), whole(rootByte)),
+                            builder.CreateICmpNE(value, rootByte)),
+          builder.CreateICmpNE(classOf(value), classOf(rootByte)));
+      llvm::Instruction *slow = llvm::SplitBlockAndInsertIfThen(
+          builder.CreateOr(bad, differs), check, false, unlikely(context));
+      llvm::IRBuilder<> at(slow);
+      ModuleContext::callSlow(at, module.guardJumpFunction(),
+                              {address,
+                               llvm::ConstantInt::get(module.i64, width),
+                               at.CreatePtrToInt(root.root, module.i64),
+                               at.CreateZExt(rootByte, module.i64), site});
+      return;
+    }
     llvm::Instruction *slow =
         llvm::SplitBlockAndInsertIfThen(bad, check, false, unlikely(context));
     llvm::IRBuilder<> at(slow);
     slowGuard(at, address, llvm::ConstantInt::get(module.i64, width), site,
               members);
+    if (root) {
+      builder.SetInsertPoint(check);
+      llvm::Value *rootByte = builder.CreateTrunc(root.shadow, module.i8);
+      llvm::Value *differs = builder.CreateICmpNE(value, rootByte);
+      llvm::Instruction *jump = llvm::SplitBlockAndInsertIfThen(
+          differs, check, false, unlikely(context));
+      llvm::IRBuilder<> atJump(jump);
+      ModuleContext::callSlow(
+          atJump, module.jumpFunction(),
+          {address, llvm::ConstantInt::get(module.i64, width),
+           atJump.CreatePtrToInt(root.root, module.i64),
+           atJump.CreateZExt(rootByte, module.i64),
+           root.monitorSite != nullptr ? root.monitorSite : site});
+    }
     return;
   }
   if (width <= 16) {
@@ -590,12 +730,14 @@ void FunctionContext::emitGuard(llvm::Instruction *before, llvm::Value *pointer,
       llvm::Value *pair = builder.CreateAlignedLoad(
           llvm::Type::getInt16Ty(context), shadowAt, llvm::Align(1));
       nonzero = builder.CreateICmpNE(
-          pair, llvm::ConstantInt::get(llvm::Type::getInt16Ty(context), 0));
+          builder.CreateAnd(pair, llvm::ConstantInt::get(
+                                      llvm::Type::getInt16Ty(context), 0x8080)),
+          llvm::ConstantInt::get(llvm::Type::getInt16Ty(context), 0));
     } else {
       first = builder.CreateLoad(module.i8, shadowAt);
       last = builder.CreateLoad(module.i8, shadowAddress(builder, lastAddress));
-      nonzero = builder.CreateICmpNE(builder.CreateOr(first, last),
-                                     llvm::ConstantInt::get(module.i8, 0));
+      nonzero = builder.CreateICmpSLT(builder.CreateOr(first, last),
+                                      llvm::ConstantInt::get(module.i8, 0));
     }
     llvm::Value *slowish =
         nullTest != nullptr ? builder.CreateOr(nonzero, nullTest) : nonzero;
@@ -621,10 +763,15 @@ void FunctionContext::emitGuard(llvm::Instruction *before, llvm::Value *pointer,
     llvm::Value *bad = builder.CreateOr(
         builder.CreateAnd(
             crosses,
-            builder.CreateICmpNE(first, llvm::ConstantInt::get(module.i8, 0))),
+            builder.CreateICmpSLT(first, llvm::ConstantInt::get(module.i8, 0))),
         builder.CreateAnd(
-            builder.CreateICmpNE(last, llvm::ConstantInt::get(module.i8, 0)),
-            builder.CreateICmpSGE(lastByte, last)));
+            builder.CreateICmpSLT(last, llvm::ConstantInt::get(module.i8, 0)),
+            builder.CreateOr(
+                builder.CreateICmpUGE(last,
+                                      llvm::ConstantInt::get(module.i8, 0xF0)),
+                builder.CreateICmpUGE(
+                    lastByte, builder.CreateAnd(last, llvm::ConstantInt::get(
+                                                          module.i8, 15))))));
     llvm::Instruction *slow =
         llvm::SplitBlockAndInsertIfThen(bad, check, false, unlikely(context));
     llvm::IRBuilder<> at(slow);
@@ -634,6 +781,27 @@ void FunctionContext::emitGuard(llvm::Instruction *before, llvm::Value *pointer,
   }
   chunkCheck(before, address, llvm::ConstantInt::get(module.i64, width), site,
              nullTest, shadowAt, {}, members);
+}
+
+void FunctionContext::colorCheck(llvm::Instruction *before,
+                                 llvm::Value *address, llvm::Value *width,
+                                 llvm::Constant *site, RootCheck root) {
+  llvm::IRBuilder<> builder(before);
+  llvm::LoadInst *value =
+      builder.CreateLoad(module.i8, shadowAddress(builder, address));
+  llvm::Value *rootByte = builder.CreateTrunc(root.shadow, module.i8);
+  llvm::Value *differs = builder.CreateAnd(
+      builder.CreateICmpNE(builder.CreateZExt(value, module.i32), root.shadow),
+      builder.CreateICmpNE(value, rootByte));
+  llvm::Instruction *jump = llvm::SplitBlockAndInsertIfThen(
+      differs, before, false, unlikely(module.context));
+  llvm::IRBuilder<> at(jump);
+  ModuleContext::callSlow(
+      at, module.jumpFunction(),
+      {address, at.CreateZExtOrTrunc(width, module.i64),
+       at.CreatePtrToInt(root.root, module.i64),
+       at.CreateZExt(rootByte, module.i64),
+       root.monitorSite != nullptr ? root.monitorSite : site});
 }
 
 void FunctionContext::chunkCheckString(llvm::Instruction *before,
@@ -675,7 +843,9 @@ void FunctionContext::chunkCheck(llvm::Instruction *before,
       llvm::Type *type =
           llvm::Type::getIntNTy(context, 8 * static_cast<unsigned>(reach));
       fast = builder.CreateICmpNE(
-          builder.CreateAlignedLoad(type, shadowAt, llvm::Align(1)),
+          builder.CreateAnd(
+              builder.CreateAlignedLoad(type, shadowAt, llvm::Align(1)),
+              llvm::ConstantInt::get(type, 0x8080808080808080ULL)),
           llvm::ConstantInt::get(type, 0));
     } else {
       const std::uint64_t mask = reach >= 8
@@ -684,7 +854,7 @@ void FunctionContext::chunkCheck(llvm::Instruction *before,
       fast = builder.CreateICmpNE(
           builder.CreateAnd(
               builder.CreateAlignedLoad(module.i64, shadowAt, llvm::Align(1)),
-              mask),
+              mask & 0x8080808080808080ULL),
           llvm::ConstantInt::get(module.i64, 0));
     }
     if (nullTest != nullptr)
@@ -704,12 +874,14 @@ void FunctionContext::chunkCheck(llvm::Instruction *before,
   llvm::Value *restMask = builder.CreateSub(
       builder.CreateShl(llvm::ConstantInt::get(module.i64, 1), bits),
       llvm::ConstantInt::get(module.i64, 1));
-  llvm::Value *rest = builder.CreateAnd(chunk, restMask);
+  llvm::Value *rest = builder.CreateAnd(
+      builder.CreateAnd(chunk, restMask),
+      llvm::ConstantInt::get(module.i64, 0x8080808080808080ULL));
   llvm::Value *lastValue =
       builder.CreateTrunc(builder.CreateLShr(chunk, bits), module.i8);
   llvm::Value *nonzero = builder.CreateOr(
       builder.CreateICmpNE(rest, llvm::ConstantInt::get(module.i64, 0)),
-      builder.CreateICmpNE(lastValue, llvm::ConstantInt::get(module.i8, 0)));
+      builder.CreateICmpSLT(lastValue, llvm::ConstantInt::get(module.i8, 0)));
   llvm::Value *slowish =
       nullTest != nullptr ? builder.CreateOr(nonzero, nullTest) : nonzero;
   llvm::Instruction *check = llvm::SplitBlockAndInsertIfThen(
@@ -726,7 +898,16 @@ void FunctionContext::chunkCheck(llvm::Instruction *before,
       builder.CreateTrunc(builder.CreateAnd(lastOffset, 15), module.i8);
   llvm::Value *bad = builder.CreateOr(
       builder.CreateICmpNE(rest, llvm::ConstantInt::get(module.i64, 0)),
-      builder.CreateICmpSGE(lastByte, lastValue));
+      builder.CreateAnd(
+          builder.CreateICmpSLT(lastValue,
+                                llvm::ConstantInt::get(module.i8, 0)),
+          builder.CreateOr(
+              builder.CreateICmpUGE(lastValue,
+                                    llvm::ConstantInt::get(module.i8, 0xF0)),
+              builder.CreateICmpUGE(
+                  lastByte,
+                  builder.CreateAnd(lastValue,
+                                    llvm::ConstantInt::get(module.i8, 15))))));
   llvm::Instruction *slowPath =
       llvm::SplitBlockAndInsertIfThen(bad, check, false, unlikely(context));
   llvm::IRBuilder<> at(slowPath);
@@ -759,8 +940,8 @@ void FunctionContext::emitRange(llvm::Instruction *before, llvm::Value *pointer,
 
 void FunctionContext::writeShadow(llvm::Instruction *before,
                                   llvm::Value *pointer,
-                                  llvm::ArrayRef<std::uint8_t> bytes) {
-  if (bytes.empty())
+                                  llvm::ArrayRef<ShadowRun> runs) {
+  if (runs.empty())
     return;
   llvm::IRBuilder<> builder(before);
   const ShadowValues values = shadow();
@@ -773,36 +954,65 @@ void FunctionContext::writeShadow(llvm::Instruction *before,
   builder.SetInsertPoint(write);
   llvm::Value *address = builder.CreatePtrToInt(pointer, module.i64);
   llvm::Value *start = shadowAddress(builder, address);
-  std::size_t at = 0;
-  while (at < bytes.size()) {
-    // A long run of one value is a memset; eight bytes a store.
-    std::size_t run = 1;
-    while (at + run < bytes.size() && bytes[at + run] == bytes[at])
-      ++run;
-    llvm::Value *to = builder.CreateConstInBoundsGEP1_64(module.i8, start, at);
-    if (run >= 64) {
-      builder.CreateMemSet(to, llvm::ConstantInt::get(module.i8, bytes[at]),
-                           run, llvm::MaybeAlign(1));
-      at += run;
+  // Short runs are stored a word at a time; a run of 64 granules or more
+  // is a memset, and one of RuntimeRun granules or more goes to the
+  // runtime, which writes only what lies on the thread's stack.
+  constexpr std::uint64_t MemsetRun = 64;
+  constexpr std::uint64_t RuntimeRun = 4096;
+  llvm::SmallVector<std::uint8_t, 64> pending;
+  std::uint64_t pendingAt = 0;
+  auto flush = [&] {
+    std::size_t at = 0;
+    while (at < pending.size()) {
+      // The widest store that fits, little-endian.
+      unsigned width = 1;
+      if (module.layout.isLittleEndian())
+        for (const unsigned candidate : {8U, 4U, 2U})
+          if (at + candidate <= pending.size()) {
+            width = candidate;
+            break;
+          }
+      std::uint64_t word = 0;
+      for (unsigned i = 0; i < width; ++i)
+        word |= static_cast<std::uint64_t>(pending[at + i]) << (8 * i);
+      builder.CreateAlignedStore(
+          llvm::ConstantInt::get(
+              llvm::IntegerType::get(module.context, 8 * width), word),
+          builder.CreateConstInBoundsGEP1_64(module.i8, start, pendingAt + at),
+          llvm::Align(1));
+      at += width;
+    }
+    pending.clear();
+  };
+  std::uint64_t at = 0;
+  for (const ShadowRun &run : runs) {
+    if (run.count < MemsetRun) {
+      if (pending.empty())
+        pendingAt = at;
+      pending.append(run.count, run.value);
+      at += run.count;
       continue;
     }
-    // The widest store that fits, little-endian.
-    unsigned width = 1;
-    if (module.layout.isLittleEndian())
-      for (const unsigned candidate : {8U, 4U, 2U})
-        if (at + candidate <= bytes.size()) {
-          width = candidate;
-          break;
-        }
-    std::uint64_t word = 0;
-    for (unsigned i = 0; i < width; ++i)
-      word |= static_cast<std::uint64_t>(bytes[at + i]) << (8 * i);
-    builder.CreateAlignedStore(
-        llvm::ConstantInt::get(
-            llvm::IntegerType::get(module.context, 8 * width), word),
-        to, llvm::Align(1));
-    at += width;
+    flush();
+    if (run.count >= RuntimeRun) {
+      builder.CreateCall(
+          module.runtime("frame_shadow",
+                         llvm::FunctionType::get(
+                             llvm::Type::getVoidTy(module.context),
+                             {module.i64, module.i64, module.i64}, false)),
+          {builder.CreateAdd(address,
+                             llvm::ConstantInt::get(module.i64, at * 16)),
+           llvm::ConstantInt::get(module.i64, run.count * 16),
+           llvm::ConstantInt::get(module.i64, run.value)});
+    } else {
+      builder.CreateMemSet(
+          builder.CreateConstInBoundsGEP1_64(module.i8, start, at),
+          llvm::ConstantInt::get(module.i8, run.value), run.count,
+          llvm::MaybeAlign(1));
+    }
+    at += run.count;
   }
+  flush();
 }
 
 /// In a build with assertions, the function each pass leaves is valid IR:
@@ -822,6 +1032,7 @@ llvm::PreservedAnalyses GuardInsertPass::run(llvm::Module &module,
   if (module.getDataLayout().getPointerSizeInBits() != 64)
     return llvm::PreservedAnalyses::all();
   guard::ModuleContext context(module, options);
+  guard::thunkLibraryAddresses(context, module);
   for (llvm::Function &function : module)
     if (!guard::skips(function)) {
       guard::insertGuards(context, function);

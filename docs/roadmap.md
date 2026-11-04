@@ -4,56 +4,56 @@ Rough ordering of the major pieces of work. This page is the one-screen view;
 the design detail and the reasoning live in the [RFCs](rfcs/README.md) each
 milestone links to. Everything here is subject to change as we learn.
 
-The design today is [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
-over the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
+The design today is [RFC 0037](rfcs/0037-complete-sweep-and-colors.md),
+over the reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
+and the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
 milestones before it are summarised under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
-## Now: RFC 0036 — Deterministic heap reuse
+## Now: RFC 0037 — A complete sweep and object colors
+
+Design: [RFC 0037 — A complete sweep and object colors](rfcs/0037-complete-sweep-and-colors.md)
+(Accepted; being implemented on `rfc0037-complete-sweep`, and Implemented
+once its _Acceptance gates_ pass on the final tree). A measurement of
+v0.17.0 found RFC 0036's guarantees broken where the sweep did not read a
+pointer (vector registers, a coroutine pool's stacks, a file mapping after
+`msync`, read-only memory, the main thread's thread-specific data), where a
+versioned loop's range wrapped, and in 32 library calls ASan guards; the
+allocator slowed down as threads were added, a full size class swept on
+every allocation, and a sweep over a pointer-dense gigabyte paused the
+program for a third of a second. RFC 0037 completes the sweep's roots, gives
+the allocator thread caches and spare regions, marks in parallel, closes
+the guards' holes, wraps the library calls, reports faults, and catches
+jumps into a neighbour (object colors in the shadow) and uses after
+return (returned frames stay poisoned). Cutting the guards' cost was
+measured and not taken (its _Alternatives_). The stages:
+
+- [x] **S0 The RFC.**
+- [x] **S1 The sweep's roots** and the signal mask.
+- [x] **S2 The allocator**: thread caches, shared state, spare regions, a
+      64 MiB quarantine.
+- [x] **S3 Parallel marking.**
+- [x] **S4 The guards' holes** (loop ranges, tags, atomics, dynamic objects,
+      large frames) and fault reports.
+- [x] **S5 Library calls.**
+- [x] **S6 Colors.**
+- [x] **S7 Returned frames and field limits.**
+- [x] **S8 Site records.**
+- [ ] **S9 Fresh iterations**: the gates (recorded in the RFC's _Measured
+      gates_), Linux through CI, the documentation.
+
+## Done: RFC 0036 — Deterministic heap reuse
 
 Design: [RFC 0036 — Deterministic heap reuse](rfcs/0036-deterministic-heap-reuse.md)
-(Accepted; being implemented on `rfc0036-deterministic-safety`, and
-Implemented once its _Acceptance gates_ pass on the final tree). A released
-heap block is reused only after a _sweep_ (the program's threads stopped,
-its stacks, registers, writable data and live heap scanned conservatively)
-finds no pointer to it, so a use after free or a double free traps however
-much memory the program allocated since; sweeps are paced to a small share
-of the run time. A fortified call's object size is checked; code written
-for ASan sees ASan's macros and interface; locals whose lifetimes never
-overlap share frame space; the globals of shared libraries and bundles are
-registered with the process's runtime; the number parsers no longer need a
-terminator they never read. Deleted: the advisory analysis (the `weavec`
-tool, `-fweavec-diagnose`, `weavec --whole-program`, `lib/Analysis`, all of
-`lib/Core` but the library table), every annotation but `WEAVEC_UNSAFE`,
-and their diagnostics.
-
-The RFC's first draft also made spatial safety and use after return
-deterministic (bounds from each pointer's provenance, locals in frame
-blocks from the arena). It was implemented on the same branch and measured
-at twice v0.16.0's run time (geometric mean 3.1× the reference compiler,
-QuickJS 10.8×); the revision keeps the cheap part and records the
-measurement of each mechanism in its _Alternatives_. The stages:
-
-- [x] **S0 The RFC**: the revision.
-- [x] **S1 Remove the first draft's spatial and frame mechanisms**:
-      provenance bounds, escapes and the escape registry, pointer slots,
-      frame blocks, the `setjmp` hook, the globals table; RFC 0035's native
-      frames back.
-- [x] **S2 Shared frame space** (`StackLifetime`).
-- [x] **S3 The sweep's cost**: pacing, the image table, address-order
-      reuse.
-- [x] **S4 Cases, lit and runtime tests** for the revised scope.
-- [x] **S5 Fresh iterations** on darwin-arm64: the motivation's projects,
-      the corpus, the gates (recorded in the RFC's _Measured gates_), the
-      documentation.
-- [ ] **Linux** through CI, then the RFC is Implemented (QuickJS's run
-      time, the cost of the ASan contract, is carried forward).
-
-RFC 0035's plan for RFC 0036, ownership as contracts checked at function
-entry, is withdrawn: it would remove guards on the strength of inferred
-facts, which would have to be right where the analysis measured 62 false
-findings in 69 (RFC 0036 _Alternatives_).
+(Implemented; its _Measured gates_ record the tree it shipped in, and RFC
+0037 completes the sweep's roots and supersedes its pacing default). A
+released heap block is reused only after a sweep finds no pointer to it, so
+a use after free or a double free traps however much the program allocated
+since; a fortified call's object size is checked; code written for ASan
+sees ASan's macros and interface; locals whose lifetimes never overlap
+share frame space. Deleted: the advisory analysis, the `weavec` tool, and
+every annotation but `WEAVEC_UNSAFE`.
 
 ## Done: RFC 0035 — Guard by default
 
@@ -76,12 +76,11 @@ analysis ledger.
 
 ## Next
 
-RFC 0036's _Future work_:
+From RFC 0037's _Future work_:
 
-- Spatial determinism (an access checked against its pointer's object) and
-  use after return, under a cost budget measured before the design.
-- Concurrent marking, so that a sweep does not stop the program for its
-  whole duration.
+- Concurrent marking, if parallel marking leaves pauses too long.
+- Pointers checked where they leave a function, and colors carried by a
+  moved pointer.
 - Hardware memory tagging (Arm MTE, Apple MIE) where the processor has it.
 - Adoption: relocatable installs, packages, a vendored `weavec.h`.
 

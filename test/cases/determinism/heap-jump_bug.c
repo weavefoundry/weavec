@@ -1,7 +1,6 @@
 // An index from `a` that lands in the live block `b` next to it: the bytes
-// it touches are `b`'s, so the shadow passes it. RFC 0036 leaves bounds from
-// a pointer's provenance to a later RFC; this case pins the bug for it.
-// XFAIL: RFC 0036 leaves spatial determinism and use after return to a later RFC
+// it touches are `b`'s, which the redzone guard passes; neighbouring slots
+// have different colors (RFC 0037 §8), so the write traps.
 // RUN-INPUT:
 #include <stdio.h>
 #include <stdlib.h>

@@ -4,7 +4,7 @@
 // RUN: %weavec_cc -O2 -fweavec-checks=verify %s -o %t
 // RUN: %t
 
-// CHECK: @__weavec.site{{.*}} = private unnamed_addr constant { ptr, i32, i32, i32 } { ptr @__weavec.file{{.*}}, i32 {{[0-9]+}}, i32 {{[0-9]+}}, i32 4 }
+// CHECK: @__weavec.site{{.*}} = private unnamed_addr constant { i64, i32, i16, i16 } { i64 sub (i64 ptrtoint (ptr @__weavec.file{{.*}} to i64), i64 ptrtoint (ptr @__weavec.site{{.*}} to i64)), i32 {{[0-9]+}}, i16 {{[0-9]+}}, i16 4 }
 int local(unsigned i) {
   int a[4] = {1, 2, 3, 4};
   return a[i & 3];

@@ -170,6 +170,10 @@ public:
   llvm::FunctionCallee guardFunction();
   llvm::FunctionCallee nullFunction();
   llvm::FunctionCallee rangeFunction();
+  /// RFC 0037 §8.3: the access and its root differ in color.
+  llvm::FunctionCallee jumpFunction();
+  /// The guard's slow path and the color's in one call.
+  llvm::FunctionCallee guardJumpFunction();
   llvm::FunctionCallee rangeOkFunction();
   llvm::FunctionCallee strlenFunction();
   /// RFC 0036 §6: a fortified call writes more than its object size.
@@ -220,6 +224,51 @@ struct ShadowValues {
   llvm::Value *mask = nullptr;
 };
 
+/// Shadow values as runs of granules of one value: a frame's shadow costs
+/// the compiler its number of objects, not its size (RFC 0037 §4).
+struct ShadowRun {
+  std::uint64_t count;
+  std::uint8_t value;
+};
+using ShadowRuns = llvm::SmallVector<ShadowRun, 8>;
+
+/// Appends `count` granules of `value` to `runs`, merging equal neighbours.
+inline void appendRun(ShadowRuns &runs, std::uint64_t count,
+                      std::uint8_t value) {
+  if (count == 0)
+    return;
+  if (!runs.empty() && runs.back().value == value)
+    runs.back().count += count;
+  else
+    runs.push_back({.count = count, .value = value});
+}
+
+/// RFC 0037 §10: the size of the array field of a struct `pointer` names
+/// by its getelementptr, unless the field is the struct's last (a flexible
+/// array by another spelling).
+std::optional<std::uint64_t> fieldLimit(const llvm::Value *pointer,
+                                        const llvm::DataLayout &layout);
+
+/// RFC 0037 §7.1: the n-th color of the shadow encoding (the runtime's
+/// weavecRtColor): 111 values, never 0, low three bits never 7.
+inline std::uint8_t colorAt(std::uint64_t n) {
+  const unsigned m = static_cast<unsigned>(n % 111) + 1;
+  return static_cast<std::uint8_t>(((m / 7U) << 3U) | (m % 7U));
+}
+
+/// RFC 0037 §8: the object an access's offset is relative to (its root),
+/// and the root's shadow byte, an i32 (sign-extended: never equal to a
+/// shadow byte zero-extended unless it is a whole granule's color).
+/// `monitor`: a check rule §8.1 would skip, emitted in verify mode, whose
+/// failure reports `weavec.proven`.
+struct RootCheck {
+  llvm::Value *root = nullptr;
+  llvm::Value *shadow = nullptr;
+  /// The site a monitor's mismatch reports with (`SiteProven`), or null.
+  llvm::Constant *monitorSite = nullptr;
+  [[nodiscard]] explicit operator bool() const { return shadow != nullptr; }
+};
+
 /// One function's state while GuardExpand runs on it.
 class FunctionContext {
 public:
@@ -256,7 +305,11 @@ public:
   void emitGuard(llvm::Instruction *before, llvm::Value *pointer,
                  std::uint64_t width, llvm::Align alignment,
                  llvm::Constant *site, llvm::Value *nullBase,
-                 llvm::ArrayRef<Member> members = {});
+                 llvm::ArrayRef<Member> members = {}, RootCheck root = {});
+  /// RFC 0037 §8.2: compares the color of `address`'s granule with the
+  /// root's; a mismatch goes to the runtime with the width.
+  void colorCheck(llvm::Instruction *before, llvm::Value *address,
+                  llvm::Value *width, llvm::Constant *site, RootCheck root);
   /// A range guard of `length` (an integer) bytes: inline when it is short.
   void emitRange(llvm::Instruction *before, llvm::Value *pointer,
                  llvm::Value *length, llvm::Constant *site);
@@ -273,11 +326,11 @@ public:
                   llvm::FunctionCallee slow = {},
                   llvm::ArrayRef<Member> members = {});
 
-  /// Writes `bytes` (shadow values, one per granule) over the shadow of the
-  /// granules from `pointer` (16-aligned), before `before`, when the shadow
-  /// exists.
+  /// Writes `runs` (shadow values, a run of granules each) over the shadow
+  /// of the granules from `pointer` (16-aligned), before `before`, when the
+  /// shadow exists.
   void writeShadow(llvm::Instruction *before, llvm::Value *pointer,
-                   llvm::ArrayRef<std::uint8_t> bytes);
+                   llvm::ArrayRef<ShadowRun> runs);
 
 private:
   /// The slow path of a failed inline check: the runtime's guard of the
@@ -288,10 +341,19 @@ private:
 
   ShadowValues loaded;
   llvm::Instruction *anchor = nullptr;
+
+public:
+  /// RFC 0037 §7.2: the constant color of each alloca the frame holds.
+  llvm::DenseMap<const llvm::Value *, std::uint8_t> frameColors;
 };
 
 /// Section 2.5: guards and redirects the calls of the library table in
 /// `function`, adding their ledger rows.
+/// The names of library thunks: `__weavec_thunk_` and the function's.
+inline constexpr llvm::StringLiteral ThunkPrefix = "__weavec_thunk_";
+/// RFC 0037 §5: replaces each address the unit takes of a library function
+/// whose calls guard an argument with that of a thunk that calls it.
+void thunkLibraryAddresses(ModuleContext &module, llvm::Module &ir);
 void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
                        bool late);
 

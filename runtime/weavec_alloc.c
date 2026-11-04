@@ -42,6 +42,7 @@
 #include "weavec_rt.h"
 
 #include <errno.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -70,11 +71,13 @@ struct __weavec_rt_shadow_t __weavec_rt_shadow = {(uintptr_t)scratchShadow, 0,
                                                   64};
 
 /* Until the arena exists `bytes` is 0, so every pointer is outside it. */
-struct __weavec_rt_heap_t __weavec_rt_heap = {0, 0, 0, 0, 0, {{0, 0, 0, 0}}};
+struct __weavec_rt_heap_t __weavec_rt_heap = {0, 0, 0, 0, 0, 0, {{0, 0, 0, 0}}};
 
 /*===-- State ---------------------------------------------------------------===*/
 
-/* What one class needs besides the public table; guarded by `lock`. */
+/* What one region needs besides the public table; guarded by `lock`. Each
+ * on its own cache line, so that threads in different classes do not share
+ * one (RFC 0037 section 2.2). */
 typedef struct {
   WeavecRtLock lock;
   /* Slots handed out so far from the region's start. */
@@ -89,9 +92,125 @@ typedef struct {
   /* Bytes of the region, and of its metadata, that are accessible. */
   uintptr_t committed;
   uintptr_t metaCommitted;
-} ClassState;
+} __attribute__((aligned(128))) RegionState;
 
-static ClassState classState[WeavecRtClassCount];
+static RegionState regionState[WeavecRtRegionCount];
+
+/* RFC 0037 section 2.3: a class's regions, its own first and then the
+ * spares it took, linked by `regionNext` (NoRegion ends the list); the
+ * region allocations try first; the bytes released into the class since
+ * the last sweep. */
+enum { NoRegion = 0xFF };
+static uint8_t regionNext[WeavecRtRegionCount];
+static uint8_t regionClass[WeavecRtRegionCount];
+static uint8_t classActive[WeavecRtClassCount];
+static size_t classGained[WeavecRtClassCount];
+static WeavecRtLock spareLock;
+
+/* RFC 0037 section 2.1: each thread's caches of free slots to allocate and
+ * of released slots on their way to the quarantine, per small class. A
+ * slot address's low bit says it was used before (its bytes are not known
+ * to be zero). A released slot in a cache is quarantined: its word says
+ * released, with the value `CachedDead`, so a second release of it is a
+ * double free and a sweep never recycles it. */
+enum {
+  CachedClasses = 40,
+  CacheSlots = 32,
+  CacheBytes = 32 * 1024,
+  /* A thread's changes to the shared counters, folded in at this size. */
+  FoldBytes = 256 * 1024,
+  CachedDead = (1 << 30) - 1
+};
+
+typedef struct {
+  uint32_t count;
+  uint32_t limit;
+  uint64_t slots[CacheSlots];
+} SlotCache;
+
+/* A cached slot: its region and index, the low bit set for a slot used
+ * before, and the top bit set so that the sweep, which reads the cache's
+ * memory, never takes one for a pointer. */
+static inline uint64_t slotEntry(unsigned region, uint32_t slot, int used) {
+  return (uint64_t)1 << 63 | (uint64_t)region << 32 | (uint64_t)slot << 1 |
+         (uint64_t)(used != 0);
+}
+static inline unsigned entryRegion(uint64_t entry) {
+  return (unsigned)(entry >> 32) & 0xFF;
+}
+static inline uint32_t entrySlot(uint64_t entry) {
+  return (uint32_t)(entry >> 1) & 0x7FFFFFFF;
+}
+
+typedef struct ThreadCache {
+  struct ThreadCache *next;
+  SlotCache alloc[CachedClasses];
+  SlotCache release[CachedClasses];
+  /* What this thread added to the live heap since it last folded it into
+   * the shared count. */
+  intptr_t liveDelta;
+  /* The thread's calls into the allocator in progress, and the allocator
+   * locks it holds: a signal handler that allocates while the thread is
+   * inside the allocator must not touch the cache, sweep, or wait for a lock
+   * the thread holds (RFC 0037 amendment 11). Releases it could not make
+   * wait here until the outer call returns. */
+  unsigned depth;
+  unsigned locks;
+  unsigned deferredCount;
+  void *deferred[16];
+} ThreadCache;
+
+/* A thread whose cache has gone (its key's destructor ran) uses none. */
+#define CacheGone ((ThreadCache *)1)
+
+static pthread_key_t cacheKey;
+static int cacheKeyReady;
+static unsigned cachedClasses;
+static ThreadCache *caches;
+static WeavecRtLock cacheListLock;
+
+/* The calling thread's value of the cache's key: on Darwin read from its
+ * TSD array directly, as libpthread's inline accessor does (the call costs
+ * as much as the rest of a small allocation's fast path). */
+static inline void *cacheValue(void) {
+#if defined(__APPLE__) && defined(__aarch64__)
+  uintptr_t tsd;
+  __asm__("mrs %0, tpidrro_el0" : "=r"(tsd));
+  return ((void *const *)(tsd & ~(uintptr_t)7))[cacheKey];
+#elif defined(__APPLE__) && defined(__x86_64__)
+  void *value;
+  __asm__("movq %%gs:(,%1,8), %0" : "=r"(value) : "r"((uintptr_t)cacheKey));
+  return value;
+#else
+  return pthread_getspecific(cacheKey);
+#endif
+}
+
+/* The calling thread's cache if it has one; none is made. */
+static inline ThreadCache *ownCache(void) {
+  ThreadCache *cache;
+  if (!__atomic_load_n(&cacheKeyReady, __ATOMIC_RELAXED))
+    return NULL;
+  cache = (ThreadCache *)cacheValue();
+  return cache != CacheGone ? cache : NULL;
+}
+
+/* An allocator lock, counted in the thread's cache (see `locks`). */
+static inline void take(WeavecRtLock *lock) {
+  ThreadCache *self = ownCache();
+  if (self != NULL)
+    ++self->locks;
+  __atomic_signal_fence(__ATOMIC_SEQ_CST);
+  weavecRtLock(lock);
+}
+
+static inline void give(WeavecRtLock *lock) {
+  ThreadCache *self = ownCache();
+  weavecRtUnlock(lock);
+  __atomic_signal_fence(__ATOMIC_SEQ_CST);
+  if (self != NULL)
+    --self->locks;
+}
 
 /* A block mapped on its own (section 2.3). */
 typedef struct {
@@ -127,7 +246,7 @@ static size_t pageBytes;
 /* RFC 0036 section 3.3: the configured quarantine (`Q`), the bytes it
  * holds, what the last sweep left in it (pointers still reach them), and
  * the bytes of live blocks. */
-static size_t quarantineBudget = (size_t)16 << 20;
+static size_t quarantineBudget = (size_t)64 << 20;
 static size_t quarantineBytes;
 static size_t retainedBytes;
 static size_t liveBytes;
@@ -294,21 +413,26 @@ void weavecRtShadowSet(uintptr_t base, size_t size, unsigned char value) {
   fill(weavecRtShadowOf(base), value, (size + 15) >> 4);
 }
 
-void weavecRtShadowObject(uintptr_t base, size_t size, unsigned char tail) {
+void weavecRtShadowObject(uintptr_t base, size_t size, unsigned char tail,
+                          unsigned char color) {
   const size_t whole = size >> 4;
   const unsigned rest = (unsigned)(size & 15);
   if (!weavecRtShadowReady() || !weavecRtInWindow(base))
     return;
   /* A huge block's shadow is mapped afresh rather than written, so that
-   * the pages of a block nothing touches cost nothing. */
-  if (whole >= 4 * pageBytes)
+   * the pages of a block nothing touches cost nothing: it is uncolored
+   * (RFC 0037 section 7.2). */
+  if (whole >= 4 * pageBytes) {
+    color = 0;
     weavecRtShadowClear(base, base + (whole << 4));
-  else if (whole != 0)
-    fill(weavecRtShadowOf(base), WeavecRtShadowAddressable, whole);
+  } else if (whole != 0) {
+    fill(weavecRtShadowOf(base), color, whole);
+  }
   /* A partial last granule says how many of its bytes are the object's; an
    * empty object's granule is all tail. */
   if (rest != 0)
-    *weavecRtShadowOf(base + (whole << 4)) = (unsigned char)rest;
+    *weavecRtShadowOf(base + (whole << 4)) =
+        weavecRtShadowPartialOf(color, rest);
   else if (size == 0)
     *weavecRtShadowOf(base) = tail;
 }
@@ -365,7 +489,8 @@ static void zeroFill(uintptr_t base, size_t size) {
  * addressable, the rest of the slot (up to TailLimit bytes of it) not. */
 static void shadowLive(uintptr_t base, size_t size, size_t slot) {
   const size_t used = (size + 15) & ~(size_t)15;
-  weavecRtShadowObject(base, size, WeavecRtShadowHeapTail);
+  weavecRtShadowObject(base, size, WeavecRtShadowHeapTail,
+                       weavecRtColorOfHeap(base));
   if (slot > used)
     weavecRtShadowSet(base + used,
                       slot - used < TailLimit ? slot - used : TailLimit,
@@ -390,6 +515,7 @@ static inline void storeWord(uint32_t *word, uint32_t value) {
 static void forkPrepare(void);
 static void forkParent(void);
 static void forkChild(void);
+static void dropCache(void *value);
 #if defined(__APPLE__)
 static void registerZone(void);
 static void promoteZone(void);
@@ -407,9 +533,10 @@ static int reserve(unsigned shift) {
   uintptr_t align;
   uintptr_t start;
   void *map;
+  unsigned region;
   buildClasses(shift);
-  data = (uintptr_t)__weavec_rt_heap.classes << shift;
-  meta = (uintptr_t)__weavec_rt_heap.classes << (shift - 2);
+  data = (uintptr_t)WeavecRtRegionCount << shift;
+  meta = (uintptr_t)WeavecRtRegionCount << (shift - 2);
   align = (uintptr_t)1 << shift;
   /* One alignment more than the regions need: a granule before the first
    * region is the arena's too (its guard). */
@@ -431,6 +558,22 @@ static int reserve(unsigned shift) {
     (void)munmap(map, total);
     return 0;
   }
+  /* Each class starts with the region of its index; the rest are spares,
+   * whose one slot until a class takes one is never allocated. */
+  for (region = 0; region < WeavecRtRegionCount; ++region) {
+    regionNext[region] = NoRegion;
+    regionClass[region] =
+        region < __weavec_rt_heap.classes ? (uint8_t)region : NoRegion;
+    if (region >= __weavec_rt_heap.classes) {
+      __weavec_rt_heap.table[region].size = (uint32_t)1 << (shift - 1);
+      __weavec_rt_heap.table[region].shift = shift;
+      __weavec_rt_heap.table[region].magic = 0;
+      __weavec_rt_heap.table[region].capacity = 0;
+    }
+  }
+  for (region = 0; region < __weavec_rt_heap.classes; ++region)
+    classActive[region] = (uint8_t)region;
+  __weavec_rt_heap.regions = __weavec_rt_heap.classes;
   __weavec_rt_heap.shift = shift;
   __weavec_rt_heap.meta = start + data;
   __atomic_store_n(&__weavec_rt_heap.base, start, __ATOMIC_RELEASE);
@@ -449,9 +592,20 @@ int weavecRtInitialise(void) {
     pageBytes = page > 0 ? (size_t)page : 4096;
     reserveShadow();
     /* Regions of 2 GiB (1 GiB when that much cannot be reserved): a full
-     * region's blocks are mapped one by one (hugeAlloc), and the
-     * reservation costs start-up time with its size. */
+     * region's class takes a spare, and the reservation costs start-up time
+     * with its size. */
     ok = reserve(31) || reserve(30);
+    if (ok) {
+      unsigned index;
+      cachedClasses = 0;
+      for (index = 0; index < __weavec_rt_heap.classes &&
+                      index < CachedClasses &&
+                      __weavec_rt_heap.table[index].size <= CacheBytes;
+           ++index)
+        cachedClasses = index + 1;
+      if (pthread_key_create(&cacheKey, dropCache) == 0)
+        __atomic_store_n(&cacheKeyReady, 1, __ATOMIC_RELEASE);
+    }
     if (ok && weavecRtShadowReady() &&
         !weavecRtInWindow(__weavec_rt_heap.base + __weavec_rt_heap.bytes - 1)) {
       static const char Message[] =
@@ -506,13 +660,55 @@ static int commit(uintptr_t start, uintptr_t *committed, uintptr_t end,
   return 1;
 }
 
+/* The slot of an arena address: its region, index and base. */
+typedef struct {
+  unsigned region;
+  uint32_t slot;
+  uintptr_t base;
+} SlotRef;
+
+static inline int inArena(uintptr_t address) {
+  return address - __weavec_rt_heap.base < __weavec_rt_heap.bytes;
+}
+
+static inline SlotRef slotOf(uintptr_t address) {
+  const uintptr_t offset = address - __weavec_rt_heap.base;
+  const unsigned region = (unsigned)(offset >> __weavec_rt_heap.shift);
+  const struct __weavec_rt_class *entry = &__weavec_rt_heap.table[region];
+  const uint64_t in = offset & (((uintptr_t)1 << __weavec_rt_heap.shift) - 1);
+  const uint64_t units = in >> entry->shift;
+  SlotRef ref;
+  ref.region = region;
+  ref.slot =
+      entry->magic == 0 ? (uint32_t)units : (uint32_t)((units * entry->magic) >> 32);
+  ref.base = regionStart(region) + (uintptr_t)ref.slot * entry->size;
+  return ref;
+}
+
+/* RFC 0037 section 7.2: a slot's color, from its index and its region's:
+ * neighbours in a region differ, and so do any two slots fewer than 111
+ * apart. */
+unsigned char weavecRtColorOfHeap(uintptr_t address) {
+  SlotRef ref;
+  if (!inArena(address))
+    return 0;
+  ref = slotOf(address);
+  return weavecRtColor((uint64_t)ref.slot + (uint64_t)ref.region * 41);
+}
+
+/* The word of a slot; "never allocated" for one the region has not
+ * reached. */
+static inline uint32_t wordOf(SlotRef ref) {
+  return loadWord(&slotWords(ref.region)[ref.slot]);
+}
+
 /* Takes a slot of `region` off its free list, or a fresh one; false when
  * the region is exhausted or memory is. The class's lock is held.
  * `recycled` says the slot was used before, so its bytes are not known to
  * be zero. */
 static int popSlot(unsigned region, uint32_t *taken, int *recycled) {
   const struct __weavec_rt_class *entry = &__weavec_rt_heap.table[region];
-  ClassState *state = &classState[region];
+  RegionState *state = &regionState[region];
   uint32_t *words = slotWords(region);
   uint32_t slot;
   *recycled = 0;
@@ -553,58 +749,306 @@ static int popSlot(unsigned region, uint32_t *taken, int *recycled) {
   return 1;
 }
 
-/* A slot of `region` for an object of `size` bytes, live; null when the
- * region is exhausted or memory is. */
-static void *takeSlot(unsigned region, size_t size, int *recycled) {
-  const struct __weavec_rt_class *entry = &__weavec_rt_heap.table[region];
-  ClassState *state = &classState[region];
-  uint32_t slot;
-  weavecRtLock(&state->lock);
-  if (!popSlot(region, &slot, recycled)) {
-    weavecRtUnlock(&state->lock);
-    return NULL;
+/* Pops up to `want` slots of `region` into `slots` (slotEntry); how
+ * many. */
+static unsigned popRegion(unsigned region, uint64_t *slots, unsigned want) {
+  RegionState *state = &regionState[region];
+  unsigned got = 0;
+  take(&state->lock);
+  while (got < want) {
+    uint32_t slot;
+    int recycled;
+    if (!popSlot(region, &slot, &recycled))
+      break;
+    slots[got++] = slotEntry(region, slot, recycled);
   }
+  give(&state->lock);
+  return got;
+}
+
+/* Gives class `c` a spare region and makes it the one its allocations try
+ * first; false when none is left (RFC 0037 section 2.3). */
+static int takeSpare(unsigned c) {
+  unsigned region;
+  unsigned last = c;
+  take(&spareLock);
+  region = __weavec_rt_heap.regions;
+  if (region >= WeavecRtRegionCount) {
+    give(&spareLock);
+    return 0;
+  }
+  __weavec_rt_heap.table[region] = __weavec_rt_heap.table[c];
+  regionClass[region] = (uint8_t)c;
+  while (regionNext[last] != NoRegion)
+    last = regionNext[last];
+  __atomic_store_n(&__weavec_rt_heap.regions, region + 1, __ATOMIC_RELEASE);
+  __atomic_store_n(&regionNext[last], (uint8_t)region, __ATOMIC_RELEASE);
+  __atomic_store_n(&classActive[c], (uint8_t)region, __ATOMIC_RELEASE);
+  give(&spareLock);
+  return 1;
+}
+
+/* Pops up to `want` (at least one) slots of class `c`: from the region its
+ * allocations try first, then from another of its regions; when every one
+ * is full, after a sweep if a quarter of a region was released into the
+ * class since the last one, else from a spare (RFC 0037 section 2.3). How
+ * many; 0 when memory is exhausted. */
+static unsigned popClass(unsigned c, uint64_t *slots, unsigned want) {
+  const struct __weavec_rt_class *entry = &__weavec_rt_heap.table[c];
+  int swept = 0;
+  for (;;) {
+    unsigned region = __atomic_load_n(&classActive[c], __ATOMIC_ACQUIRE);
+    unsigned got = popRegion(region, slots, want);
+    if (got != 0)
+      return got;
+    for (region = c; region != NoRegion;
+         region = __atomic_load_n(&regionNext[region], __ATOMIC_ACQUIRE)) {
+      got = popRegion(region, slots, want);
+      if (got != 0) {
+        __atomic_store_n(&classActive[c], (uint8_t)region, __ATOMIC_RELEASE);
+        return got;
+      }
+    }
+    if (!swept && __atomic_load_n(&classGained[c], __ATOMIC_RELAXED) >=
+                      (size_t)entry->capacity * entry->size / 4) {
+      swept = 1;
+      weavecRtSweep();
+      continue;
+    }
+    if (takeSpare(c))
+      continue;
+    /* No spare is left: the last chance is what a sweep recycles. */
+    if (swept)
+      return 0;
+    swept = 1;
+    weavecRtSweep();
+  }
+}
+
+/* Adds `bytes` (negative: takes them) to the live heap's count. */
+static void addLive(intptr_t bytes) {
+  const size_t live =
+      __atomic_add_fetch(&liveBytes, (size_t)bytes, __ATOMIC_RELAXED);
+  if ((intptr_t)live > (intptr_t)peakLive)
+    peakLive = live;
+}
+
+/* The live heap's bytes; a thread's folded release may briefly arrive
+ * before another's allocation. */
+static size_t liveNow(void) {
+  const intptr_t live = (intptr_t)__atomic_load_n(&liveBytes, __ATOMIC_RELAXED);
+  return live > 0 ? (size_t)live : 0;
+}
+
+/* Makes the slot `taken` (slotEntry) live with an object of `size`
+ * bytes. */
+static void *makeLive(uint64_t taken, size_t size, size_t slotBytes) {
+  const unsigned region = entryRegion(taken);
+  const uint32_t slot = entrySlot(taken);
+  const uintptr_t base = regionStart(region) + (uintptr_t)slot * slotBytes;
   storeWord(&slotWords(region)[slot],
             ((uint32_t)size << WeavecRtWordShift) | WeavecRtLive);
-  weavecRtUnlock(&state->lock);
-  {
-    const size_t live =
-        __atomic_add_fetch(&liveBytes, entry->size, __ATOMIC_RELAXED);
-    if (live > peakLive)
-      peakLive = live;
+  if ((taken & 1) != 0 && size != 0)
+    zeroFill(base, size);
+  shadowLive(base, size, slotBytes);
+  return (void *)base;
+}
+
+/* A slot of class `c` for an object of `size` bytes, live, without a
+ * thread cache; null when memory is exhausted. */
+static void *takeSlot(unsigned c, size_t size) {
+  const size_t slotBytes = __weavec_rt_heap.table[c].size;
+  uint64_t taken;
+  if (popClass(c, &taken, 1) == 0)
+    return NULL;
+  addLive((intptr_t)slotBytes);
+  return makeLive(taken, size, slotBytes);
+}
+
+/*===-- Thread caches (RFC 0037 section 2.1) --------------------------------===*/
+
+static unsigned cacheLimit(unsigned c) {
+  const size_t fit = CacheBytes / __weavec_rt_heap.table[c].size;
+  return fit == 0 ? 1 : fit < CacheSlots ? (unsigned)fit : CacheSlots;
+}
+
+
+/* The calling thread's cache, made on its first use; null when it has none
+ * (it is exiting, or the cache cannot be mapped). */
+static ThreadCache *makeCache(void);
+
+static inline ThreadCache *threadCache(void) {
+  ThreadCache *cache;
+  /* Set once, before any thread but the initialising one can allocate. */
+  if (__builtin_expect(!__atomic_load_n(&cacheKeyReady, __ATOMIC_RELAXED), 0))
+    return NULL;
+  cache = (ThreadCache *)cacheValue();
+  if (__builtin_expect(cache != NULL && cache != CacheGone, 1))
+    return cache;
+  return cache == CacheGone ? NULL : makeCache();
+}
+
+/* A new cache for the calling thread. */
+static __attribute__((noinline)) ThreadCache *makeCache(void) {
+  ThreadCache *cache;
+  unsigned c;
+  cache = (ThreadCache *)mmap(NULL, sizeof(ThreadCache), PROT_READ | PROT_WRITE,
+                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if ((void *)cache == MAP_FAILED)
+    return NULL;
+  for (c = 0; c < cachedClasses; ++c)
+    cache->alloc[c].limit = cache->release[c].limit = cacheLimit(c);
+  if (pthread_setspecific(cacheKey, cache) != 0) {
+    (void)munmap(cache, sizeof(ThreadCache));
+    return NULL;
   }
-  return (void *)(regionStart(region) + (uintptr_t)slot * entry->size);
+  take(&cacheListLock);
+  cache->next = caches;
+  caches = cache;
+  give(&cacheListLock);
+  return cache;
 }
 
-/* The slot of an arena address: its region, index and base. */
-typedef struct {
-  unsigned region;
-  uint32_t slot;
-  uintptr_t base;
-} SlotRef;
-
-static inline int inArena(uintptr_t address) {
-  return address - __weavec_rt_heap.base < __weavec_rt_heap.bytes;
+/* Folds a thread's change of the live heap into the shared count. */
+static void foldLive(ThreadCache *cache) {
+  if (cache->liveDelta != 0)
+    addLive(cache->liveDelta);
+  cache->liveDelta = 0;
 }
 
-static inline SlotRef slotOf(uintptr_t address) {
-  const uintptr_t offset = address - __weavec_rt_heap.base;
-  const unsigned region = (unsigned)(offset >> __weavec_rt_heap.shift);
-  const struct __weavec_rt_class *entry = &__weavec_rt_heap.table[region];
-  const uint64_t in = offset & (((uintptr_t)1 << __weavec_rt_heap.shift) - 1);
-  const uint64_t units = in >> entry->shift;
-  SlotRef ref;
-  ref.region = region;
-  ref.slot =
-      entry->magic == 0 ? (uint32_t)units : (uint32_t)((units * entry->magic) >> 32);
-  ref.base = regionStart(region) + (uintptr_t)ref.slot * entry->size;
-  return ref;
+/* Moves class `c`'s released slots from the cache to their regions'
+ * quarantines, holding a region's lock across a run of its slots. With
+ * `check`, a slot that is not one (a cache a fork copied mid-push) is
+ * left. */
+static void flushReleases(ThreadCache *cache, unsigned c, int check) {
+  SlotCache *released = &cache->release[c];
+  const size_t slotBytes = __weavec_rt_heap.table[c].size;
+  const uint32_t claimed =
+      ((uint32_t)CachedDead << WeavecRtWordShift) | WeavecRtDead;
+  RegionState *held = NULL;
+  size_t bytes = 0;
+  unsigned i;
+  for (i = 0; i < released->count; ++i) {
+    const unsigned region = entryRegion(released->slots[i]);
+    const uint32_t slot = entrySlot(released->slots[i]);
+    RegionState *state = &regionState[region];
+    uint32_t *words = slotWords(region);
+    if (check && (region >= __weavec_rt_heap.regions ||
+                  regionClass[region] != c || slot >= state->bump ||
+                  loadWord(&words[slot]) != claimed))
+      continue;
+    if (state != held) {
+      if (held != NULL)
+        give(&held->lock);
+      take(&state->lock);
+      held = state;
+    }
+    storeWord(&words[slot], WeavecRtDead);
+    if (state->deadTail != 0)
+      storeWord(&words[state->deadTail - 1],
+                ((slot + 1) << WeavecRtWordShift) | WeavecRtDead);
+    else
+      state->deadHead = slot + 1;
+    state->deadTail = slot + 1;
+    bytes += slotBytes;
+  }
+  if (held != NULL)
+    give(&held->lock);
+  released->count = 0;
+  if (bytes != 0) {
+    const size_t total =
+        __atomic_add_fetch(&quarantineBytes, bytes, __ATOMIC_RELAXED);
+    (void)__atomic_add_fetch(&classGained[c], bytes, __ATOMIC_RELAXED);
+    if (total > peakQuarantine)
+      peakQuarantine = total;
+  }
 }
 
-/* The word of a slot; "never allocated" for one the region has not
- * reached. */
-static inline uint32_t wordOf(SlotRef ref) {
-  return loadWord(&slotWords(ref.region)[ref.slot]);
+/* Gives class `c`'s cached free slots back to their regions' free lists. */
+static void returnSlots(ThreadCache *cache, unsigned c, int check) {
+  SlotCache *available = &cache->alloc[c];
+  unsigned i;
+  for (i = 0; i < available->count; ++i) {
+    const unsigned region = entryRegion(available->slots[i]);
+    const uint32_t slot = entrySlot(available->slots[i]);
+    RegionState *state = &regionState[region];
+    uint32_t *words = slotWords(region);
+    if (check && (region >= __weavec_rt_heap.regions ||
+                  regionClass[region] != c || slot >= state->bump ||
+                  (loadWord(&words[slot]) & WeavecRtWordState) == WeavecRtLive ||
+                  (loadWord(&words[slot]) & WeavecRtWordState) == WeavecRtDead))
+      continue;
+    take(&state->lock);
+    storeWord(&words[slot],
+              (state->freeHead << WeavecRtWordShift) | WeavecRtFree);
+    state->freeHead = slot + 1;
+    give(&state->lock);
+  }
+  available->count = 0;
+}
+
+/* Empties a cache into the shared lists and counts. */
+static void drainCache(ThreadCache *cache, int check) {
+  unsigned c;
+  for (c = 0; c < cachedClasses; ++c) {
+    flushReleases(cache, c, check);
+    returnSlots(cache, c, check);
+  }
+  foldLive(cache);
+}
+
+/* A thread's exit: its cache goes, and the thread uses none from then on
+ * (a destructor that runs after this one may still allocate). */
+static void dropCache(void *value) {
+  ThreadCache *cache = (ThreadCache *)value;
+  (void)pthread_setspecific(cacheKey, CacheGone);
+  if (cache == NULL || cache == CacheGone)
+    return;
+  drainCache(cache, 0);
+  take(&cacheListLock);
+  {
+    ThreadCache **at = &caches;
+    while (*at != NULL && *at != cache)
+      at = &(*at)->next;
+    if (*at != NULL)
+      *at = cache->next;
+  }
+  give(&cacheListLock);
+  (void)munmap(cache, sizeof(ThreadCache));
+}
+
+void weavecRtFlushThread(void) {
+  ThreadCache *cache;
+  if (!__atomic_load_n(&cacheKeyReady, __ATOMIC_ACQUIRE))
+    return;
+  cache = (ThreadCache *)cacheValue();
+  if (cache != NULL && cache != CacheGone)
+    drainCache(cache, 0);
+}
+
+static int overBudget(void);
+
+/* An allocation of class `c` from the cache, refilled when empty. */
+static void *cachedAlloc(ThreadCache *cache, unsigned c, size_t size) {
+  SlotCache *available = &cache->alloc[c];
+  const size_t slotBytes = __weavec_rt_heap.table[c].size;
+  if (available->count == 0) {
+    unsigned i;
+    available->count = popClass(c, available->slots, available->limit);
+    if (available->count == 0)
+      return NULL;
+    /* Taken from the end: the lowest address last in, so that slots are
+     * handed out in address order (RFC 0036 amendment 4). */
+    for (i = 0; i < available->count / 2; ++i) {
+      const uint64_t swap = available->slots[i];
+      available->slots[i] = available->slots[available->count - 1 - i];
+      available->slots[available->count - 1 - i] = swap;
+    }
+  }
+  cache->liveDelta += (intptr_t)slotBytes;
+  if (cache->liveDelta >= FoldBytes)
+    foldLive(cache);
+  return makeLive(available->slots[--available->count], size, slotBytes);
 }
 
 /*===-- The quarantine (section 2.4) ----------------------------------------===*/
@@ -633,7 +1077,7 @@ static int overBudget(void) {
   const size_t held = __atomic_load_n(&quarantineBytes, __ATOMIC_RELAXED) +
                       __atomic_load_n(&hugeDeadBytes, __ATOMIC_RELAXED);
   const size_t kept = __atomic_load_n(&retainedBytes, __ATOMIC_RELAXED);
-  const size_t live = __atomic_load_n(&liveBytes, __ATOMIC_RELAXED);
+  const size_t live = liveNow();
   const size_t gained = held > kept ? held - kept : 0;
   const size_t soft = quarantineBudget > live / 4 ? quarantineBudget : live / 4;
   const size_t hard =
@@ -682,17 +1126,29 @@ static void giveBack(uintptr_t base, size_t bytes) {
  * released, and a page given back would read 0, addressable. */
 static void decommit(uintptr_t base, size_t bytes) { giveBack(base, bytes); }
 
-/* Makes the live slot `ref` dead and queues it in its class's quarantine;
- * sweeps when the quarantine is over budget. */
+/* Takes the live slot `ref`, whose word was `word`, for its release: its
+ * word says released, with the value `CachedDead` (a sweep leaves it be
+ * until it is queued), so a second release of it, even one racing this
+ * one, is a double free. */
+static void claim(SlotRef ref, uint32_t word, void *p) {
+  uint32_t *at = &slotWords(ref.region)[ref.slot];
+  if (!__atomic_compare_exchange_n(
+          at, &word, ((uint32_t)CachedDead << WeavecRtWordShift) | WeavecRtDead,
+          0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+    __weavec_rt_fatal("invalid release", p, "the block was already released");
+}
+
+/* Queues the claimed slot `ref` in its region's quarantine; sweeps when
+ * the quarantine is over budget. */
 static void retire(SlotRef ref) {
   const struct __weavec_rt_class *entry = &__weavec_rt_heap.table[ref.region];
-  ClassState *state = &classState[ref.region];
+  RegionState *state = &regionState[ref.region];
   uint32_t *words = slotWords(ref.region);
   /* Before the slot is queued: a sweep may recycle it once it is. */
   shadowDead(ref.base, entry->size);
   if (entry->size >= WeavecRtDecommitBytes)
     decommit(ref.base, entry->size);
-  weavecRtLock(&state->lock);
+  take(&state->lock);
   storeWord(&words[ref.slot], WeavecRtDead);
   if (state->deadTail != 0)
     storeWord(&words[state->deadTail - 1],
@@ -700,16 +1156,35 @@ static void retire(SlotRef ref) {
   else
     state->deadHead = ref.slot + 1;
   state->deadTail = ref.slot + 1;
+  give(&state->lock);
   {
     const size_t held =
         __atomic_add_fetch(&quarantineBytes, entry->size, __ATOMIC_RELAXED);
     if (held > peakQuarantine)
       peakQuarantine = held;
   }
-  (void)__atomic_sub_fetch(&liveBytes, entry->size, __ATOMIC_RELAXED);
-  weavecRtUnlock(&state->lock);
+  (void)__atomic_add_fetch(&classGained[regionClass[ref.region]], entry->size,
+                           __ATOMIC_RELAXED);
+  addLive(-(intptr_t)entry->size);
   if (overBudget())
     weavecRtSweep();
+}
+
+/* A release through the thread's cache: the slot waits there, claimed,
+ * until the cache's class fills and moves to the quarantine. */
+static void cachedRelease(ThreadCache *cache, unsigned c, SlotRef ref) {
+  SlotCache *released = &cache->release[c];
+  const size_t slotBytes = __weavec_rt_heap.table[c].size;
+  shadowDead(ref.base, slotBytes);
+  released->slots[released->count++] = slotEntry(ref.region, ref.slot, 1);
+  cache->liveDelta -= (intptr_t)slotBytes;
+  if (cache->liveDelta <= -(intptr_t)FoldBytes)
+    foldLive(cache);
+  if (released->count == released->limit) {
+    flushReleases(cache, c, 0);
+    if (overBudget())
+      weavecRtSweep();
+  }
 }
 
 /*===-- Huge blocks ---------------------------------------------------------===*/
@@ -738,7 +1213,12 @@ static void *hugeAlloc(size_t size, size_t alignment) {
   size_t at;
   if (alignment < page)
     alignment = page;
-  if (size > (~(size_t)0 >> 1) - 2 * alignment - 2 * page) {
+  /* RFC 0037 section 2.3: a block the shadow's window has no room for (more
+   * than a quarter of it) fails, as the system allocator fails one the
+   * address space has no room for. */
+  if (size > (~(size_t)0 >> 1) - 2 * alignment - 2 * page ||
+      (weavecRtShadowReady() && __weavec_rt_shadow.bits < 64 &&
+       size > ((size_t)1 << (__weavec_rt_shadow.bits - 2)))) {
     errno = ENOMEM;
     return NULL;
   }
@@ -756,7 +1236,7 @@ static void *hugeAlloc(size_t size, size_t alignment) {
   base = (map + alignment - 1) & ~(uintptr_t)(alignment - 1);
   (void)mprotect((void *)(base + bytes), page, PROT_NONE);
 
-  weavecRtLock(&hugeLock);
+  take(&hugeLock);
   if (hugeCount == hugeCapacity) {
     const size_t capacity = hugeCapacity != 0 ? hugeCapacity * 2 : 256;
     HugeBlock *grown =
@@ -764,7 +1244,7 @@ static void *hugeAlloc(size_t size, size_t alignment) {
                           PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
                           -1, 0);
     if ((void *)grown == MAP_FAILED) {
-      weavecRtUnlock(&hugeLock);
+      give(&hugeLock);
       (void)munmap((void *)map, mapBytes);
       errno = ENOMEM;
       return NULL;
@@ -795,7 +1275,7 @@ static void *hugeAlloc(size_t size, size_t alignment) {
     __atomic_store_n(&hugeLow, map, __ATOMIC_RELAXED);
   if (map + mapBytes > __atomic_load_n(&hugeHigh, __ATOMIC_RELAXED))
     __atomic_store_n(&hugeHigh, map + mapBytes, __ATOMIC_RELAXED);
-  weavecRtUnlock(&hugeLock);
+  give(&hugeLock);
   return (void *)base;
 }
 
@@ -810,13 +1290,13 @@ static int hugeFind(uintptr_t address, HugeBlock *out) {
   long index;
   if (!maybeHuge(address))
     return 0;
-  weavecRtLock(&hugeLock);
+  take(&hugeLock);
   index = hugeIndex(address);
   if (index >= 0 && address < hugeBlocks[index].map + hugeBlocks[index].mapBytes) {
     *out = hugeBlocks[index];
     found = 1;
   }
-  weavecRtUnlock(&hugeLock);
+  give(&hugeLock);
   return found;
 }
 
@@ -827,7 +1307,7 @@ static int hugeFree(uintptr_t address) {
   int ok = 0;
   if (!maybeHuge(address))
     return 0;
-  weavecRtLock(&hugeLock);
+  take(&hugeLock);
   index = hugeIndex(address);
   if (index >= 0 && hugeBlocks[index].base == address &&
       hugeBlocks[index].dead == 0) {
@@ -852,7 +1332,7 @@ static int hugeFree(uintptr_t address) {
     ++hugeDeadCount;
     (void)__atomic_add_fetch(&hugeDeadBytes, block->size, __ATOMIC_RELAXED);
   }
-  weavecRtUnlock(&hugeLock);
+  give(&hugeLock);
   return ok;
 }
 
@@ -947,11 +1427,16 @@ static size_t nextSize(const void *p) {
 
 /*===-- Allocate, release, reallocate (section 2.3) -------------------------===*/
 
-void *__weavec_rt_alloc(size_t size, size_t alignment) {
+/* The cache of a call that is the thread's only one in the allocator; null
+ * for a nested one (a signal handler's), which uses none. */
+static ThreadCache *cacheFor(unsigned c) {
+  ThreadCache *cache = c < cachedClasses ? threadCache() : NULL;
+  return cache != NULL && cache->depth <= 1 ? cache : NULL;
+}
+
+static void *allocate(size_t size, size_t alignment) {
   unsigned region;
   void *block;
-  int recycled = 0;
-  WEAVEC_RT_FORWARD(alloc, size, alignment);
   if (!weavecRtInitialise()) {
     errno = ENOMEM;
     return NULL;
@@ -972,19 +1457,11 @@ void *__weavec_rt_alloc(size_t size, size_t alignment) {
   }
   weavecRtCount(WeavecRtStatAllocations);
   if (region < __weavec_rt_heap.classes) {
-    block = takeSlot(region, size, &recycled);
-    /* A full region whose quarantine holds slots: a sweep may free some. */
-    if (block == NULL &&
-        __atomic_load_n(&classState[region].deadHead, __ATOMIC_RELAXED) != 0) {
-      weavecRtSweep();
-      block = takeSlot(region, size, &recycled);
-    }
-    if (block != NULL) {
-      if (recycled && size != 0)
-        zeroFill((uintptr_t)block, size);
-      shadowLive((uintptr_t)block, size, __weavec_rt_heap.table[region].size);
+    ThreadCache *cache = cacheFor(region);
+    block = cache != NULL ? cachedAlloc(cache, region, size)
+                          : takeSlot(region, size);
+    if (block != NULL)
       return block;
-    }
   }
   weavecRtCount(WeavecRtStatHuge);
   return hugeAlloc(size, alignment);
@@ -1022,18 +1499,22 @@ static const char *whyNotReleasable(uintptr_t address) {
   return "not the start of its block";
 }
 
-void __weavec_rt_free(void *p) {
+static void release(void *p) {
   const uintptr_t address = (uintptr_t)p;
-  WEAVEC_RT_FORWARD_VOID(release, p);
-  if (p == NULL)
-    return;
   if (inArena(address)) {
     const SlotRef ref = slotOf(address);
     const uint32_t word = wordOf(ref);
+    const unsigned c = regionClass[ref.region];
+    ThreadCache *cache;
     if (ref.base != address || (word & WeavecRtWordState) != WeavecRtLive)
       __weavec_rt_fatal("invalid release", p, whyNotReleasable(address));
     weavecRtCount(WeavecRtStatReleases);
-    retire(ref);
+    claim(ref, word, p);
+    cache = cacheFor(c);
+    if (cache != NULL)
+      cachedRelease(cache, c, ref);
+    else
+      retire(ref);
     return;
   }
   if (hugeFree(address)) {
@@ -1051,6 +1532,57 @@ void __weavec_rt_free(void *p) {
   nextFree(p);
 }
 
+/* RFC 0037 amendment 11: a call made while the thread is already inside
+ * the allocator (by a signal handler, which C does not allow but programs
+ * do) uses no cache and starts no sweep; while the thread holds an
+ * allocator lock it allocates nothing and defers its release. */
+void *__weavec_rt_alloc(size_t size, size_t alignment) {
+  ThreadCache *self;
+  void *block;
+  WEAVEC_RT_FORWARD(alloc, size, alignment);
+  self = ownCache();
+  if (self != NULL && self->depth != 0 && self->locks != 0) {
+    errno = ENOMEM;
+    return NULL;
+  }
+  if (self != NULL)
+    ++self->depth;
+  __atomic_signal_fence(__ATOMIC_SEQ_CST);
+  block = allocate(size, alignment);
+  __atomic_signal_fence(__ATOMIC_SEQ_CST);
+  if (self != NULL && --self->depth == 0)
+    while (self->deferredCount != 0)
+      __weavec_rt_free(self->deferred[--self->deferredCount]);
+  return block;
+}
+
+void __weavec_rt_free(void *p) {
+  ThreadCache *self;
+  WEAVEC_RT_FORWARD_VOID(release, p);
+  if (p == NULL)
+    return;
+  self = ownCache();
+  if (self != NULL && self->depth != 0 && self->locks != 0) {
+    /* (A release that does not fit waits for no one: the block stays.) */
+    if (self->deferredCount < sizeof self->deferred / sizeof self->deferred[0])
+      self->deferred[self->deferredCount++] = p;
+    return;
+  }
+  if (self != NULL)
+    ++self->depth;
+  __atomic_signal_fence(__ATOMIC_SEQ_CST);
+  release(p);
+  __atomic_signal_fence(__ATOMIC_SEQ_CST);
+  if (self != NULL && --self->depth == 0)
+    while (self->deferredCount != 0)
+      __weavec_rt_free(self->deferred[--self->deferredCount]);
+}
+
+int weavecRtAllocatorNested(void) {
+  const ThreadCache *self = ownCache();
+  return self != NULL && self->depth > 1;
+}
+
 void *__weavec_rt_realloc(void *p, size_t size) {
   const uintptr_t address = (uintptr_t)p;
   size_t old = 0;
@@ -1065,7 +1597,7 @@ void *__weavec_rt_realloc(void *p, size_t size) {
     if (ref.base != address || (value & WeavecRtWordState) != WeavecRtLive)
       __weavec_rt_fatal("invalid release", p, whyNotReleasable(address));
     old = weavecRtWordValue(value);
-    if (classFor(size) == ref.region) {
+    if (classFor(size) == regionClass[ref.region]) {
       /* The block stays; bytes it gains are zero (section 2.3). */
       if (size > old)
         memset((char *)p + old, 0, size - old);
@@ -1137,16 +1669,18 @@ struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address) {
 void weavecRtLockAll(void) {
   unsigned i;
   weavecRtLock(&initLock);
-  for (i = 0; i < WeavecRtClassCount; ++i)
-    weavecRtLock(&classState[i].lock);
+  weavecRtLock(&spareLock);
+  for (i = 0; i < WeavecRtRegionCount; ++i)
+    weavecRtLock(&regionState[i].lock);
   weavecRtLock(&hugeLock);
 }
 
 void weavecRtUnlockAll(void) {
   unsigned i;
   weavecRtUnlock(&hugeLock);
-  for (i = WeavecRtClassCount; i-- > 0;)
-    weavecRtUnlock(&classState[i].lock);
+  for (i = WeavecRtRegionCount; i-- > 0;)
+    weavecRtUnlock(&regionState[i].lock);
+  weavecRtUnlock(&spareLock);
   weavecRtUnlock(&initLock);
 }
 
@@ -1154,14 +1688,37 @@ void weavecRtUnlockAll(void) {
  * progress. */
 static void forkPrepare(void) {
   weavecRtSweepLock();
+  weavecRtLock(&cacheListLock);
   weavecRtLockAll();
 }
 static void forkParent(void) {
   weavecRtUnlockAll();
+  weavecRtUnlock(&cacheListLock);
   weavecRtSweepUnlock();
 }
+/* The child has one thread: the other threads' caches go back to the
+ * shared lists (RFC 0037 section 2.1). */
 static void forkChild(void) {
+  ThreadCache *own = NULL;
+  ThreadCache *cache;
   weavecRtUnlockAll();
+  if (__atomic_load_n(&cacheKeyReady, __ATOMIC_ACQUIRE))
+    own = (ThreadCache *)pthread_getspecific(cacheKey);
+  cache = caches;
+  caches = NULL;
+  while (cache != NULL) {
+    ThreadCache *next = cache->next;
+    if (cache == own) {
+      cache->next = caches;
+      caches = cache;
+    } else {
+      drainCache(cache, 1);
+      (void)munmap(cache, sizeof(ThreadCache));
+    }
+    cache = next;
+  }
+  weavecRtUnlock(&cacheListLock);
+  weavecRtSweepForkChild();
   weavecRtSweepUnlock();
 }
 
@@ -1177,8 +1734,8 @@ int weavecRtSweepWanted(void) {
  * held. */
 int weavecRtPrepareMarks(void) {
   unsigned region;
-  for (region = 0; region < __weavec_rt_heap.classes; ++region) {
-    ClassState *state = &classState[region];
+  for (region = 0; region < __weavec_rt_heap.regions; ++region) {
+    RegionState *state = &regionState[region];
     if (state->deadHead == 0 || state->marks != NULL)
       continue;
     {
@@ -1199,15 +1756,17 @@ int weavecRtPrepareMarks(void) {
 static inline void markAddress(uintptr_t value) {
   if (value - __weavec_rt_heap.base < __weavec_rt_heap.bytes) {
     /* A class with nothing in its quarantine needs no slot index. */
-    const ClassState *quick =
-        &classState[(value - __weavec_rt_heap.base) >> __weavec_rt_heap.shift];
+    const RegionState *quick =
+        &regionState[(value - __weavec_rt_heap.base) >> __weavec_rt_heap.shift];
     SlotRef ref;
     if (quick->marks == NULL || quick->deadHead == 0)
       return;
     ref = slotOf(value);
+    /* Atomic: mark workers set bits of one word at once (RFC 0037
+     * section 3). */
     if ((wordOf(ref) & WeavecRtWordState) == WeavecRtDead)
-      classState[ref.region].marks[ref.slot >> 6] |= (uint64_t)1
-                                                     << (ref.slot & 63);
+      (void)__atomic_fetch_or(&regionState[ref.region].marks[ref.slot >> 6],
+                              (uint64_t)1 << (ref.slot & 63), __ATOMIC_RELAXED);
     return;
   }
   if (hugeDeadCount != 0 && value >= hugeLow && value < hugeHigh) {
@@ -1225,33 +1784,55 @@ void weavecRtMarkWords(uintptr_t low, uintptr_t high) {
     markAddress(*word);
 }
 
-void weavecRtMarkHeap(void) {
-  unsigned region;
-  size_t i;
-  for (region = 0; region < __weavec_rt_heap.classes; ++region) {
-    const struct __weavec_rt_class *entry = &__weavec_rt_heap.table[region];
-    const uint32_t *words = slotWords(region);
-    const uint32_t bump = classState[region].bump;
-    uint32_t slot;
-    for (slot = 0; slot < bump; ++slot) {
-      const uint32_t word = loadWord(&words[slot]);
-      if ((word & WeavecRtWordState) == WeavecRtLive) {
-        const uintptr_t base = regionStart(region) + (uintptr_t)slot * entry->size;
-        weavecRtMarkWords(base, base + weavecRtWordValue(word));
-      }
+void weavecRtMarkSlots(unsigned region, uint32_t first, uint32_t last) {
+  const struct __weavec_rt_class *entry = &__weavec_rt_heap.table[region];
+  const uint32_t *words = slotWords(region);
+  uint32_t slot;
+  for (slot = first; slot < last; ++slot) {
+    const uint32_t word = loadWord(&words[slot]);
+    if ((word & WeavecRtWordState) == WeavecRtLive) {
+      const uintptr_t base = regionStart(region) + (uintptr_t)slot * entry->size;
+      weavecRtMarkWords(base, base + weavecRtWordValue(word));
     }
   }
+}
+
+void weavecRtHeapWork(void (*add)(unsigned, uint32_t, uint32_t), size_t chunk) {
+  unsigned region;
+  for (region = 0; region < __weavec_rt_heap.regions; ++region) {
+    const size_t size = __weavec_rt_heap.table[region].size;
+    const uint32_t bump = regionState[region].bump;
+    const uint32_t step = size >= chunk ? 1 : (uint32_t)(chunk / size);
+    uint32_t first;
+    for (first = 0; first < bump; first += step)
+      add(region, first, bump - first > step ? first + step : bump);
+  }
+}
+
+void weavecRtMarkHuge(void) {
+  size_t i;
   for (i = 0; i < hugeCount; ++i)
     if (hugeBlocks[i].dead == 0)
       weavecRtMarkWords(hugeBlocks[i].base,
                         hugeBlocks[i].base + hugeBlocks[i].size);
 }
 
+void weavecRtMarkHeap(void) {
+  unsigned region;
+  for (region = 0; region < __weavec_rt_heap.regions; ++region)
+    weavecRtMarkSlots(region, 0, regionState[region].bump);
+  weavecRtMarkHuge();
+}
+
+size_t weavecRtLiveBytes(void) { return liveNow(); }
+
 void weavecRtRecycle(struct weavecRtSweepCounts *counts, int recycle) {
   unsigned region;
   size_t i;
-  for (region = 0; region < __weavec_rt_heap.classes; ++region) {
-    ClassState *state = &classState[region];
+  for (region = 0; region < __weavec_rt_heap.classes; ++region)
+    classGained[region] = 0;
+  for (region = 0; region < __weavec_rt_heap.regions; ++region) {
+    RegionState *state = &regionState[region];
     uint32_t *words = slotWords(region);
     const size_t size = __weavec_rt_heap.table[region].size;
     uint32_t keptHead = 0;
@@ -1262,7 +1843,11 @@ void weavecRtRecycle(struct weavecRtSweepCounts *counts, int recycle) {
      * address order, so that slots are reused, and their words read, in
      * order. */
     for (slot = state->bump; slot-- > 0;) {
-      if ((loadWord(&words[slot]) & WeavecRtWordState) != WeavecRtDead)
+      const uint32_t word = loadWord(&words[slot]);
+      /* A slot in a thread's cache, or being released, is not queued: it
+       * stays as it is (RFC 0037 section 2.1). */
+      if ((word & WeavecRtWordState) != WeavecRtDead ||
+          weavecRtWordValue(word) == CachedDead)
         continue;
       if (!recycle || (state->marks[slot >> 6] >> (slot & 63) & 1) != 0) {
         if (keptHead == 0)

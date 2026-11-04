@@ -8,10 +8,11 @@
 //
 // RFC 0035 §3. The tracked static allocas of a function become offsets into
 // one frame alloca with redzones between them; two whose lifetimes never
-// overlap may share bytes (RFC 0036 §2), as Clang's stack colouring lets
+// overlap may share bytes (RFC 0036 §2), as Clang's stack coloring lets
 // them share stack space. The frame's shadow is written
 // at entry (redzones poisoned, objects whose scope has not begun poisoned as
-// out of scope) and cleared before each return; lifetime markers write the
+// out of scope) and written as returned before each return (RFC 0037 §9,
+// the runtime clears what is stale); lifetime markers write the
 // scope of their object. A tracked dynamic alloca gets a redzone after it,
 // which the runtime clears at the stack restore or return that frees it.
 // Before a call that does not return, the runtime clears the stack's shadow
@@ -25,6 +26,7 @@
 #include "llvm/Analysis/StackLifetime.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/Support/xxhash.h"
 
 #include <algorithm>
 
@@ -35,6 +37,8 @@ static constexpr std::uint8_t ShadowLeft = 0xF1;
 static constexpr std::uint8_t ShadowMid = 0xF2;
 static constexpr std::uint8_t ShadowRight = 0xF3;
 static constexpr std::uint8_t ShadowScope = 0xF8;
+/// RFC 0037 §9: a frame that returned.
+static constexpr std::uint8_t ShadowReturned = 0xF5;
 
 /// The alignment of every object in a frame, and its left redzone: wider
 /// than the redzones between objects, for the negative indexes that reach
@@ -53,6 +57,8 @@ struct FrameObject {
   llvm::AllocaInst *alloca = nullptr;
   std::uint64_t size = 0;
   std::uint64_t offset = 0;
+  /// RFC 0037 §7.2: the object's color.
+  std::uint8_t color = 0;
   /// The lifetime markers of the object.
   llvm::SmallVector<llvm::IntrinsicInst *, 2> starts;
   llvm::SmallVector<llvm::IntrinsicInst *, 2> ends;
@@ -60,12 +66,25 @@ struct FrameObject {
 
 } // namespace
 
-/// The shadow bytes of `size` addressable bytes: whole granules 0, a
-/// partial last granule its byte count.
-static void objectBytes(std::uint64_t size,
-                        llvm::SmallVectorImpl<std::uint8_t> &bytes) {
-  for (std::uint64_t at = 0; at < size; at += 16)
-    bytes.push_back(size - at >= 16 ? 0 : static_cast<std::uint8_t>(size - at));
+/// The shadow byte of a partial granule of `bytes` (1 to 15) addressable
+/// bytes of an object of `color` (RFC 0037 §7.1: `1ccc kkkk`).
+static std::uint8_t partialOf(std::uint8_t color, std::uint64_t bytes) {
+  return static_cast<std::uint8_t>(
+      0x80U | ((static_cast<unsigned>(color) & 7U) << 4U) | bytes);
+}
+
+/// The shadow of `size` addressable bytes of an object of `color`: whole
+/// granules the color, a partial last granule its byte count.
+static void objectRuns(std::uint64_t size, std::uint8_t color,
+                       ShadowRuns &runs) {
+  appendRun(runs, size / 16, color);
+  if (size % 16 != 0)
+    appendRun(runs, 1, partialOf(color, size % 16));
+}
+
+/// The granules `size` bytes cover.
+static std::uint64_t granules(std::uint64_t size) {
+  return (size + 15) / 16;
 }
 
 /// Whether `function` can have its frame laid out: no `musttail` call (the
@@ -183,6 +202,15 @@ static void layoutStatic(FunctionContext &context,
     return size;
   };
   std::uint64_t frameSize = place();
+  // RFC 0037 §7.2: the locals of a frame take consecutive colors, from a
+  // hash of the function's name, so that any two of them differ.
+  {
+    std::uint64_t next = llvm::xxh3_64bits(function.getName());
+    for (FrameObject &object : objects) {
+      object.color = colorAt(next++);
+      context.frameColors[object.alloca] = object.color;
+    }
+  }
   if (frameSize > ShareAbove &&
       llvm::any_of(objects, [](const FrameObject &object) {
         return !object.starts.empty();
@@ -193,22 +221,44 @@ static void layoutStatic(FunctionContext &context,
   }
 
   // The shadow at entry: redzones, objects in scope or not yet. An object
-  // live at entry shares bytes with none.
-  llvm::SmallVector<std::uint8_t, 64> entry(frameSize / 16, ShadowMid);
-  for (std::uint64_t g = 0; g < LeftZone / 16; ++g)
-    entry[g] = ShadowLeft;
+  // live at entry shares bytes with none. Each stretch between two of the
+  // objects' boundaries takes one value, decided by the objects that cover
+  // it in layout order.
   std::uint64_t objectsEnd = 0;
-  for (const FrameObject &object : objects) {
-    llvm::SmallVector<std::uint8_t, 16> bytes;
-    objectBytes(object.size, bytes);
-    const bool inScope = object.starts.empty();
-    for (std::size_t i = 0; i < bytes.size(); ++i)
-      if (inScope || entry[(object.offset / 16) + i] == ShadowMid)
-        entry[(object.offset / 16) + i] = inScope ? bytes[i] : ShadowScope;
+  for (const FrameObject &object : objects)
     objectsEnd = std::max(objectsEnd, object.offset + object.size);
+  llvm::SmallVector<std::uint64_t, 32> cuts = {
+      0, LeftZone / 16, granules(objectsEnd), frameSize / 16};
+  for (const FrameObject &object : objects) {
+    cuts.push_back(object.offset / 16);
+    cuts.push_back((object.offset / 16) + (object.size / 16));
+    cuts.push_back((object.offset / 16) + granules(object.size));
   }
-  for (std::uint64_t g = (objectsEnd + 15) / 16; g < frameSize / 16; ++g)
-    entry[g] = ShadowRight;
+  llvm::sort(cuts);
+  cuts.erase(std::ranges::unique(cuts).begin(), cuts.end());
+  ShadowRuns entry;
+  for (std::size_t c = 0; c + 1 < cuts.size() && cuts[c] < frameSize / 16;
+       ++c) {
+    const std::uint64_t g = cuts[c];
+    std::uint8_t value = g < LeftZone / 16 ? ShadowLeft : ShadowMid;
+    if (g >= granules(objectsEnd)) {
+      value = ShadowRight;
+    } else {
+      for (const FrameObject &object : objects) {
+        const std::uint64_t first = object.offset / 16;
+        if (g < first || g >= first + granules(object.size))
+          continue;
+        const std::uint8_t own =
+            g - first < object.size / 16
+                ? object.color
+                : partialOf(object.color, object.size % 16);
+        const bool inScope = object.starts.empty();
+        if (inScope || value == ShadowMid)
+          value = inScope ? own : ShadowScope;
+      }
+    }
+    appendRun(entry, std::min(cuts[c + 1], frameSize / 16) - g, value);
+  }
 
   // The frame, at the top of the entry block.
   llvm::BasicBlock &first = function.getEntryBlock();
@@ -230,9 +280,10 @@ static void layoutStatic(FunctionContext &context,
     llvm::Value *at = addresses[i];
     // Scopes: the markers write the object's shadow, then go (they name an
     // alloca, which the object no longer is).
-    llvm::SmallVector<std::uint8_t, 16> live;
-    objectBytes(object.size, live);
-    const llvm::SmallVector<std::uint8_t, 16> dead(live.size(), ShadowScope);
+    ShadowRuns live;
+    objectRuns(object.size, object.color, live);
+    ShadowRuns dead;
+    appendRun(dead, granules(object.size), ShadowScope);
     // A redzone that shares bytes with another object's says so again at
     // the start, so that an overflow into it is reported as one.
     const bool sharesRedzone =
@@ -241,7 +292,8 @@ static void layoutStatic(FunctionContext &context,
                  object.offset + object.size < other.offset + other.size;
         });
     if (sharesRedzone)
-      live.resize(paddedSize(object.size) / 16, ShadowMid);
+      appendRun(live, (paddedSize(object.size) / 16) - granules(object.size),
+                ShadowMid);
     for (llvm::IntrinsicInst *start : object.starts) {
       context.writeShadow(start, at, live);
       start->eraseFromParent();
@@ -255,8 +307,10 @@ static void layoutStatic(FunctionContext &context,
     moved[object.alloca] = at;
     object.alloca->eraseFromParent();
   }
-  // The entry's shadow first; the frame's cleared at each exit.
-  const llvm::SmallVector<std::uint8_t, 64> clear(frameSize / 16, 0);
+  // The entry's shadow first; at each exit the frame says it returned
+  // (RFC 0037 §9).
+  ShadowRuns clear;
+  appendRun(clear, frameSize / 16, ShadowReturned);
   for (llvm::Instruction *exit : exitsOf(function))
     context.writeShadow(exit, frame, clear);
   context.writeShadow(context.entry(), frame, entry);

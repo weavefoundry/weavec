@@ -18,6 +18,11 @@
 // shadow of what they map); a call that only computes a string's length is
 // replaced by the string guard that computes it. RFC 0036 §6: a fortified
 // form's object size bounds what the call writes, inline or in the wrapper.
+// RFC 0037 §5: a wide string is scanned by the runtime, and a library
+// function whose address the unit takes is replaced there by a thunk that
+// calls it directly, so that a call through the pointer is guarded too.
+// RFC 0037 §10: a string or formatting call into an array field of a
+// struct is limited to the field.
 //
 //===----------------------------------------------------------------------===//
 
@@ -72,9 +77,66 @@ struct LibraryCall {
                         bytes, LedgerRow::Outcome::Guarded, reason);
   }
 
+  /// RFC 0037 §10: the size of the array field the call's first written
+  /// argument names, for a row whose wrapper takes a limit (a string or
+  /// formatting call); or null.
+  [[nodiscard]] llvm::Value *writtenField() const {
+    if (match.entry->wide || !match.entry->wrapper || !wrapperTakesLimit())
+      return nullptr;
+    const std::vector<core::LibraryParam> &params = match.entry->params;
+    for (unsigned index = 0; index < params.size(); ++index) {
+      if (params[index].type != core::LibraryParam::Type::Pointer ||
+          (params[index].access != core::LibraryParam::Access::Write &&
+           params[index].access != core::LibraryParam::Access::ReadWrite))
+        continue;
+      const llvm::Value *pointer = argument(index);
+      if (pointer == nullptr || !pointer->getType()->isPointerTy())
+        return nullptr;
+      const std::optional<std::uint64_t> limit =
+          fieldLimit(pointer, function.getParent()->getDataLayout());
+      return limit ? llvm::ConstantInt::get(context.i64, *limit) : nullptr;
+    }
+    return nullptr;
+  }
+
+  /// A call of a C library's fortified inline definition (glibc's
+  /// `strcpy`), whose object size inside the definition cannot name the
+  /// field: the bytes it writes, against the field the call names.
+  void checkField() const {
+    llvm::Value *limit = writtenField();
+    if (limit == nullptr)
+      return;
+    const std::vector<core::LibraryParam> &params = match.entry->params;
+    for (unsigned index = 0; index < params.size(); ++index) {
+      if (params[index].type != core::LibraryParam::Type::Pointer ||
+          (params[index].access != core::LibraryParam::Access::Write &&
+           params[index].access != core::LibraryParam::Access::ReadWrite))
+        continue;
+      const std::optional<core::LibTerm> &term =
+          params[index].bytes ? params[index].bytes : params[index].count;
+      llvm::IRBuilder<> builder(&call);
+      if (!term)
+        return;
+      if (llvm::Value *bytes = evaluate(*term, builder))
+        checkLimit(argument(index), bytes, limit);
+      return;
+    }
+  }
+
   /// RFC 0036 §6: the object size a fortified form passes (an i64), or
-  /// null when the call is no fortified form or the size is unknown (-1).
+  /// null when the call is no fortified form or the size is unknown (-1);
+  /// RFC 0037 §10: the smaller of it and the field's.
   [[nodiscard]] llvm::Value *objectSize() const {
+    llvm::Value *field = writtenField();
+    llvm::Value *stated = statedSize();
+    if (field == nullptr || stated == nullptr)
+      return field != nullptr ? field : stated;
+    llvm::IRBuilder<> builder(&call);
+    return builder.CreateBinaryIntrinsic(llvm::Intrinsic::umin, field, stated);
+  }
+
+  /// The object size a fortified form passes, or null.
+  [[nodiscard]] llvm::Value *statedSize() const {
     const int at = match.sizeArgument();
     if (at < 0 || static_cast<unsigned>(at) >= call.arg_size())
       return nullptr;
@@ -134,7 +196,8 @@ struct LibraryCall {
   llvm::Value *stringLength(llvm::IRBuilder<> &builder, llvm::Value *pointer,
                             llvm::Value *bound, unsigned flags) const {
     llvm::StringRef literal;
-    if (llvm::getConstantStringInfo(pointer, literal)) {
+    // (A wide literal's bytes are not its characters.)
+    if (!match.entry->wide && llvm::getConstantStringInfo(pointer, literal)) {
       std::uint64_t length = literal.size();
       if (const auto *constant =
               llvm::dyn_cast_or_null<llvm::ConstantInt>(bound))
@@ -144,6 +207,18 @@ struct LibraryCall {
     if (bound == nullptr)
       bound = llvm::ConstantInt::get(module().i64,
                                      std::numeric_limits<std::uint64_t>::max());
+    // RFC 0037 §5: a wide string is scanned by the runtime, in elements.
+    if (match.entry->wide) {
+      (void)record("string");
+      return builder.CreateCall(
+          module().runtime(
+              "wcslen", llvm::FunctionType::get(
+                            module().i64,
+                            {module().ptr, module().i64, module().ptr}, false)),
+          {pointer, bound,
+           module().site(call.getDebugLoc(),
+                         (flags & MarkerNullOk) != 0 ? SiteNullOk : 0)});
+    }
     return module().insertString(builder, pointer, bound, record("string"),
                                  flags);
   }
@@ -169,10 +244,6 @@ struct LibraryCall {
       return builder.CreateSExtOrTrunc(value, i64);
     }
     case Kind::StringLength: {
-      // A wide string's length is in wchar_t elements, which the byte scan
-      // of a string guard does not give.
-      if (match.entry->wide)
-        return nullptr;
       llvm::Value *pointer = argument(term.arg);
       if (pointer == nullptr || !pointer->getType()->isPointerTy())
         return nullptr;
@@ -285,14 +356,14 @@ void LibraryCall::guardArguments() const {
     const bool write = param.access == core::LibraryParam::Access::Write ||
                        param.access == core::LibraryParam::Access::ReadWrite;
     llvm::IRBuilder<> builder(&call);
-    if (param.string && !entry.wide)
+    if (param.string)
       (void)stringLength(builder, pointer, nullptr,
                          nullOk(index) ? MarkerNullOk : 0);
     const std::optional<core::LibTerm> &term =
         param.bytes ? param.bytes : param.count;
     // `min(t, strlen(a<self>) + 1)`: the bytes a bounded scan of the string
     // reads, which its string guard checks.
-    if (term && !entry.wide && term->kind == core::LibTerm::Kind::Min &&
+    if (term && term->kind == core::LibTerm::Kind::Min &&
         term->operands.size() == 2 &&
         term->operands[1] ==
             core::LibTerm::sum(core::LibTerm::stringLength(index),
@@ -452,6 +523,9 @@ void LibraryCall::guardFormat(const core::LibFormat &format) const {
 /// then its guards are cheaper than the runtime's version.
 static bool cheapToGuard(const LibraryCall &call) {
   const core::LibraryEntry &entry = *call.match.entry;
+  // A formatted call's wrapper checks the arguments its format names.
+  if (entry.format && entry.wrapper)
+    return false;
   auto small = [&](const core::LibTerm &term) {
     using Kind = core::LibTerm::Kind;
     if (term.kind == Kind::Constant)
@@ -590,11 +664,17 @@ void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
     for (llvm::Instruction &instruction : block)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction))
         if (const llvm::Function *callee = call->getCalledFunction();
-            callee && (callee->isDeclaration() && !callee->isIntrinsic() &&
+            callee && ((callee->isDeclaration() ||
+                        (!late && callee->hasFnAttribute(
+                                      llvm::Attribute::AlwaysInline))) &&
+                       !callee->isIntrinsic() &&
                        !ModuleContext::isRuntimeName(callee->getName())))
           calls.push_back(call);
   for (llvm::CallInst *call : calls) {
-    const llvm::StringRef name = cName(call->getCalledFunction()->getName());
+    llvm::StringRef name = cName(call->getCalledFunction()->getName());
+    // Clang names a builtin's inline definition so (glibc's fortified
+    // forms).
+    name.consume_back(".inline");
     if (module.isUnsafe(call->getDebugLoc()))
       continue;
     const std::optional<core::LibraryMatch> match =
@@ -606,6 +686,12 @@ void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
                         .call = *call,
                         .match = *match,
                         .name = match->entry->name};
+    // RFC 0037 §10: a fortified inline definition is checked against the
+    // field at its call; its body's calls are guarded as any others.
+    if (!call->getCalledFunction()->isDeclaration()) {
+      library.checkField();
+      continue;
+    }
     // A read-only call with a wrapper is the late pass's (GuardExpand, after
     // the optimiser), which redirects it or guards it inline; the late pass
     // touches nothing else.
@@ -646,6 +732,66 @@ void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
       }
     }
     library.guardArguments();
+  }
+}
+
+/// Whether a call of the row guards one of its pointer arguments: one it
+/// reads or writes and does not release.
+static bool guardsAnArgument(const core::LibraryEntry &entry) {
+  return llvm::any_of(entry.params, [](const core::LibraryParam &param) {
+    return param.type == core::LibraryParam::Type::Pointer &&
+           param.access != core::LibraryParam::Access::None &&
+           param.effect != core::LibraryParam::Effect::Release &&
+           param.effect != core::LibraryParam::Effect::Realloc;
+  });
+}
+
+void thunkLibraryAddresses(ModuleContext &module, llvm::Module &ir) {
+  const core::LibrarySpec &spec = core::LibrarySpec::shipped();
+  for (llvm::Function &function : llvm::make_early_inc_range(ir)) {
+    if (!function.isDeclaration() || function.isIntrinsic() ||
+        function.isVarArg() || ModuleContext::isRuntimeName(function.getName()))
+      continue;
+    const llvm::StringRef name = cName(function.getName());
+    const std::optional<core::LibraryMatch> match =
+        spec.lookup(name, function.arg_size());
+    if (!match || match->entry == nullptr || !guardsAnArgument(*match->entry))
+      continue;
+    // The uses that take the address: any but the callee of a call.
+    auto takesAddress = [](const llvm::Use &use) {
+      const auto *call = llvm::dyn_cast<llvm::CallBase>(use.getUser());
+      return call == nullptr || !call->isCallee(&use);
+    };
+    if (llvm::none_of(function.uses(), takesAddress))
+      continue;
+    // One thunk per function, the same in every unit (`linkonce_odr`), so
+    // that its address compares equal across units built by weavec-cc.
+    const std::string thunkName = (ThunkPrefix + name).str();
+    llvm::Function *thunk = ir.getFunction(thunkName);
+    if (thunk == nullptr) {
+      thunk = llvm::Function::Create(function.getFunctionType(),
+                                     llvm::GlobalValue::LinkOnceODRLinkage,
+                                     thunkName, ir);
+      thunk->copyAttributesFrom(&function);
+      llvm::IRBuilder<> builder(
+          llvm::BasicBlock::Create(module.context, "", thunk));
+      llvm::SmallVector<llvm::Value *, 8> arguments;
+      for (llvm::Argument &argument : thunk->args())
+        arguments.push_back(&argument);
+      llvm::CallInst *call = builder.CreateCall(&function, arguments);
+      if (thunk->getReturnType()->isVoidTy())
+        builder.CreateRetVoid();
+      else
+        builder.CreateRet(call);
+    }
+    // (A constant user, a global's initializer, is rebuilt rather than
+    // changed in place.)
+    function.replaceUsesWithIf(thunk, [&](llvm::Use &use) {
+      return takesAddress(use) && use.getUser() != thunk &&
+             (!llvm::isa<llvm::Instruction>(use.getUser()) ||
+              llvm::cast<llvm::Instruction>(use.getUser())->getFunction() !=
+                  thunk);
+    });
   }
 }
 

@@ -29,6 +29,10 @@
 |*
 \*===----------------------------------------------------------------------===*/
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1 /* glibc's REG_ERR and REG_RIP */
+#endif
+
 #include "weavec_rt.h"
 
 #include <execinfo.h>
@@ -36,6 +40,10 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
+#include <sys/ucontext.h>
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#endif
 #include <string.h>
 #include <unistd.h>
 #if !defined(__APPLE__)
@@ -288,14 +296,38 @@ void weavecRtFail(const char *kind, uintptr_t address, uint64_t width,
     size = describeHeap(address, text, sizeof text);
     if (size > 0)
       emit(text, size);
+  } else if (strcmp(kind, "stack-use-after-return") == 0) {
+    struct Line line = {text, text + sizeof text - 1};
+    put(&line, "weavec: ");
+    putHex(&line, address);
+    put(&line, " is in a frame that returned");
+    emit(text, finish(&line, text));
   }
+  stop(site);
+}
+
+void weavecRtFailJump(const char *kind, uintptr_t address, uint64_t width,
+                      uintptr_t root, const struct __weavec_rt_site *site) {
+  char text[256];
+  struct Line line = {text, text + sizeof text - 1};
+  if (!reportLine(kind, address, width, site))
+    return;
+  /* RFC 0037: the second line of a color mismatch. */
+  put(&line, "weavec: ");
+  putHex(&line, address);
+  put(&line, " is ");
+  putUnsigned(&line, address >= root ? address - root : root - address, 10);
+  put(&line, address >= root ? " bytes after its base " : " bytes before its base ");
+  putHex(&line, root);
+  put(&line, ", in another object");
+  emit(text, finish(&line, text));
   stop(site);
 }
 
 static int reportLine(const char *kind, uintptr_t address, uint64_t width,
                       const struct __weavec_rt_site *site) {
   const unsigned flags = site != NULL ? site->flags : 0;
-  const char *file = site != NULL && site->file != NULL ? site->file : NULL;
+  const char *file = weavecRtSiteFile(site);
   const unsigned line = site != NULL ? site->line : 0;
   const unsigned column = site != NULL ? site->column : 0;
   const int report = (flags & WeavecRtSiteReport) != 0 && !shouldAbort();
@@ -342,6 +374,13 @@ static int reportLine(const char *kind, uintptr_t address, uint64_t width,
 
 /* Counted without synchronisation: a diagnostic aid, not an account. */
 unsigned long long weavecRtStats[WeavecRtStatCount];
+int weavecRtStatsOn;
+
+/* Read once, in a constructor, as the other variables are. */
+__attribute__((constructor)) static void readStats(void) {
+  const char *value = getenv("WEAVEC_RT_STATS");
+  weavecRtStatsOn = value != NULL && strcmp(value, "1") == 0;
+}
 
 __attribute__((destructor)) static void printStats(void) {
   static const char *const Names[WeavecRtStatCount] = {
@@ -399,6 +438,91 @@ __attribute__((destructor)) static void printStats(void) {
       const long written = (long)write(2, text, (size_t)finish(&line, text));
       (void)written;
     }
+  }
+}
+
+/*===-- Faults (RFC 0037 section 6) ----------------------------------------===*/
+
+/* The faulting instruction's address and, where the context says, whether
+ * it wrote (1), read (0) or is unknown (-1). */
+static uintptr_t faultPc(const void *context, int *write) {
+  const ucontext_t *uc = (const ucontext_t *)context;
+  *write = -1;
+#if defined(__APPLE__) && defined(__aarch64__)
+  /* A data abort's syndrome: bit 6 (WnR) is set by a write. */
+  *write = (uc->uc_mcontext->__es.__esr >> 6) & 1;
+  return (uintptr_t)arm_thread_state64_get_pc(uc->uc_mcontext->__ss);
+#elif defined(__APPLE__) && defined(__x86_64__)
+  *write = (uc->uc_mcontext->__es.__err & 2) != 0;
+  return (uintptr_t)uc->uc_mcontext->__ss.__rip;
+#elif defined(__linux__) && defined(__x86_64__)
+  *write = (uc->uc_mcontext.gregs[REG_ERR] & 2) != 0;
+  return (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+#elif defined(__linux__) && defined(__aarch64__)
+  return (uintptr_t)uc->uc_mcontext.pc;
+#else
+  (void)uc;
+  return 0;
+#endif
+}
+
+/* A fault the shadow did not see (a wild access, the inaccessible middle of
+ * a huge block): one report, then the signal again under the default
+ * disposition, now restored, which ends the program as it would have when
+ * the handler returns (a signal sent, which no access would retry, too). */
+static void onFault(int signal, siginfo_t *info, void *context) {
+  char text[256];
+  struct Line line = {text, text + sizeof text - 1};
+  const uintptr_t address = (uintptr_t)info->si_addr;
+  int write = -1;
+  const uintptr_t pc = faultPc(context, &write);
+  int size;
+  /* A signal sent (kill, raise) faulted nothing: Linux says who sent it;
+   * Darwin's arm64 syndrome says the thread was in a system call. */
+#if defined(__APPLE__) && defined(__aarch64__)
+  const int sent = ((((const ucontext_t *)context)->uc_mcontext->__es.__esr >>
+                     26) & 0x3F) == 0x15;
+#else
+  const int sent = info->si_code <= 0;
+#endif
+  if (sent) {
+    (void)raise(signal);
+    return;
+  }
+  put(&line, "weavec: memory-fault at pc ");
+  putHex(&line, pc);
+  put(&line, write == 1 ? ": write at " : write == 0 ? ": read at " : ": access at ");
+  putHex(&line, address);
+  emit(text, finish(&line, text));
+  size = describeHeap(address, text, sizeof text);
+  if (size > 0)
+    emit(text, size);
+  if (backtraceSetting) {
+    void *frames[64];
+    backtrace_symbols_fd(frames, backtrace(frames, 64), 2);
+  }
+  (void)raise(signal);
+}
+
+/* The handlers go where the disposition is the default, so that a program's
+ * own handler (installed before or after) is its own. WEAVEC_RT_FAULTS=0
+ * installs none. */
+__attribute__((constructor)) static void watchFaults(void) {
+  static const int Faults[2] = {SIGSEGV, SIGBUS};
+  const char *value = getenv("WEAVEC_RT_FAULTS");
+  int i;
+  if (value != NULL && strcmp(value, "0") == 0)
+    return;
+  for (i = 0; i < 2; ++i) {
+    struct sigaction action;
+    if (sigaction(Faults[i], NULL, &action) != 0 ||
+        (action.sa_flags & SA_SIGINFO) != 0 || action.sa_handler != SIG_DFL)
+      continue;
+    memset(&action, 0, sizeof action);
+    action.sa_sigaction = onFault;
+    action.sa_flags = SA_SIGINFO | SA_RESETHAND | SA_ONSTACK;
+    sigemptyset(&action.sa_mask);
+    (void)sigaction(Faults[i], &action, NULL);
   }
 }
 
