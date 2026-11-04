@@ -390,11 +390,6 @@ static void scanStack(uintptr_t low, uintptr_t high) {
     scanExcluding(sp - RedZone > low ? sp - RedZone : low, high);
 }
 
-
-#if defined(__APPLE__)
-
-/*===-- Darwin --------------------------------------------------------------===*/
-
 /* The first address at or after `address` outside the runtime's own
  * mappings (sorted). */
 static uintptr_t skipInternal(uintptr_t address) {
@@ -404,6 +399,10 @@ static uintptr_t skipInternal(uintptr_t address) {
       address = internalRanges[i].high;
   return address;
 }
+
+#if defined(__APPLE__)
+
+/*===-- Darwin --------------------------------------------------------------===*/
 
 static thread_act_array_t threads;
 static mach_msg_type_number_t threadCount;
@@ -1076,7 +1075,8 @@ static void scanResident(uintptr_t low, uintptr_t high, int pagemap) {
   unsigned char vector[Pages];
   uint64_t entries[Pages];
   low &= ~(page - 1);
-  while (low < high) {
+  /* (Not the runtime's own: its reservations are large.) */
+  while ((low = skipInternal(low)) < high) {
     const uintptr_t chunk =
         high - low > Pages * page ? Pages * page : high - low;
     const uintptr_t count = (chunk + page - 1) / page;
