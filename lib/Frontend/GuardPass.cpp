@@ -417,7 +417,7 @@ ModuleContext::positionOf(const llvm::DebugLoc &location) {
     return position;
   const llvm::DILocation *at = reportedAt(location.get());
   position.file =
-      UnsafeRegions::normalise(at->getFilename(), at->getDirectory());
+      UnsafeRegions::normalize(at->getFilename(), at->getDirectory());
   position.line = at->getLine();
   position.column = at->getColumn();
   return position;

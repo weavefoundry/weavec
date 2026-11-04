@@ -1,4 +1,4 @@
-// RFC 0030 §2.6: a C99 inline definition inlined at -O2 is analysed and instrumented.
+// RFC 0030 §2.6: a C99 inline definition inlined at -O2 is analyzed and instrumented.
 // STAGE: S5
 // 'get' is a C99 inline definition: CodeGen emits it available_externally and inlines it at
 // -O1 and above, so SiteCollector counts it as emitted and CheckEmitter instruments it,

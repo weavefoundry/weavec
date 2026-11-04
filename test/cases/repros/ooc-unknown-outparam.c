@@ -2,7 +2,7 @@
 // 'cmd' with the external 'redisFormatCommand(&cmd, ...)', frees it, and formats again into
 // the same variable: 'fmt(&cmd, ...); free(cmd); fmt(&cmd, ...); free(cmd);'.
 // v0.11.0 reports definite 'use-after-free' and 'double-free' errors on the second use and
-// release: the write through '&cmd' by an unknown callee is not modelled, so 'cmd' still
+// release: the write through '&cmd' by an unknown callee is not modeled, so 'cmd' still
 // holds the freed value. Reduced from build/rfc31/ooc/repro/outp.c; the formatters are
 // defined in a unit the analysis does not see (Inputs/ooc-unknown-outparam-impl.c).
 // intended: no finding; an unknown callee given '&cmd' may overwrite 'cmd' with a fresh

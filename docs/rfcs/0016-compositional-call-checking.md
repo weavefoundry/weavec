@@ -356,7 +356,7 @@ program contains a memory bug.
 
 > **Amended by [RFC 0030](0030-prove-or-trap.md).** `analysis-incomplete` is
 > removed: what it reported is now an `unresolved` ledger row with a reason from
-> a closed list (`unanalysed`, `budget`, …) plus the summary line (§2.3, §12).
+> a closed list (`unanalyzed`, `budget`, …) plus the summary line (§2.3, §12).
 
 ## Drawbacks
 

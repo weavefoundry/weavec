@@ -1,6 +1,6 @@
-// RFC 0031 §4.6 (materialisation): releasing the materialised head releases the object the list's head cell still points to.
+// RFC 0031 §4.6 (materialization): releasing the materialized head releases the object the list's head cell still points to.
 // STAGE: S4
-// As materialise-pop.c, but the head is freed without unlinking it: 'l.head' still points
+// As materialize-pop.c, but the head is freed without unlinking it: 'l.head' still points
 // to the released node (ASan: heap-use-after-free).
 // ASAN
 #include <stdlib.h>

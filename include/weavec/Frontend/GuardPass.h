@@ -7,14 +7,14 @@
 //===----------------------------------------------------------------------===//
 //
 // RFC 0035. `weavec-cc` adds four passes to the pipeline of every C unit it
-// enforces (GuardLoop when optimising, the others at every level):
+// enforces (GuardLoop when optimizing, the others at every level):
 //
 //   GuardInsert  (PipelineStartEP) before every access (load, store, atomic
 //                operation, memory intrinsic, masked or gathered lane) and
 //                every memory argument of a C library call, a guard: a call
 //                of `__weavec.guard`, `__weavec.range` or `__weavec.strlen`
 //                that only reads inaccessible memory and is not `willreturn`,
-//                so the optimiser keeps it, merges and hoists it as it does a
+//                so the optimizer keeps it, merges and hoists it as it does a
 //                load, and never assumes the access after it executes. An
 //                access inside a stack or global object at a constant
 //                offset gets none, so that the object can still be promoted
@@ -34,8 +34,8 @@
 //                do not return, and gives the unit's globals redzones
 //                (section 4).
 //
-// Guards are inserted first and expanded last because the optimiser
-// exploits undefined behaviour: an out-of-bounds read of a heap object of
+// Guards are inserted first and expanded last because the optimizer
+// exploits undefined behavior: an out-of-bounds read of a heap object of
 // known size may make a loop infinite, and a read after `free` may become
 // `undef`, before any pass at the end of the pipeline sees the access.
 //
@@ -73,7 +73,7 @@ struct GuardOptions {
   bool colors = true;
 };
 
-/// RFC 0035 §2.1, §2.5: guards before the optimiser.
+/// RFC 0035 §2.1, §2.5: guards before the optimizer.
 class GuardInsertPass : public llvm::PassInfoMixin<GuardInsertPass> {
 public:
   explicit GuardInsertPass(GuardOptions options)
@@ -100,7 +100,7 @@ private:
   GuardOptions options;
 };
 
-/// RFC 0035 §6.4: loop ranges, before the vectoriser.
+/// RFC 0035 §6.4: loop ranges, before the vectorizer.
 class GuardLoopPass : public llvm::PassInfoMixin<GuardLoopPass> {
 public:
   explicit GuardLoopPass(GuardOptions options) : options(std::move(options)) {}
@@ -112,7 +112,7 @@ private:
   GuardOptions options;
 };
 
-/// RFC 0035 §2.3, §3, §4, §6: guards after the optimiser.
+/// RFC 0035 §2.3, §3, §4, §6: guards after the optimizer.
 class GuardExpandPass : public llvm::PassInfoMixin<GuardExpandPass> {
 public:
   explicit GuardExpandPass(GuardOptions options)

@@ -53,8 +53,8 @@ ctest --preset dev             # unit tests, the runtime test, lit, the cases
 | `dev`            | Debug build for day-to-day work                      |
 | `dev-asan`       | Debug + AddressSanitizer + UBSan                     |
 | `dev-tidy`       | Debug with clang-tidy running as part of compilation |
-| `release`        | Optimised, LTO (the runtime archives excepted)       |
-| `relwithdebinfo` | Optimised with debug info                            |
+| `release`        | Optimized, LTO (the runtime archives excepted)       |
+| `relwithdebinfo` | Optimized with debug info                            |
 | `ci-*`           | What CI runs: warnings are errors                    |
 
 Useful cache variables (`-D...` or in `CMakeUserPresets.json`):
@@ -141,7 +141,7 @@ with `lit -v build/dev/test/Guards/heap-overflow.c`. The suites:
 
 | Directory | What it pins |
 | --- | --- |
-| `test/Guards/` | the guard passes and the runtime. `ir-*.c` run `%weavec_cc -O2 -S -emit-llvm` and FileCheck the IR: the inline checks, the frame layout and shared frame space (`ir-frames.c`, `shared-frame.c`), the unpoisoning before `noreturn` calls (`ir-noreturn.c`), the global layout, the guards a rule removes. The others build and run a program and pin the exact report (`weavec: heap-buffer-overflow at …`): heap, stack and global overflows, use after scope, intra-object overflow of fortified calls, use after poison, report mode, verify mode, the ledger and summary line, unsafe regions and `no_sanitize`, the checked library calls, array bounds, `longjmp`, `mmap` and zero-initialisation. |
+| `test/Guards/` | the guard passes and the runtime. `ir-*.c` run `%weavec_cc -O2 -S -emit-llvm` and FileCheck the IR: the inline checks, the frame layout and shared frame space (`ir-frames.c`, `shared-frame.c`), the unpoisoning before `noreturn` calls (`ir-noreturn.c`), the global layout, the guards a rule removes. The others build and run a program and pin the exact report (`weavec: heap-buffer-overflow at …`): heap, stack and global overflows, use after scope, intra-object overflow of fortified calls, use after poison, report mode, verify mode, the ledger and summary line, unsafe regions and `no_sanitize`, the checked library calls, array bounds, `longjmp`, `mmap` and zero-initialization. |
 | `test/Driver/` | `weavec-cc` on the command line: compile and link, the runtime on the link line and its fallback notes (`runtime-link.c`), one runtime per process on Darwin, the globals of a dylib and a bundle (`image-globals.c`), `-D_FORTIFY_SOURCE=3` (`fortify.c`), ASan's macros (`asan-compat*.c`), `-fweavec-*` flags, versions. |
 
 Every change to a run-time report needs a lit test, because these pin the
@@ -151,7 +151,7 @@ existing `rfcNNNN-` names stay.
 
 ### Test cases (`test/cases/`)
 
-Executable C cases organised by feature, with their expectations in
+Executable C cases organized by feature, with their expectations in
 line-comment markers; [`test/cases/README.md`](../test/cases/README.md) has
 the grammar. For each case `scripts/run-cases.py`:
 
@@ -171,7 +171,7 @@ the grammar. For each case `scripts/run-cases.py`:
 deterministic (use after free and double free after churn, a fortified
 field overflow, a pool poisoned through ASan's interface), each with its
 correct twin (gate G1), and, as `XFAIL`, the bugs it leaves to a later RFC
-(a jump into a neighbouring object, use after return).
+(a jump into a neighboring object, use after return).
 
 `--asan` adds the ASan oracle (each case built with
 `-fsanitize=address,array-bounds` by the reference compiler); `--checks
@@ -207,6 +207,16 @@ and of the runtime (7,000, counted apart, because it is linked into
 compiled programs, not into the compiler); `--help` lists each check and
 its limit. It runs in the Linux
 Release CI job.
+
+### Spelling
+
+`scripts/check-spelling.py` holds every tracked file to American English
+(behavior, initialize, analyze, labeled, color), identifiers and file
+names included; `--fix` rewrites what it finds, keeping each word's case.
+It skips the generated `CHANGELOG.md` and the npm lock file, and allows RFC
+0009's file name, which is the URL of its page on the site. "analyses" is
+not checked, because it is also the plural of "analysis". It runs in the
+Formatting CI job.
 
 ### Sanitizers
 
@@ -244,7 +254,7 @@ editor integration.
   -filter-print-funcs=<function>`) prints the IR after every pass, so the
   markers (`__weavec.guard`, `__weavec.range`, `__weavec.strlen`,
   `__weavec.disjoint`, `__weavec.scope`) can be followed from
-  `weavec::frontend::GuardInsertPass` through the optimiser,
+  `weavec::frontend::GuardInsertPass` through the optimizer,
   `GuardPrunePass` and `GuardLoopPass` to `GuardExpandPass`, which turns
   them into checks. `-mllvm -print-after=<pass>` takes the name of one of
   LLVM's own passes (`sroa`, `licm`); the guard passes are not in LLVM's
@@ -270,7 +280,7 @@ editor integration.
   guards, stack unpoisons and sweeps, then the sweeps' total and
   longest pause, the blocks and bytes the last sweep retained, and the
   most the live slots and the quarantine held. The
-  counters are not synchronised.
+  counters are not synchronized.
 - `WEAVEC_RT_QUARANTINE=<bytes>` sets how much the quarantine must gain
   (and more than a quarter of the live heap) before a sweep is due (paced
   to eight times the last sweep's duration; twice the value, or

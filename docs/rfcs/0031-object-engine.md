@@ -49,7 +49,7 @@ This RFC replaces that engine with the **object engine**. Facts live on
 *abstract objects* and *symbolic values*; a pointer is a symbolic value
 with a points-to set; memory is a map from object cells to values; copies
 share values, so every alias sees every fact by construction. The engine
-keeps entry heaps finite by k-limited, materialising entry objects, keeps
+keeps entry heaps finite by k-limited, materializing entry objects, keeps
 loops finite by recency and widening, proves bounds with a zone domain over
 symbolic values, and states distinctness of objects explicitly, including a
 new *owner-forest* assumption that makes ownership-based temporal proofs
@@ -105,7 +105,7 @@ false errors, among them
   (`memcpy(v + 4, v, 4)` is accepted);
 - `fmt(&cmd, …); free(cmd); fmt(&cmd, …); free(cmd);` with `fmt` external:
   definite `double-free` and `use-after-free`, because the write through
-  `&cmd` by an unknown callee is not modelled;
+  `&cmd` by an unknown callee is not modeled;
 - pointer arithmetic on the stale value after `realloc` reported as
   `use-after-move` (libyaml `api.c:81–154`);
 - a back pointer the object's own release makes unreachable reported as
@@ -191,7 +191,7 @@ link step reports what it can verify (§8.3).
 Nowhere intentionally. Every decision rule of RFC 0030 §3 keeps its
 meaning; where the object engine cannot establish the premise of a proven
 outcome, the facet takes the RFC 0030 unresolved reason for the missing
-premise. A construct the object engine does not model is `unanalysed`
+premise. A construct the object engine does not model is `unanalyzed`
 (§5.1), never proven.
 
 Two rules become more permissive, each justified by the new A3 clause or by
@@ -273,7 +273,7 @@ engine may not grow past it without an amendment.
 ```
 
 - **Core** holds the abstract domain: symbols, values, objects, cells, the
-  zone domain, join, widening, garbage collection, materialisation,
+  zone domain, join, widening, garbage collection, materialization,
   distinctness, summaries and their text form. It never sees Clang. Objects
   refer to program entities through opaque 32-bit handles the Analysis layer
   assigns (the `core::SourceLocation::opaque` pattern).
@@ -299,18 +299,18 @@ For each unit:
 1. **Order.** Build the call graph over the unit's definitions (direct
    calls, plus indirect calls resolved by the slot solution), take its
    strongly connected components in bottom-up order (`core::Scc`).
-2. **Summaries.** Analyse each component bottom up. A non-trivial component
+2. **Summaries.** Analyze each component bottom up. A non-trivial component
    iterates its members' summaries to a fixpoint, with summary widening
    (§6.4) after 3 rounds and a hard limit of 8 (the limit marks the
    summaries incomplete, §6.5). These runs publish into a discarding
    adapter.
-3. **Authoritative pass.** Each emitted function (RFC 0030 §2.6) is analysed
+3. **Authoritative pass.** Each emitted function (RFC 0030 §2.6) is analyzed
    once more with the final summaries of everything it calls, publishing
    through the unit's adapter after `beginFunction`. A function whose
    summary run already had the final callee summaries (every function
    outside a cycle whose callees did not change) reuses that run: its
    decisions were recorded during the run and are replayed into the
-   authoritative adapter, so a leaf function is analysed once.
+   authoritative adapter, so a leaf function is analyzed once.
 4. **Contexts.** Alias contexts (§6.6) run after the authoritative pass,
    publish only diagnostics (RFC 0030 §2.6 *Departure*), and share the
    callee's second budget (RFC 0030 §5.5).
@@ -358,7 +358,7 @@ objects. Its **origin** is one of:
 | `function` | yes | the function's handle | on `&f` |
 | `heap recent` | yes | the allocation site's handle | by an allocating call (§5.4) |
 | `heap old` | no | the allocation site's handle | when a `heap recent` of the same site is allocated again: the old recent object folds into it (*recency abstraction*) |
-| `entry` | yes | a `SummaryPath` from a parameter, a global or a callee's result | materialised on first load from the entry heap (§4.6) |
+| `entry` | yes | a `SummaryPath` from a parameter, a global or a callee's result | materialized on first load from the entry heap (§4.6) |
 | `entry summary` | no | a `SummaryPath` prefix and a repeated step | when an entry path exceeds the k-limit (§4.6) |
 | `unknown` | no | none | the target of a pointer the engine has no facts about (a raw value, an integer conversion) |
 
@@ -385,9 +385,9 @@ unknown values marked `raw-cast` for pointer cells.
 
 The **memory** is a persistent map from cells to value sets. A cell that
 was never written in this activation holds its *entry value*: for
-`local`, uninitialised (§5.9); for `heap recent`, zero or uninitialised by
+`local`, uninitialized (§5.9); for `heap recent`, zero or uninitialized by
 the allocating row (§5.4); for `entry`, `global` and `heap old`, an entry
-symbol materialised on first load (§4.6). *Amended (S7):* a `global` with
+symbol materialized on first load (§4.6). *Amended (S7):* a `global` with
 internal linkage that the unit only reads by value (every reference to it
 is a load through subscripts of it and `.` members, or unevaluated; its
 address is never taken or passed, and no store names it) holds its
@@ -486,13 +486,13 @@ of these rules applies:
 A join symbol (§4.1) may equal each of its members and nothing else they
 are distinct from.
 
-#### 4.6 Entry objects, k-limiting and materialisation
+#### 4.6 Entry objects, k-limiting and materialization
 
 At entry, each pointer parameter `pᵢ` holds an entry symbol pointing to
 `E(param i)`, with the nullness and extent of its kind (RFC 0030 §7.3;
 the engine reads `EngineInput::kinds`, which replaces the old
 `KindSeeding`). A load of a pointer from a cell of an `entry` object that
-this activation has not written materialises `E(path.f)` (or
+this activation has not written materializes `E(path.f)` (or
 `E(path[*])` for a summary cell), with the kind of the slot it was loaded
 from (RFC 0030 §7.3).
 
@@ -501,7 +501,7 @@ occurs more than twice, or which is longer than 6 steps, is folded into an
 `entry summary` object `E(prefix.f+)` covering every object reachable from
 `prefix` by one or more `f` steps. Its cells point back to itself.
 
-**Materialisation.** When a symbol `s` whose points-to set contains a
+**Materialization.** When a symbol `s` whose points-to set contains a
 non-singular object Σ is released, or when a pointer is loaded through `s`
 from Σ, the engine *focuses*: it creates a singular object `N` with Σ's
 attributes and cell values, retargets `s` (and every cell and expression
@@ -519,7 +519,7 @@ a leak (§5.8). Dropping a released object is how a released list node that
 nothing points to any more stops tainting its summary.
 
 **Folding.** At a loop head's widening (§4.8), a singular object that was
-materialised from Σ inside the loop and is still reachable is folded back
+materialized from Σ inside the loop and is still reachable is folded back
 into Σ (its state and cells join into Σ's), so the number of objects is
 bounded by the program's allocation sites, locals, and the k-limited entry
 paths.
@@ -530,7 +530,7 @@ With these three rules a destructor
 void list_free(struct n *p) { while (p) { struct n *next = p->next; free(p); p = next; } }
 ```
 
-is proven: each iteration materialises the current node, releases it, and
+is proven: each iteration materializes the current node, releases it, and
 moves to a node D6 keeps distinct; the released node is unreachable at the
 loop head and is collected, so no released object is left for `p->next` to
 alias.
@@ -571,7 +571,7 @@ corresponding decision is not proven.
 - **Iteration order.** Blocks are visited in a weak topological order
   (Bourdoncle). Loop heads widen after 2 visits: intervals and zone bounds
   that grew jump to the type's limits or to the nearest program constant;
-  points-to sets that grew keep growing up to their bound; materialised
+  points-to sets that grew keep growing up to their bound; materialized
   objects fold (§4.6). One narrowing pass follows.
 - **Budget.** The block transfers count against `-fweavec-budget`
   unchanged (RFC 0030 §5.5, default 50,000). A function over budget takes
@@ -642,7 +642,7 @@ element position:
   every join, an element cell one side has only is matched with an element
   cell of the other side whose index the join pairs (the first iteration's
   `a[0]` with a later iteration's `a[i]`: one cell `a[i']` of the join);
-  otherwise it is materialised on the other side, or evicted when that
+  otherwise it is materialized on the other side, or evicted when that
   side's ranges cannot tell it apart. Ranges are aligned per position from
   their oldest ends; a bound of the joined range is a result symbol of a
   pair the join makes anyway (the variables' values, with a constant
@@ -651,7 +651,7 @@ element position:
   first entry: `[0, i)` with `i = 0`), else it is evicted. Every choice is
   sound; they differ in precision only.
 - **Entry objects across a join.** An entry object (or its dead copy) that
-  one side released and the other never materialised is `may-released` in
+  one side released and the other never materialized is `may-released` in
   the join: the other path left it live. (Before this amendment the join
   kept `released`, and a loop's first iteration made `release *a always`
   part of the summary of a cleanup that may run zero times.)
@@ -666,7 +666,7 @@ the destination), the rest is instead a *copied range* of the elements the
 length counts (`n` for `n * sizeof *s` without wrap, else a count symbol no
 smaller than the lower bound's): each element holds the entry value of its
 own source element, which is the symbol a load of that element reads (or
-read, found by the cell it was materialised for), so `free(s[0])` after the
+read, found by the cell it was materialized for), so `free(s[0])` after the
 copy is seen through `d[0]`. An element the range may hold gets that value
 as a possible one. Any later change to the range (a weak store, a fold, a
 join) makes it the plain range its value describes (some element of the
@@ -683,7 +683,7 @@ cannot be so expressed is exported without a range, as a possible effect on
 some elements; a caller applies a `[*]` path without a range weakly. The
 same holds for a global's elements (`global(g)[*]`). A cell of an entry
 object or a global is a store (§6.2) unless it still holds the value
-materialised for it (each such value remembers its object and cell, a join
+materialized for it (each such value remembers its object and cell, a join
 keeps that only when both sides agree, arithmetic and copies drop it), so
 an integer written with a non-constant value (`g_n++`) is exported as
 `int [lo, hi]` from the zone; an object no store reached in the activation
@@ -718,14 +718,14 @@ a points-to set with an offset. Loads and stores go through the address:
 - casts between pointer types keep the symbol (the object and offset do not
   change); an integer-to-pointer conversion other than a null constant makes
   a raw pointer to `unknown`; a pointer-to-integer conversion keeps the
-  pointer symbol behind the integer, so the round trip is recognised;
+  pointer symbol behind the integer, so the round trip is recognized;
 - compound literals are `local` objects of their scope; string literals are
   `literal` objects; `sizeof` of a VLA is the VLA's size symbol.
 
 A construct the engine does not evaluate (atomic builtins beyond load and
 store, vector types, `__builtin_*` without a table row, statement
 expressions containing jumps) yields unknown values and, for every site it
-contains, the unresolved reason `unanalysed` with the construct named in
+contains, the unresolved reason `unanalyzed` with the construct named in
 the detail.
 
 #### 5.2 Decisions at sites
@@ -798,7 +798,7 @@ facets too (RFC 0030 G6).
 A call's callee is resolved in RFC 0030's order (§5.1–§5.3, §9.3):
 
 1. a declared ownership contract (annotations, ecosystem attributes);
-2. the callee's summary from this unit (after its component was analysed);
+2. the callee's summary from this unit (after its component was analyzed);
 3. the program database's summary (link, `--whole-program`);
 4. its `LibrarySpec` row;
 5. a platform-header declaration: borrow-only, `trusted(system-api)`;
@@ -810,7 +810,7 @@ summaries (a consume is definite only if every target consumes).
 
 **Library rows.** A row's `alloc` creates a `heap recent` object of the
 row's family with the extent the row's size expression gives, zeroed when
-the row or zero-initialisation says so; its result symbol is
+the row or zero-initialization says so; its result symbol is
 `maybe`-null with `allocatorSource` unless the row says `nonnull`. A
 `release` releases the argument's value and its targets (§5.5). Argument
 requirements (`r:bytes(n)`, `nonnull`, `string`, `disjoint`) become
@@ -940,14 +940,14 @@ from `main` or after an `exits` row (RFC 0030 §3.4). An object passed to a
 callee that may retain it, or stored in a cell another unit can reach, is
 escaped.
 
-#### 5.9 Initialisation
+#### 5.9 Initialization
 
 A `local` pointer cell that was never written holds `uninit`. A use where
 every value is `uninit`:
 
-- with zero-initialisation on (the enforcing modes) is a null value: the
+- with zero-initialization on (the enforcing modes) is a null value: the
   null facet is a violation with `use-of-uninitialized` when every path is
-  uninitialised, checked otherwise (RFC 0030 §3.1 table);
+  uninitialized, checked otherwise (RFC 0030 §3.1 table);
 - with `-fno-weavec-zero-init`, `unresolved(no-zero-init)`.
 
 Scalar `uninit` uses keep RFC 0030 §3.4's rule (error when definite, no
@@ -1031,12 +1031,12 @@ cases per effect.
 
 At a call, the callee's parameter paths are matched against the caller's
 state: `param i` is the argument's value, each step loads through the
-caller's memory (materialising entry objects as a load would), and each
+caller's memory (materializing entry objects as a load would), and each
 effect is applied to the objects the path reaches in the caller, weakly
 when the path reaches several. A `result fresh` becomes a `heap recent`
 object named by the call site. A case keyed on the result becomes a pending
 case on the result symbol, resolved by a later test of it (RFC 0030 §9.1's
-`PendingOutcome` behaviour, now on the symbol).
+`PendingOutcome` behavior, now on the symbol).
 
 *Amendment (heap outputs).* Added during S6 for RFC 0013's heap outputs,
 which the first format-30 summaries lost:
@@ -1099,7 +1099,7 @@ cannot separate them; where they cannot, the entry objects are joined
 already and the summary is sound for aliased calls. Where a caller passes
 arguments that *must* be the same object to parameters the callee treated
 as possibly distinct, and the callee `reads` one after releasing the other,
-the caller requests an alias context: the callee is re-analysed with those
+the caller requests an alias context: the callee is re-analyzed with those
 entry objects unified, its diagnostics are reported at the use in the
 callee with a note naming the call (RFC 0030 §2.6 *Departure*, probe
 `two(p, p)`), and the call's temporal facet takes the result. At most 16
@@ -1117,10 +1117,10 @@ one constant, allocates a size it does not know, or has a `may`, `lossy` or
 parameter-keyed effect, and whose call knows integers the callee reads (an
 integer argument that is a constant, or an integer cell of the single object
 a pointer argument, or a pointer global the callee names, points to), the
-engine analyses the callee again in that *numeric context*: its alias
+engine analyzes the callee again in that *numeric context*: its alias
 context (above) with those parameters bound to their constants and those
 entry cells to theirs. A call whose alias context
-is not trivial is analysed in it whatever its summary says. The run is a
+is not trivial is analyzed in it whatever its summary says. The run is a
 summary run (it reports nothing) and the call instantiates the summary it
 derives instead of the general one; the summary is sound for the call
 because its entry state is the call's. Contexts are cached per callee (at
@@ -1208,7 +1208,7 @@ reason rather than silently unguarded.
 ### 10. Deletions
 
 Listed in §1. The Core and Analysis unit tests of deleted components go
-with them; their scenarios that describe behaviour (not representation)
+with them; their scenarios that describe behavior (not representation)
 are converted to `test/cases/semantics/` or to `unittests/Analysis/
 ObjectEngineTest.cpp` first. The superseded RFCs keep their text.
 `docs/architecture.md`, `docs/development.md`, the roadmap and the
@@ -1228,7 +1228,7 @@ docs-site pages that describe the engine are rewritten.
   0)`, anonymous-member record round trip).
 - `test/cases/semantics/objects/`: the domain's cases: strong and weak
   updates, recency in loops, list and tree destructors (proven),
-  materialisation, owner-forest cycles (not proven), array summary cells,
+  materialization, owner-forest cycles (not proven), array summary cells,
   unions, byte-wise copies of pointer structs.
 
 #### 11.2 The held-out corpus
@@ -1258,7 +1258,7 @@ dump.
 No flag changes except: `--dump-analysis` prints the object engine's states
 (objects, cells, symbols and zone at each block exit and site; unstable
 format), and `--analysis-stats` reports block transfers, joins,
-materialisations, objects and zone sizes.
+materializations, objects and zone sizes.
 
 ### 13. Performance
 
@@ -1292,10 +1292,10 @@ so every stage can compare both on the same inputs; S6 deletes it.
 | Stage | Work | Gate to leave the stage |
 | --- | --- | --- |
 | **S0 Tests first** | The alias probes, the held-out repros and `semantics/objects/` cases (§11.1), expected to fail on the old engine where it is wrong; the held-out corpus configs (§11.2); a baseline run of every gate on v0.11.0 recorded in the PR. | The new cases fail on the old engine exactly where the analysis says; the held-out configs build with the reference compiler. |
-| **S1 Domain** | Core: `PMap`, symbols and values, objects and cells, attributes, the zone, distinctness, join, widening, GC, materialisation, folding (§4); unit tests for each, including I1–I6. | `WeaveCCoreTests` pass under ASan; the domain has no Clang include. |
+| **S1 Domain** | Core: `PMap`, symbols and values, objects and cells, attributes, the zone, distinctness, join, widening, GC, materialization, folding (§4); unit tests for each, including I1–I6. | `WeaveCCoreTests` pass under ASan; the domain has no Clang include. |
 | **S2 Intraprocedural engine** | `ObjectEngine` over the always-add CFG: expressions, lvalues, loads, stores, casts, locals, globals, literals, conditions, loops, scopes; decisions for Deref, Index, PtrArith, Cast, IntToPtr, Raw and Assume sites with witnesses (§5.1–§5.3); budgets. Library calls only for allocation and release. | The alias probes are caught; `run-cases.py --filter 'pairs/**' --filter 'proofs/**'` passes under the new engine; no proven facet at an ASan-reported line in any case. |
 | **S3 Calls** | The full call dispatcher (§5.4): library rows, unknown callees, system APIs, slots, callbacks; format-30 summaries: derivation, instantiation, cases, recursion, incompleteness (§6.1–§6.5). | `evaluation/**` and `recall/**` pass under the new engine. |
-| **S4 Temporal completeness** | Releases, families, invalid releases, conflicting borrows, shares (§5.5), boundaries and the owner forest (§5.6, §8), lifetimes (§5.7), leaks (§5.8), initialisation (§5.9), integer operations (§5.10), alias contexts (§6.6), concurrency and `setjmp`. | Every `test/cases` suite passes under the new engine, with the marker changes of §11.3 and within G2. |
+| **S4 Temporal completeness** | Releases, families, invalid releases, conflicting borrows, shares (§5.5), boundaries and the owner forest (§5.6, §8), lifetimes (§5.7), leaks (§5.8), initialization (§5.9), integer operations (§5.10), alias contexts (§6.6), concurrency and `setjmp`. | Every `test/cases` suite passes under the new engine, with the marker changes of §11.3 and within G2. |
 | **S5 Records and link** | `UnitExports`, format-29 records, `ProgramDatabase`, the link step and `--whole-program` over the new engine (§7). | `test/WholeProgram` and the multi-unit cases pass; G11 measured. |
 | **S6 Delete** | Remove the old engine and everything §1 lists; the hygiene gate's include rule and line budgets; lit and unit test migration (§10, §11.3). | Build with warnings as errors; every unit, lit and case suite passes; H1, H2. |
 | **S7 Fixes and cost** | §9.1, §9.2; profiling against G13; docs. | G1–G13 and H1–H3 on the final tree. |
@@ -1361,7 +1361,7 @@ start of each run), and the figures in the PR say which machine.
   whichever is larger.
 - **G10.** zlib `make -j8` with `CC=weavec-cc` at most 5.4 s wall on the
   reference machine (RFC 0030 G15).
-- **G11.** Over-budget functions at most 1% of analysed functions over the
+- **G11.** Over-budget functions at most 1% of analyzed functions over the
   original and held-out configs, each listed.
 - **G12.** Every held-out config's `weavec-cc` build takes at most 8× the
   reference compiler's user CPU; mujs's single-file `one.c` and sqlite's
@@ -1460,11 +1460,11 @@ disagree, the amendment holds.
   otherwise add the same allocation every round).
 - **Values one side of a join never read (§4.8).** A cell that one side
   of a join wrote and the other never read (a global or an entry object
-  the other side did not materialise, or a cell it left unwritten) holds,
+  the other side did not materialize, or a cell it left unwritten) holds,
   on that other side, its initial or entry value: a release recorded on the
   joined value happened on some paths only (`do { fclose(stdout); } while
   (…)` is a possible double free at the loop head).
-- **`va_list` (§5.1).** `va_start` and `va_copy` initialise the `va_list`
+- **`va_list` (§5.1).** `va_start` and `va_copy` initialize the `va_list`
   they are given by reference.
 - **One-sided zone relations (§4.4).** At a join, a relation only one side
   knows is kept only when it bounds a symbol against a constant, or when
@@ -1549,7 +1549,7 @@ disagree, the amendment holds.
   with what is served, so its diagnostics are those of its last run. For
   the same reason `weavec --whole-program` prints each unit's summary line
   from its last run, after all runs. At link, a unit the program view does
-  not otherwise re-analyse stays a serving unit: it runs again only if
+  not otherwise re-analyze stays a serving unit: it runs again only if
   another unit asks a context of it. A constant unsigned 64-bit argument
   above `INT64_MAX` is carried by its bits and binds the parameter's
   interval.
@@ -1593,7 +1593,7 @@ disagree, the amendment holds.
   over them: each round assumes, per pointer field, the first standing
   candidate at entry (its field's kind becomes `counted`/`sized` over the
   count field, exact); a checking run of every function that writes a
-  candidate's `d` or `f` (or initialises its record) examines, at each call
+  candidate's `d` or `f` (or initializes its record) examines, at each call
   and at each exit, the objects of the record it hands out (arguments, and
   every object but its locals at an exit). A candidate holds of an object
   when `d` is null, or points to the start of one object whose exact extent
@@ -1605,7 +1605,7 @@ disagree, the amendment holds.
   candidates are dropped and the round repeats, at most four times (still
   refuting after that: none stands); a candidate no function witnessed is
   dropped too (it would only replace the kinds' default). The functions
-  that read a standing invariant's `d` are analysed once more with it
+  that read a standing invariant's `d` are analyzed once more with it
   (their rows replace the first run's; a diagnostic the first run made
   links to the new rows); summaries stay what callers used. Where the
   count's range cannot rule out the wrap, a load of `d` gets an extent whose
@@ -1652,7 +1652,7 @@ disagree, the amendment holds.
   annotations of `Summaries.h` moved to `Annotations.h`. Everything else §1
   lists is deleted, with `SummarySteps` and `Place` replaced by `Path.h`.
 - **The dispatch split (§9.2).** Implemented as `SplitDispatchEdges`
-  (`lib/Frontend/DispatchEdges.cpp`), registered for optimised builds whose
+  (`lib/Frontend/DispatchEdges.cpp`), registered for optimized builds whose
   checks are emitted.
 - **Pointer comparisons (§6.1, RFC 0014).** A state remembers the
   comparisons of two pointer values its path decided (`p == q`, `p != q`),
@@ -1671,7 +1671,7 @@ disagree, the amendment holds.
   escaped, and an escape is never undone. Its temporal default names the
   reason `callback` for an indirect call through a slot with no known
   target, for what the arguments reach as for the call (RFC 0030 §9.3).
-- **Entry tests (§6.1, §6.2, lazy initialisation).** A state records the
+- **Entry tests (§6.1, §6.2, lazy initialization).** A state records the
   zero tests its path made of values cells held at entry (`if (!g)`, `if
   (b->buf == NULL)`), by cell, and a join keeps those both sides made alike.
   A join where one side stored a cell under a test and the other took the
@@ -1725,12 +1725,12 @@ disagree, the amendment holds.
   `leaveblock`).
   An `unknown` effect on `*p` reaches, in the caller, every object the
   caller's memory reaches from `*p`, as a direct call to unknown code does:
-  the callee's summary names only the objects it materialised, and the code
+  the callee's summary names only the objects it materialized, and the code
   it could not see had the rest (`semantics/temporal/unknown-effect-reaches-frame.c`).
 - **Loop heads and widening (§4.8).** Widening starts after a loop head's
   first two joins and uses as thresholds the constants the loop's own
   conditions test (the conditions of the blocks of its natural loop, each
-  constant with its neighbours, and -1, 0 and 1) until the head has changed
+  constant with its neighbors, and -1, 0 and 1) until the head has changed
   eight times, then drops a growing bound. (The function's every constant
   had been the thresholds: a counter no condition bounds by a constant,
   `while (l++ < width)` in printf's `_vsnprintf`, climbed one small
@@ -1783,11 +1783,11 @@ disagree, the amendment holds.
 - **`realloc` of zero bytes (RFC 0030 §8.2, §11).** RFC 0030 releases the
   argument of `realloc` on the null class when the size may be zero,
   because glibc's `realloc(p, 0)` frees `p` and returns null. A build with
-  zero-initialisation (the default, and what the analysis models unless
+  zero-initialization (the default, and what the analysis models unless
   `-fno-weavec-zero-init` or `--no-zero-init` says otherwise) calls
   `realloc` through `__weavec_realloc_zero`, which asks for one byte
   instead of none, so there the null class always keeps the argument and
-  the release does not arise. Without zero-initialisation RFC 0030's rule
+  the release does not arise. Without zero-initialization RFC 0030's rule
   stands. A buffer wrapper's failure path (`if (!new) return;` after
   `realloc(ab->b, ab->len + len)`) thus keeps a live buffer, and no
   boundary sees a pointer that may be gone (linenoise's `abAppend`).
@@ -1813,7 +1813,7 @@ disagree, the amendment holds.
   exception: the objects they point to are still exposed (the stream may be
   closed), but the name keeps its value, so the stream a later round reads
   from `stdout` is the one an earlier round closed. Without it, the reload
-  materialised a fresh copy of the entry object and minigzip's repeated
+  materialized a fresh copy of the entry object and minigzip's repeated
   `fclose(stdout)` (RFC 0030 G9) went unreported
   (`semantics/library/stdout-closed-twice.c`).
 - **Entry objects a function zero-fills (§6.2).** `memset(p, 0, sizeof *p)`
@@ -1843,7 +1843,7 @@ disagree, the amendment holds.
 - **Releases at an unknown offset (§6.1, RFC 0008).** A release whose
   pointer is at an offset the callee cannot name into the object its
   parameter points into (`free(s - hdr_size(s[-1]))`, hiredis's `sdsfree`),
-  or at different offsets on different exits, was summarised at offset 0,
+  or at different offsets on different exits, was summarized at offset 0,
   so the caller released its argument itself and reported a definite (and
   false) `invalid-release` when that pointed past the object's start. Such a
   release is written `offset=?` in format 30 (`PathEffect::anyOffset`); the
@@ -1852,7 +1852,7 @@ disagree, the amendment holds.
   (`semantics/library/release-at-unknown-offset.c`).
 - **A new result the callee points into.** The contents of a fresh result
   are described only when the result is the new object's start; one that
-  points into it (an `sds` string after its header) was still summarised
+  points into it (an `sds` string after its header) was still summarized
   as zero-filled, so the caller read the header the callee wrote as zeros.
   Its cells now read as unknown in the caller, as those of a new object
   below another one's already did.
@@ -1904,7 +1904,7 @@ disagree, the amendment holds.
   "rawness joins as may be raw";
   `semantics/slots/hook-raw-on-some-targets.c`).
 - **Units that do not parse.** A unit with an error that stops its
-  compilation is not analysed (Clang's own analyzer does the same): its
+  compilation is not analyzed (Clang's own analyzer does the same): its
   records may have no layout, and the analysis crashed on one.
 - **Locals an expression makes.** Their objects (a compound literal, a
   call's record result) are keyed by the expression, not by a
@@ -1985,7 +1985,7 @@ disagree, the amendment holds.
     sets. **G12's build ratios**: bzip2 11.0, http-parser 31.6, lz4 13.0,
     mujs 46.7 and utf8proc 9.2 against the reference compiler, limit 8
     (hiredis 1.9, inih 4.8, libyaml 2.9, miniz 2.9, tinyexpr 7.6): the
-    link step analyses the program again for every executable it links,
+    link step analyzes the program again for every executable it links,
     and the analysis of one unit alone exceeds the bound for http-parser
     (`http_parser.c`, 3.5 s against a whole build of 0.6 s) and mujs.
     **H1** is measured by CI. **G5's traps** depend on the fuzzer's seed in
@@ -1997,7 +1997,7 @@ disagree, the amendment holds.
     trapped in the verify-mode run; the trap-mode run's seed did not reach
     it. It is a true report: a trap of the kind G5's exception names for
     definite errors, which this RFC records as true here.
-  - None of the open gates is a matter of tuning: G6 needs the modelling
+  - None of the open gates is a matter of tuning: G6 needs the modeling
     of hooks and of extents that RFC 0032 (runtime enforcement) plans for
     what stays unresolved, G12 a link step that reuses what the compile
     step decided (RFC 0033), and G4's count values a summary cannot
@@ -2110,7 +2110,7 @@ disagree, the amendment holds.
   commit history. The test tree (410 cases, the lit pins, the corpus
   ratchet) is the specification this RFC relies on, and whatever it does not
   pin can regress silently in precision (never in soundness, by §4.7).
-- **Materialisation and folding are the subtle part.** A bug there is a
+- **Materialization and folding are the subtle part.** A bug there is a
   false proof. I1–I6 have unit tests, verify mode monitors proven facets,
   and the ASan oracle runs over every case; the risk is still the largest in
   the change.
@@ -2143,7 +2143,7 @@ disagree, the amendment holds.
   interprocedural story; it is built for C++ value types.
 - **Full separation-logic shape analysis** (list segments, abduction). The
   most precise option for recursive structures, and the most expensive and
-  least predictable; the owner forest plus materialisation covers the
+  least predictable; the owner forest plus materialization covers the
   destructor and traversal shapes the corpus has, at a fraction of the
   cost.
 
@@ -2161,7 +2161,7 @@ disagree, the amendment holds.
 - **Recency abstraction** (Balakrishnan and Reps, SAS 2006): the `heap
   recent`/`heap old` split that allows strong updates on the most recent
   allocation.
-- **k-limiting** (Jones and Muchnick, 1979) and **materialisation** (Sagiv,
+- **k-limiting** (Jones and Muchnick, 1979) and **materialization** (Sagiv,
   Reps and Wilhelm, TVLA): the entry-path limit and focus of §4.6.
 - **Zones** (Miné, 2001): the difference-bound domain of §4.4.
 - **Rust ownership**: `Box` trees are the owner forest of A3; the forest is
@@ -2224,7 +2224,7 @@ disagree, the amendment holds.
   slot, or declared hook contracts).
 - **The build-cost bound of G12** (carried from this RFC: a `weavec-cc`
   build within 8 times the reference compiler's CPU; 2 to 47 times at its
-  close). The link step analyses the program again for every executable it
+  close). The link step analyzes the program again for every executable it
   links: it should reuse what the compile step decided for the units whose
   program facts did not change, and keep results across links of the same
   objects (with RFC 0033's records in object sections).

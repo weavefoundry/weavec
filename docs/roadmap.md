@@ -7,7 +7,7 @@ milestone links to. Everything here is subject to change as we learn.
 The design today is [RFC 0037](rfcs/0037-complete-sweep-and-colors.md),
 over the reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
 and the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
-milestones before it are summarised under _History_; their RFCs keep the
+milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
@@ -25,7 +25,7 @@ every allocation, and a sweep over a pointer-dense gigabyte paused the
 program for a third of a second. RFC 0037 completes the sweep's roots, gives
 the allocator thread caches and spare regions, marks in parallel, closes
 the guards' holes, wraps the library calls, reports faults, and catches
-jumps into a neighbour (object colors in the shadow) and uses after
+jumps into a neighbor (object colors in the shadow) and uses after
 return (returned frames stay poisoned). Cutting the guards' cost was
 measured and not taken (its _Alternatives_). The stages:
 
@@ -102,12 +102,12 @@ deletes the analysis and marks the RFCs that specified it (0001–0017, 0031) Su
 | 3–4 Compiler driver and whole program | [RFC 0005](rfcs/0005-whole-program-analysis.md)                                                                       | `weavec-cc`, `--whole-program`                                                         | Superseded by RFC 0036; `weavec-cc` lives on, records and the link step deleted by RFC 0035                  |
 | 5 Precision                           | [RFC 0006](rfcs/0006-precision.md)                                                                                    | Non-lexical loans, condition facts, element places, outcome-conditional summaries      | Superseded by RFC 0036                                                                                       |
 | 6 Resource lifecycle                  | [RFC 0007](rfcs/0007-resource-lifecycle.md)                                                                           | Leaks, release families, owned fields                                                  | Superseded by RFC 0036                                                                                       |
-| 7 Pointer validity                    | [RFC 0008](rfcs/0008-pointer-validity.md)                                                                             | Null dereferences, uninitialised pointers, invalid releases, replaced values           | Superseded by RFC 0036                                                                                       |
-| 8 Value-conditional behaviour         | [RFC 0009](rfcs/0009-value-conditional-behaviour.md)                                                                  | Scalar facts, guarded effects, inferred `noreturn`                                     | Superseded by RFC 0036                                                                                       |
+| 7 Pointer validity                    | [RFC 0008](rfcs/0008-pointer-validity.md)                                                                             | Null dereferences, uninitialized pointers, invalid releases, replaced values           | Superseded by RFC 0036                                                                                       |
+| 8 Value-conditional behavior         | [RFC 0009](rfcs/0009-value-conditional-behaviour.md)                                                                  | Scalar facts, guarded effects, inferred `noreturn`                                     | Superseded by RFC 0036                                                                                       |
 | 9 Shared ownership                    | [RFC 0010](rfcs/0010-shared-ownership.md)                                                                             | Reference counts, ownership by outcome                                                 | Superseded by RFC 0036                                                                                       |
 | 10–11 Spatial safety                  | [RFC 0011](rfcs/0011-spatial-safety.md), [RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)                   | Derived pointers, extents, strings, sized fields, assumptions                          | Superseded by RFC 0036                                                                                       |
 | 12 Interprocedural heap state         | [RFC 0013](rfcs/0013-interprocedural-heap-state.md)                                                                   | Heap postconditions, value snapshots                                                   | Superseded by RFC 0036                                                                                       |
-| 13 Pointer identity and call effects  | [RFC 0014](rfcs/0014-pointer-identity-and-call-effects.md)                                                            | Function values, callback specialisation, pointer-copy identity                        | Superseded by RFC 0036                                                                                       |
+| 13 Pointer identity and call effects  | [RFC 0014](rfcs/0014-pointer-identity-and-call-effects.md)                                                            | Function values, callback specialization, pointer-copy identity                        | Superseded by RFC 0036                                                                                       |
 | 14 Arrays and containers              | [RFC 0015](rfcs/0015-array-and-container-ownership.md)                                                                | Element selectors, ranges, container ownership                                         | Superseded by RFC 0036                                                                                       |
 | 15 Compositional call checking        | [RFC 0016](rfcs/0016-compositional-call-checking.md)                                                                  | Call contexts under caller alias relationships                                         | Superseded by RFC 0036                                                                                       |
 | 16 C integers and spatial checking    | [RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md)                                                       | Target integer semantics, typed expressions, VLAs, flexible arrays                     | Superseded by RFC 0036                                                                                       |

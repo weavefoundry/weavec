@@ -48,13 +48,13 @@ A trap is almost always a real bug. The exceptions are programs that read past a
 
 ## Heap reports
 
-- `heap-buffer-overflow`: the access reached the bytes after a heap block's object in its slot. The second line says where (`is 16 bytes after the 64-byte heap object`). An index that jumps further, over the slot's tail into a neighbouring live block, is not caught. Look for an index or length that exceeds the allocation, an allocation sized in elements where bytes were meant (or the reverse), or a missing byte for a string's terminator. The runtime's allocator gives each block exactly its requested size: slack a system allocator rounds up to is not addressable, and `malloc_usable_size` returns the requested size.
+- `heap-buffer-overflow`: the access reached the bytes after a heap block's object in its slot. The second line says where (`is 16 bytes after the 64-byte heap object`). An index that jumps further, over the slot's tail into a neighboring live block, is not caught. Look for an index or length that exceeds the allocation, an allocation sized in elements where bytes were meant (or the reverse), or a missing byte for a string's terminator. The runtime's allocator gives each block exactly its requested size: slack a system allocator rounds up to is not addressable, and `malloc_usable_size` returns the requested size.
 - `heap-use-after-free`: the access is to a block that was freed (`is inside a released heap block at …`). Look for a pointer kept across a `free`, or across a `realloc` that moved the block. A released block is not reused while the program holds a pointer to it, so this is reported however long ago the block was freed and however much the program allocated since.
 
 ## Stack and global reports
 
 - `stack-buffer-overflow`: the access left a local into the redzone after it (or, for a negative index, before it). `dynamic-stack-buffer-overflow` is the same for an `alloca` block or a variable-length array.
-- `stack-use-after-scope`: the access is to a local whose block has ended, through a pointer that outlived it. This is caught at every optimisation level. A use of a local after its function returned is not caught.
+- `stack-use-after-scope`: the access is to a local whose block has ended, through a pointer that outlived it. This is caught at every optimization level. A use of a local after its function returned is not caught.
 - `global-buffer-overflow`: the access left a global or static variable the unit defines into its redzone.
 
 Within a struct, an index into a declared array field is checked against its bound (`index-out-of-bounds`), and a fortified string call into a field against the size the call states (`intra-object-overflow`): the field's with Darwin's headers, the rest of the object with glibc's; a pointer walk past a field is not checked.
@@ -76,7 +76,7 @@ Within a struct, an index into a declared array field is checked against its bou
 weavec: invalid release of 0xbd00000000: the block was already released
 ```
 
-The runtime's allocator received a `free` or `realloc` it cannot honour, and stopped the program. This line has no source location, because the allocator validates the release, not a guard. The reasons are:
+The runtime's allocator received a `free` or `realloc` it cannot honor, and stopped the program. This line has no source location, because the allocator validates the release, not a guard. The reasons are:
 
 | Reason                                                        | Usual cause                                                                                                                   |
 | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
@@ -103,7 +103,7 @@ Accesses in a `WEAVEC_UNSAFE` function or block are not guarded and its array in
 
 ## Code written for AddressSanitizer behaves differently
 
-`weavec-cc` defines `__SANITIZE_ADDRESS__` and makes `__has_feature(address_sanitizer)` true, so a project's ASan paths are compiled in: a pool allocator poisons its free space, and a use of it traps as `use-after-poison`, which is the intent. When an ASan path is not wanted (it calls a sanitizer interface the runtime does not provide, or changes behaviour in a way the program should not see), build with `-fno-weavec-asan-compat`: the macros are left undefined and the code is compiled as for a plain build, still guarded. Code that reads past an object on purpose only when ASan is off then traps again, and needs a `WEAVEC_UNSAFE` region.
+`weavec-cc` defines `__SANITIZE_ADDRESS__` and makes `__has_feature(address_sanitizer)` true, so a project's ASan paths are compiled in: a pool allocator poisons its free space, and a use of it traps as `use-after-poison`, which is the intent. When an ASan path is not wanted (it calls a sanitizer interface the runtime does not provide, or changes behavior in a way the program should not see), build with `-fno-weavec-asan-compat`: the macros are left undefined and the code is compiled as for a plain build, still guarded. Code that reads past an object on purpose only when ASan is off then traps again, and needs a `WEAVEC_UNSAFE` region.
 
 ## The link prints "building without the WeaveC runtime"
 

@@ -96,15 +96,15 @@ anything. The guarantee it commits later RFCs to is:
   single-threaded execution within a function. Threads, signals and
   `setjmp`/`longjmp` make the surrounding code `Raw` until an RFC says
   otherwise.
-- Uninitialised reads of non-pointer data, integer overflow, type punning.
+- Uninitialized reads of non-pointer data, integer overflow, type punning.
 
 **Accepted false positives.** The model is deliberately conservative at
 control-flow merges: a place freed on *either* incoming path is treated as
 freed afterwards, so `if (c) free(p); ... if (c) use(p);` is rejected even
 though it is correct. Users resolve this by restructuring, by re-nulling the
-pointer (`p = NULL` reinitialises the place), or with `WEAVEC_UNSAFE`. We
+pointer (`p = NULL` reinitializes the place), or with `WEAVEC_UNSAFE`. We
 accept this because path-sensitive reasoning about arbitrary predicates is
-where analysers become unpredictable, and predictability matters more to
+where analyzers become unpredictable, and predictability matters more to
 adoption than precision on this pattern.
 
 **Assumptions.**
@@ -115,7 +115,7 @@ adoption than precision on this pattern.
   `unsafe` code behind a safe signature.
 - Unannotated external functions receive `Raw` parameters, so calling them
   from safe code is an error rather than a hole.
-- Memory is only released through recognised release functions (initially
+- Memory is only released through recognized release functions (initially
   `free`; user allocators via annotation). Releasing through an unannotated
   function is invisible.
 
@@ -171,13 +171,13 @@ and be reported.
 `free(p)`, passing an owned pointer to a parameter annotated `WEAVEC_OWNED`,
 returning it from a function whose return is `WEAVEC_OWNED`, or assigning it
 to another owned place *moves* ownership out of `p`. A moved place is
-uninitialised until it is reassigned. Reading it is `use-after-free` (if the
+uninitialized until it is reassigned. Reading it is `use-after-free` (if the
 move was a release) or `use-after-move`; moving it again is `double-free`.
 
 `core::MoveTracker` records `PlaceId → MoveRecord{reason, location}`. The
 record carries the location of the move so the diagnostic can point at both
 the use and the earlier release. `reinitialize(place)` clears the record;
-plain assignment (`p = expr`) reinitialises. `join` is set union ("may be
+plain assignment (`p = expr`) reinitializes. `join` is set union ("may be
 moved"), giving the conservative merge described under *Soundness*.
 
 Design decision: moves are tracked per *place*, not per *value*. If `q = p;
@@ -245,7 +245,7 @@ disables checks *inside* it.
 
 ### Allocation and release functions
 
-Recognised by name initially: `malloc`, `calloc`, `realloc`, `strdup`
+Recognized by name initially: `malloc`, `calloc`, `realloc`, `strdup`
 produce `Owned`; `free` consumes `Owned`. Users teach WeaveC about their own
 allocators by annotating declarations (`WEAVEC_OWNED` on the return type for
 producers, `WEAVEC_OWNED` on the consumed parameter for releasers). There is
@@ -307,13 +307,13 @@ filterable); renaming one is a breaking change. Which RFC makes each one
 | Id                    | Severity | Meaning                                             | Emitted by                 |
 | --------------------- | -------- | --------------------------------------------------- | -------------------------- |
 | `use-after-free`      | error    | Read of a place after its resource was released.    | scaffold checker; RFC 0002 |
-| `double-free`         | error    | Second release of a place without reinitialisation. | scaffold checker; RFC 0002 |
+| `double-free`         | error    | Second release of a place without reinitialization. | scaffold checker; RFC 0002 |
 | `use-after-move`      | error    | Read of a place after ownership moved out.          | RFC 0002                   |
 | `conflicting-borrow`  | error    | Loan or access violates the aliasing rules.         | RFC 0002                   |
 | `lifetime-too-short`  | error    | Loan may outlive its referent.                      | RFC 0002                   |
 | `unsafe-operation`    | error    | `Raw` pointer used outside `WEAVEC_UNSAFE`.         | future RFC                 |
 | `annotation-required` | warning  | Ownership not inferable; annotate.                  | scaffold (opt-in)          |
-| `invalid-annotation`  | warning  | Unrecognised `weavec.*` annotation.                 | scaffold                   |
+| `invalid-annotation`  | warning  | Unrecognized `weavec.*` annotation.                 | scaffold                   |
 
 Message shapes fixed by the scaffold and to be preserved:
 `use of '<p>' after it was freed` with note `freed here`;
@@ -327,9 +327,9 @@ Message shapes fixed by the scaffold and to be preserved:
   metric (see roadmap, *Ongoing*).
 - **Trusting summaries.** A single wrong annotation on a widely-called
   function silently weakens the guarantee across the codebase. Mitigation
-  (reconciliation against inferred behaviour) is a later RFC.
+  (reconciliation against inferred behavior) is a later RFC.
 - **Place granularity.** Reasoning per place rather than per value means
-  aliasing through copies must be modelled explicitly, and interior pointers
+  aliasing through copies must be modeled explicitly, and interior pointers
   (into arrays and structs) need summary places that lose precision.
 - **A Rust-shaped model on a non-Rust language.** C idioms with no Rust
   analogue (intrusive lists, arena allocation, `container_of`, pointer
@@ -342,7 +342,7 @@ Message shapes fixed by the scaffold and to be preserved:
   approach; also what Clang's static analyzer `MallocChecker` does with
   symbolic values). More precise on aliasing and path conditions, but
   results depend on analysis budgets and heuristics, so the same code can
-  pass or fail depending on context. WeaveC prioritises predictability: a
+  pass or fail depending on context. WeaveC prioritizes predictability: a
   user should be able to say *why* a program was accepted.
 - **Type-based ownership only** (annotate every pointer type, no inference;
   roughly Checked C's or GSL `owner<T>`'s position). Sound and simple, but
@@ -361,7 +361,7 @@ Message shapes fixed by the scaffold and to be preserved:
 
 - **Rust** ([The Rust Reference, *Ownership* and *References*]; RFC 2094
   *Non-lexical lifetimes*; the Polonius project). The kinds, the aliasing
-  rules and the "moved-out place is uninitialised" rule are taken directly.
+  rules and the "moved-out place is uninitialized" rule are taken directly.
   What does not transfer: Rust has the type system enforce that every
   pointer *is* one of these kinds; WeaveC must infer it and needs `Raw` and
   `Unknown` to describe the gap.
@@ -438,7 +438,7 @@ Recorded honestly so the next RFC does not rediscover them.
 ## Future work
 
 - **RFC 0002** — sound intra-procedural checking: the CFG dataflow that
-  drives `MoveTracker`, `BorrowState` and `LifetimeConstraints`, recognised
+  drives `MoveTracker`, `BorrowState` and `LifetimeConstraints`, recognized
   allocators, field-sensitive places, and the first emitted
   `use-after-move`, `conflicting-borrow` and `lifetime-too-short`.
 - **Signature inference RFC** — per-function summaries, bottom-up over the
@@ -465,6 +465,6 @@ change it.
 | Local checker        | Replaced by the RFC 0002 CFG dataflow (`lib/Analysis/Dataflow.cpp`).   |
 | CFG dataflow         | Implemented (RFC 0002).                                                |
 | Signature inference  | Future RFC.                                                            |
-| Annotations          | `unsafe` honoured; `WEAVEC_OWNED` parameters move, `WEAVEC_BORROWED`/`WEAVEC_MUT` loan. Inference/annotation reconciliation: future RFC. |
+| Annotations          | `unsafe` honored; `WEAVEC_OWNED` parameters move, `WEAVEC_BORROWED`/`WEAVEC_MUT` loan. Inference/annotation reconciliation: future RFC. |
 | `unsafe-operation`   | Future RFC (unsafe blocks).                                            |
 | Cross-TU summaries   | Future RFC.                                                            |

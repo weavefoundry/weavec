@@ -1,6 +1,6 @@
 // RFC 0035 §3.2: a local reached only through a phi (the pointer that
 // outlived its scope is null on the other path) is still in the frame, so
-// the use after its scope traps at every optimisation level.
+// the use after its scope traps at every optimization level.
 // RUN: %weavec_cc -O0 %s -o %t0
 // RUN: not --crash %t0 2>&1 | FileCheck %s
 // RUN: %weavec_cc -O2 %s -o %t2

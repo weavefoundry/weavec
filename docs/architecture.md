@@ -11,7 +11,7 @@ each RFC's *Implementation amendments* override its body.
 IR, against the runtime's shadow memory. It removes a guard only where a
 simple local rule proves it redundant. The locals a guard can reach get
 redzones in their frame (locals whose lifetimes never overlap share space),
-globals get redzones, locals are zero-initialised, typed array indexes are
+globals get redzones, locals are zero-initialized, typed array indexes are
 checked against their declared bounds and fortified library calls against
 the object size they carry. The runtime's allocator leaves at least one
 byte after every heap object that no object owns, and reuses a released
@@ -63,7 +63,7 @@ described in the RFCs that introduced and retired them.
 these additions in an enforcing mode (`-fweavec-checks=trap`, the default,
 `report` or `verify`; RFC 0035 §1 and amendment 1, RFC 0036 §1):
 
-1. **Zero-initialised locals.** `-ftrivial-auto-var-init=zero`, for locals
+1. **Zero-initialized locals.** `-ftrivial-auto-var-init=zero`, for locals
    up to 4 KiB unless the command line sets its own limit
    (`-fno-weavec-zero-init` turns it off). The runtime's allocator
    zero-fills every block.
@@ -82,7 +82,7 @@ these additions in an enforcing mode (`-fweavec-checks=trap`, the default,
 5. **No conditional compares on AArch64** (`-aarch64-enable-ccmp=false`;
    a later `-mllvm` option of the user's wins). The backend folded a
    guard's partial-granule test back into its fast path.
-6. **Fortification** (§1, §6). On an optimising glibc build whose command
+6. **Fortification** (§1, §6). On an optimizing glibc build whose command
    line neither defines nor undefines `_FORTIFY_SOURCE`, the driver adds
    `-D_FORTIFY_SOURCE=3`; Darwin's SDK fortifies at level 2 by default. The
    guards check the object size a fortified call carries.
@@ -100,7 +100,7 @@ these additions in an enforcing mode (`-fweavec-checks=trap`, the default,
 8. **The unsafe-region collector** (`UnsafeRegions`) runs over the AST
    before code generation (see *Unsafe regions*).
 9. **Four LLVM passes** (`registerGuardPasses` in
-   `lib/Frontend/GuardPass.cpp`), at every optimisation level:
+   `lib/Frontend/GuardPass.cpp`), at every optimization level:
 
    | Pass | Extension point | Files | Does |
    | --- | --- | --- | --- |
@@ -117,8 +117,8 @@ these additions in an enforcing mode (`-fweavec-checks=trap`, the default,
    body (a C99 inline definition) is guarded, since the inliner copies it
    into the unit. Verify mode skips GuardLoop.
 
-Guards are inserted first and expanded last because the optimiser exploits
-undefined behaviour: an out-of-bounds read in a loop can make the loop
+Guards are inserted first and expanded last because the optimizer exploits
+undefined behavior: an out-of-bounds read in a loop can make the loop
 infinite, and a read after `free` can become `undef`, before a pass at the
 end of the pipeline sees the access. GuardInsert's markers are
 
@@ -131,7 +131,7 @@ void __weavec.disjoint(ptr destination, ptr source, i64 length)
 
 They are `nounwind` and `nomerge`, read only the runtime's memory (a string
 marker the string too), capture nothing, and are not `willreturn`: the
-optimiser may neither drop nor merge them, nor move an access past one, but
+optimizer may neither drop nor merge them, nor move an access past one, but
 it may hoist and remove them as it does loads. Beside each lifetime marker
 GuardInsert puts `__weavec.scope()`, which writes the runtime's memory, so
 that no marker is hoisted above the `lifetime.start` of a local declared in
@@ -228,7 +228,7 @@ around it no spills.
 `p`: a null base takes the slow path, which reports a null dereference. A
 constant offset below 4,096 from a null base faults on the null page, and a
 guard on an address in the lowest 64 KiB fails as a null dereference
-through its shadow, even when the optimiser moved the access to the other
+through its shadow, even when the optimizer moved the access to the other
 arm of a `select`.
 
 ## Removing guards
@@ -262,7 +262,7 @@ LLVM's `nofree` attribute, and is monitored by verify mode
   preheader asks `__weavec_rt_range_ok(lo, n)` (no report) whether the
   whole range of each invariant or affine access over the trip is
   addressable; when the trip has at least 16 iterations and every range
-  is, a copy of the loop without those guards runs, and LLVM may vectorise
+  is, a copy of the loop without those guards runs, and LLVM may vectorize
   it; otherwise the guarded loop runs and stops at the access that fails.
   Verify mode does not version.
 
@@ -302,7 +302,7 @@ in place, without redzones.
 larger than 512 bytes, two tracked locals may share bytes when their
 lifetimes never overlap: LLVM's `StackLifetime` analysis,
 in its *may be live* mode, over the lifetime markers that remain after the
-optimiser (the analysis SafeStack uses). Each local is placed at the lowest
+optimizer (the analysis SafeStack uses). Each local is placed at the lowest
 32-byte-aligned offset after the left redzone where its object and redzone
 meet no other local's that may be live with it, so locals in the disjoint
 arms of a `switch` take the space of one, as in Clang's own frames. A local
@@ -333,7 +333,7 @@ unwinding through C frames) keeps its poison until the stack is reused
 tracked unless it is thread-local, in a named section, in a comdat, in a
 non-default address space, a string literal or other mergeable constant
 (constant, `unnamed_addr` and local), `common`, appending, externally
-initialised, aligned above 4 KiB, of size 0, or one of LLVM's or WeaveC's
+initialized, aligned above 4 KiB, of size 0, or one of LLVM's or WeaveC's
 own. A tracked global is replaced by a global of the same name, linkage and
 visibility that holds the original and a redzone (sized as a frame
 object's), aligned to 32 bytes. A module constructor of priority 1 calls
@@ -380,7 +380,7 @@ define, before the call (RFC 0035 §2.5 and amendment 7, RFC 0036 §6):
   character that stopped it); `mmap` and `munmap` clear the shadow of what
   they map. A wrapper is named after
   its row's function (the parser checks it). The calls that write through
-  no pointer are redirected late, by GuardExpand, so that the optimiser can
+  no pointer are redirected late, by GuardExpand, so that the optimizer can
   still fold `strcmp` of constants; GuardInsert guards only the first byte
   of their string arguments. Such a call that reads exactly a constant of
   at most 113 bytes keeps inline guards instead.
@@ -429,7 +429,7 @@ reason:
 | Outcome | Reasons |
 | --- | --- |
 | `guarded` | `access`, `range`, `string`, `checked-call`, `loop-range` |
-| `proven` | `in-bounds`, `dominated`, `merged`, `optimized` (the optimiser removed every copy of the access) |
+| `proven` | `in-bounds`, `dominated`, `merged`, `optimized` (the optimizer removed every copy of the access) |
 | `unguarded` | `unsafe` |
 
 `-fweavec-ledger=<path>` writes the rows as JSON, `weavec-ledger` version 3
@@ -537,7 +537,7 @@ The sweep (RFC 0036 §3.4, `weavec_sweep.c`):
 1. **Stop.** Take the image table's lock, every allocator lock and the
    sweep lock, then stop every other thread: on Darwin with `task_threads`
    and `thread_suspend`, reading each thread's general and vector registers with
-   `thread_get_state`; on Linux by signalling each task of
+   `thread_get_state`; on Linux by signaling each task of
    `/proc/self/task` (`SIGPWR`, `SIGXCPU` when the program handles
    `SIGPWR`, or `WEAVEC_RT_SWEEP_SIGNAL`), whose handler records its stack
    pointer and waits. A thread that does not stop within a second ends the
@@ -689,7 +689,7 @@ arguments it releases or reallocates, which must not overlap, how a format
 reads its arguments, the result a `value(t)` computes, the runtime's
 checked version (`wrapper(NAME)`), `wide` rows, and the fortified aliases
 with their object-size argument (`chk`). CMake embeds the text;
-`LibrarySpec::shipped()` parses it once on first use. Library behaviour
+`LibrarySpec::shipped()` parses it once on first use. Library behavior
 goes in the table, never in a comparison of a callee's name.
 
 ## `weavec::Frontend` — Clang and LLVM integration
@@ -733,10 +733,10 @@ command line is that of RFC 0035 §7 as RFC 0036 §7 amends it.
   mappings, the array-bounds handlers, threads and `fork`. Test
   names as arguments run only those.
 - **Lit tests** (`test/Guards`, `test/Driver`) pin exact output and
-  behaviour. `test/Guards` pins the passes' IR (FileCheck on `-emit-llvm`:
+  behavior. `test/Guards` pins the passes' IR (FileCheck on `-emit-llvm`:
   `ir-*.c`, among them `ir-frames.c`, and `shared-frame.c`) and, by
   building and running programs, the run-time
-  behaviour, each report line, and the enforcement ledger;
+  behavior, each report line, and the enforcement ledger;
   `test/Driver` pins the runtime's link line and fallbacks
   (`runtime-*.c`), fortification (`fortify.c`), ASan's macros
   (`asan-compat*.c`) and the globals of a dylib and a bundle

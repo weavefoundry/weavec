@@ -19,7 +19,7 @@ A fortified library call (`__strcpy_chk(d, s, 8)`, which Clang emits for a `strc
 
 ## What the compiler guards
 
-The runtime replaces the program's allocator and keeps one _shadow_ byte for every 16 bytes of memory, saying which of them belong to a live object. Heap objects, the locals a guard can reach and the file's globals are separated by _redzones_, bytes no object owns, and locals are zero-initialised. A guard then catches:
+The runtime replaces the program's allocator and keeps one _shadow_ byte for every 16 bytes of memory, saying which of them belong to a live object. Heap objects, the locals a guard can reach and the file's globals are separated by _redzones_, bytes no object owns, and locals are zero-initialized. A guard then catches:
 
 - an access past either end of a heap block, a local or a global into its redzone;
 - a read or write of a freed heap block, and a double or invalid `free`;

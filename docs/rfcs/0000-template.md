@@ -112,7 +112,7 @@ is a real option. Explain why the chosen design is preferred.
 
 <!--
 WeaveC has no reference implementation to match, so this section is where we
-borrow judgement. Cite specifics (paper section, source file, RFC number)
+borrow judgment. Cite specifics (paper section, source file, RFC number)
 from, as relevant:
 
 - AddressSanitizer, HWASan and Arm MTE: shadow memory, redzones, tags.

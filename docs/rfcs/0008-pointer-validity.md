@@ -1,4 +1,4 @@
-# RFC 0008: Pointer validity: null dereferences, uninitialised pointers, invalid releases and replaced values
+# RFC 0008: Pointer validity: null dereferences, uninitialized pointers, invalid releases and replaced values
 
 - **Status**: Superseded
 - **Authors**: WeaveC authors
@@ -23,7 +23,7 @@ answer "is this pointer *valid right now*". Four things fall through today:
 
 1. A callee that releases a value reachable from its arguments and then
    overwrites the place it came from (`v->items = realloc(v->items, n)`,
-   `free(b->data); b->data = NULL;`) is summarised as if nothing was
+   `free(b->data); b->data = NULL;`) is summarized as if nothing was
    released, because RFC 0003 reads such effects from the callee's exit
    state. A caller's own copy of the old value is then used without a
    report. This is a soundness hole in the guarantee RFC 0002 gives.
@@ -31,7 +31,7 @@ answer "is this pointer *valid right now*". Four things fall through today:
    ':'); *q`, `if (!n) log(); return n->v;` and passing a possibly-null
    pointer to `strlen` are all silent.
 3. Reading a pointer variable or a pointer field of a local struct that was
-   never initialised is silent (Clang catches the variable case; nothing
+   never initialized is silent (Clang catches the variable case; nothing
    catches `struct s x; free(x.data);`).
 4. Releasing something that was never allocated is silent: `free(buf)` on a
    stack array, `free("literal")`, `free(p + 1)`, `free(&s)`, `free(g)` on
@@ -47,7 +47,7 @@ format 3 → 4.
 ## Motivation
 
 The README promises Rust-style memory safety for C. Rust's `Option<Box<T>>`
-and its refusal to read uninitialised memory or to free anything but a
+and its refusal to read uninitialized memory or to free anything but a
 `Box` are as much a part of that promise as the borrow checker. Of the
 memory-safety CWEs that appear in real C CVE data, null dereference
 (CWE-476) is the most frequent after out-of-bounds access, and "invalid
@@ -73,10 +73,10 @@ int f(struct vec *v) {
 
 `vec_grow`'s summary is `v->items: written; stores{v->items = fresh(free)}`.
 The `moved` that `realloc` performed on `v->items` was recorded and then
-erased by the reinitialisation, and the caller never hears of it. The same
+erased by the reinitialization, and the caller never hears of it. The same
 happens with `free(b->data); b->data = NULL;` for a caller that copied
 `b->data` first, and with `free(b->data); if (c) b->data = NULL;` for the
-caller's `b->data` itself (the store re-initialises the place at the call
+caller's `b->data` itself (the store re-initializes the place at the call
 site even though on the `!c` path it still holds the freed pointer). A
 user who finds this on their own `grow()` helper has reason to distrust
 every other report.
@@ -120,17 +120,17 @@ fields, and results of unknown callees are trusted non-null unless tested
 or annotated `WEAVEC_NULLABLE`; the guarantee for those is the caller's or
 the annotation's.
 
-**Uninitialised pointers (item 3).**
+**Uninitialized pointers (item 3).**
 
 ```c
-char *p; if (c) p = malloc(8); free(p);    // 'p' may be uninitialised
+char *p; if (c) p = malloc(8); free(p);    // 'p' may be uninitialized
 struct s x; free(x.data);                  // a pointer field of a local
 ```
 
-Reads of a pointer variable declared without an initialiser, or of a pointer
+Reads of a pointer variable declared without an initializer, or of a pointer
 field of a local record declared without one, before an assignment reaches
 them on every path. Taking the address (`&p`), passing `&p` or `&x` to any
-callee, or a callee's store through the address counts as initialisation.
+callee, or a callee's store through the address counts as initialization.
 
 **Invalid releases (item 4).** Releasing (`free`, any `f` entry, any
 inferred or annotated consuming parameter) or moving into an owning
@@ -168,12 +168,12 @@ char *q = strchr(p, 'x'); free(q);         // an interior copy of an owned place
   function *knows* to be an allocation (a resource record) makes an offset
   from it invalid.
 - **Bounds.** Whether `p + 1` is in bounds remains out of scope (RFC 0001).
-- **Uninitialised arrays and non-pointer scalars.** `char *a[4]; use(a[1])`
-  after `a[0] = ...` is not reported (element writes reinitialise the
-  summary place); integer uninitialised reads are Clang's `-Wuninitialized`.
+- **Uninitialized arrays and non-pointer scalars.** `char *a[4]; use(a[1])`
+  after `a[0] = ...` is not reported (element writes reinitialize the
+  summary place); integer uninitialized reads are Clang's `-Wuninitialized`.
 - **Address-taken locals.** `char *p; char **pp = &p; *pp = malloc(8);
   use(p)` is not tracked: a local whose address is taken anywhere in the
-  body is never marked uninitialised.
+  body is never marked uninitialized.
 - **`fclose(NULL)` and friends** are reported through the `requires` fact
   on the table entry, but `free(NULL)` and `realloc(NULL, n)` are not:
   ISO C defines them.
@@ -209,7 +209,7 @@ Those of RFCs 0001–0007. In addition: the nullness of a place is a property
 of its *value*, so it copies with the pointer and is dropped when the place
 is reassigned; the `null` alternative of a shipped table entry describes
 the ISO C / POSIX contract (a platform that never returns `NULL` from
-`malloc` is not modelled); and a `WEAVEC_NONNULL` annotation is trusted
+`malloc` is not modeled); and a `WEAVEC_NONNULL` annotation is trusted
 like every other annotation (RFC 0001: annotations are authoritative).
 
 ## Detailed design
@@ -238,7 +238,7 @@ per path:
 The effect written to the summary is the *event* consumption. A new flag
 **`replaced`** is set when the path has event consumption but no exit
 consumption: on every path that released the value, the place was
-reinitialised before returning. `replaced` is a must-fact and joins by
+reinitialized before returning. `replaced` is a must-fact and joins by
 conjunction (a summary joined from several bodies is `replaced` only if
 each is).
 
@@ -260,7 +260,7 @@ changes as follows. For a consumed path `P` resolving to caller place `c`:
 
 - with `replaced`: the consume targets are the *aliases* of `c` and of its
   mirrors (every other name for the old value), not `c` itself nor its
-  mirrors. The place `c` is then reinitialised (its facts and the facts
+  mirrors. The place `c` is then reinitialized (its facts and the facts
   below it are dropped) so a following store to `P` lands on a clean cell;
   if the summary has no store to `P`, `c` holds an unknown value.
 - without `replaced`: as today, `c`, its mirrors and its aliases are
@@ -286,7 +286,7 @@ its null edge.
 summary with a *whole* witness, which matches every element: a callee that
 does `free(history[len])` on one path makes the second call in a caller's
 loop a `double-free` of `*history`. RFC 0007's reading of a `written` effect
-as a reinitialisation used to mask this; *Replaced values* (which keeps the
+as a reinitialization used to mask this; *Replaced values* (which keeps the
 record unless the consume is `replaced`) exposes it. So the effect carries a
 second must-fact, **`element`**: every consume of the path went through an
 element access (its witness was not *whole*). A caller applies an `element`
@@ -338,7 +338,7 @@ leak logic; a place marked null there is also `Null` here.
 
 **Sources of facts** (`weavec::Analysis`):
 
-- `p = NULL`, `p = 0`, an initialiser list zeroing a field: `Null`
+- `p = NULL`, `p = 0`, an initializer list zeroing a field: `Null`
   (`AssignedNull`).
 - `p = f(...)` where `f`'s summary `returns` include `null` (the origin has
   a `Null` arm): `MaybeNull` (`CalleeResult`, detail `'f'`). The `null`
@@ -413,13 +413,13 @@ tracker joins like `ResourceTracker`. No new places are interned. The
 corpus timings in `scripts/corpus/README.md` are the measurement; see
 *Performance* under *Implementation notes* for what they showed.
 
-### Uninitialised pointers
+### Uninitialized pointers
 
 `MoveReason` gains `Uninitialized`. `handleDecl` marks a pointer variable
-declared without an initialiser (not `static`, not `extern`, and not
+declared without an initializer (not `static`, not `extern`, and not
 address-taken anywhere in the body, see *Deliberately not caught*)
 `Uninitialized` at the declaration; for a record-typed local without an
-initialiser it interns every pointer-typed field path (through nested
+initializer it interns every pointer-typed field path (through nested
 records, not through arrays or pointers, bounded by `MaxPlaceDepth`) and
 marks each. The existing machinery does the rest: a read of the place, a
 dereference through it, a consume of it, or a copy from it finds the record
@@ -429,7 +429,7 @@ call (`init(&p)`, `memset(&x, 0, n)`, a call into unknown code) clears it.
 `reportUseOfMoved` reports the new reason as `use-of-uninitialized`;
 `doConsume` does not treat it as a double free. The record never reaches a
 summary (`consumptionAt`, `finalizeSummary` and `recordConsume` skip it):
-only locals can be uninitialised.
+only locals can be uninitialized.
 
 ### Invalid releases
 
@@ -472,7 +472,7 @@ after a class's `null{...}`, and `result.data` as a store destination.
 `replaced` and `element` in `effect` lines; `requires N` lines (parameter index);
 `notnull <class> <path>` lines; the path root `result`. Everything else is
 unchanged; a version-3 sidecar is rejected by its header and the object
-re-analysed.
+re-analyzed.
 
 ## Annotation surface
 
@@ -504,7 +504,7 @@ New ids, all errors by default:
 > **Amended by [RFC 0030](0030-prove-or-trap.md).** `null-dereference` and
 > `use-of-uninitialized` are errors only when definite. The "may be null" forms
 > are removed: `weavec-cc` inserts a trapping check instead (§3.2), and
-> zero-initialisation makes possibly-uninitialised pointers null (§11).
+> zero-initialization makes possibly-uninitialized pointers null (§11).
 
 Triggers are the snippets under *Soundness*. Each gets a unit test and a lit
 test under `test/Analysis/rfc0008-*.c`.
@@ -564,7 +564,7 @@ their wording is unchanged and the note points at the call.
 
 - **Rust**: `Option<T>` makes nullability a type; `Box::from_raw` on a
   non-`Box` pointer is UB the type system prevents; reading an
-  uninitialised local is a compile error. We recover the first as a
+  uninitialized local is a compile error. We recover the first as a
   flow-sensitive fact, the second as `invalid-release`, the third as
   `use-of-uninitialized`.
 - **Clang**: `-Wnull-dereference`, `-Wuninitialized`/
@@ -679,7 +679,7 @@ Where the code refines the design above:
 - **Nullness annotations on unchecked callees.** A declaration with
   `WEAVEC_NULLABLE`/`WEAVEC_NONNULL` but no ownership annotations is still
   `annotation-required` (RFC 0003 is unchanged), but its nullness
-  annotations are honoured: the result is `MaybeNull` (`Declared`) and a
+  annotations are honored: the result is `MaybeNull` (`Declared`) and a
   `WEAVEC_NONNULL` parameter is a requirement. Nullness annotations alone
   do not make a declaration "annotated" for `annotation-required`.
   > **Amended by [RFC 0030](0030-prove-or-trap.md).** `annotation-required` is
@@ -692,7 +692,7 @@ Where the code refines the design above:
   for a place whose `ResourceRecord` is `interior`, or for arithmetic on a
   place that has a non-interior record. `strchr(s, c)` on a parameter with
   no record is not reported: nothing is known about `s`. `p + 0` is `p`.
-- **Uninitialised records and the dump.** The record is dropped with the
+- **Uninitialized records and the dump.** The record is dropped with the
   local at scope exit, so it does not appear in `--dump-analysis`'s exit
   state; the diagnostic is the evidence. Locals of a function whose summary
   is dumped never carry `uninitialized` into `summary:`.
@@ -711,7 +711,7 @@ one program) nevertheless went from about 12 minutes (RFC 0007) to 52 on
 the same machine and build (29 after the two fixes below), and the cause is
 *Replaced values*, not nullness: `luaV_execute` calls a `luaM_realloc`-family helper at some 130
 sites, RFC 0007 read each callee's `written` effect on `L->stack` and its
-relatives as a reinitialisation and dropped the record, and this RFC keeps
+relatives as a reinitialization and dropped the record, and this RFC keeps
 it, so every one of those calls now performs a consume of the path, of its
 mirrors through `L->twups ~ L`, and of their aliases, and the function's
 states carry a hundred move records where they carried none. Two costs
@@ -750,6 +750,6 @@ to a later change with the RFC 0007 item.
 - **Nullability of fields inferred from constructors** (`s->opt` is
   nullable because `make_s` stores `NULL` there): a `nullable` store
   fact in the summary rather than an annotation.
-- **Arrays of pointers**: element-witnessed uninitialised and null facts.
+- **Arrays of pointers**: element-witnessed uninitialized and null facts.
 - **`WEAVEC_NULLABLE` on function-pointer types** for callbacks that may be
   absent.

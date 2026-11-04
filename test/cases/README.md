@@ -189,7 +189,7 @@ any further units named by `UNITS`, its headers and its inputs), built with
 ## Adding a case
 
 1. Put it in the directory of its feature (`semantics/<feature>/` for new
-   behaviour), named for what it tests (`*_bug.c` and `*_ok.c` for a pair);
+   behavior), named for what it tests (`*_bug.c` and `*_ok.c` for a pair);
    there is no manifest to update.
 2. Start with a comment saying what the case is about and where it comes
    from, then the file markers, then the code.
@@ -211,5 +211,5 @@ golden binaries (`GOLDEN.md`, `KNOWN-DIFFERENCES.md`). RFC 0035 deleted the
 analysis ledger, the checks and the require levels; the cases were
 converted to the grammar above. RFC 0036 deleted the advisory analysis and
 with it the markers that pinned it (`BUG`, `MISS` on a `BUG`,
-`NEUTRALISED`, `ALLOW`, `TOOL`); the comments of older cases may still cite
+`NEUTRALIZED`, `ALLOW`, `TOOL`); the comments of older cases may still cite
 the RFC they were written for.

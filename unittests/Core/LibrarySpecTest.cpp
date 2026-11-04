@@ -408,7 +408,7 @@ TEST(LibrarySpecTest, NumberParsersHaveWrappers) {
 //===----------------------------------------------------------------------===//
 
 // Heap allocation: every heap result may fail, is released by free, and
-// carries its §11 zero-initialisation decision.
+// carries its §11 zero-initialization decision.
 static constexpr auto HeapExpectations = std::to_array<Expectation>({
     {"posix_memalign", "W bytes=8, int, int", "int", ""},
     {"canonicalize_file_name", "R str nullable", "ptr", ""},

@@ -1,5 +1,5 @@
 // RFC 0035 §3.4: a dynamic alloca at the very top of a function (libsodium's
-// sodium_stackzero) gets its redzone, at every optimisation level.
+// sodium_stackzero) gets its redzone, at every optimization level.
 // RUN: %weavec_cc -O0 %s -o %t0 && %t0 64
 // RUN: %weavec_cc -O2 %s -o %t2 && %t2 64
 // RUN: not --crash %t2 0 2>&1 | FileCheck %s

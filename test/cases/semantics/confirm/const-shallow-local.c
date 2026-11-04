@@ -2,7 +2,7 @@
 // with the request in a local and the out-pointer two levels below it. The
 // callee, in another unit, gets a pointer to a const request, but const is
 // shallow: it writes the result through the pointers the request holds, so
-// neither 'n' nor 'name' is uninitialised after the call.
+// neither 'n' nor 'name' is uninitialized after the call.
 // CLEAN
 // UNITS: const-shallow-local-callee.c
 #include <stdio.h>

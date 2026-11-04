@@ -39,7 +39,7 @@ the corpus. This RFC adds those, on top of the model RFC 0011 built:
    `strlen(s)` as a *length place* for a string of unknown length,
    `n` after `n = strlen(s)`), and whether the object is known to hold
    *no* terminator (`unterminated`). Sources: literals and array
-   initialisers, `strlen`, `strcpy`/`strcat`/`sprintf`/`strdup` and the
+   initializers, `strlen`, `strcpy`/`strcat`/`sprintf`/`strdup` and the
    other terminating writers of the table, `strncpy`/`memcpy`/`memset`
    that provably overwrite every byte without a NUL, and a NUL store
    `buf[i] = 0`. `malloc(strlen(s) + 1)` records the extent `strlen(s) +
@@ -84,7 +84,7 @@ the corpus. This RFC adds those, on top of the model RFC 0011 built:
    refinements. `WEAVEC_ASSUME(len <= cap)` is how a user states an
    invariant inference cannot see. It compiles to a call of an empty
    inline function under WeaveC and to `((void)0)` elsewhere; it never
-   reaches the optimiser as an assumption.
+   reaches the optimizer as an assumption.
 5. **Flexible array members** are already checked by RFC 0011's access
    model (`s->fam[i]` is an access on `s`'s object at `offsetof(fam) +
    i * sizeof(elem)`, against `malloc(sizeof *s + n)`); the probe
@@ -316,7 +316,7 @@ Unchanged: everything RFCs 0002–0011 catch.
 
 ### Accepted false positives
 
-- **A string whose length the checker learnt before a write it cannot
+- **A string whose length the checker learned before a write it cannot
   see.** Every write the model follows (`strcpy`, `strcat`, `sprintf`,
   `strncpy`, `memcpy`, `memset`, `buf[i] = c`, a callee's `written`) is
   applied to every name of the object: the pointer's exact aliases, the
@@ -334,13 +334,13 @@ Unchanged: everything RFCs 0002–0011 catch.
 - **An inferred sized field whose invariant a *later* unit breaks.**
   Within one unit the two-pass rule (below) sees every store before any
   inferred extent is used. Across units, `weavec-cc`'s compile step
-  analyses each unit against the database of the units compiled before
-  it, and the link step re-analyses against the whole program; a unit
+  analyzes each unit against the database of the units compiled before
+  it, and the link step re-analyzes against the whole program; a unit
   that both loads a field and refutes it is consistent with itself, and
   the link step's report set is the authoritative one (RFC 0005,
   *Compile-time reports not repeated at link time*). Within one
-  whole-program run the units are analysed in the call graph's order,
-  which does not follow types: a reader analysed before the unit that
+  whole-program run the units are analyzed in the call graph's order,
+  which does not follow types: a reader analyzed before the unit that
   refutes the pair keeps its report for that run (see *Across units*
   below; the next build's sidecars carry the refutation from the start).
   A report from a compile step that the link step does not make is the
@@ -356,7 +356,7 @@ Unchanged: everything RFCs 0002–0011 catch.
 
 - Everything RFCs 0001–0011 assume.
 - A string literal's length is the number of bytes before its first
-  NUL; `sizeof` of a `char` array initialised from one is its extent.
+  NUL; `sizeof` of a `char` array initialized from one is its extent.
 - `strlen(s)` evaluated twice without an intervening write the model
   follows yields the same value: the length place is stable until the
   string facts are dropped, and a fresh one is created after.
@@ -452,8 +452,8 @@ holder of a loan on that storage when the place is such storage):
 - A string literal: `length = its byte length`, on the literal borrow.
 - `char a[N] = "…"` and `char a[] = "…"`: the array's storage place gets
   `length = the literal's length`; `char a[N] = {…}` with a NUL among
-  the constant initialisers: `length` = the index of the first NUL. An
-  array declared without an initialiser gets nothing (its bytes are
+  the constant initializers: `length` = the index of the first NUL. An
+  array declared without an initializer gets nothing (its bytes are
   indeterminate, which is RFC 0008's business, not this RFC's).
 - `strlen(s)`: as above.
 - `strcpy(d, s)`, `stpcpy`: `d.length = s.length` when known, else `d`'s
@@ -529,13 +529,13 @@ returns `{count FieldDecl, unit}` with the unit `sizeof(*f)` (1 for
 `P = o->f` (or `o.f`, or deeper: the record of the object that holds `f`
 is found by `countedObjectOf`'s walk: fields only, no dereference between
 `o` and `f`) and finds none, and `f` is sized by `g` (annotated, or
-confirmed inferred, below): the record is synthesised as `{extent =
+confirmed inferred, below): the record is synthesized as `{extent =
 {place(o->g), unit, 0}, offset = Zero, location = f's declaration,
 declared = true}` (`spatialRecordAt(place, state)`, used by
 `knownExtentOf` and by the copy arm of `applyPointerAssign`). A place
 that *has* a record (this function stored it) keeps it: what the function
 did is more precise than the invariant. Writes to `o->g` drop extents
-counted in it as today (`assignScalar` → `dropExtentsOn`); a synthesised
+counted in it as today (`assignScalar` → `dropExtentsOn`); a synthesized
 record is recomputed at the next load from the new `o->g`, which is the
 invariant's meaning.
 
@@ -582,15 +582,15 @@ witnesses for `f` (unit and database together) are exactly `{(g, s)}`,
 `f` is in no refutation set, and `(f, g)` is in none. Version 8 of the
 sidecar; version 7 files are rejected as today.
 
-**Two passes in a unit.** `TranslationUnitAnalyzer::run` analyses and
+**Two passes in a unit.** `TranslationUnitAnalyzer::run` analyzes and
 reports as today, with inferred sized fields taken from the *database
 only* (annotated fields apply immediately). At the end, if the unit's
 own witnesses confirm any field the database alone did not, every
 reported function whose body contains a `MemberExpr` on such a field
-(a syntactic walk) is analysed once more with the unit's confirmations
+(a syntactic walk) is analyzed once more with the unit's confirmations
 in force, and the `out-of-bounds` diagnostics of that run that the first
 run did not produce (same id, location and message) are emitted. Only
-`out-of-bounds` can change: a synthesised record adds an extent where
+`out-of-bounds` can change: a synthesized record adds an extent where
 there was none, which enables bounds reports and nothing else (a
 requirement is recorded only for a *parameter root* of unknown extent,
 which a field load is not; nullness, moves and resources do not read
@@ -624,7 +624,7 @@ the fact to where it is used:
   object witnesses*. A unit whose sidecar has no `loads-field` line for
   any witnessed field keeps its compile-time view, as today.
 
-A refutation in a unit analysed *after* a reader is not retracted: the
+A refutation in a unit analyzed *after* a reader is not retracted: the
 reader's report on a pair the program later refuted stands for that run.
 The window is one link (the next build's sidecars carry the refutation
 from the start), and the shape needs two other units to witness the pair
@@ -657,7 +657,7 @@ are not (`i < n + 3` then `i > n - 3`). `Equal` with an offset (`j = i +
 `i < n - 1`). The join keeps a pair only when both sides have it with
 the same offset (the weakest relation), and drops it otherwise.
 
-`atLeast`, the mirror of RFC 0011's `atMost`: learnt from `x > k` (`x
+`atLeast`, the mirror of RFC 0011's `atMost`: learned from `x > k` (`x
 >= k + 1`), `x >= k`, and the failing edges of `x < k` / `x <= k`;
 narrowed to the *larger* bound; joined as the *smaller*; cleared by any
 write; looked up through one `Equal` hop with the offset applied. An
@@ -712,13 +712,13 @@ before summary lookup: its first argument is applied with
 same function the true edge of `if (arg)` runs, so pointer equalities
 unite aliases, `x OP k` narrows scalar facts and bounds, `x OP y` learns
 a relation, a test of a call result selects its outcome classes, and
-every fact learnt refines the guards it contradicts (RFC 0009). An
+every fact learned refines the guards it contradicts (RFC 0009). An
 infeasible assumption (`WEAVEC_ASSUME(0)`, or one contradicting a
 must-fact) ends the path, as an infeasible edge does. The argument is
 not otherwise a use of anything (no read is recorded; it is evaluated at
 run time, but a read of a moved pointer in an assumption is the user's
 statement, not a use the checker second-guesses). `weavec_assume_` has
-an empty body and is never analysed or summarised; under other compilers
+an empty body and is never analyzed or summarized; under other compilers
 the macro is `((void)sizeof((expr) != 0))`, an unevaluated operand, so
 `expr` is neither run nor a source of unused-variable warnings.
 `weavec.assume` on anything but that function is `invalid-annotation`.
@@ -751,7 +751,7 @@ the exit state's `spatial{...}` (`s string=len(strlen(s))`,
 - The second pass in a unit runs only over functions that load a field
   the unit's own witnesses confirmed; the syntactic walk that finds them
   is one traversal per reported function.
-- The cross-unit pass re-analyses only units that both looked up an
+- The cross-unit pass re-analyzes only units that both looked up an
   unannotated field's extent and were reported on before the program
   confirmed its pair; a program with no inferred pair, or whose readers
   call the unit that fills the pair, has none.
@@ -842,7 +842,7 @@ and offset relations.
   made the same bet and has held up on the corpus.
 - **Length places are places without storage.** Every query that walks
   the place table (`tracksScalar`, `nameOf`, the dump) must know them.
-  They are base places with a recognisable name and a flag; the
+  They are base places with a recognizable name and a flag; the
   alternative, a second kind of `Affine` operand, would touch every
   `Affine` consumer.
 - **Inference needs a second pass.** One analysis per function that loads
@@ -855,9 +855,9 @@ and offset relations.
 - **Two more integers per relation entry** and a second bound map.
   Bounded like the tracker itself.
 - **`WEAVEC_ASSUME` is a runtime call under WeaveC.** An empty inline
-  function the optimiser removes; the alternative (`__builtin_assume`)
-  would hand the optimiser a claim the user made to the *checker*, and a
-  wrong one is undefined behaviour at run time. Under other compilers
+  function the optimizer removes; the alternative (`__builtin_assume`)
+  would hand the optimizer a claim the user made to the *checker*, and a
+  wrong one is undefined behavior at run time. Under other compilers
   the macro is nothing.
 
 ## Alternatives
@@ -917,7 +917,7 @@ and offset relations.
   `-Wstringop-overflow` also tracks `strlen` results through locals
   (its "string length range" pass). We take the format lower-bound rule
   and the `strlen` tracking, on the checker's places instead of the
-  optimiser's SSA.
+  optimizer's SSA.
 - **Clang static analyzer `CStringChecker`.** Tracks `strlen` as a
   symbolic value per string region, checks `strcpy`/`strcat`/`strncpy`
   destinations against it, and flags `strlen` on a non-terminated

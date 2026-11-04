@@ -41,8 +41,8 @@ covers building, testing and tooling in depth.
 
 ## What to work on
 
-Issues labelled `good first issue` are self-contained and well specified.
-Issues labelled `help wanted` are larger but scoped. If you want to take one,
+Issues labeled `good first issue` are self-contained and well specified.
+Issues labeled `help wanted` are larger but scoped. If you want to take one,
 leave a comment so work is not duplicated.
 
 The [roadmap](docs/roadmap.md) lists the larger pieces of planned work and
@@ -99,9 +99,12 @@ Additional rules:
   change.
 - **Comments** explain intent and invariants, not what the code does. Each
   file starts with the standard LLVM-style header block.
+- **Spelling.** Code, comments, documentation and file names use American
+  English (behavior, initialize, color). `scripts/check-spelling.py` checks
+  every tracked file in CI; `--fix` rewrites what it finds.
 - **Warnings** are errors in CI. Do not suppress warnings without a comment
   explaining why.
-- **Tests.** New guard behaviour needs both a unit test (in `unittests/`,
+- **Tests.** New guard behavior needs both a unit test (in `unittests/`,
   or `runtime/test/rt_test.c` for the runtime) exercising the core logic and
   an end-to-end test: a lit test (in `test/`) when the exact IR or report
   text matters, or a case under `test/cases/` whose markers pin where the

@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// (The optimiser folds the multiplication's overflow test into a compare.)
+// (The optimizer folds the multiplication's overflow test into a compare.)
 // IR-LABEL: define {{.*}}@fill(
 // IR: call { i64, i1 } @llvm.uadd.with.overflow.i64(
 // IR: call i32 @__weavec_rt_range_ok(

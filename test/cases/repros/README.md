@@ -1,7 +1,7 @@
 # Root-cause repros
 
 The 12 reduced programs behind the v0.10.0 false-positive root causes (RFC 0030,
-*Motivation*). Their markers state the behaviour RFC 0030 intends, so they fail
+*Motivation*). Their markers state the behavior RFC 0030 intends, so they fail
 in `--legacy` by design; they are not part of the S0 gate. Each file's header
 says what v0.10.0 reports and what is intended. `main` drivers were added where
 missing so the executable oracle runs them; every driver is ASan-clean except

@@ -27,7 +27,7 @@ const struct __weavec_rt_dispatch __weavec_rt_dispatch = {
     WeavecRtDispatchVersion,
     &__weavec_rt_heap,
     &__weavec_rt_shadow,
-    weavecRtInitialise,
+    weavecRtInitialize,
     __weavec_rt_alloc,
     __weavec_rt_free,
     __weavec_rt_realloc,
@@ -71,7 +71,7 @@ const struct __weavec_rt_dispatch *weavecRtResolveOwner(void) {
                                                      "__weavec_rt_dispatch");
   if (found != 0 && found != &__weavec_rt_dispatch &&
       found->magic == WeavecRtDispatchMagic &&
-      found->version == WeavecRtDispatchVersion && found->initialise()) {
+      found->version == WeavecRtDispatchVersion && found->initialize()) {
     /* The owner's arena and shadow are fixed once reserved: its shadow
      * descriptor serves this image's inline guards and frames. `mask` and
      * `bytes`, published last, open them. */
@@ -92,12 +92,12 @@ const struct __weavec_rt_dispatch *weavecRtResolveOwner(void) {
   return weavecRtOwner;
 }
 
-/* Before this image's own code runs, as far as an initialiser can be. The
+/* Before this image's own code runs, as far as an initializer can be. The
  * owner reserves its arena and promotes its zone here, so that the C
  * library's allocations in the program's first statements are in it. */
 __attribute__((constructor)) static void resolveOwner(void) {
   if (weavecRtForward() == 0)
-    (void)weavecRtInitialise();
+    (void)weavecRtInitialize();
 }
 
 #endif

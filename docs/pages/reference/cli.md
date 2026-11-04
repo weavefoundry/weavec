@@ -1,6 +1,6 @@
 ---
 title: Command-line reference
-description: weavec-cc options for guard modes, zero-initialisation, AddressSanitizer compatibility, fortification, the runtime and its environment variables, the enforcement ledger and its summary line, and the options that were removed.
+description: weavec-cc options for guard modes, zero-initialization, AddressSanitizer compatibility, fortification, the runtime and its environment variables, the enforcement ledger and its summary line, and the options that were removed.
 ---
 
 WeaveC is one tool, `weavec-cc`: Clang's compiler driver with WeaveC inside. It guards every memory access of the C code it compiles and links the runtime that the guards call. The options below are specified by [RFC 0035](/rfcs/0035-guard-by-default/) §7 as amended by [RFC 0036](/rfcs/0036-deterministic-heap-reuse/) §1, §6 and §7; `weavec-cc --help-weavec` lists the ones your build accepts.
@@ -16,16 +16,16 @@ make CC=weavec-cc
 
 ## weavec-cc
 
-| Flag                                               | Default                          | Meaning                                                                                                                                                                                                                                                                                                   |
-| -------------------------------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-fweavec` / `-fno-weavec`                         | on                               | Guard memory accesses. Off compiles as plain Clang.                                                                                                                                                                                                                                                       |
-| `-fweavec-checks=trap\|report\|verify\|none`       | `trap`                           | What a failed guard does; see [check modes](#check-modes).                                                                                                                                                                                                                                                |
-| `-fweavec-zero-init` / `-fno-weavec-zero-init`     | on unless checks are `none`      | Zero-initialise locals of up to 4 KiB (`-ftrivial-auto-var-init=zero`; a `-ftrivial-auto-var-init-max-size` on the command line sets another limit). The runtime's allocator zero-fills every block regardless.                                                                                           |
-| `-fweavec-asan-compat` / `-fno-weavec-asan-compat` | on                               | Compile and preprocess C as AddressSanitizer would for the source; see [AddressSanitizer compatibility](#addresssanitizer-compatibility).                                                                                                                                                                 |
-| `-fweavec-colors` / `-fno-weavec-colors`           | on                               | Check an access computed from a pointer against the color of the pointer's object, so that an index or pointer that jumps over a redzone into a live neighbour traps ([guarantee (C)](/reference/guarantees/#the-guarantee)). Off, the shadow is colored all the same and only redzones stop such a jump. |
-| `-fweavec-ledger=<path>`                           | unset                            | Write the [enforcement ledger](#ledger-and-summary-line). A value ending in `/`, or naming an existing directory, receives `<object>.ledger.json` per unit; a file receives one ledger, and naming one for an invocation that compiles several C files is an error.                                       |
-| `-fweavec-summary` / `-fno-weavec-summary`         | off, on when a ledger is written | Print the unit's summary line on stderr.                                                                                                                                                                                                                                                                  |
-| `--help-weavec`                                    |                                  | List the WeaveC flags and exit.                                                                                                                                                                                                                                                                           |
+| Flag                                               | Default                          | Meaning                                                                                                                                                                                                                                                                                                  |
+| -------------------------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-fweavec` / `-fno-weavec`                         | on                               | Guard memory accesses. Off compiles as plain Clang.                                                                                                                                                                                                                                                      |
+| `-fweavec-checks=trap\|report\|verify\|none`       | `trap`                           | What a failed guard does; see [check modes](#check-modes).                                                                                                                                                                                                                                               |
+| `-fweavec-zero-init` / `-fno-weavec-zero-init`     | on unless checks are `none`      | Zero-initialize locals of up to 4 KiB (`-ftrivial-auto-var-init=zero`; a `-ftrivial-auto-var-init-max-size` on the command line sets another limit). The runtime's allocator zero-fills every block regardless.                                                                                          |
+| `-fweavec-asan-compat` / `-fno-weavec-asan-compat` | on                               | Compile and preprocess C as AddressSanitizer would for the source; see [AddressSanitizer compatibility](#addresssanitizer-compatibility).                                                                                                                                                                |
+| `-fweavec-colors` / `-fno-weavec-colors`           | on                               | Check an access computed from a pointer against the color of the pointer's object, so that an index or pointer that jumps over a redzone into a live neighbor traps ([guarantee (C)](/reference/guarantees/#the-guarantee)). Off, the shadow is colored all the same and only redzones stop such a jump. |
+| `-fweavec-ledger=<path>`                           | unset                            | Write the [enforcement ledger](#ledger-and-summary-line). A value ending in `/`, or naming an existing directory, receives `<object>.ledger.json` per unit; a file receives one ledger, and naming one for an invocation that compiles several C files is an error.                                      |
+| `-fweavec-summary` / `-fno-weavec-summary`         | off, on when a ledger is written | Print the unit's summary line on stderr.                                                                                                                                                                                                                                                                 |
+| `--help-weavec`                                    |                                  | List the WeaveC flags and exit.                                                                                                                                                                                                                                                                          |
 
 An unknown `-fweavec-*` flag is an error. Every other flag is Clang's. When WeaveC is on, the driver defines `__WEAVEC__=1` and puts the directory of `weavec.h` on the system include path. `weavec-cc --version` prints Clang's version block first, then `weavec-cc version <version> (<revision>)`, so a configure script that reads the first line sees Clang. On macOS a link with `-flto` uses the libLTO of the LLVM that WeaveC was built with.
 
@@ -33,7 +33,7 @@ C++, Objective-C, OpenCL and CUDA sources are compiled as Clang compiles them, w
 
 ### Fortification
 
-On glibc targets, an optimising compile in an enforcing mode whose command line neither defines nor undefines `_FORTIFY_SOURCE` gets `-D_FORTIFY_SOURCE=3`, so that the C library's headers pass each string and `printf`-family call the size of the object or field it writes; the guards check that size ([guarantee (F)](/reference/guarantees/#the-guarantee)). A command line that sets its own level, `-D_FORTIFY_SOURCE=0` included, keeps it. Darwin's SDK fortifies optimising compiles at level 2 by itself.
+On glibc targets, an optimizing compile in an enforcing mode whose command line neither defines nor undefines `_FORTIFY_SOURCE` gets `-D_FORTIFY_SOURCE=3`, so that the C library's headers pass each string and `printf`-family call the size of the object or field it writes; the guards check that size ([guarantee (F)](/reference/guarantees/#the-guarantee)). A command line that sets its own level, `-D_FORTIFY_SOURCE=0` included, keeps it. Darwin's SDK fortifies optimizing compiles at level 2 by itself.
 
 ### AddressSanitizer compatibility
 
@@ -124,7 +124,7 @@ weavec: runtime: sweeps took 48 ms (longest 7 ms); the last retained 0 blocks (0
 weavec: runtime: at most 86 MiB of live slots and 82 MiB of released ones waiting for a sweep
 ```
 
-The counters are not synchronised between threads.
+The counters are not synchronized between threads.
 
 ## Ledger and summary line
 
@@ -170,10 +170,10 @@ A row's `operation` is `load`, `store`, `rmw` (an atomic operation), `copy`, `se
 | `proven`    | `in-bounds`    | It lies inside a local or a global at an offset whose range is known (RFC 0035 §6.1).    |
 |             | `dominated`    | A guard on the same pointer covers its bytes, with nothing between that may free (§6.2). |
 |             | `merged`       | It is merged into one guard of nearby accesses on the same pointer (§6.3).               |
-|             | `optimized`    | The optimiser removed every copy of the access.                                          |
+|             | `optimized`    | The optimizer removed every copy of the access.                                          |
 | `unguarded` | `unsafe`       | It lies in a `WEAVEC_UNSAFE` region or a function excluded from AddressSanitizer.        |
 
-The rows are collected when the guards are inserted, before the optimiser; an access to a local or a global at a constant offset inside it gets neither a guard nor a row. A loop whose whole range was checked once still counts its accesses as `guarded`. `-fweavec-summary` prints the unit's counts:
+The rows are collected when the guards are inserted, before the optimizer; an access to a local or a global at a constant offset inside it gets neither a guard nor a row. A loop whose whole range was checked once still counts its accesses as `guarded`. `-fweavec-summary` prints the unit's counts:
 
 ```text
 weavec: lookup.c: 3 accesses: 1 proven, 2 guarded, 0 unguarded

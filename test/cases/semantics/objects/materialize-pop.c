@@ -1,7 +1,7 @@
-// RFC 0031 §4.6 (materialisation): releasing the head of a list built at one allocation site focuses it out of the site's summary; the next node stays live.
+// RFC 0031 §4.6 (materialization): releasing the head of a list built at one allocation site focuses it out of the site's summary; the next node stays live.
 // STAGE: S4
 // All nodes come from one allocation site in a loop. Popping the head ('n = l.head;
-// l.head = n->next; free(n)') releases the materialised head only, so the new head, loaded
+// l.head = n->next; free(n)') releases the materialized head only, so the new head, loaded
 // from its owning slot 'next' (D6), is live and its use is proven.
 // The destructor loop after it is not (the retired golden comparison of RFC 0030, *Cases*):
 // 'l.head->next' and 'free(l.head)' stay may-alias-released, never proven.

@@ -2,7 +2,7 @@
  * jansson_private_config.h for the corpus gate (scripts/corpus-gate.py).
  *
  * The configure-time header a Clang/POSIX build of Jansson would write from
- * cmake/jansson_private_config.h.cmake, spelled out so the corpus can analyse
+ * cmake/jansson_private_config.h.cmake, spelled out so the corpus can analyze
  * a plain checkout (-DHAVE_CONFIG_H). Windows- and endianness-specific
  * options are left undefined.
  */

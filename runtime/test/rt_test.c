@@ -193,7 +193,7 @@ static void testShadowEncoding(void) {
   CHECK(shadowAt(p) == color);
   CHECK(shadowAt(p + 16) == weavecRtShadowPartialOf(color, 4));
   CHECK(weavecRtShadowClass(shadowAt(p + 16)) == (color & 7U));
-  /* Neighbours differ. */
+  /* Neighbors differ. */
   CHECK(weavecRtColorOfHeap((uintptr_t)q) != color);
   for (n = 0; n < 111; ++n)
     CHECK(weavecRtColor(n) != weavecRtColor(n + 1) &&
@@ -240,7 +240,7 @@ static __attribute__((noinline)) uintptr_t releasedBlock(size_t n) {
 static __attribute__((noinline)) void scrubStack(void) {
   unsigned char scratch[65536];
   memset(scratch, 0, sizeof scratch);
-  /* Keeps the optimiser from removing the stores to a dead array. */
+  /* Keeps the optimizer from removing the stores to a dead array. */
   __asm__ volatile("" : : "r"(scratch) : "memory");
 }
 
@@ -326,7 +326,7 @@ static void testRealloc(void) {
 /* Allocates blocks of `n` bytes until one is `target` (at most 256): that
  * block, or null; the others are released again. A sweep hands released
  * slots out in address order, so the target need not be the first. Not
- * inlined: its array would sit, uninitialised, in the frame the sweep scans. */
+ * inlined: its array would sit, uninitialized, in the frame the sweep scans. */
 static __attribute__((noinline)) unsigned char *reuse(uintptr_t target,
                                                        size_t n) {
   unsigned char *taken[256];

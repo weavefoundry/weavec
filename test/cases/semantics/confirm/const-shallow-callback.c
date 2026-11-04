@@ -1,4 +1,4 @@
-// RFC 0034 section 6.3: a false definite use of an uninitialised value the
+// RFC 0034 section 6.3: a false definite use of an uninitialized value the
 // milestone found in libgit2's tests/libgit2/online/clone.c
 // (build/eval-2026-10-04/repros/libgit2-2.c): run_with_callbacks takes a
 // pointer to a const struct, but C's const is shallow, and the callback it

@@ -1,4 +1,4 @@
-// RFC 0034 detection set, case 11 (heap stride into a neighbour): one of the 61 blind bug programs
+// RFC 0034 detection set, case 11 (heap stride into a neighbor): one of the 61 blind bug programs
 // of the RFC 0034 milestone (build/eval-2026-10-04/detect). The default build must stop
 // the bug at or before its STOP line (a WeaveC error, or a trap whose report-mode check
 // is on that line); -DFIX selects the fixed twin, which must build and run clean.
@@ -32,7 +32,7 @@ static void image_set(struct image *im, int x, int y, unsigned char v) {
   if (x < 0 || y < 0 || x >= im->w || y >= im->h)
     return;
 #endif
-  im->px[(size_t)y * (size_t)im->w + (size_t)x] = v; // STOP // MISS: the stride lands in the neighbouring live block, and the guard checks the accessed address
+  im->px[(size_t)y * (size_t)im->w + (size_t)x] = v; // STOP // MISS: the stride lands in the neighboring live block, and the guard checks the accessed address
 }
 
 static unsigned image_sum(const struct image *im) {

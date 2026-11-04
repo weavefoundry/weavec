@@ -42,7 +42,7 @@ declared for code the checker cannot see:
    object, live on. Shares are tracked per place, propagate through
    wrappers and across units, leak like any other resource, and the
    *inline* forms (`Py_INCREF`/`Py_DECREF`-style macros expanded into the
-   caller) are recognised by the same rules.
+   caller) are recognized by the same rules.
 2. **Per-outcome stores.** A summary records, per outcome class of the
    result, which stores into caller-visible memory happened on every path
    returning it. A caller that tests the result retracts the stores that
@@ -69,7 +69,7 @@ declared for code the checker cannot see:
    Without it, the share rule turns every container insert into a leak.
 
 A bounded engineering change rides along: the whole-program fixpoint (RFC
-0005) re-analyses a member of a cyclic group only when the exports it
+0005) re-analyzes a member of a cyclic group only when the exports it
 imports changed since its last run, instead of every member every round.
 
 ## Motivation
@@ -169,11 +169,11 @@ summary.
 
 ### Bugs deliberately not caught
 
-- **Counts manipulated outside recognised shapes.** `o->rc = o->rc + 1`,
+- **Counts manipulated outside recognized shapes.** `o->rc = o->rc + 1`,
   `o->rc += n` for `n != 1`, a count kept behind a pointer (`o->hdr->rc`),
   a count in a global or a local, and a decrement whose zero test does not
   guard the release (`if (o->rc > 1) { o->rc--; return; } free(o);`) are
-  not recognised. Such a function is an ordinary free of its argument, as
+  not recognized. Such a function is an ordinary free of its argument, as
   before this RFC; annotate it `WEAVEC_RELEASES`.
 - **A release that is the last one.** `obj_unref(a)` when `a` holds the
   only share frees the object, and the checker cannot know it did: every
@@ -182,7 +182,7 @@ summary.
   without an increment) is outside the guarantee, as a program that frees
   through a raw pointer is.
 - **Leaked shares of unknown counts.** A retained share of an object whose
-  count field no analysed function releases, and which is not
+  count field no analyzed function releases, and which is not
   `WEAVEC_REFCOUNT`, is not reported when it dies: the checker cannot tell
   a reference count from a length field a callee incremented. The fact is
   kept (the share is real for the purpose of releases), only the leak
@@ -219,7 +219,7 @@ summary.
   and `a`'s share is a sibling's. Both follow the discipline rule.
 - **Per-outcome stores need an outcome test.** A container that reports
   failure through an out-parameter or a global rather than its result is
-  summarised as before: the store may have happened, the caller's
+  summarized as before: the store may have happened, the caller's
   pointer is an alias of the element on every path.
 
 ### Assumptions
@@ -237,7 +237,7 @@ Unchanged from RFC 0001 through 0009, plus:
   survives the call; releasing an owned share of it leaves the name valid.
   A value the function allocated (or received `fresh`) carries only the
   shares the function owns.
-- The decrement helpers a program defines (`dec_and_test`) are analysed
+- The decrement helpers a program defines (`dec_and_test`) are analyzed
   like any other function; a compiler builtin (`__atomic_*`, `__sync_*`,
   `__c11_atomic_*`) adjusts its target by its constant operand and yields
   the old or new value as its name says.
@@ -298,7 +298,7 @@ Text: `increment <path>`, `decrement <path>`, `count <path>`, `fact <class>
 `positive|negative`). A retain annotation with no field is spelled with
 the object path itself: `increment param 0 *`.
 
-### Recognising increments and decrements (Analysis)
+### Recognizing increments and decrements (Analysis)
 
 An *adjustment* of an integer place `x` is one of `++x`, `x++`, `--x`,
 `x--`, `x += 1` and `x -= 1`; anything else that writes an integer forgets
@@ -380,7 +380,7 @@ annotation mismatch check (`WEAVEC_BORROWED` parameter consumed) runs only
 in case 3: releasing a share this function took itself does not touch the
 caller's.
 
-**Recognising an `unref` body.** At `finalizeSummary`, before
+**Recognizing an `unref` body.** At `finalizeSummary`, before
 `dropUnstableGuards`, every consume of a parameter root `param i` (in
 `effects` and in every outcome class) whose guard has a conjunct on a path
 `param i *.F...` that this function decremented, with a fact whose classes
@@ -420,7 +420,7 @@ callee's stores (`PendingOutcome::storedBy`) and, for each `copy` store,
 the source place and whether it was already escaped
 (`PendingOutcome::sources`). When an outcome test narrows the classes, a
 destination stored in none of the remaining classes is *retracted*: it is
-reinitialised (its record, aliases, loans, nullness and move record go),
+reinitialized (its record, aliases, loans, nullness and move record go),
 and the source of a retracted copy store has its `escaped` flag restored to
 what it was before the call. The existing RFC 0007 `nullOn` relaxation for
 `fresh` stores is unchanged and now redundant with this rule for the
@@ -506,7 +506,7 @@ parameter of the result's type makes the result unknown again);
 `WEAVEC_RELEASES` contributes `effect param i
 freed,share` and `count param i *`; `WEAVEC_REFCOUNT` on a field makes its
 key a known count for the leak rule (it says nothing else: the field is
-still recognised by its adjustments); `WEAVEC_OWNED_BY(f)` sets the
+still recognized by its adjustments); `WEAVEC_OWNED_BY(f)` sets the
 release family of the `WEAVEC_OWNED` parameter or result it accompanies
 (`fresh(f)`, `moved(f)`). A `WEAVEC_OWNED_BY` without `WEAVEC_OWNED`, or
 `WEAVEC_RETAINS` and `WEAVEC_RELEASES` on one declaration, is
@@ -596,11 +596,11 @@ No new ids. Two existing ids gain messages:
   a share. It is the right answer for every shape found in GLib, jansson
   and CPython, but a program with an unusual convention will be reported
   at its second release rather than accepted.
-- Recognising `unref` bodies depends on RFC 0009's facts surviving to the
+- Recognizing `unref` bodies depends on RFC 0009's facts surviving to the
   release: a body that copies the count into a local first (`int n =
   --o->rc; if (n == 0) free(o)`) works (the local's fact is a copy of the
   place's), but one that goes through a function the checker cannot see
-  does not, and falls back to today's behaviour.
+  does not, and falls back to today's behavior.
 - Five new summary lines and a format bump; sidecars must be regenerated.
 
 ## Alternatives

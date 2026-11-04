@@ -55,7 +55,7 @@ foreach(_weavec_runtime IN ITEMS weavec_rt weavec_alloc)
 endforeach()
 
 # The allocator and the guards run in every enforcing program: always
-# optimised, whatever the build type, and never treated as calls to the
+# optimized, whatever the build type, and never treated as calls to the
 # functions they implement.
 foreach(_weavec_runtime IN ITEMS weavec_rt weavec_alloc)
   if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")

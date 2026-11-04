@@ -1,5 +1,5 @@
 // RFC 0037 §8: an index computed from a pointer that lands in a live
-// neighbour of another color traps, where a redzone guard alone lets it
+// neighbor of another color traps, where a redzone guard alone lets it
 // pass; with -fno-weavec-colors it passes as before.
 // RUN: %weavec_cc -O2 %s -o %t
 // RUN: %t 0

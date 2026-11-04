@@ -50,7 +50,7 @@ bool UnsafeRegions::contains(llvm::StringRef file, unsigned line,
   });
 }
 
-std::string UnsafeRegions::normalise(llvm::StringRef file,
+std::string UnsafeRegions::normalize(llvm::StringRef file,
                                      llvm::StringRef directory) {
   llvm::SmallString<256> path;
   if (llvm::sys::path::is_absolute(file) || directory.empty()) {
@@ -130,7 +130,7 @@ public:
     if (begin.isInvalid() || end.isInvalid() ||
         llvm::StringRef(begin.getFilename()) != end.getFilename())
       return;
-    out.add(UnsafeRegions::normalise(begin.getFilename(), directory),
+    out.add(UnsafeRegions::normalize(begin.getFilename(), directory),
             UnsafeRegions::Range{.beginLine = begin.getLine(),
                                  .beginColumn = begin.getColumn(),
                                  .endLine = end.getLine(),

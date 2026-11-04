@@ -1,4 +1,4 @@
-# RFC 0009: Value-conditional behaviour: scalar facts, guarded effects and inferred `noreturn`
+# RFC 0009: Value-conditional behavior: scalar facts, guarded effects and inferred `noreturn`
 
 - **Status**: Superseded
 - **Authors**: WeaveC authors
@@ -36,7 +36,7 @@ did what it did. Three consequences show up on every real code base:
    size-driven allocator (`if (nsize == 0) { free(ptr); return NULL; }
    return realloc(ptr, nsize);`, Lua's `l_alloc`).
 3. **A summary cannot say "on this argument".** Once a callee's effect is
-   summarised it applies to every call. `l_alloc(ud, ptr, osize, 0)` frees
+   summarized it applies to every call. `l_alloc(ud, ptr, osize, 0)` frees
    `ptr` and `l_alloc(ud, ptr, osize, 64)` does not, but both are "may free
    `ptr`", so a caller that keeps using the block after a growing
    reallocation is reported. Likewise `if (!b->noalloc) free(b->data)`
@@ -58,7 +58,7 @@ This RFC adds:
   held on the path that created it; at a join, records present on both
   sides keep what their guards agree on.
 - **Inferred `noreturn`**: a function whose exit is unreachable is
-  summarised as `never-returns`, transitively through wrappers and across
+  summarized as `never-returns`, transitively through wrappers and across
   units, and a call to it ends the current path like a call to a function
   declared `noreturn` does.
 
@@ -75,7 +75,7 @@ into three groups, in decreasing order of size:
   `abort` and are declared `l_noret`, which expands to nothing under some
   compilers and to `__attribute__((noreturn))` under others. When the
   attribute is absent every `if (bad) luaG_runerror(L, ...); use(p);` is
-  analysed as if `use(p)` were reachable on the bad path. The same shape
+  analyzed as if `use(p)` were reachable on the bad path. The same shape
   is in every project that has an error function: SQLite's `sqlite3_log`
   wrappers around `abort`, zlib's test drivers, cJSON's `fail:` helpers.
   Annotating them is not an answer at the scale of a real code base, and
@@ -114,7 +114,7 @@ Precision gains (reports that disappear because the code is correct):
   `!c` edge.
 - `void *l_alloc(void *ud, void *ptr, size_t osize, size_t nsize) { if
   (nsize == 0) { free(ptr); return NULL; } return realloc(ptr, nsize); }`
-  summarised as `effect param 1 freed(free) when param 3 zero; return null
+  summarized as `effect param 1 freed(free) when param 3 zero; return null
   when param 3 zero; return fresh(free) when param 3 positive; return null
   when param 3 positive` (the last two are joined into an unguarded `return
   null` and a guarded `return fresh`). A caller `p = l_alloc(ud, p, 8,
@@ -123,12 +123,12 @@ Precision gains (reports that disappear because the code is correct):
   release(&b); use(b.data);` in a caller: the consume of `param 0 *.data`
   is guarded by `param 0 *.noalloc zero`, and the caller's scalar fact
   `b.noalloc = 1` refutes it.
-- `if (msg != NULL) state->msg = msg;` summarised as `store param 0 *.msg =
+- `if (msg != NULL) state->msg = msg;` summarized as `store param 0 *.msg =
   copy param 2 when param 2 nonnull`; `gz_error(state, err, NULL)` stores
   nothing and does not extend the lifetime of anything.
 - `if (bad) die(...); use(p);` where `die` is `void die(...) { ...;
   abort(); }` or a wrapper around `longjmp`, unannotated: `die` is inferred
-  `never-returns` and `use(p)` is analysed on the good path only. This
+  `never-returns` and `use(p)` is analyzed on the good path only. This
   also removes the `leak` reports for resources that "go out of reach" at
   the end of a block that is in fact dead, and the `lifetime-too-short`
   reports for loans that "outlive" a scope that is never left.
@@ -160,7 +160,7 @@ Precision gains (reports that disappear because the code is correct):
 ### Accepted false positives
 
 - **A guard refuted by a fact the checker never learns.** Facts are
-  learnt from `==`, `!=`, `<`, `<=`, `>`, `>=` against an integer
+  learned from `==`, `!=`, `<`, `<=`, `>`, `>=` against an integer
   constant, from truthiness tests, from `switch` cases and from
   assignments of a constant or of a value with a known fact. A test of
   a computed expression (`if ((n & 1) == 0)`) or of a function's result
@@ -183,11 +183,11 @@ Precision gains (reports that disappear because the code is correct):
 - The RFC 0001 assumptions, and RFC 0004 for what a pointer's integer
   representation means.
 - An integer's class is that of its mathematical value: signed wrap-around
-  and unsigned wrap-around are not modelled (an unsigned value is `zero`
+  and unsigned wrap-around are not modeled (an unsigned value is `zero`
   or `positive`; `negative` is unreachable for it, and a fact set that
   covers both `zero` and `positive` is trivial for an unsigned place even
   though the lattice does not know it—guards therefore never *refute*
-  based on the type, only on facts learnt from the program). A constant is
+  based on the type, only on facts learned from the program). A constant is
   read in its own type (`ULONG_MAX` is 2^64−1, not −1; `unsigned x = -1`
   is `UINT_MAX`, `positive`), and one an `int64_t` does not hold is no
   constant at all, so a test against `SIZE_MAX` decides nothing. A
@@ -202,7 +202,7 @@ Precision gains (reports that disappear because the code is correct):
   to a function that is `noreturn` (declared or inferred) or in a loop
   the CFG shows to be infinite. Functions that exit through `longjmp` are
   `noreturn` by Clang's builtin knowledge; `setjmp` returning twice is not
-  modelled (RFC 0001, *Out of scope*).
+  modeled (RFC 0001, *Out of scope*).
 
 ## Detailed design
 
@@ -329,7 +329,7 @@ The following carry a guard:
 **On the path.** A record created in the state takes as its guard the
 *path guard*: every scalar fact currently held, every definite `null`, and
 every `nonnull` established by a test (`NullReason::Tested`, RFC 0008),
-each on a place the state tracks. A fact learnt later on the path
+each on a place the state tracks. A fact learned later on the path
 (*Refuting guards in the state*) is added to every guard that has no
 conjunct on its place and narrows the conjunct of every guard that has one.
 Records present on both sides of a join keep what their guards agree on
@@ -371,7 +371,7 @@ that path is then *unreplaced under the exit record's guard* (conjoined
 with whatever guard the effect already had), and the replaced consume of
 the other paths is not claimed. Joining the two into an unconditional,
 unreplaced consume would tell a caller passing a buffer that its stack was
-freed, while the store that reinitialises it keeps the guard the caller's
+freed, while the store that reinitializes it keeps the guard the caller's
 argument refutes; this was the largest cluster of new `double-free`
 reports in Lua's `ldump.c` when guards were first introduced. The
 information given up—that on the other paths the old value's other names
@@ -385,7 +385,7 @@ alias of its own). Keeping the old record there made every later call
 report again.
 
 A guard in a summary speaks of the caller's memory *as it was on entry*.
-When the summary is finalised, every conjunct on a path this function
+When the summary is finalized, every conjunct on a path this function
 wrote—an integer it assigned, a place a callee's `written` effect names,
 or anything below an object it overwrote—is dropped: the path may have
 held another value when the guard was formed (`n = 0; if (n == 0) free(p)`
@@ -451,7 +451,7 @@ On a condition edge, after the fact on a place is narrowed, every move,
 resource and null record *learns* it: a guard with a conjunct on the place
 is refined, a guard without one gains it. A refuted move record is
 **reinstated** (RFC 0006, *Retraction*):
-the place is initialised again, and the `consumed` entry for its summary
+the place is initialized again, and the `consumed` entry for its summary
 path is erased with the same justification RFC 0006 gives (a second
 consumption of the place between the guarded consume and the test would
 already have been reported). A refuted resource record is **cleared**: the
@@ -475,7 +475,7 @@ dataflow did not converge (RFC 0006, `MaxVisitsPerBlock`) is not
 `never-returns`.
 
 A call to a callee whose resolved summary is `never-returns` **ends the
-block**: the remaining elements of the block are not analysed, the block's
+block**: the remaining elements of the block are not analyzed, the block's
 state is not propagated to its successors, and its end-of-block checks
 (dead locals, leaks at scope exit) are not run, exactly as for a block
 Clang marks `hasNoReturnElement()`. The callee's effects *before* the
@@ -497,7 +497,7 @@ The intra-unit fixpoint (RFC 0003, *Recursion*) starts each SCC member
 from the empty summary, which is not `never-returns`: a mutually
 recursive pair whose only exits are `abort()` is inferred `never-returns`
 on the second iteration, which is sound because the first iteration's
-callers saw "may return" and were re-analysed.
+callers saw "may return" and were re-analyzed.
 
 ### Summary text format (version 5)
 
@@ -532,7 +532,7 @@ the classes joined by `|` (`zero`, `positive`, `negative`, `null`,
 
 ## Annotation surface
 
-None. `WEAVEC_NORETURN` is not added: Clang already honours
+None. `WEAVEC_NORETURN` is not added: Clang already honors
 `__attribute__((noreturn))` and C11 `_Noreturn`, and the point of this RFC
 is that the attribute is not needed for the checker's purposes.
 
@@ -583,7 +583,7 @@ programs that trigger them shrinks.
   manager over symbolic integers; its `noreturn` handling is the same
   "end the path" rule, applied to the declared attribute and to a
   hard-coded list of functions. This RFC infers the attribute instead.
-- **Infer** (Pulse) summarises functions with pre/post *specs* selected by
+- **Infer** (Pulse) summarizes functions with pre/post *specs* selected by
   the caller's state—the same idea as argument-conditional effects, over a
   richer separation-logic domain.
 - **Frama-C EVA** and **Astrée** track integer intervals/congruences with
@@ -646,13 +646,13 @@ Files:
   variable's own storage; path guards at every event; `pruneGuard` /
   `pruneOrigin` for a callee's translated guards (a discarded call whose
   surviving alternatives are not fresh is not a `leak`);
-  `writtenScalarPaths` / `dropUnstableGuards` at summary finalisation;
+  `writtenScalarPaths` / `dropUnstableGuards` at summary finalization;
   `finalizeSummary` narrows an unreplaced consume to its exit record's
-  guard (*Replaced values under a guard*) and `doConsume` reinitialises a
+  guard (*Replaced values under a guard*) and `doConsume` reinitializes a
   replaced place after a `double-free` report; `replayWrites` no longer
   turns a callee's consume below a pointer into `written` on the whole
   pointee (the coarse fallback is for summaries that say nothing below it);
-  `blockNeverReturns` (memoised) ends the block and is honoured by the
+  `blockNeverReturns` (memoized) ends the block and is honored by the
   liveness pass, `neverReturns` set when the exit was never reached.
 - `lib/Analysis/PlaceBuilder.cpp`: `translateGuard` (constants and null
   constants decide on the spot; casts and positive scaling looked through,
@@ -697,7 +697,7 @@ summaries change more often between rounds. The RFC asked for "a few
 percent"; this is not that, and it is recorded here as the cost the
 precision was bought at rather than hidden. The next step, if it is to
 be taken, is the one RFC 0008's *Performance* note already names for
-`luaV_execute`: fewer places consumed and reinitialised per
+`luaV_execute`: fewer places consumed and reinitialized per
 `luaM_realloc`-family call, not cheaper guards.
 
 What the RFC asked for in reports it delivers: no project reports

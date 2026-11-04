@@ -47,7 +47,7 @@ void EnforcementLedger::finish() {
     LedgerRow &row = rows[i];
     const Copies &seen = copies[i];
     if (row.outcome == LedgerRow::Outcome::Guarded && seen.stay == 0) {
-      // Every copy removed, or none left: the optimiser removed a guard a
+      // Every copy removed, or none left: the optimizer removed a guard a
       // dominating one made redundant, or the access with its code.
       row.outcome = LedgerRow::Outcome::Proven;
       row.reason = seen.removed != 0 ? seen.reason : "optimized";

@@ -4,7 +4,7 @@
 // FLAGS: -O2
 // RUN-INPUT:
 /*
- * Image flip into a second image. image_flip() initialises the output with a
+ * Image flip into a second image. image_flip() initializes the output with a
  * struct assignment from the source "to copy the dimensions", which also
  * copies the pixel pointer; both images then own the same buffer and the
  * second image_free() frees it again.

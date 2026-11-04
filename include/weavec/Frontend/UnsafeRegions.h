@@ -46,7 +46,7 @@ public:
     unsigned endColumn = 0;
   };
 
-  /// `file` is a normalised absolute path.
+  /// `file` is a normalized absolute path.
   void add(llvm::StringRef file, Range range);
   /// Whether `line:column` of `file` lies in a range; column 0 matches a
   /// range anywhere on the line.
@@ -54,8 +54,8 @@ public:
                               unsigned column) const;
   [[nodiscard]] bool empty() const { return ranges.empty(); }
 
-  /// The normalised absolute form of `file`, relative to `directory`.
-  [[nodiscard]] static std::string normalise(llvm::StringRef file,
+  /// The normalized absolute form of `file`, relative to `directory`.
+  [[nodiscard]] static std::string normalize(llvm::StringRef file,
                                              llvm::StringRef directory);
 
 private:

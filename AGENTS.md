@@ -1,6 +1,6 @@
 # Notes for AI coding agents
 
-Read this before making changes; it summarises the conventions that matter
+Read this before making changes; it summarizes the conventions that matter
 most and where to find the rest.
 
 ## Project in one paragraph
@@ -78,6 +78,8 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
   --weavec-cc build/dev/bin/weavec-cc`; the site: `npm ci && npm test &&
   npm run build` in `docs/`.
 - Hygiene gate: `scripts/check-hygiene.py`.
+- Spelling: `scripts/check-spelling.py` (American English; `--fix`
+  rewrites what it finds).
 - Format: `scripts/format.sh`; check: `scripts/check-format.sh`.
 
 ## Rules that reviewers will enforce
@@ -108,7 +110,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
    the PR. New tests are named by feature (`test/cases/<area>/…`,
    `test/Guards/<feature>.c`); existing `rfcNNNN-` names may stay.
 9. Keep the library table and the runtime clean (`scripts/check-hygiene.py`;
-   RFC 0037 gate H1): library behaviour goes in `lib/Core/LibrarySpec.txt`
+   RFC 0037 gate H1): library behavior goes in `lib/Core/LibrarySpec.txt`
    (the guards read it through `GuardLibrary.cpp`), never in
    `name == "…"` tests; nothing under `lib/` names a corpus project; the
    library code (`lib/`, `include/`, `tools/`) stays within its line budget
@@ -120,6 +122,9 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
    (`WEAVEC_RT_SLOW`) stay trivial wrappers that call non-inlined helpers:
    Apple clang 21 miscompiles a `preserve_all` function that uses many
    callee-saved registers (it saves some below the stack pointer).
+10. Write American English (behavior, initialize, color) in code, comments,
+    documentation, RFCs and file names; `scripts/check-spelling.py` checks
+    every tracked file in CI.
 
 ## Where things are
 

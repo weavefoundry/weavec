@@ -2,11 +2,11 @@
  * jansson_config.h for the corpus gate (scripts/corpus-gate.py).
  *
  * Jansson generates this header at configure time from
- * src/jansson_config.h.in; the corpus analyses a plain checkout, so the
+ * src/jansson_config.h.in; the corpus analyzes a plain checkout, so the
  * substitutions a Clang/POSIX build would make are spelled out here. The
  * choice that matters to WeaveC is JSON_HAVE_ATOMIC_BUILTINS: with it the
  * reference count is kept by `__atomic_add_fetch` / `__atomic_sub_fetch`
- * (RFC 0010, *Recognising increments and decrements*).
+ * (RFC 0010, *Recognizing increments and decrements*).
  */
 #ifndef JANSSON_CONFIG_H
 #define JANSSON_CONFIG_H
