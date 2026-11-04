@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.18.0 (2026-11-04)
+
+### Features
+
+- Complete the sweep, color objects, and poison returns
+  ([#52](https://github.com/weavefoundry/weavec/pull/52),
+  [`4ec7384`](https://github.com/weavefoundry/weavec/commit/4ec73842b01f638d2da89645bd7c610a888f4e0e))
+
+
 ## v0.17.0 (2026-10-28)
 
 ### Features
