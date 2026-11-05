@@ -21,7 +21,7 @@
 
 The design below landed as written except where this section says
 otherwise. Each item clarifies *how* a decision was built, not the decision;
-where the text below disagrees with an item here, the item wins. Behaviour is
+where the text below disagrees with an item here, the item wins. Behavior is
 pinned by `test/Analysis/rfc0004-*.c`, `test/Annotations/rfc0003-unknown-extern.c`
 (strict mode), `test/Driver/dump-analysis.c`, `unittests/Core/RawTest.cpp`,
 `unittests/Analysis/DataflowTest.cpp`, `unittests/Analysis/SummariesTest.cpp`
@@ -69,7 +69,7 @@ and `unittests/Analysis/SignatureInferenceTest.cpp`.
   changes" means in practice.
 - **Address-taken means "used as a value".** `AddressTakenCollector` records
   a function for every `DeclRefExpr` to it that is not the callee of a
-  direct call: initialisers (including file-scope aggregate initialisers),
+  direct call: initializers (including file-scope aggregate initializers),
   assignments, arguments, casts and discarded expression statements. A
   function referenced only as a direct callee is never a candidate.
 - **Strict mode and system headers.** Default mode keeps RFC 0003's
@@ -267,7 +267,7 @@ int strict(char *p) {
   RFC merely stops pretending the cast is a mystery. See *Pointer identity*
   for why this is the sound choice for the properties WeaveC does check.
 - **Bounds.** `p + 1` is the same object as `p`. `free(p + 1)` is undefined
-  behaviour that this model reports as a release of `p`'s object, which is
+  behavior that this model reports as a release of `p`'s object, which is
   the conservative reading for everything WeaveC checks and the only one it
   can make without bounds reasoning (RFC 0001, out of scope).
 - **Callbacks registered from another translation unit.** The inferred
@@ -303,7 +303,7 @@ region upholds the model's invariants for every place it touches (this is
 the contract the user signs by writing the annotation); a `WEAVEC_RAW`
 annotation is truthful (it can only make callers *more* careful, so an
 unnecessary one costs friction, not soundness); the POSIX/GNU library
-entries describe the platform's behaviour.
+entries describe the platform's behavior.
 
 ## Detailed design
 
@@ -489,7 +489,7 @@ a compound statement annotated `WEAVEC_UNSAFE`. Inside a region:
 3. no diagnostic whose program point is inside the region is emitted.
 
 Point 1 is the change from RFC 0002 (which treated the region's CFG blocks
-as identity) and RFC 0003 (which did not analyse unsafe functions at all).
+as identity) and RFC 0003 (which did not analyze unsafe functions at all).
 The consequences:
 
 - `WEAVEC_UNSAFE { free(p); } p[0]` reports `use-after-free` at `p[0]`.
@@ -554,7 +554,7 @@ resolves the callee expression's function type in this order:
    authoritative exactly as in RFC 0003 (they replace inferred effects for
    that root); a type with any ownership annotation is a signature.
 2. **The join of address-taken functions.** `TranslationUnitAnalyzer`
-   collects, over the whole TU including file-scope initialisers, every
+   collects, over the whole TU including file-scope initializers, every
    function whose name is used as a value rather than as the callee of a
    direct call. For an indirect call with callee type `T` (after stripping
    the pointer and any typedefs), the summaries of all collected functions
@@ -569,7 +569,7 @@ resolves the callee expression's function type in this order:
 3. **Otherwise the call is a boundary.**
 
 The call graph gains an edge from a function containing an indirect call to
-every collected function of the compatible type, so callbacks are analysed
+every collected function of the compatible type, so callbacks are analyzed
 before their callers and recursion through a callback is one SCC.
 
 **Boundary semantics.** For a direct call to a callee with no summary and for
@@ -616,21 +616,21 @@ return pointers: `<unistd.h>` (`read`, `write`, `close`, `pipe`, `dup2`,
 variants return unknown), `<sys/mman.h>` (`mmap` produces an owned mapping,
 `munmap` releases it), `<pthread.h>` (create/join/mutex/cond/rwlock/key
 functions; the start routine and its argument are borrowed for the call and
-not modelled as escaping, because threads are out of scope per RFC 0001),
+not modeled as escaping, because threads are out of scope per RFC 0001),
 `<sys/socket.h>`/`<netdb.h>`/`<arpa/inet.h>` (`getaddrinfo` stores a fresh
 list through its out-parameter, `freeaddrinfo` releases it, `inet_ntop`
 returns its buffer argument), `<dlfcn.h>` (`dlopen` produces an owned
 handle, `dlclose` releases it), `<regex.h>`, `<signal.h>`, `<sys/wait.h>`,
 `<sys/time.h>`, `<sys/uio.h>`, `<poll.h>`/`<sys/select.h>`, `<err.h>`,
 `<syslog.h>`, `<libgen.h>`, `<pwd.h>`/`<grp.h>` (static storage: unknown),
-`<iconv.h>`, `<glob.h>` and `<fnmatch.h>`. Entries whose behaviour the spec
+`<iconv.h>`, `<glob.h>` and `<fnmatch.h>`. Entries whose behavior the spec
 string cannot express (`getline`, `asprintf`, `posix_memalign`,
 `getaddrinfo`, `strtok_r`: stores through out-parameters) are patched by
 hand as `strtol` already is. Functions returning pointers to static storage
 (`getpwnam`, `localtime`, `strsignal`, `ttyname`, ...) return unknown, as
 `getenv` does; a `Static` value source remains future work.
 
-Each entry describes ISO C / POSIX behaviour, not a platform extension. The
+Each entry describes ISO C / POSIX behavior, not a platform extension. The
 table is unit-tested entry by entry as before (`SummariesTest.cpp`); the
 RFC 0003 drawback about trusting the table grows with it and is mitigated
 the same way (small specs, reviewed, tested).
@@ -716,7 +716,7 @@ no `annotation-mismatch` form is added because there is nothing a body can
 do to contradict "no guarantee".
 
 Existing macros change as follows. `WEAVEC_UNSAFE` on a definition now means
-"the body is an unsafe region" (analysed, suppressed, raw permitted) rather
+"the body is an unsafe region" (analyzed, suppressed, raw permitted) rather
 than "skip the body"; on a declaration without a body it is unchanged.
 `WEAVEC_OWNED`, `WEAVEC_BORROWED` and `WEAVEC_MUT` on local variables are
 consumed for the assertion rule and the dump; nothing else about them
@@ -775,10 +775,10 @@ Changed:
 - **Suppression by region is coarse** (see *Soundness*). Finer control
   (per-diagnostic-id suppression, `WEAVEC_UNSAFE` on a single expression)
   is possible later without changing this design.
-- **Analysing unsafe bodies costs time and may report more.** An unsafe
+- **Analyzing unsafe bodies costs time and may report more.** An unsafe
   function that was previously skipped now contributes a summary; callers
   that were silently fine may now see reports. That is the point, but it is
-  a behaviour change for anyone who used `WEAVEC_UNSAFE` as "ignore this".
+  a behavior change for anyone who used `WEAVEC_UNSAFE` as "ignore this".
 - **Pointer casts as identity lose the RFC 0002 hedge.** If type punning
   ever comes into scope, the cast will need a fact of its own. Nothing
   accepted now becomes rejected then; it becomes rejected for a new reason.
@@ -797,7 +797,7 @@ Changed:
   merely *read* inside a region unusable afterwards, so `WEAVEC_UNSAFE {
   log(p); } p[0]` would be an error, and it throws away the effects the
   model *does* understand inside the region, so `WEAVEC_UNSAFE { free(p); }
-  p[0]` would stay silent. Analysing the region and letting rawness attach
+  p[0]` would stay silent. Analyzing the region and letting rawness attach
   to genuinely unmodellable values is strictly more useful and no less
   sound.
 - **Rust's rule: no suppression inside unsafe.** Principled, but WeaveC's
@@ -819,7 +819,7 @@ Changed:
   flow into `o.drop`). More precise for structs of hooks, but it is a
   points-to analysis with all the predictability problems RFC 0001 declined,
   and per-type inference already handles the common cases (hook tables
-  initialised with function names, callbacks passed as arguments).
+  initialized with function names, callbacks passed as arguments).
 - **A `WEAVEC_UNSAFE_FN` annotation** meaning "callers must be in unsafe"
   (Rust `unsafe fn`). Not needed: `WEAVEC_RAW` on the parameters and return
   expresses the caller's obligation at the exact position it applies, and
@@ -876,7 +876,7 @@ Changed:
 | Question                                     | Decision                                                                                            |
 | -------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | What makes a pointer raw                     | Integer casts, `WEAVEC_RAW`, loads through raw, callee `raw` sources, strict-mode unknown results. Not pointer casts, not arithmetic, not contradictory joins. |
-| Unsafe regions: skip or analyse              | Analyse; suppress diagnostics inside; permit and un-raw assertions inside.                          |
+| Unsafe regions: skip or analyze              | Analyze; suppress diagnostics inside; permit and un-raw assertions inside.                          |
 | `WEAVEC_UNSAFE` on definitions               | Body is an unsafe region; summary inferred; annotations authoritative. Declarations without body unchanged. |
 | Escape rule for unsafe blocks                | Subsumed: raw values stay raw when they escape; tracked values stay tracked.                        |
 | Function pointers                            | Type annotations, then join of address-taken functions of the type, then boundary.                  |

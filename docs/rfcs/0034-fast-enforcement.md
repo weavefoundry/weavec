@@ -191,7 +191,7 @@ removed) builds with WeaveC:
   one after it is a double free.
 - **`const` taken as deep** (libgit2): a callee given a `const struct *`
   may write through a pointer stored in the struct; a local whose address
-  is stored there is not uninitialised after the call.
+  is stored there is not uninitialized after the call.
 
 And one true but vacuous error: QuickJS's `quickjs.check.o` is built with
 `CONFIG_CHECK_JSVALUE`, in which `JS_GetOpaque` always returns null; the
@@ -327,7 +327,7 @@ an older object) links and is checked, out of line.
 #### 1.2 Canonical form
 
 `GuardCanonicalize`, a function pass at `PipelineStartEP` (every
-optimisation level), rewrites each call of a declared guard:
+optimization level), rewrites each call of a declared guard:
 
 ```llvm
 %r = call ptr @__weavec_chk_object(ptr %p, i64 %i, i64 %step, i64 %off, i64 %w)
@@ -359,7 +359,7 @@ is not known not to touch inaccessible memory.
 
 #### 1.3 Merging
 
-`GuardMerge`, at `OptimizerLastEP`, takes what the optimiser left:
+`GuardMerge`, at `OptimizerLastEP`, takes what the optimizer left:
 
 - **Covered guards.** A guard whose pointer is a constant offset from a
   guarded pointer, whose bytes lie inside bytes the dominating guard
@@ -382,7 +382,7 @@ remaining guard with the inline check of §2.3 and a cold call of the slow
 path (§3). It loads the arena descriptor once per function, in the entry
 block, with `!invariant.load`: a function that started before the arena
 existed sees an empty arena and sends every guard to the slow path, which
-is correct for every address. At `-O0` it runs too, so even an unoptimised
+is correct for every address. At `-O0` it runs too, so even an unoptimized
 build has the inline check.
 
 `SplitDispatchEdges` (RFC 0031 §9.2) runs after expansion.
@@ -395,7 +395,7 @@ The range caches (`object_c`, `live_c`, `__weavec_range_check`,
 runtime's epoch, and the inline guard helpers' `_ool` copies are deleted.
 The check helpers (`nonnull`, `index`, `span`, `len`, `disjoint`,
 `assert`) stay inline C: they are a compare and a branch, and the
-optimiser folds them.
+optimizer folds them.
 
 ### 2. Shadow memory for the arena
 
@@ -536,13 +536,13 @@ call then behaves as `sprintf`). A wrapper is used only for a facet that
 would otherwise be `unresolved(inexpressible)` or guarded on the wrong
 bytes; a call whose need is stated keeps its check.
 
-#### 5.3 The quarantine and zero-initialisation
+#### 5.3 The quarantine and zero-initialization
 
 The quarantine's default budget becomes 16 MiB, held per class in
 proportion to the class's share of recent releases, and a class reuses its
 most recently released slot past the budget first, so a program that frees
 and allocates in a tight loop does not walk cold memory. With the runtime
-linked, zero-initialisation's usable-size query is `__weavec_rt_size`,
+linked, zero-initialization's usable-size query is `__weavec_rt_size`,
 not the C library's (Darwin's `malloc_size` asks every zone).
 
 ### 6. Confirmed errors
@@ -714,7 +714,7 @@ change:
   the confirm cases, and the starting tree measured.
 - **S1 Shadow memory** in the runtime (§2), with the runtime's guard entry
   points and the slow path (§3); range caches and the epoch deleted.
-- **S2 The backend passes** (§1): declared guards, canonicalisation,
+- **S2 The backend passes** (§1): declared guards, canonicalization,
   merging, expansion.
 - **S3 Stack objects and library calls** (§4, §5).
 - **S4 Confirmed errors** (§6).
@@ -798,8 +798,8 @@ disagree, the amendment holds.
    | `0xFE` | A live heap object's slot after the object. |
    | `0x41`–`0x50` | The last granule of a registered stack or global object that starts on a granule, with `k - 0x40` of its bytes there. |
    | `0x81`–`0xBF` | An earlier granule of such an object, r granules before its last: `0x80 + r` for r up to 48, and `0x80 + 48 + c` (c from 1 to 15) for r at least 2^(c + 4). Two granules are of one object when their distance is at most the earlier one's least r; an object's end, and its start, are a logarithmic number of jumps away (a capped run made each lookup in http-parser's 80 KiB test buffer walk thousands of granules). |
-   | `0xFB` | The untracked granule after such an object that ends on a granule (for a global, its padding, amendment 2): an address one past it belongs to it. Not written in a frame with unnamed automatic storage (an `alloca`, a compound literal), which may start there; a local that a guard can reach is registered (amendment 3), so no other neighbour is reached through a guard. |
-   | `0xFC` | A granule of a registered object that does not start on a granule (a parameter passed in memory), or the granule after it; the runtime looks it up. It never overwrites an exactly encoded neighbour's bytes, and a granule an exact object shares with a live one stays `0xFC`. |
+   | `0xFB` | The untracked granule after such an object that ends on a granule (for a global, its padding, amendment 2): an address one past it belongs to it. Not written in a frame with unnamed automatic storage (an `alloca`, a compound literal), which may start there; a local that a guard can reach is registered (amendment 3), so no other neighbor is reached through a guard. |
+   | `0xFC` | A granule of a registered object that does not start on a granule (a parameter passed in memory), or the granule after it; the runtime looks it up. It never overwrites an exactly encoded neighbor's bytes, and a granule an exact object shares with a live one stays `0xFC`. |
    | `0xFD` | A released huge block. |
 
    So a stack or global object's bytes are checked inline too: the inline
@@ -829,7 +829,7 @@ disagree, the amendment holds.
    at guarded sites are not used.
 
 4. **Call-argument guards (§5.1).** A call argument's guard of a constant
-   need (`memcpy(&v, p, 4)`, an unaligned load) is canonicalised to the
+   need (`memcpy(&v, p, 4)`, an unaligned load) is canonicalized to the
    access guard of that many bytes and expanded inline; one of a run-time
    need calls `__weavec_rt_object`, which scans at most four granules and
    looks a longer heap range up in its slot (constant time). `object_s` is
@@ -957,7 +957,7 @@ disagree, the amendment holds.
       its scope ends; ASan sees the first three only through inlining), a
       use after free through a borrowed reference at a call boundary whose
       liveness is not guarded, and a never-set pointer that
-      zero-initialisation makes null (and free(NULL) harmless). The use
+      zero-initialization makes null (and free(NULL) harmless). The use
       after scope stops on darwin-arm64 and linux-arm64 only because the
       dead buffer lies one past a live array there; it is marked a known
       miss.
@@ -993,7 +993,7 @@ disagree, the amendment holds.
       million iterations took 82 seconds (the reference compiler 0.45).
       The granules of one run byte are now written with one `memset`, and
       a leave clears a run byte's least run at once (6.3 seconds; most of
-      what remains is the zero-initialisation of the arrays, RFC 0033).
+      what remains is the zero-initialization of the arrays, RFC 0033).
 
 19. **What Linux found (§2, §4).** The gates were measured on darwin-arm64;
     the first Linux CI run found two more faults:

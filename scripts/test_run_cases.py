@@ -118,7 +118,7 @@ class SegmentTest(unittest.TestCase):
         self.assertEqual(rc.split_segments(" STOP // MISS: why "), ["STOP", "MISS: why"])
 
     def test_the_analysis_markers_are_gone(self):
-        for text in ("BUG: leak", "ALLOW: leak", "TOOL", "NEUTRALISED: zero-init"):
+        for text in ("BUG: leak", "ALLOW: leak", "TOOL", "NEUTRALIZED: zero-init"):
             with self.subTest(text=text):
                 self.assertIsNone(rc.parse_segment(text))
 

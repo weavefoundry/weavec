@@ -95,7 +95,7 @@ class ParsingTest(unittest.TestCase):
         self.assertFalse(gate.fault_evidence(proc(-5)))
 
     def test_paths(self):
-        self.assertEqual(gate.normalise_path("../../src/./x.c"), "src/x.c")
+        self.assertEqual(gate.normalize_path("../../src/./x.c"), "src/x.c")
         self.assertTrue(gate.same_file("x.c", "src/x.c"))
         self.assertTrue(gate.same_file("/tmp/w/src/x.c", "src/x.c"))
         self.assertFalse(gate.same_file("src/y.c", "src/x.c"))

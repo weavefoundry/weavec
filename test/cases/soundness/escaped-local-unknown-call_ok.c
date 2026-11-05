@@ -2,7 +2,7 @@
 // whose address is stored in a global has escaped. Code the analysis does not
 // see may keep that address when an unrelated call wipes the global, and
 // write the local through it later, so a read after any unknown call is no
-// use of an uninitialised value.
+// use of an uninitialized value.
 // UNITS: Inputs/escaped-local-unknown-call-impl.c
 // CLEAN
 // RUN-INPUT:

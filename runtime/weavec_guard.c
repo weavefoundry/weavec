@@ -519,7 +519,7 @@ void __weavec_rt_globals_register(const struct __weavec_rt_global *globals,
       return;
     }
   }
-  (void)weavecRtInitialise();
+  (void)weavecRtInitialize();
   for (i = 0; i < n; ++i) {
     const struct __weavec_rt_global *global = &globals[i];
     const uint64_t used = (global->size + 15) & ~(uint64_t)15;

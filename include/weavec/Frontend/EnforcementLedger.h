@@ -47,7 +47,7 @@ struct LedgerRow {
 
 /// The rows of one unit, and their counts by outcome. The pass adds a row
 /// for each access when it inserts the access's guard, and later says, for
-/// each copy of that guard the optimiser left (inlining and unrolling copy
+/// each copy of that guard the optimizer left (inlining and unrolling copy
 /// guards; redundancy elimination merges them), whether the copy stays or a
 /// rule removed it; `finish` settles each row's outcome: guarded when a copy
 /// stays, proven otherwise.

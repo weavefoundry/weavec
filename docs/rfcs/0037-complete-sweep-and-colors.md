@@ -56,7 +56,7 @@ This RFC:
 7. **Colors objects** (§7, §8): each tracked object's shadow carries one
    of 111 colors; an access computed from a pointer traps when its bytes
    lie in an object of another color. A jump over a redzone into a live
-   neighbour, which passes today and under ASan, traps.
+   neighbor, which passes today and under ASan, traps.
 8. **Poisons returned frames** (§9): a frame's shadow says *returned* after
    it returns, so a use after return traps until another frame of WeaveC's
    code reuses its bytes.
@@ -186,7 +186,7 @@ pass under both.
 
 RFC 0036 leaves to this RFC an index or pointer that jumps over a redzone
 into another live object, and a use after return. Twenty probes of jumps
-(heap to a neighbour, to a slot 500 away, to another class; within a frame
+(heap to a neighbor, to a slot 500 away, to another class; within a frame
 and into the caller's; global to global, global to heap and back; a
 variable-stride pointer; `memcpy` and `strlen` from a jumped pointer; a
 versioned loop) pass on v0.17.0 and under ASan. Ten probes of use after
@@ -203,7 +203,7 @@ compiler):
 | Build | Instructions | Cycles |
 | --- | --- | --- |
 | v0.17.0 | 2.14 | 1.634 |
-| no guards (and no optimiser barrier) | 1.37 | 1.342 |
+| no guards (and no optimizer barrier) | 1.37 | 1.342 |
 | no library guards and wrappers | 1.98 | 1.580 |
 | quarantine of 4 GiB (no sweeps; peak memory 2.98 times the reference's) | 2.06 | 1.554 |
 | frames without redzones | 2.07 | 1.640 |
@@ -261,8 +261,8 @@ mode, with the runtime linked, every memory access outside a
 **What the guarantee means for the bug classes:**
 
 - **Heap, stack and global overflow** by an index or pointer into a
-  neighbour: traps when the index jumps over the redzone into an object
-  of another color, deterministically for neighbours (§7.2).
+  neighbor: traps when the index jumps over the redzone into an object
+  of another color, deterministically for neighbors (§7.2).
 - **Use after return**: traps through a stale pointer to a frame of
   WeaveC's code, unless a later call at that depth laid a tracked frame
   over it (ASan's fake stack catches that case too).
@@ -289,7 +289,7 @@ RFC 0035's A1–A5 and RFC 0036's A6–A7 stay, with these changes:
 
 The silent reuses, the loop overrun, the tagged and atomic accesses and the
 library calls of the motivation trap; a fault is reported; a jump into a
-neighbour and a use after return trap; a field overflow by a string call
+neighbor and a use after return trap; a field overflow by a string call
 traps on glibc.
 
 ### Where this is less sound than RFC 0036
@@ -327,7 +327,7 @@ out but the two this RFC takes on.
   another, and traps in the corpus gate's `zstd` suite. ASan lets it pass.
   `-fno-weavec-colors` builds it. The rule stays strict by decision:
   letting a root at a block's start reach other blocks would let a jump
-  over a heap redzone into a neighbour pass, which is most of what heap
+  over a heap redzone into a neighbor pass, which is most of what heap
   colors catch. A false trap is not triaged (`test/corpus/README.md`), so
   the weekly full gate stays red on zstd until the rule or the gate's
   zstd config changes.
@@ -552,7 +552,7 @@ functions.
 #### 7.2 Who gets which color
 
 - **Heap slots**: `color(slot + 41 × class)`, the slot's *number*, from
-  its index in its class's regions. Neighbours in a class always differ, and so do slots
+  its index in its class's regions. Neighbors in a class always differ, and so do slots
   fewer than 111 apart. A reused slot has its previous occupant's color
   (use after free is (T)'s). An object of four pages or more, whose shadow
   is mapped afresh (RFC 0035 amendment 3), is uncolored (`0x00`) but for
@@ -575,7 +575,7 @@ but:
 
 - an access whose offset from its root is an affine recurrence with a
   constant step of at most 32 bytes and a constant start within 4 KiB of
-  the root: such a walk reaches the object's redzone before any neighbour,
+  the root: such a walk reaches the object's redzone before any neighbor,
   where the guard itself stops it; in verify mode its color check is
   emitted as a monitor and reports `weavec.proven` (RFC 0035 §6);
 - accesses whose guard a rule removed (RFC 0035 §6), which inherit the
@@ -993,7 +993,7 @@ and G8, G11 and G12 miss in part (below).
 
 ## Drawbacks
 
-- **Colors are probabilistic** for objects that are not neighbours, and
+- **Colors are probabilistic** for objects that are not neighbors, and
   an attacker who knows the layout can choose a collision. They raise the
   bar for jumps; they do not close it.
 - **New false traps** on arithmetic between objects, which C leaves
@@ -1022,13 +1022,13 @@ geometric mean of 13 benchmarks, ratio to the build without the change):
 | A constant shadow base and mask | 0.99 | 0.993 | the unguarded fallback; sweeps 80% slower (unexplained) |
 | No scope writes for locals that do not escape | 1.00 | 1.006 | nothing |
 | All of them | 0.97 | 0.990 | |
-| Guards inserted after the optimiser (ASan's position) | 0.93 | 0.970 | guards on accesses the optimiser deleted, merged or moved; rule 6.4 |
+| Guards inserted after the optimizer (ASan's position) | 0.93 | 0.970 | guards on accesses the optimizer deleted, merged or moved; rule 6.4 |
 | Partial granules bounded, not exact | 0.992 | 0.994 | the tail byte's precision (A) |
 
 The guard is already three instructions on AArch64, and 56–69% of executed
 guards have no redundancy; a rule that removed 8% of Lua's instructions
 saved none of its cycles. Late insertion is the only measured gain and is a
-decision about "every access", not an optimisation; dropping the ASan
+decision about "every access", not an optimization; dropping the ASan
 contract gains 2%, almost all of it QuickJS's, and loses its detection.
 
 ### Spatial designs (option B's)
@@ -1071,7 +1071,7 @@ say whether that is enough.
 ## Prior art
 
 - **HWASan and Arm MTE**: a tag per granule compared with a tag in the
-  pointer (8 bits, or 4 with MTE), with neighbours given different tags.
+  pointer (8 bits, or 4 with MTE), with neighbors given different tags.
   Colors keep the tag in the shadow at the root, not in the pointer, so
   they need no pointer bits and no hardware, and lose what a moved pointer
   carries.

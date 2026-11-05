@@ -1,6 +1,6 @@
 // Array of owned pointers: free all in a loop, then read an element.
 // The filling loop's body is three statements, and the contiguous-fill
-// recogniser of §7.4 takes only a loop whose whole body is the one store, so
+// recognizer of §7.4 takes only a loop whose whole body is the one store, so
 // no cell of 'items' ever takes the allocated value: the final read finds
 // 'items[2]' as it was declared and is reported as a use of an uninitialized
 // pointer, not as the use after free it is. ASan sees the real defect, and

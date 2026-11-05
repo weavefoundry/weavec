@@ -6,8 +6,8 @@
 /*
  * Tiny calculator that echoes its tokens. lex() fills in text and len for
  * words, but for numbers it sets only num and len; the echo then copies
- * tok.text, which for a leading number was never initialised.
- * Category: uninitialized (read through an uninitialised pointer field of a
+ * tok.text, which for a leading number was never initialized.
+ * Category: uninitialized (read through an uninitialized pointer field of a
  * stack struct).
  * Why it may be missed: compilers do not track struct fields filled through
  * a pointer, and after the first word token the field holds a stale but
@@ -69,7 +69,7 @@ int main(void)
         if (tok.kind == TK_END)
             break;
         if (eo + tok.len + 1 < sizeof echo) {
-            memcpy(echo + eo, tok.text, tok.len); // STOP // MISS: zero-initialisation makes the never-set pointer null; memcpy's null check is inexpressible (the token is a local whose address is taken)
+            memcpy(echo + eo, tok.text, tok.len); // STOP // MISS: zero-initialization makes the never-set pointer null; memcpy's null check is inexpressible (the token is a local whose address is taken)
             eo += tok.len;
             echo[eo++] = ' ';
         }

@@ -39,9 +39,9 @@ By default `weavec-cc` compiles with `-fweavec-checks=trap`. Each C file is comp
 
 - every load, store, atomic operation and memory intrinsic, and every memory argument of a C library call in the library table, gets a _guard_: a few inline instructions that read the runtime's shadow memory and call the runtime only when a byte they read is not zero. A guard is removed only where a local rule proves it redundant;
 - the locals a guard can reach, or whose address escapes, are laid out in one frame with redzones between them, and locals whose lifetimes never overlap share space as Clang's own frames do. The file's globals get redzones, which a constructor registers with the runtime;
-- array indexes are checked against the bound the array's type declares (`-fsanitize=array-bounds`, reported through the runtime), and a fortified library call (`__strcpy_chk` and the like) is checked against the object size it carries. On glibc targets an optimising compile that does not set `_FORTIFY_SOURCE` gets `-D_FORTIFY_SOURCE=3`;
+- array indexes are checked against the bound the array's type declares (`-fsanitize=array-bounds`, reported through the runtime), and a fortified library call (`__strcpy_chk` and the like) is checked against the object size it carries. On glibc targets an optimizing compile that does not set `_FORTIFY_SOURCE` gets `-D_FORTIFY_SOURCE=3`;
 - the file is parsed as AddressSanitizer would parse it: `__SANITIZE_ADDRESS__` is defined and `__has_feature(address_sanitizer)` is true, so code written to be ASan-clean takes the same paths. `-fno-weavec-asan-compat` turns this off;
-- locals are zero-initialised (`-ftrivial-auto-var-init=zero`; `-fno-weavec-zero-init` turns it off), and `__WEAVEC__` is defined;
+- locals are zero-initialized (`-ftrivial-auto-var-init=zero`; `-fno-weavec-zero-init` turns it off), and `__WEAVEC__` is defined;
 - source locations are kept for the reports, without emitting debug information when you asked for none.
 
 There is no change to pointer representation or the ABI. `-fweavec-checks=report` prints failed guards instead of trapping; `-fweavec-checks=none` (or `-fno-weavec`) compiles the same code as Clang would and links nothing. C++ and Objective-C sources are compiled as Clang compiles them.

@@ -8,7 +8,7 @@
 - **Supersedes / superseded by**: Supersedes RFC 0030's enforcement:
   §1 (the compile pipeline), §2.5–§2.6 and §6 (the require levels), §10
   (checks inserted through Sema, the prelude, deferred CodeGen), §11
-  (zero-initialisation lowering), §12 (the ledger, as far as it describes
+  (zero-initialization lowering), §12 (the ledger, as far as it describes
   the enforcing build) and §13 (unit records and the link step); RFC 0032
   §3–§7 (guards, stack and global registration, the object table as a
   lookup structure); RFC 0033 §4 (the guard question), §7 (link modes and
@@ -66,7 +66,7 @@ bugs:
 This RFC inverts the pipeline:
 
 1. **Every memory access is guarded unless a local rule proves the guard
-   redundant.** An LLVM pass at the end of the optimisation pipeline
+   redundant.** An LLVM pass at the end of the optimization pipeline
    guards each load, store, atomic operation and memory intrinsic, and the
    memory arguments of C library calls, against the runtime's shadow
    memory. The rules that remove a guard are local, simple and checked by
@@ -92,7 +92,7 @@ This RFC inverts the pipeline:
    the generated code.
 6. **What existed only to put the analysis into the code is deleted**:
    checks inserted through Sema, deferred CodeGen, the check planner and
-   emitter, the prelude, the zero-initialisation lowering, unit records,
+   emitter, the prelude, the zero-initialization lowering, unit records,
    the link step, the require levels and the analysis ledger.
 
 Ownership inference keeps its place as the analysis that will remove the
@@ -112,7 +112,7 @@ retired unless stated.
 | --- | --- | --- | --- | --- |
 | json-c | builds; 10 of 29 tests trap | a deliberate word-at-a-time hash over-read in the project | 2.42 / 3.39 | 1.8× |
 | gawk | stops: 2 false errors | an open function-pointer slot taken as closed | 2.58 / 3.49 | 7.6× |
-| MicroPython | stops (a true but unreachable error); every run traps | a statically initialised global with a flexible array; a non-local jump in assembly leaves stack shadow behind | 5.06 / 1.81 | 2.3× |
+| MicroPython | stops (a true but unreachable error); every run traps | a statically initialized global with a flexible array; a non-local jump in assembly leaves stack shadow behind | 5.06 / 1.81 | 2.3× |
 | Tcl | tests: 13 files trap, one hangs; configure dropped two features | `getaddrinfo` with a null service; a definite error inside a configure probe | 5.08 / 2.57 | 5.0× |
 | libarchive | test program stops: 2 false errors | `getcwd(NULL, n)` and `realpath(p, NULL)` taken as always null | 3.80 / 3.53 | 2.2× |
 | git | stops: 2 false errors | a callback's effects merged over its targets | 3.11 / 2.59 | 4.0× |
@@ -144,7 +144,7 @@ traps on:
   use after free inside the callee, whose free is in another file, has no
   guard.
 
-Each is a modelling gap in a whole-function abstract interpretation of the
+Each is a modeling gap in a whole-function abstract interpretation of the
 C heap, and the analysis is trusted: a gap becomes a missed bug. The three
 milestone analyses before this one each found new classes after the
 previous RFC fixed the old ones.
@@ -253,7 +253,7 @@ of code built without WeaveC) and the bytes of live tracked objects.
   a WeaveC frame at that depth, and a guard that meets one can trap.
 
 The assumptions RFC 0030 and its successors named about callers (A1),
-trusted callees (A2), other code's heap invariants (A3) and initialisation
+trusted callees (A2), other code's heap invariants (A3) and initialization
 (A5) are not needed: no guard is removed because of what another function
 does.
 
@@ -279,7 +279,7 @@ does.
 - **Subobject bounds of pointer arithmetic and library calls.** RFC 0030's
   `index` and `len` checks compared some accesses with a field's declared
   extent; only indexes into declared arrays keep that (B).
-- **Uninitialised pointers** in memory other than locals and the runtime's
+- **Uninitialized pointers** in memory other than locals and the runtime's
   heap (which are zero-filled) point anywhere; their accesses are guarded,
   and an access into untracked memory passes (A1).
 - **Without the runtime nothing is enforced** except (B). RFC 0030's
@@ -307,7 +307,7 @@ region. A multidimensional array indexed past an inner bound
 
 `weavec-cc` compiles a C unit as Clang does, with four additions:
 
-1. **Zero-initialised locals.** `-ftrivial-auto-var-init=zero` in the
+1. **Zero-initialized locals.** `-ftrivial-auto-var-init=zero` in the
    enforcing modes (`-fno-weavec-zero-init` turns it off). The runtime's
    allocator zero-fills every block, as before.
 2. **Array bounds.** `-fsanitize=array-bounds` with the handlers in
@@ -319,7 +319,7 @@ region. A multidimensional array indexed past an inner bound
    locations for the pass and the reports, and no debug information is
    emitted.
 4. **The guard pass** (§2–§4), registered at `OptimizerLastEP` (after
-   inlining, scalar optimisation and vectorisation, at every optimisation
+   inlining, scalar optimization and vectorization, at every optimization
    level), and the unsafe-region collector (§2.6), which runs over the AST
    before code generation.
 
@@ -461,7 +461,7 @@ return it writes zeros over it.
 
 A lifetime start of a tracked object writes its shadow (addressable), a
 lifetime end poisons it with `0xF8`. Clang emits lifetime markers when
-optimising; at `-O0` scopes are not tracked.
+optimizing; at `-O0` scopes are not tracked.
 
 #### 3.4 Dynamic objects
 
@@ -604,7 +604,7 @@ covered its bytes.
 | `-fweavec-checks=report` | guards report once per site and continue |
 | `-fweavec-checks=verify` | as `trap`, and §6's removed guards are emitted as monitors |
 | `-fweavec-checks=none` | Clang's output; no runtime |
-| `-fno-weavec-zero-init` | locals are not zero-initialised |
+| `-fno-weavec-zero-init` | locals are not zero-initialized |
 | `-fweavec-diagnose` | run the analysis (§8) and print its findings as warnings |
 | `-fweavec-ledger=<path>` | write the enforcement ledger (§9) |
 | `-fweavec-summary` | print the summary line |
@@ -678,10 +678,10 @@ measure deleted outcomes.
 ### 11. Tests and the corpus
 
 - **Lit.** `test/Guards/` pins the pass's IR (FileCheck on `-emit-llvm`)
-  and its run-time behaviour; `test/Emission` and `test/Prelude` are
+  and its run-time behavior; `test/Emission` and `test/Prelude` are
   deleted.
 - **Unit tests** run the pass on IR text (`GuardPassTest`).
-- **Cases.** The runner checks run-time behaviour against the default
+- **Cases.** The runner checks run-time behavior against the default
   build and diagnostics against `weavec`: `BUG` markers against the tool,
   `TRAP: <kind>` (a §5.3 report kind) and `STOP` against the build. The
   facet-ledger markers are replaced by `GUARDED` and `UNGUARDED` on the
@@ -785,7 +785,7 @@ These record where the implementation departs from the design above. They
 override the body.
 
 1. **Guards are inserted early and expanded late (§1, §2).** One pass at
-   `OptimizerLastEP` saw code the optimiser had already changed on the
+   `OptimizerLastEP` saw code the optimizer had already changed on the
    strength of the bug itself: an out-of-bounds read in a loop made the
    loop infinite, and a use after free became `undef`, before any guard
    existed. The pass is four:
@@ -796,7 +796,7 @@ override the body.
      replaces a `strlen`), and `__weavec.disjoint(ptr, ptr, i64)` (§2.5).
      Markers are `nounwind`, `nomerge`, read only the runtime's memory
      (`strlen` the string too), capture nothing, and are not `willreturn`,
-     so the optimiser may neither drop nor merge them nor move an access
+     so the optimizer may neither drop nor merge them nor move an access
      past one. It also records the ledger rows (§9).
    - **GuardPrune** at `PeepholeEP` removes the markers rule 6.1 proves on
      a local or global at constant offsets, so that SROA still promotes
@@ -818,7 +818,7 @@ override the body.
      2^44 and 4 GiB regions cost 2.7 ms. The runtime warns if the arena
      lies outside the window.
    - The shadow of the lowest 64 KiB is `0xFE`: a guard on an address
-     there fails as a null dereference, even when the optimiser moved the
+     there fails as a null dereference, even when the optimizer moved the
      access itself to the other arm of a `select` of the pointer.
    - Committed arena slots not yet handed out are `0xFA`, as is the
      granule before each region, so that a far index or an underflow of a
@@ -848,7 +848,7 @@ override the body.
    may end a lifetime gets a copy without the guards of its invariant and
    affine accesses. When the trip has at least 16 iterations and each
    access's range over the trip is addressable (`__weavec_rt_range_ok`), the
-   copy runs, and LLVM may vectorise it; otherwise the guarded loop runs.
+   copy runs, and LLVM may vectorize it; otherwise the guarded loop runs.
    A loop with a constant trip count of at most 32 and at most 300
    instructions over the trip (markers aside) is unrolled fully instead,
    as LLVM unrolls it without guards: a marker is not `willreturn`, which
@@ -874,9 +874,9 @@ override the body.
      `mmap`
      and `munmap`. The calls that write through no pointer (the searches,
      comparisons and mappings) are redirected by GuardExpand, after the
-     optimiser has folded what it could (`strcmp` of two constants, which an
+     optimizer has folded what it could (`strcmp` of two constants, which an
      inlined tree of comparisons depends on); GuardInsert guards only the
-     first byte of each of their string arguments, which the optimiser may
+     first byte of each of their string arguments, which the optimizer may
      turn into a load. Such a call that reads exactly a constant of at most
      113 bytes through each pointer that is not a literal keeps inline
      guards instead.
@@ -888,7 +888,7 @@ override the body.
      strings are not scanned (a known gap: a wide string argument is not
      guarded).
    - A null the row accepts (`null-ok`) passes: a string's site carries a
-     flag the runtime honours, and other arguments are guarded over zero
+     flag the runtime honors, and other arguments are guarded over zero
      bytes when null. The arguments a call releases or reallocates are not
      guarded; the allocator validates them.
    - A copy's operands must not overlap: `llvm.memcpy` (except an aggregate
@@ -911,14 +911,14 @@ override the body.
    already took back, prints `weavec: invalid release of 0x…: <why>`
    without a location and stops the program in every mode.
 10. **The ledger (§9).** A `proven` row may also have the reason
-    `optimized` (the optimiser removed every copy of the access); the
+    `optimized` (the optimizer removed every copy of the access); the
     guarded reason `loop-range` is not used (amendment 6 keeps the guard
     in the copy that runs when a range fails), nor the unguarded reason
     `no-runtime` (a unit built without the runtime has no guard pass and
     so no rows).
-11. **Zero-initialisation (§1)** stops at locals of 4 KiB: a larger one
+11. **Zero-initialization (§1)** stops at locals of 4 KiB: a larger one
     (or the limit of the command line's
-    `-ftrivial-auto-var-init-max-size`) is left uninitialised, as without
+    `-ftrivial-auto-var-init-max-size`) is left uninitialized, as without
     WeaveC. Clearing a 229 KiB local on every iteration of a loop cost
     opus's test suite 14 times its instructions.
 12. **Assumptions.** `WEAVEC_ASSUME` no longer compiles to a run-time
@@ -984,9 +984,9 @@ not used.
   amendment 7's scanf wrappers). mbedtls's test helpers' over-read of a
   certificate array, which RFC 0034 reported, now lands inside the next
   global and passes, as under ASan (§ *Bugs deliberately not caught*).
-- **G4: 13 of 15 stop with a report, 1 faults, 1 is neutralised.** Lua's
+- **G4: 13 of 15 stop with a report, 1 faults, 1 is neutralized.** Lua's
   `getlocal` bug stops by SIGBUS, as under ASan; jq's CVE-2025-48060 reads a
-  string whose terminator zero-initialisation supplies, so it does not
+  string whose terminator zero-initialization supplies, so it does not
   misbehave (inferred from its output). No fixed revision traps.
 - **G5: passes.** 64-program blind set: 60 stop at the faulty access
   (ASan 58; a 61st stops in the callee, where ASan also reports it); the
@@ -1038,7 +1038,7 @@ not used.
 - **A larger stack and data segment**: redzones around tracked locals and
   globals.
 - **An LLVM pass.** The enforcement depends on the pass running in
-  `weavec-cc`; an object compiled to bitcode and optimised elsewhere is
+  `weavec-cc`; an object compiled to bitcode and optimized elsewhere is
   guarded only if the pass ran before.
 
 ## Alternatives

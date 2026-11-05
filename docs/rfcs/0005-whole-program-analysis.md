@@ -22,7 +22,7 @@
 
 The design below landed as written except where this section says
 otherwise. Each item clarifies *how* a decision was built, not the decision;
-where the text below disagrees with an item here, the item wins. Behaviour
+where the text below disagrees with an item here, the item wins. Behavior
 is pinned by `test/WholeProgram/rfc0005-*.c`, `test/Driver/rfc0005-*.c`,
 `unittests/Core/SummaryIOTest.cpp`, `unittests/Analysis/ProgramDatabaseTest.cpp`,
 `unittests/Analysis/DataflowTest.cpp` (struct copies) and
@@ -33,7 +33,7 @@ is pinned by `test/WholeProgram/rfc0005-*.c`, `test/Driver/rfc0005-*.c`,
   (indirect calls with no signature from the pointer type), and the two
   sets the compile step deferred: `unknownCallees` and
   `unknownIndirectTypes`. The unit graph uses the first two; the link step
-  uses the last two to decide that a unit must be re-analysed even when no
+  uses the last two to decide that a unit must be re-analyzed even when no
   other unit defines anything it imports (its deferred warnings still have
   to be emitted or retracted). Clang builtins (`__builtin_*`) are never
   imports.
@@ -42,9 +42,9 @@ is pinned by `test/WholeProgram/rfc0005-*.c`, `test/Driver/rfc0005-*.c`,
   callees and indirect type keys from the call graph and returns exports
   with empty summaries; `exports()` after `run()` fills the summaries in.
   In driver mode the sidecar *is* the discovery result, so the link step
-  parses a unit only when it analyses it.
+  parses a unit only when it analyzes it.
 - **The database is per unit, built from `settled` plus the component.**
-  `ProgramAnalysis` keeps one `ProgramDatabase` of everything analysed so
+  `ProgramAnalysis` keeps one `ProgramDatabase` of everything analyzed so
   far (`settled`); for a cyclic component it builds a temporary database
   from `settled` plus the members' current exports each round.
   `ProgramDatabase::add` joins duplicate names and duplicate candidates of
@@ -81,7 +81,7 @@ is pinned by `test/WholeProgram/rfc0005-*.c`, `test/Driver/rfc0005-*.c`,
 - **The link step's "needs analysis" test is as written**, plus the
   deferred-boundary case above. A unit that needs analysis but whose
   sidecar carries no command (a sidecar written by hand or by a future
-  plugin) contributes its exports and is not re-analysed.
+  plugin) contributes its exports and is not re-analyzed.
 - **`-fweavec-*` and `-W*weavec*` reach `-cc1` as `-Xclang` arguments.**
   The driver strips them from Clang's command line and re-attaches each as
   `-Xclang <flag>` so they appear in every `-cc1` job (and therefore in
@@ -107,7 +107,7 @@ is pinned by `test/WholeProgram/rfc0005-*.c`, `test/Driver/rfc0005-*.c`,
   removed by the driver with the temporaries.
 - **Failures short of a diagnostic are `Result` fields.** A unit that
   cannot be parsed or re-run is listed in `Result::failed` (the rest of
-  the program is still analysed); a cyclic component that does not settle
+  the program is still analyzed); a cyclic component that does not settle
   within `MaxRounds = 8` is listed in `nonConverging` and its members are
   reported against the last round. Both fail the link and `weavec
   --whole-program`'s exit status.
@@ -115,7 +115,7 @@ is pinned by `test/WholeProgram/rfc0005-*.c`, `test/Driver/rfc0005-*.c`,
 ## Summary
 
 Lift RFC 0003's algorithm one level: the unit of the bottom-up fixpoint
-becomes the translation unit and the object analysed becomes the *program*,
+becomes the translation unit and the object analyzed becomes the *program*,
 the set of translation units built together. Every translation unit exports
 the summaries of its externally visible definitions and of every function
 whose address is taken; a *program database* collects them and the
@@ -126,12 +126,12 @@ file is joined into the signature of the function-pointer type it is stored
 in. `annotation-required` fires only for code defined nowhere in the
 program. The `FunctionSummary` gains a stable text form, Clang-free and
 unit-tested in Core, which is both the on-disk format and the debugging aid.
-Two ways to run it: `weavec --whole-program` analyses every unit of a
+Two ways to run it: `weavec --whole-program` analyzes every unit of a
 compilation database together; `weavec-cc`, a drop-in C compiler built on
-Clang's driver, compiles each file with Clang, analyses it as it goes,
+Clang's driver, compiles each file with Clang, analyzes it as it goes,
 writes its exports to a sidecar next to the object, and at link time runs
 the whole-program analysis over the sidecars of the objects being linked,
-re-analysing the units whose diagnostics depend on other units. Compiler-
+re-analyzing the units whose diagnostics depend on other units. Compiler-
 style flags (`-fweavec-strict`, `-fno-weavec`, `-Wno-error=weavec-<id>`, ...)
 control it. Finally, a whole-struct copy now copies the facts of every
 pointer field, closing the last soundness hole RFC 0004 listed.
@@ -154,7 +154,7 @@ void list_free(struct node *n);       list_free(n);
 
 The tool reports nothing at `n->v`: `list_free` is a warning, its effect is
 lost, and the warning is the only sign that the whole file is being checked
-against an optimistic model of its neighbours. On the corpus every remaining
+against an optimistic model of its neighbors. On the corpus every remaining
 `annotation-required` (five sites across six projects) is a callback
 installed by code in another translation unit, which RFC 0004 could only
 name as "the single-TU limitation Milestone 4 addresses". The corpus itself
@@ -162,7 +162,7 @@ is made of single-file libraries because the tool cannot do otherwise; the
 question the RFCs keep deferring to it, "what does real code look like",
 cannot be answered with the tool as it stands.
 
-Separately, `weavec` is a libTooling analyser: `weavec file.c -- -I..`. It
+Separately, `weavec` is a libTooling analyzer: `weavec file.c -- -I..`. It
 does not compile anything, cannot be set as `CC=` in a Makefile, and has no
 compiler-style flags. The README describes a compiler, and the roadmap has
 had "drop-in `cc`" as Milestone 3 since the scaffold. Teams adopt a checker
@@ -186,14 +186,14 @@ summary database that lives anywhere else has to guess what the program is.
 > every violation of the aliasing rules, every borrow that may outlive its
 > referent, and every raw operation, subject to the assumptions listed.
 
-where a *program* is the set of translation units analysed together (the
+where a *program* is the set of translation units analyzed together (the
 units of a compilation database under `--whole-program`, or the objects
 handed to one `weavec-cc` link). The statement for a single translation unit
 is the special case of a one-unit program, so nothing accepted under RFCs
 0002–0004 becomes rejected.
 
 **Bugs caught after this RFC**, in addition to RFC 0002–0004's, when the
-units are analysed together:
+units are analyzed together:
 
 ```c
 /* node.c */
@@ -251,14 +251,14 @@ int copy(void) {
   summaries. `annotation-required` still fires for them, so the gap is
   visible; `--strict-externs`/`-fweavec-strict` makes it an error.
 - **Link-time interposition.** `-Wl,--wrap`, `LD_PRELOAD`, weak symbols
-  overridden at link and `dlsym` are invisible: the definition analysed is
+  overridden at link and `dlsym` are invisible: the definition analyzed is
   the one in the program. RFC 0003 made the same assumption within a unit.
 - **Function pointers that leave the program.** A callback handed to a
   library that calls it is checked as a definition (RFC 0003) but nothing
   checks the library's call. A function pointer *received* from outside
   the program with no annotation on its type is a boundary (RFC 0004).
 - **Units not in the program.** `--whole-program` over a compilation
-  database analyses what the database lists; a file the build system
+  database analyzes what the database lists; a file the build system
   compiles some other way is outside the program, and calls into it warn.
 
 **Accepted false positives**, beyond earlier RFCs':
@@ -286,7 +286,7 @@ int copy(void) {
 a function across units (no `asm("label")` renames; `static` functions are
 private to their unit); the objects linked are the objects whose sidecars
 are read (a build that rewrites objects after compiling them defeats the
-sidecar, as it would defeat debug info); when `weavec-cc` re-analyses a unit
+sidecar, as it would defeat debug info); when `weavec-cc` re-analyzes a unit
 at link time, the recorded compiler command still describes it (the source
 and headers have not changed since the object was built, which is what the
 build system already guarantees for the object itself).
@@ -296,7 +296,7 @@ build system already guarantees for the object itself).
 ### Programs, units and exports
 
 A **unit** is one translation unit with its compiler command line. A
-**program** is a set of units analysed together. Each unit produces
+**program** is a set of units analyzed together. Each unit produces
 **exports**:
 
 ```
@@ -367,7 +367,7 @@ s`) is a unit-tested invariant. This is the format RFC 0003 said
 ### The program database (`weavec::Analysis`)
 
 `ProgramDatabase` holds the exports of every unit of a program except the
-one being analysed:
+one being analyzed:
 
 - `functions : Map<Name, FunctionSummary>` for external-linkage exports,
   joined over units (see *Accepted false positives*);
@@ -420,12 +420,12 @@ cc1 commands in driver mode):
    a candidate. Tarjan's algorithm over units gives the components in
    reverse topological order, dependencies first (the RFC 0003 machinery,
    reused).
-3. **Analysis.** A component of one unit with no self-dependency is analysed
+3. **Analysis.** A component of one unit with no self-dependency is analyzed
    once, with reporting on, against a database holding the exports of every
-   unit already analysed. A component with a cycle (mutual recursion across
+   unit already analyzed. A component with a cycle (mutual recursion across
    files, or two files that each call into the other) starts every member
-   at the bottom (no exports), analyses all members with reporting off
-   until no member's exports change (cap: 8 rounds), then analyses each
+   at the bottom (no exports), analyzes all members with reporting off
+   until no member's exports change (cap: 8 rounds), then analyzes each
    member once more with reporting on against the fixpoint. Monotonicity is
    RFC 0003's argument: exports only grow, and a larger callee summary
    yields a larger exit state.
@@ -468,7 +468,7 @@ with WeaveC inside:
   error fails the compile and removes the output, as any compile error
   does. The unit's exports are written to `<output>.weavec` (`foo.o.weavec`
   next to `foo.o`), including the cc1 command line; with `-fsyntax-only` or
-  `-E` nothing is written. The compile step analyses the unit **alone**,
+  `-E` nothing is written. The compile step analyzes the unit **alone**,
   as `weavec file.c` does today, with one difference: `annotation-required`
   for callees with no definition here is *deferred*, recorded in the
   sidecar (`unknown`) rather than emitted, because only the link knows
@@ -477,7 +477,7 @@ with WeaveC inside:
 - **Link step.** Before running the linker job, the driver reads the
   sidecar of every object on the link line (objects with no sidecar are
   unknown code) and runs the whole-program algorithm over them, re-parsing
-  a unit from its recorded cc1 command when it must be analysed. A unit
+  a unit from its recorded cc1 command when it must be analyzed. A unit
   needs analysis at link time if it imports a name some other sidecar
   defines, has an indirect call of a type some other sidecar has a
   candidate for, or deferred at least one boundary warning; a unit that
@@ -510,12 +510,12 @@ with WeaveC inside:
   assumes default severities.
   > **Amended by [RFC 0030](0030-prove-or-trap.md).** `-fweavec-analyze-headers`
   > is removed: every emitted function, `static inline` functions from user
-  > headers included, is analysed and instrumented (§5.6). `-fweavec-strict` and
+  > headers included, is analyzed and instrumented (§5.6). `-fweavec-strict` and
   > `-fweavec-report-unannotated` are removed too (§16).
 
 The compile step's view of a unit is the RFC 0003 single-unit view, so its
 diagnostics are what `weavec file.c` reports today; the link step's view is
-the whole-program view. Because an unknown callee is modelled optimistically
+the whole-program view. Because an unknown callee is modeled optimistically
 (borrow, retain nothing, unknown result), the compile step reports a subset
 of the link step's reports in practice, and a report the link step
 *retracts* (a summary that removed a conflict) is not attempted: the
@@ -523,7 +523,7 @@ compile-time report stands and the user resolves it as today.
 
 ### Struct copies
 
-A whole-struct assignment or initialisation `b = a` (both of record type)
+A whole-struct assignment or initialization `b = a` (both of record type)
 is the sequence of pointer copies `b.f = a.f` for every pointer-typed field
 path `f` the analysis has a place for under `a`, recursively through nested
 records and array summaries: `b.f` aliases `a.f`, carries its loans and its
@@ -532,7 +532,7 @@ yet are not copied (nothing is known about them; `b.f` is forgotten as
 before). This replaces the RFC 0002 implementation's "forget every field of
 `b`", which made `struct buf b = a; free(a.data); b.data[0]` silent. Struct
 parameters and returns by value already go through this rule via the
-initialisation of the receiving place. RFC 0004's *Accepted false
+initialization of the receiving place. RFC 0004's *Accepted false
 positives* item "struct copies drop raw records" is thereby withdrawn: they
 copy them.
 
@@ -585,7 +585,7 @@ at link time, one parse per unit that depends on another unit or deferred a
 boundary warning (in practice most units, on a first build) and one per
 round for cyclic groups. Parsing dominates analysis by an order of magnitude
 on the corpus, so the link step of a *N*-unit program costs roughly the
-analysis-only compile of *N* files. Caching serialised ASTs to avoid the
+analysis-only compile of *N* files. Caching serialized ASTs to avoid the
 re-parse is future work; `scripts/corpus.py` records analysis time per
 program as before and gains a whole-program column.
 
@@ -607,7 +607,7 @@ No new identifiers.
 
 Tool-level failures are not diagnostics and have no id: a sidecar with an
 unreadable format version (`weavec-cc: warning: ignoring 'foo.o.weavec':
-unsupported format 2`), a unit that cannot be re-analysed because its
+unsupported format 2`), a unit that cannot be re-analyzed because its
 recorded command no longer runs, and a program whose cyclic component does
 not converge within the round cap (`error: whole-program analysis of
 'a.c', 'b.c' did not converge`) are printed by the driver and, for the last
@@ -617,10 +617,10 @@ two, fail the link.
 
 - **Two parses per unit.** Discovery and analysis are separate parses in
   tooling mode; driver mode re-parses at link time what it already parsed
-  when compiling. Serialising ASTs would fix it and is deferred (see
+  when compiling. Serializing ASTs would fix it and is deferred (see
   *Alternatives*) because correctness and simplicity come first and the
   cost is bounded by the compile itself.
-- **Sidecars are build artefacts the build system does not know about.**
+- **Sidecars are build artifacts the build system does not know about.**
   `make clean` rules that delete `*.o` leave `*.o.weavec` behind; a stale
   sidecar next to a fresh object built by another compiler is read as
   truth. Mitigation: the sidecar records the object's size and mtime and is
@@ -646,14 +646,14 @@ two, fail the link.
   each unit sees, and there is no moment at which the database is known to
   be complete, so results depend on `-j`. Sidecars plus a link step have
   neither problem: every compile is independent and the link is the
-  synchronisation point the build already has.
-- **Analyse only at link time** (compile step writes exports and reports
+  synchronization point the build already has.
+- **Analyze only at link time** (compile step writes exports and reports
   nothing). Simpler and never redundant, but `weavec-cc -c foo.c` would
   report nothing, which is not how a compiler behaves, and a project that
   never links through `weavec-cc` (a library) would get no reports at all.
-  Reporting at both points with deduplication keeps compiler behaviour and
+  Reporting at both points with deduplication keeps compiler behavior and
   adds the program view.
-- **Serialised ASTs (`-emit-ast`) in the sidecar** to avoid re-parsing.
+- **Serialized ASTs (`-emit-ast`) in the sidecar** to avoid re-parsing.
   Faster link step, much larger sidecars (megabytes per unit), and an ABI
   tie to the exact Clang version. Deferred until the corpus shows the
   re-parse matters.
@@ -667,7 +667,7 @@ two, fail the link.
   the tool for. The type key is used only for indirect candidates, where
   the type *is* the identity.
 - **Make `weavec` itself the compiler** (driver mode when no `--`). Rejected:
-  `weavec foo.c` is ambiguous between "analyse with the compilation
+  `weavec foo.c` is ambiguous between "analyze with the compilation
   database" and "compile to `a.out`"; two binaries with one meaning each
   are easier to document and to put in a Makefile.
 - **A Clang plugin instead of a driver.** `-fplugin=` runs in a stock
@@ -680,15 +680,15 @@ two, fail the link.
 ## Prior art
 
 - **Infer** (Calcagno et al.): *capture* (compile every file, saving the
-  IR) then *analyse* (bottom-up over the global call graph with on-disk
+  IR) then *analyze* (bottom-up over the global call graph with on-disk
   per-procedure summaries). Our compile step is capture, our link step is
-  analyse, and our sidecar is the per-file capture output; Infer's
+  analyze, and our sidecar is the per-file capture output; Infer's
   experience that the capture must be *inside the build* (via `infer --
   make`) is why this RFC builds a driver rather than a database tool.
 - **LTO / ThinLTO** (LLVM): per-object summaries written next to the object
   and combined at link time, with the link as the only whole-program point.
   ThinLTO's module summaries are the structural model for the sidecar; its
-  "import the summaries you need, analyse locally" is our
+  "import the summaries you need, analyze locally" is our
   `ProgramDatabase::import`.
 - **Clang's cross-translation-unit analysis** (`clang-extdef-mapping`, CTU
   in the static analyzer): a pre-pass maps external definitions to the file
@@ -747,7 +747,7 @@ two, fail the link.
   format is the distribution format; a `libz.weavec` next to `libz.a` would
   be read like any other sidecar.
 - **Incremental link steps**: with sidecars recording what each unit
-  imported and the summary it saw, a link can re-analyse only the units
+  imported and the summary it saw, a link can re-analyze only the units
   whose imports changed since the last link.
 - **Non-lexical loans** and **conditional summaries** (RFC 0002/0003 future
   work), now measurable on multi-file programs.

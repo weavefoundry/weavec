@@ -18,7 +18,7 @@
 The design below landed as written except where this section says
 otherwise. Each item is a clarification of *how* a decision was built, not a
 change of decision; where the text below disagrees with an item here, the
-item wins. Behaviour is pinned by `test/Analysis/rfc0002-*.c` and
+item wins. Behavior is pinned by `test/Analysis/rfc0002-*.c` and
 `unittests/Analysis/DataflowTest.cpp`.
 
 - **Alias relation instead of a partition.** `core::AliasRelation` replaced
@@ -41,7 +41,7 @@ item wins. Behaviour is pinned by `test/Analysis/rfc0002-*.c` and
   class of `p`". Facts about the objects under `*p` are *mirrored* onto
   `*q` when `q = p` copies the pointer, and queries expand a place to the
   same path under every alias of each dereferenced pointer on its path
-  (`FunctionDataflow::mirrors`). Synthesised mirror paths are capped at
+  (`FunctionDataflow::mirrors`). Synthesized mirror paths are capped at
   depth 8 so cyclic structures cannot grow the place table without bound;
   paths written in the source are never truncated. The rule runs both
   ways: a whole write to `p->x` (`reinit`) also drops the move records of
@@ -52,7 +52,7 @@ item wins. Behaviour is pinned by `test/Analysis/rfc0002-*.c` and
 - **`reallocs` maps the result to the consumed places** (the argument and
   its aliases at the call), not to a class id, so the entry stays meaningful
   after the relation changes. Join semantics are as specified.
-- **Allocator list.** `posix_memalign` is not modelled; it lands with the
+- **Allocator list.** `posix_memalign` is not modeled; it lands with the
   signature-inference work. Recognition requires global linkage, so a
   `static` helper named `free` is *not* libc's (the "shadow is treated as
   libc" limitation only applies to global redefinitions).
@@ -81,7 +81,7 @@ item wins. Behaviour is pinned by `test/Analysis/rfc0002-*.c` and
 Replace the scaffold's path-insensitive AST walk with a forward dataflow
 analysis over `clang::CFG` whose state is the triple
 `(MoveTracker, BorrowState, LifetimeConstraints)` from RFC 0001, plus an
-alias partition over places and a narrow `realloc` fact. Recognise the libc
+alias partition over places and a narrow `realloc` fact. Recognize the libc
 allocation and release functions, treat copies of owned pointers as aliases
 of one resource, accept the canonical `realloc` failure idiom, drive
 loans from address-of and array decay, and assign lifetimes to lexical scopes
@@ -89,13 +89,13 @@ so that pointers escaping a scope are caught. After this RFC lands WeaveC
 emits `use-after-move`, `conflicting-borrow` and `lifetime-too-short` for the
 first time, handles loops, `switch`, `goto` and short-circuit evaluation
 soundly, and gains `--dump-analysis` for inspecting inferred facts. Function
-signatures are still not inferred; every function is analysed in isolation
+signatures are still not inferred; every function is analyzed in isolation
 with parameters treated per RFC 0001's defaults.
 
 ## Motivation
 
 The scaffold checker (`LocalOwnershipChecker`) exists to prove the pipeline
-runs end to end. It is not sound: loop bodies are analysed once, so a `free`
+runs end to end. It is not sound: loop bodies are analyzed once, so a `free`
 on the second iteration of a loop that reads the pointer at the top is
 missed; `switch`, `goto`, `?:` and `&&`/`||` are walked as flat child lists;
 `q = p; free(q); use(p)` is accepted because moves are per place with no
@@ -153,7 +153,7 @@ after a `goto` back past its `free`.
 
 **Deliberately not caught by this RFC:**
 
-- Anything requiring a callee's behaviour. Calls to functions without
+- Anything requiring a callee's behavior. Calls to functions without
   annotations are treated per RFC 0001: pointer arguments to unannotated
   callees are *not* moved, *not* loaned, and the callee is assumed not to
   free or retain them. This is a known hole that the signature-inference RFC
@@ -186,7 +186,7 @@ after a `goto` back past its `free`.
 
 **Assumptions.** Single-threaded execution within the function; no
 `setjmp`/`longjmp`; `clang::CFG` is complete for the function (no
-`asm goto`, no computed `goto`); the recognised allocator list is correct.
+`asm goto`, no computed `goto`); the recognized allocator list is correct.
 
 ## Detailed design
 
@@ -223,7 +223,7 @@ Copying a pointer creates an alias of the same resource rather than moving
 ownership: after `q = p`, `p` and `q` are in one alias class. Releasing or
 moving *any* member marks *every* member moved (with the location of the
 release), so `free(q); use(p)` is `use-after-free` and the note points at
-`free(q)`. Reinitialising a place (`p = malloc(...)`, `p = NULL`, `p = r`)
+`free(q)`. Reinitializing a place (`p = malloc(...)`, `p = NULL`, `p = r`)
 removes it from its class and puts it in a fresh singleton (or into `r`'s
 class).
 
@@ -288,7 +288,7 @@ list, in the order they are applied within one statement:
 
 | Expression / statement                             | Event                                                        |
 | -------------------------------------------------- | ------------------------------------------------------------ |
-| `DeclStmt` for a pointer `p` with initialiser `e`  | reinit `p`; then apply `e`'s assignment rules                |
+| `DeclStmt` for a pointer `p` with initializer `e`  | reinit `p`; then apply `e`'s assignment rules                |
 | `p = e`, `e` an allocation call                    | reinit `p` into a fresh singleton class; kind `Owned`        |
 | `q = realloc(p, n)`                                | `checkMove(p)`; `markMoved(class(p), Moved)`; reinit `q` fresh, `Owned`; record `reallocs[q] = class(p)` |
 | `p = q` (plain copy of a pointer place)            | reinit `p`; unite `p` with `q`'s class                       |
@@ -296,7 +296,7 @@ list, in the order they are applied within one statement:
 | `p = a` (array decay), `p = &a[i]`                 | as `&x` against `a[*]`                                       |
 | `p = e`, `e` opaque (call result, cast, field load)| reinit `p` into a fresh singleton; kind `Unknown`            |
 | `p = NULL` / `p = 0`                               | reinit `p`; fresh singleton                                  |
-| `free(p)` and recognised releasers                 | `checkMove(p)` → `conflicting-borrow`; `markMoved(class, Freed)` |
+| `free(p)` and recognized releasers                 | `checkMove(p)` → `conflicting-borrow`; `markMoved(class, Freed)` |
 | call with `WEAVEC_OWNED` parameter receiving `p`   | as `free`, reason `Moved`                                    |
 | call with `WEAVEC_BORROWED` / `WEAVEC_MUT` param   | `addLoan{p, Shared/Mutable, lifetime(call)}`; expire after   |
 | `return p`                                         | for each loan `p` carries: `outlives(loan.lifetime, fn)` else `lifetime-too-short` |
@@ -345,7 +345,7 @@ p = q;                                    /* p joins q's class            */
 ```
 
 and `p = realloc(p, n)` needs no special handling at all: the consumed class
-is `p`'s own, `p` is immediately reinitialised, and on failure the old block
+is `p`'s own, `p` is immediately reinitialized, and on failure the old block
 is leaked, which is a real bug this RFC does not report.
 
 Decision: do this rather than accept the false positive, because rejecting
@@ -355,10 +355,10 @@ null-tracking, because `malloc` failure paths need no help (nothing is
 consumed) and a general mechanism would want to be designed alongside
 signature inference, where `NULL`-returning callees appear.
 
-Recognised allocation functions: `malloc`, `calloc`, `realloc`, `strdup`,
+Recognized allocation functions: `malloc`, `calloc`, `realloc`, `strdup`,
 `strndup`, `aligned_alloc`, `posix_memalign` (via its out-parameter), and
 any function whose declaration carries `WEAVEC_OWNED` on the return type.
-Recognised release functions: `free`, and any function with a `WEAVEC_OWNED`
+Recognized release functions: `free`, and any function with a `WEAVEC_OWNED`
 parameter. Recognition is by `IdentifierInfo` and global linkage, as today,
 so a user's own `malloc` shadow is treated as the libc one; that is a known
 limitation.
@@ -419,7 +419,7 @@ parameters (that is the signature RFC).
 ### Unsafe interaction
 
 > **Superseded by [RFC 0004](0004-unsafe-boundaries.md), *Unsafe
-> regions*.** Unsafe blocks and unsafe function bodies are now analysed with
+> regions*.** Unsafe blocks and unsafe function bodies are now analyzed with
 > their diagnostics suppressed, so a free inside one is reported at a use
 > outside it.
 
@@ -427,12 +427,12 @@ parameters (that is the signature RFC).
 blocks are *skipped* by the transfer function (their CFG blocks are treated
 as identity) and their escaping-pointer rule is left to the unsafe-blocks
 RFC; until then a pointer freed inside an unsafe block and used outside it
-is *not* reported. This preserves the scaffold's behaviour and avoids
+is *not* reported. This preserves the scaffold's behavior and avoids
 half-implementing RFC 0001's escape rule.
 
 ### Debug output
 
-`weavec --dump-analysis` prints, per analysed function, the place table with
+`weavec --dump-analysis` prints, per analyzed function, the place table with
 paths and kinds, the lifetime constraints, and the exit state (moved places,
 live loans, alias classes) in a stable textual form intended for FileCheck:
 
@@ -466,7 +466,7 @@ combines the worklist and the event translation; `PlaceBuilder` in
 
 ## Annotation surface
 
-None. Existing annotations gain behaviour (`WEAVEC_OWNED` parameters now
+None. Existing annotations gain behavior (`WEAVEC_OWNED` parameters now
 move their argument; `WEAVEC_BORROWED`/`WEAVEC_MUT` parameters now create
 loans for the call), which is the meaning RFC 0001 already assigned them.
 
@@ -518,7 +518,7 @@ unit test against the core state machine and a lit test under
   (per-field places under a deref) is a compatible extension.
 - **Alias-set semantics are not Rust's.** Someone porting intuition from
   Rust will expect `q = p` to kill `p`. The RFC 0001 *Copies as aliases*
-  question is resolved here in favour of C idiom; the drawback is that
+  question is resolved here in favor of C idiom; the drawback is that
   "which alias is the owner" is never stated, so a leak (neither freed)
   cannot be distinguished from a transfer, which is part of why leaks are
   out of scope.
@@ -572,7 +572,7 @@ unit test against the core state machine and a lit test under
   studying for whether WeaveC can reuse its fact generator rather than
   writing `EventTranslator` from scratch.
 - **Clang Static Analyzer `MallocChecker`.** Its allocator list and its
-  `realloc` modelling (with the failure path handled via symbolic
+  `realloc` modeling (with the failure path handled via symbolic
   constraints) are the reference for what users expect; we adopt the list
   and a deliberately narrow, non-symbolic version of its `realloc` failure
   handling.
@@ -604,7 +604,7 @@ Summary, so the reasoning is findable from here:
   documented only there.
 - The iteration cap (64 per block): silent, always on; the block is dropped
   from the worklist and analysis continues.
-- `posix_memalign`'s out-parameter form: not modelled yet.
+- `posix_memalign`'s out-parameter form: not modeled yet.
 - `goto` *into* a scope: lifetimes are attached to `CFGLifetimeEnds`
   elements per variable rather than to scope-end markers, so a jump into a
   scope simply never sees the variable's end on that path. No lifetime rule
@@ -626,7 +626,7 @@ Summary, so the reasoning is findable from here:
   summaries make unannotated callees stop being a hole and make
   `annotation-required` default-on.
 - **Unsafe blocks RFC** (done: [RFC 0004](0004-unsafe-boundaries.md)):
-  `unsafe-operation`, analysed unsafe regions, and pointer identity for
+  `unsafe-operation`, analyzed unsafe regions, and pointer identity for
   arithmetic and casts.
 - **Non-lexical loans**: liveness from the CFG dataflow; removes the
   lexical-loan false positives and enables read-only loan inference.

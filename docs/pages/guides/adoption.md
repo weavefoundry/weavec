@@ -41,9 +41,9 @@ weavec: 0x... is inside a released heap block at 0x...
 
 `WEAVEC_RT_BACKTRACE=1` adds the stack of the access that stopped the program. The [command-line reference](/reference/cli/#check-modes) lists the report kinds, and [troubleshooting](/reference/troubleshooting/) the common causes.
 
-A trap is either a real bug or code that relies on undefined behaviour that happens to work: reading one element past an array, reading a word at a time past the end of a string's allocation, using the slack the system allocator leaves after a block (`malloc_usable_size` returns the requested size), or an index computed from one object that lands in another. Fix the code. Code written to be clean under AddressSanitizer needs nothing more: `weavec-cc` compiles it as ASan would (`__SANITIZE_ADDRESS__` and `__has_feature(address_sanitizer)` are set), honours its `no_sanitize("address")` functions, and implements ASan's poisoning interface. If an over-read is intentional and harmless, and the project does not already keep it from ASan, put it in a small `WEAVEC_UNSAFE` region as a last resort: its accesses are not guarded. See [unsafe boundaries](/guides/unsafe/).
+A trap is either a real bug or code that relies on undefined behavior that happens to work: reading one element past an array, reading a word at a time past the end of a string's allocation, using the slack the system allocator leaves after a block (`malloc_usable_size` returns the requested size), or an index computed from one object that lands in another. Fix the code. Code written to be clean under AddressSanitizer needs nothing more: `weavec-cc` compiles it as ASan would (`__SANITIZE_ADDRESS__` and `__has_feature(address_sanitizer)` are set), honors its `no_sanitize("address")` functions, and implements ASan's poisoning interface. If an over-read is intentional and harmless, and the project does not already keep it from ASan, put it in a small `WEAVEC_UNSAFE` region as a last resort: its accesses are not guarded. See [unsafe boundaries](/guides/unsafe/).
 
-Locals are zero-initialised in the enforcing modes and the runtime's heap is zero-filled, so code that read uninitialised memory now reads zeros.
+Locals are zero-initialized in the enforcing modes and the runtime's heap is zero-filled, so code that read uninitialized memory now reads zeros.
 
 ## 4. Measure the cost
 

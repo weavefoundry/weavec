@@ -33,7 +33,7 @@ pull requests; release-worthy changes appear in the generated `CHANGELOG.md`.
    Implementation proceeds in follow-up PRs that reference the RFC number.
 3. When every item in the RFC's *Detailed design* and *Diagnostics* sections
    has landed with tests, a PR flips the status to **Implemented**. Lit tests
-   that pin RFC behaviour are named by feature (`test/Guards/<feature>.c`,
+   that pin RFC behavior are named by feature (`test/Guards/<feature>.c`,
    `test/cases/<area>/…`), and the pull request names the RFC.
 4. An RFC that is abandoned is marked **Withdrawn**; one replaced by a later
    RFC is marked **Superseded** with a link. RFCs are never deleted or
@@ -57,8 +57,8 @@ decision is a new RFC that supersedes the relevant section.
 | [0005](0005-whole-program-analysis.md)   | Whole-program analysis: cross-TU summaries and the compiler driver | Superseded |
 | [0006](0006-precision.md)                | Precision: non-lexical loans, condition facts, element places and outcome-conditional summaries | Superseded |
 | [0007](0007-resource-lifecycle.md)       | Resource lifecycle: leaks, release families and owned fields | Superseded |
-| [0008](0008-pointer-validity.md)         | Pointer validity: null dereferences, uninitialised pointers, invalid releases and replaced values | Superseded |
-| [0009](0009-value-conditional-behaviour.md) | Value-conditional behaviour: scalar facts, guarded effects and inferred `noreturn` | Superseded |
+| [0008](0008-pointer-validity.md)         | Pointer validity: null dereferences, uninitialized pointers, invalid releases and replaced values | Superseded |
+| [0009](0009-value-conditional-behaviour.md) | Value-conditional behavior: scalar facts, guarded effects and inferred `noreturn` | Superseded |
 | [0010](0010-shared-ownership.md)         | Shared ownership: reference counts, ownership by outcome and per-outcome facts | Superseded |
 | [0011](0011-spatial-safety.md)           | Spatial safety: derived pointers, extents and bounds | Superseded |
 | [0012](0012-spatial-safety-strings-and-fields.md) | Spatial safety II: strings, sized fields, offset relations and assumptions | Superseded |

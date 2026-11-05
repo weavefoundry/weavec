@@ -149,7 +149,7 @@ llvm::StringRef driverFlagsHelp() {
       and continue; trap, with every guard a local proof removed kept as a
       monitor (verify); or nothing is guarded (none).
   -fweavec-zero-init, -fno-weavec-zero-init
-      Zero-initialise locals (default: on unless -fweavec-checks=none).
+      Zero-initialize locals (default: on unless -fweavec-checks=none).
   -fweavec-ledger=<path>
       Write the unit's enforcement ledger: what was guarded, proven or left
       unguarded, access by access. A directory (a value ending in '/')
@@ -161,7 +161,7 @@ llvm::StringRef driverFlagsHelp() {
       and __has_feature(address_sanitizer) (default: on).
   -fweavec-colors, -fno-weavec-colors
       Check an access computed from a pointer against the color of the
-      pointer's object, so that a jump into a neighbour traps (default: on).
+      pointer's object, so that a jump into a neighbor traps (default: on).
 )";
 }
 
@@ -274,10 +274,10 @@ static llvm::StringRef checksName(DriverOptions::Checks checks) {
   return "trap";
 }
 
-/// The largest local, in bytes, that `weavec-cc` zero-initialises.
+/// The largest local, in bytes, that `weavec-cc` zero-initializes.
 static constexpr unsigned ZeroInitMaxSize = 4096;
 
-/// RFC 0035 §1: zero-initialised locals, Clang's `array-bounds` checks
+/// RFC 0035 §1: zero-initialized locals, Clang's `array-bounds` checks
 /// reported through the runtime, location tracking for the reports, and
 /// the guard pass. Returns the ledger the pass fills.
 static std::shared_ptr<EnforcementLedger>
@@ -286,16 +286,16 @@ configureEnforcement(clang::CompilerInstance &compiler,
                      std::shared_ptr<const UnsafeRegions> unsafe) {
   clang::LangOptions &lang = compiler.getLangOpts();
   clang::CodeGenOptions &codegen = compiler.getCodeGenOpts();
-  if (weavec.zeroInitialises()) {
+  if (weavec.zeroInitializes()) {
     lang.setTrivialAutoVarInit(
         clang::LangOptions::TrivialAutoVarInitKind::Zero);
-    // A local larger than this is not zero-initialised (unless the command
+    // A local larger than this is not zero-initialized (unless the command
     // line set its own limit): clearing a buffer of hundreds of KiB on each
     // iteration of a loop that declares it cost a test suite 14x.
     if (lang.TrivialAutoVarInitMaxSize == 0)
       lang.TrivialAutoVarInitMaxSize = ZeroInitMaxSize;
   }
-  // Lifetime markers at every optimisation level, for the scopes of
+  // Lifetime markers at every optimization level, for the scopes of
   // section 3.3 (Clang emits them at -O0 for this flag only).
   codegen.SanitizeAddressUseAfterScope = true;
   // A command line that asks for a sanitizer keeps its own handlers.
@@ -328,7 +328,7 @@ static bool emitEnforcementLedger(const clang::CompilerInstance &compiler,
     unit.object = frontend.OutputFile;
   unit.target = compiler.getTargetOpts().Triple;
   unit.checks = checksName(weavec.checks).str();
-  unit.zeroInit = weavec.zeroInitialises();
+  unit.zeroInit = weavec.zeroInitializes();
   bool ok = true;
   if (!weavec.ledger.empty()) {
     std::string error;
@@ -591,11 +591,11 @@ static std::string runtimeObstacle(llvm::ArrayRef<const char *> args) {
 }
 
 /// RFC 0036 §1: whether the build should define `_FORTIFY_SOURCE=3`: a glibc
-/// target, an optimising compile (glibc fortifies only then, and warns
+/// target, an optimizing compile (glibc fortifies only then, and warns
 /// otherwise), and a command line that does not define or undefine it.
 static bool wantsFortification(llvm::ArrayRef<const char *> args) {
   std::string triple = llvm::sys::getDefaultTargetTriple();
-  bool optimises = false;
+  bool optimizes = false;
   for (std::size_t i = 1; i < args.size(); ++i) {
     llvm::StringRef arg = args[i];
     if (arg.starts_with("-D_FORTIFY_SOURCE") ||
@@ -604,14 +604,14 @@ static bool wantsFortification(llvm::ArrayRef<const char *> args) {
          llvm::StringRef(args[i + 1]).starts_with("_FORTIFY_SOURCE")))
       return false;
     if (arg.starts_with("-O"))
-      optimises = arg != "-O0";
+      optimizes = arg != "-O0";
     if (arg.consume_front("--target="))
       triple = arg.str();
     else if ((arg == "-target" || arg == "--target") && i + 1 < args.size())
       triple = args[++i];
   }
   const llvm::Triple target(llvm::Triple::normalize(triple));
-  return optimises && target.isOSLinux() && target.isGNUEnvironment();
+  return optimizes && target.isOSLinux() && target.isGNUEnvironment();
 }
 
 /// RFC 0035 §7: adds the runtime archives to every link job, before the
@@ -835,7 +835,7 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
 
   DriverOptions weavec;
   std::vector<const char *> clangArgs;
-  // Storage for arguments synthesised here; a deque keeps the pointers
+  // Storage for arguments synthesized here; a deque keeps the pointers
   // handed to `clangArgs` valid as it grows.
   std::deque<std::string> owned;
   bool printJobsOnly = false;

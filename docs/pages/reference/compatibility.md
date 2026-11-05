@@ -1,11 +1,11 @@
 ---
 title: Compatibility
-description: Supported toolchains and platforms, what weavec-cc changes in compiled code (the allocator and its sweep, frames and redzones, fortification, AddressSanitizer's macros, zero-initialised locals, the shadow reservation, traps on deliberate over-reads), sanitizers, external code, and version changes.
+description: Supported toolchains and platforms, what weavec-cc changes in compiled code (the allocator and its sweep, frames and redzones, fortification, AddressSanitizer's macros, zero-initialized locals, the shadow reservation, traps on deliberate over-reads), sanitizers, external code, and version changes.
 ---
 
 ## C and Clang
 
-WeaveC uses Clang for C parsing, semantic analysis, target layout, optimisation and code generation. Pass the language standard and target flags used by your project. `weavec-cc` guards the C units it compiles; C++, Objective-C, OpenCL and CUDA sources are compiled as Clang compiles them, without guards, and link with the guarded C code as usual.
+WeaveC uses Clang for C parsing, semantic analysis, target layout, optimization and code generation. Pass the language standard and target flags used by your project. `weavec-cc` guards the C units it compiles; C++, Objective-C, OpenCL and CUDA sources are compiled as Clang compiles them, without guards, and link with the guarded C code as usual.
 
 ## weavec.h
 
@@ -15,13 +15,13 @@ WeaveC uses Clang for C parsing, semantic analysis, target layout, optimisation 
 
 With the default `-fweavec-checks=trap`, `weavec-cc` compiles each C unit as Clang does and adds a guard before every memory access that a simple local rule cannot prove safe, in LLVM IR, against the runtime's shadow memory. There is no change to pointer representation or the ABI, and objects link with objects from any compiler, but the link must go through `weavec-cc`: the guards call WeaveC's runtime, which every enforcing link adds (`libweavec_rt.a` and `libweavec_alloc.a`). `-fweavec-checks=none` produces the object Clang would produce and links nothing; `-fno-weavec` is plain Clang.
 
-A guarded compile also turns on some of Clang's own options: `-fsanitize=array-bounds` for typed array indexes, reported through WeaveC's runtime (unless the command line already asks for a sanitizer); source locations for the reports, without emitting debug information when there is no `-g`; lifetime markers at every optimisation level, so that a use after scope is caught at `-O0` too; and, on AArch64, no conditional compares in the backend. Object code is larger and compiles take longer than with Clang alone.
+A guarded compile also turns on some of Clang's own options: `-fsanitize=array-bounds` for typed array indexes, reported through WeaveC's runtime (unless the command line already asks for a sanitizer); source locations for the reports, without emitting debug information when there is no `-g`; lifetime markers at every optimization level, so that a use after scope is caught at `-O0` too; and, on AArch64, no conditional compares in the backend. Object code is larger and compiles take longer than with Clang alone.
 
 ### Preprocessor macros and fortification
 
 In the enforcing modes a C unit sees what it would see under AddressSanitizer: `__SANITIZE_ADDRESS__` is defined and `__has_feature(address_sanitizer)` is true, so a project's ASan-specific code (poisoning in a pool allocator, a scan kept from ASan) is compiled in, and the runtime implements ASan's poisoning interface for it. `__WEAVEC__` is defined whenever WeaveC is on. `-fno-weavec-asan-compat` leaves the ASan macros undefined. A precompiled header or module built by `weavec-cc` records the same setting, so the compiles that read it with the same flags accept it. See [AddressSanitizer compatibility](/reference/cli/#addresssanitizer-compatibility).
 
-On glibc targets an optimising compile whose command line does not set `_FORTIFY_SOURCE` gets `-D_FORTIFY_SOURCE=3`, so string and `printf`-family calls carry the size of the object they write, which the guards check (glibc's inline wrappers state the rest of the object even for a field, so a write into the next field is not stopped there). Darwin's SDK fortifies optimising compiles at level 2, and keeps doing so under WeaveC although Clang turns it off under ASan.
+On glibc targets an optimizing compile whose command line does not set `_FORTIFY_SOURCE` gets `-D_FORTIFY_SOURCE=3`, so string and `printf`-family calls carry the size of the object they write, which the guards check (glibc's inline wrappers state the rest of the object even for a field, so a write into the next field is not stopped there). Darwin's SDK fortifies optimizing compiles at level 2, and keeps doing so under WeaveC although Clang turns it off under ASan.
 
 ### The allocator
 
@@ -43,9 +43,9 @@ Each local that a guard can reach or whose address escapes is laid out in one fr
 
 Each global or static variable a unit defines is followed by a redzone and aligned to 32 bytes, so the data sections grow and their layout changes. `sizeof` and the variable's own bytes are unchanged, but code that relies on two globals being adjacent (walking from one into the next) traps. Thread-local variables, variables in a named section, string literals, common symbols and a few other kinds are left as they are, so linker sets placed in a named section keep working. The globals of shared libraries and bundles built by `weavec-cc` are protected as the executable's are.
 
-### Zero-initialisation
+### Zero-initialization
 
-In the enforcing modes, locals of up to 4 KiB are zero-initialised (`-ftrivial-auto-var-init=zero` with `-ftrivial-auto-var-init-max-size=4096`, unless the command line sets its own limit), and the runtime's heap is zero-filled. This changes behaviour only for programs that read indeterminate values, which C leaves undefined. `-fno-weavec-zero-init` turns zero-initialisation of locals off.
+In the enforcing modes, locals of up to 4 KiB are zero-initialized (`-ftrivial-auto-var-init=zero` with `-ftrivial-auto-var-init-max-size=4096`, unless the command line sets its own limit), and the runtime's heap is zero-filled. This changes behavior only for programs that read indeterminate values, which C leaves undefined. `-fno-weavec-zero-init` turns zero-initialization of locals off.
 
 ### The shadow and the arena
 

@@ -4,7 +4,7 @@
 // `Resub`). Positions are kept modulo their stride, so the second field of
 // `sub[i]` is counted from the start of `sub[i + 1]` (`[1, 17) * 16 + 0`
 // here); its store names `param1->sub[*].ep` over elements `[0, 16)`. Without
-// the shift it was dropped (and `use` read `m.sub[0].ep` as uninitialised);
+// the shift it was dropped (and `use` read `m.sub[0].ep` as uninitialized);
 // and the caller's check measured the range's last element as a whole
 // stride, a false `out-of-bounds` of 8 bytes past `m`.
 // CLEAN

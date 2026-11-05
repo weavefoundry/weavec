@@ -4,7 +4,7 @@
 // view"), so the link step drops the unit with "link input 'tinyexpr.o' has a stale WeaveC
 // record ...; calls into it are trusted" [weavec::unanalyzed-input].
 // Reduced from build/rfc31/ooc/repro/anon.c and anon_main.c: this unit calls 'eval' in
-// Inputs/ooc-anon-union-eval.c, and both are analysed and linked.
+// Inputs/ooc-anon-union-eval.c, and both are analyzed and linked.
 // intended: no finding; the record of a function reading an anonymous member round-trips.
 // UNITS: Inputs/ooc-anon-union-eval.c
 // CLEAN

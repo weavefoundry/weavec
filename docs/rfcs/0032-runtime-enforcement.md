@@ -8,7 +8,7 @@
   (*Soundness*, a new clause (G) and assumption A6), its outcomes (§2.2, a
   sixth outcome `guarded`), its rank (§2.5), its check templates (§10.1,
   §10.2), its modes (§10.7: every enforcing mode links a runtime), its
-  zero-initialisation (§11: the allocator zero-fills), its require levels
+  zero-initialization (§11: the allocator zero-fills), its require levels
   (§6.3: a new level `guarded`), its ledger (§12: schema version 2) and its
   rule that temporal facets are never checked. Amends RFC 0031 §7 (unit
   record format 29 becomes 30) and closes the part of its gate G6 that
@@ -118,7 +118,7 @@ each new proof removes a run-time check.
 ### The guarantee
 
 RFC 0030's guarantee stands, with (S), (N), (T) and (V) unchanged, for the
-enforcing modes with zero-initialisation on. For a unit compiled with the
+enforcing modes with zero-initialization on. For a unit compiled with the
 runtime (the default; §9), one clause and one assumption are added.
 
 A **tracked object** is one of:
@@ -408,8 +408,8 @@ arena or huge block, and ask the next allocator for any other pointer.
 
 Compiled code is not changed to call the runtime: a call to `malloc` in any
 object of the image, WeaveC's or not, binds to the image's definition.
-The zero-initialisation lowering of RFC 0030 §11 stays as it is (its
-wrappers call `__builtin_calloc`, which tells the optimiser the memory is
+The zero-initialization lowering of RFC 0030 §11 stays as it is (its
+wrappers call `__builtin_calloc`, which tells the optimizer the memory is
 zero, and their tail-zeroing finds no tail, because the usable size is the
 requested size).
 
@@ -679,7 +679,7 @@ default enforcing build), which gains `--no-runtime`.
   subscript already holds. The emitter adds §4.2's declarations and the
   `setjmp` wraps before the site rewrites, and §5's descriptors after
   them.
-- **Zero-initialisation.** Unchanged in the AST. `alloca` is lowered as
+- **Zero-initialization.** Unchanged in the AST. `alloca` is lowered as
   before; its block is untracked.
 - **The driver.** An enforcing link adds `libweavec_rt.a` and, unless a
   unit defines the allocator, `libweavec_alloc.a`, before the system
@@ -750,7 +750,7 @@ requires a ledger row there with that facet guarded.
   mode" and the code paths that assume it (`SitePlanner::checksFor`'s
   temporal failure, `LedgerSummary`'s comment, the runner's rule that a
   temporal `BUG` cannot be satisfied by a trap).
-- `Assumptions::Initialisation`'s dependence on the usable-size query for
+- `Assumptions::Initialization`'s dependence on the usable-size query for
   runtime builds: `nonLoweredAllocations` counts only what the image's
   allocator does not serve.
 - `libweavec_rt.a` stops being the "report-mode runtime": it is the
@@ -939,7 +939,7 @@ disagree, the amendment holds.
 
    A range cache never makes a guard pass that the uncached guard would
    fail in the same state: an entry holds one object's bytes, the pointer
-   itself must lie in them (so a pointer into a neighbour that an index
+   itself must lie in them (so a pointer into a neighbor that an index
    brings back into the cached object still fails), and an entry is used
    only while its state stands. Caches are the compiler's own locals and
    are not registered as stack objects.
@@ -1021,7 +1021,7 @@ disagree, the amendment holds.
    error, one line per counter as `weavec: runtime: <n> <what>`:
    allocations, releases, recycled slots, huge blocks, lookups (and of
    those heap, stack, global and untracked), range requests, ranges kept,
-   stack objects entered. The counters are not synchronised.
+   stack objects entered. The counters are not synchronized.
 
 9. **Triaged guard failures (gate R3).** `test/corpus/triage.json` gains
    `guardFailures`: guard failures of a test suite that are true bugs,
@@ -1152,7 +1152,7 @@ disagree, the amendment holds.
     or guarding the arguments of an unresolved call, is the *boundary
     facets* item of *Future work*.
 
-18. **`weavec` and `weavec-cc`.** With zero-initialisation on, the
+18. **`weavec` and `weavec-cc`.** With zero-initialization on, the
     compiler decides a few facets `guarded` that the tool decides
     `proven` (measured on `semantics/runtime/uaf-container_bug.c`: two
     spatial facets). The difference costs precision, not soundness; its
@@ -1166,11 +1166,11 @@ disagree, the amendment holds.
     loops). The engine now takes the call for an unknown callee handed the
     variable, as it takes inline assembly: what the variable reaches may
     have been released, retained or replaced, with the cleanup function
-    named as the reason. Analysing the call like any other is left for
+    named as the reason. Analyzing the call like any other is left for
     later. A loop that declares such a variable is not quiet. The cases are
     `semantics/runtime/cleanup-function_*`.
 
-20. **Corpus notes.** lz4's randomised tests take a fixed seed and count
+20. **Corpus notes.** lz4's randomized tests take a fixed seed and count
     (`-s1 -i500`) so that a run is reproducible: with a seed derived from
     the time, some runs feed `LZ4_decompress_safe` a match offset of 0, for
     which `LZ4_memcpy_using_offset_base` copies two bytes onto themselves
@@ -1259,7 +1259,7 @@ disagree, the amendment holds.
 
 - **A runtime in the default mode.** RFC 0030's default linked nothing.
   Now every enforcing link carries an allocator, and the program's
-  allocation behaviour (speed, fragmentation, address layout) is
+  allocation behavior (speed, fragmentation, address layout) is
   WeaveC's. An allocator is a large surface for bugs of its own.
 - **Run-time cost** where RFC 0031 held 1.10×. The answer is a looser
   bound for the default (R6) and the old bound for

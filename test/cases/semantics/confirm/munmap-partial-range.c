@@ -7,7 +7,7 @@
 // not start a mapping (munmap takes any page-aligned range).
 // CLEAN
 /* libdeflate programs/test_util.c alloc_guarded_buffer: munmap of part of a
- * mapping is modelled as a release of the whole mapping, so unmapping the two
+ * mapping is modeled as a release of the whole mapping, so unmapping the two
  * guard pages is a "double free" and the middle page is "used after free".
  * -DNEGATIVE: unmap only the whole mapping, once, at the end -> builds, runs. */
 #include <stdio.h>

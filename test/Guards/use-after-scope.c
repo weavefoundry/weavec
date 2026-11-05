@@ -1,5 +1,5 @@
 // RFC 0035 §3.3: a lifetime end poisons its local; a use through a pointer
-// that outlived the scope traps (lifetime markers exist when optimising).
+// that outlived the scope traps (lifetime markers exist when optimizing).
 // RUN: %weavec_cc -O2 %s -o %t
 // RUN: not --crash %t 2>&1 | FileCheck %s
 #include <stdio.h>

@@ -1,4 +1,4 @@
-// Zero-initialisation (RFC 0035 §1) defines the read: the run is clean.
+// Zero-initialization (RFC 0035 §1) defines the read: the run is clean.
 // CLEAN
 #include <stdlib.h>
 int main(void) {

@@ -15,7 +15,7 @@
   arguments), the Darwin allocator of §2.5 (one runtime per process, the
   system's allocations in the arena) and the failure path of §7. Amends
   RFC 0031 §7 (unit record format 30 becomes 31). Amends RFC 0005 and
-  RFC 0030 §13.2 on what the link step analyses.
+  RFC 0030 §13.2 on what the link step analyzes.
 
 This RFC was drafted before implementation. On 2026-10-03 the project
 owner accepted the recommendation of the milestone analysis (make WeaveC
@@ -34,7 +34,7 @@ WeaveC passes every gate it has on the twenty projects it was built
 against, and fails on the first four projects it was not. Built with
 `CC=weavec-cc` and default flags, none of zstd, libuv, jq (with its
 bundled oniguruma) and redis compiles: the build stops at errors that are
-artefacts of the model, and when they are lowered, the lowered violations
+artifacts of the model, and when they are lowered, the lowered violations
 trap in correct programs. Building costs 2.6 to 28 times Clang's CPU, and
 redis's link step runs for 25 minutes and then fails with an error no flag
 can lower.
@@ -46,7 +46,7 @@ link or a trap on a correct program) is a WeaveC bug of the same severity
 as a false proof. To keep the promise:
 
 1. **A definite violation must be witnessed** on every path by facts the
-   program states, never by a model artefact: a pointer converted from an
+   program states, never by a model artifact: a pointer converted from an
    integer is no longer *raw*, only a pointer declared `WEAVEC_RAW` is, so
    `(void *)(uintptr_t)n` stops being an `unsafe-operation` error and its
    uses are guarded like any pointer of unknown provenance.
@@ -57,7 +57,7 @@ as a false proof. To keep the promise:
 4. **A guard asks about the bytes the access touches**, so pointer
    arithmetic that leaves an object and comes back (zstd's `base + index`)
    is not a trap.
-5. **The link step by default only reads records.** Re-analysing the
+5. **The link step by default only reads records.** Re-analyzing the
    program at link becomes `-fweavec-link=analyze`, with a budget, and
    never fails a link except for a definite violation.
 6. **The analysis has a per-unit budget**, so a large unit costs a bounded
@@ -71,7 +71,7 @@ as a false proof. To keep the promise:
 
 The measure is a new *fresh* corpus of eight projects WeaveC was never
 tuned on, plus a *sealed* set of five more that is built with WeaveC only
-once, at the end, to measure whether the fixes generalise.
+once, at the end, to measure whether the fixes generalize.
 
 ## Motivation
 
@@ -104,9 +104,9 @@ Every error but one was false. The causes, each reproduced in a few lines:
   sized for `nfds` traps libuv.
 - **Engine imprecision reported as definite.** A pointer tested through a
   function's result (`if (listAddNodeTail(copy, v) == NULL)`) is taken as
-  null; a local initialised through a cast of its address
-  (`(processor_info_array_t *)&info`) is taken as uninitialised; `(void)
-  tmp;` is a use of an uninitialised value.
+  null; a local initialized through a cast of its address
+  (`(processor_info_array_t *)&info`) is taken as uninitialized; `(void)
+  tmp;` is a use of an uninitialized value.
 - **Lowered violations trap.** RFC 0030 §3.4 traps a lowered temporal or
   release violation unconditionally, so a false error lowered with
   `-Wno-error` becomes a crash of a correct program.
@@ -360,7 +360,7 @@ byte-copy and `va_arg` rules (also `raw-cast`) are unchanged.
 **Portability rule.** A row states what *every supported C library*
 (Darwin's libSystem and glibc, on the targets RFC 0032 §2.6 supports)
 does with an argument, not what the C or POSIX standard permits it to do.
-Where they differ, the row takes the more permissive behaviour: null is
+Where they differ, the row takes the more permissive behavior: null is
 allowed if any of them accepts it (`gettimeofday`'s first argument), a
 count of zero allows null if any of them reads nothing then (`setgroups`).
 A row that requires more than a library does is a false-stop bug.
@@ -442,10 +442,10 @@ compiled with `-fno-weavec-runtime`. `__weavec_rt_fatal` does the same.
 #### 6.2 Darwin: one runtime per process, the system's heap in the arena
 
 - **One runtime.** Every image linked by `weavec-cc` carries the runtime's
-  archives, as today. The first image to initialise its runtime becomes
+  archives, as today. The first image to initialize its runtime becomes
   the process's *owner*; it publishes a table of its entry points and
   state under a process-wide name (`__weavec_rt_owner`, found with
-  `dlsym(RTLD_DEFAULT, …)` from images initialised later, and registered
+  `dlsym(RTLD_DEFAULT, …)` from images initialized later, and registered
   before any allocation is served). Every other image's runtime copies the
   owner's arena descriptor (`__weavec_rt_heap` is constant once the arena
   is reserved) and forwards every out-of-line entry point to the owner:
@@ -479,7 +479,7 @@ that captures standard error sees the program's own output.
 | Value | What runs |
 | --- | --- |
 | `records` (default) | Steps 1–3, 5 and 6 of RFC 0030 §13.2 over the records alone: inputs and `unanalyzed-input`, the program's slots, declarations against definitions (`annotation-mismatch`), exported requirements at cross-unit calls, the allocator, and, with `-fweavec-ledger` or `-fweavec-summary`, the program ledger composed from the records' rows. No unit is parsed again and the engine does not run. |
-| `analyze` | `records`, then step 4: the units analysed again with the program in view, as RFC 0030 §13.2 and RFC 0031 §7 describe, under a budget (below). Its temporal facets refine the program ledger and its definite violations are reported. |
+| `analyze` | `records`, then step 4: the units analyzed again with the program in view, as RFC 0030 §13.2 and RFC 0031 §7 describe, under a budget (below). Its temporal facets refine the program ledger and its definite violations are reported. |
 | `none` | Nothing; the link proceeds as Clang's. |
 
 **The budget of `analyze`.** The re-analysis stops when its CPU time
@@ -492,7 +492,7 @@ within its rounds takes its widened summaries for the reporting run, as a
 function over budget does, and is noted the same way. **No re-analysis
 outcome fails a link** except a definite violation, and that is an error
 through the diagnostic engine like any other, so `-Wno-error=weavec-<id>`
-lowers it. The `cannot re-analyse` and `did not converge` errors are
+lowers it. The `cannot re-analyze` and `did not converge` errors are
 deleted.
 
 **Records.** Composing the program ledger without re-analysis needs every
@@ -501,7 +501,7 @@ rows it already carries become the unit ledger's rows, with each facet's
 outcome, reason, check, requirements and diagnostic index. The record
 grows; the header's payload length is unchanged in meaning.
 
-`weavec --whole-program` keeps today's behaviour (it is the analysis
+`weavec --whole-program` keeps today's behavior (it is the analysis
 tool), with the same budget flag and the same non-failing fallback.
 
 ### 8. Diagnostics a build prints
@@ -570,7 +570,7 @@ analysis; the default link is tested by the corpus.
 - The unconditional trap of a lowered violation that has a guard (§3.4's
   `Form::Violation` stays for builds without the runtime).
 - `-fweavec-link` / `-fno-weavec-link` (replaced by `-fweavec-link=`),
-  the link step's `cannot re-analyse` and `did not converge` errors, and
+  the link step's `cannot re-analyze` and `did not converge` errors, and
   the re-analysis of every unit when a ledger is composed.
 - The runtime's `before` lookup.
 - Unit record format 30 readers (records are rebuilt by every compile).
@@ -874,7 +874,7 @@ disagree, the amendment holds.
 12. **Code generation (§13).** The helpers are inlined (`always_inline`),
     and in a function with thousands of checks and guards (pcre2's `match`,
     21,552 checked or guarded facets from macro expansion) the inlined
-    copies kept the optimiser (the SLP vectorizer, then the rest of the
+    copies kept the optimizer (the SLP vectorizer, then the rest of the
     function pipeline) on that function for over two minutes. The prelude
     now also defines `<helper>_ool`, a copy of each check and guard helper
     that is not inlined, and a function with more than 4,096 plan entries
@@ -944,7 +944,7 @@ disagree, the amendment holds.
 
 - **A weaker word for the same code.** An error the user saw becomes a
   guard they do not see. The ledger keeps every such row, and
-  `-fweavec-require=checked` restores fail-closed behaviour.
+  `-fweavec-require=checked` restores fail-closed behavior.
 - **The default link reports less.** Users who relied on the link step for
   cross-unit findings must add `-fweavec-link=analyze` or run `weavec
   --whole-program` in CI. The cost it removes is most of the build
@@ -1008,7 +1008,7 @@ disagree, the amendment holds.
 ## Future work
 
 - **RFC 0034, guard elimination** (dominated guards, the hull of a block's
-  guards per pointer, loop hoisting, guards as optimiser-visible
+  guards per pointer, loop hoisting, guards as optimizer-visible
   intrinsics), against RFC 0032's carried cost gate.
 - **RFC 0035, adoption** (formerly planned as 0033): records in object
   sections so that archives and shared libraries carry them, incremental

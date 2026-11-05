@@ -1,4 +1,4 @@
-// RFC 0034 detection set, case 12 (heap stride into a neighbour): one of the 61 blind bug programs
+// RFC 0034 detection set, case 12 (heap stride into a neighbor): one of the 61 blind bug programs
 // of the RFC 0034 milestone (build/eval-2026-10-04/detect). The default build must stop
 // the bug at or before its STOP line (a WeaveC error, or a trap whose report-mode check
 // is on that line); -DFIX selects the fixed twin, which must build and run clean.

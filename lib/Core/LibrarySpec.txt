@@ -95,7 +95,7 @@
 # PORTABILITY
 #   A row states what every supported C library (Darwin's libSystem, glibc)
 #   does with an argument, not what a standard permits it to do: where they
-#   differ, the row takes the more permissive behaviour. Null is allowed if
+#   differ, the row takes the more permissive behavior. Null is allowed if
 #   any of them accepts it, and a count of zero allows null if any of them
 #   then reads nothing. A row that requires more than a library does is a
 #   false trap. An extent is what the call reads or writes, or, for a buffer

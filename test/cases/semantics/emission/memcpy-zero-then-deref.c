@@ -1,4 +1,4 @@
-// RFC 0030 §8.3: a zero-length memcpy from null does not let the optimiser drop a later null check.
+// RFC 0030 §8.3: a zero-length memcpy from null does not let the optimizer drop a later null check.
 // STAGE: S5
 // The zero-length memcpy passes its null-if-zero check, and it proves nothing about 'p'.
 // Clang does not turn memcpy's 'nonnull' declaration into an IR 'nonnull' argument, and LLVM

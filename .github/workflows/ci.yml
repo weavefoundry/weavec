@@ -65,6 +65,13 @@ jobs:
           pipx inject cmakelang pyyaml
           scripts/check-cmake-format.sh
 
+      # American English throughout (issue 53): the checker's tests, then the
+      # check of every tracked file.
+      - name: Spelling
+        run: |
+          python3 scripts/test_check_spelling.py
+          python3 scripts/check-spelling.py
+
   # ---------------------------------------------------------------------------
   build-test:
     name: ${{ matrix.name }}

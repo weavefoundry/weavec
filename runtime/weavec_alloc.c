@@ -298,7 +298,7 @@ static void buildClasses(unsigned shift) {
       m = 5 + (index - WeavecRtSmallClasses) % 4;
       k = 5 + (index - WeavecRtSmallClasses) / 4;
     }
-    /* Normalise so that m is odd or small: the divisor of the slot index. */
+    /* Normalize so that m is odd or small: the divisor of the slot index. */
     while (m % 2 == 0 && m > 1) {
       m /= 2;
       ++k;
@@ -377,7 +377,7 @@ static void reserveShadow(void) {
   weavecRtInternal((uintptr_t)map, (uintptr_t)map + bytes + 64);
   __weavec_rt_shadow.bits = bits;
   __atomic_store_n(&__weavec_rt_shadow.base, (uintptr_t)map, __ATOMIC_RELEASE);
-  /* An access near null fails its guard even when the optimiser moved
+  /* An access near null fails its guard even when the optimizer moved
    * the access itself to the other arm of the pointer's select. */
   memset(map, WeavecRtShadowNull, WeavecRtNullPage >> 4);
   /* Published last: until then every guard passes. */
@@ -510,7 +510,7 @@ static inline void storeWord(uint32_t *word, uint32_t value) {
   __atomic_store_n(word, value, __ATOMIC_RELAXED);
 }
 
-/*===-- Initialisation ------------------------------------------------------===*/
+/*===-- Initialization ------------------------------------------------------===*/
 
 static void forkPrepare(void);
 static void forkParent(void);
@@ -582,7 +582,7 @@ static int reserve(unsigned shift) {
   return 1;
 }
 
-int weavecRtInitialise(void) {
+int weavecRtInitialize(void) {
   int ok = 1;
   if (__atomic_load_n(&__weavec_rt_heap.bytes, __ATOMIC_ACQUIRE) != 0)
     return 1;
@@ -633,8 +633,8 @@ int weavecRtInitialise(void) {
  * once on entry, so `main` would otherwise keep the empty one, and pass
  * every guard, when its first allocation reserves the shadow. On Darwin
  * weavec_owner.c does this once it has found the owner. */
-__attribute__((constructor(101))) static void initialiseEarly(void) {
-  (void)weavecRtInitialise();
+__attribute__((constructor(101))) static void initializeEarly(void) {
+  (void)weavecRtInitialize();
 }
 #endif
 
@@ -686,7 +686,7 @@ static inline SlotRef slotOf(uintptr_t address) {
 }
 
 /* RFC 0037 section 7.2: a slot's color, from its index and its region's:
- * neighbours in a region differ, and so do any two slots fewer than 111
+ * neighbors in a region differ, and so do any two slots fewer than 111
  * apart. */
 unsigned char weavecRtColorOfHeap(uintptr_t address) {
   SlotRef ref;
@@ -879,7 +879,7 @@ static ThreadCache *makeCache(void);
 
 static inline ThreadCache *threadCache(void) {
   ThreadCache *cache;
-  /* Set once, before any thread but the initialising one can allocate. */
+  /* Set once, before any thread but the initializing one can allocate. */
   if (__builtin_expect(!__atomic_load_n(&cacheKeyReady, __ATOMIC_RELAXED), 0))
     return NULL;
   cache = (ThreadCache *)cacheValue();
@@ -1437,7 +1437,7 @@ static ThreadCache *cacheFor(unsigned c) {
 static void *allocate(size_t size, size_t alignment) {
   unsigned region;
   void *block;
-  if (!weavecRtInitialise()) {
+  if (!weavecRtInitialize()) {
     errno = ENOMEM;
     return NULL;
   }

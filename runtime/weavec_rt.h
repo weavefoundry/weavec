@@ -604,7 +604,7 @@ struct __weavec_rt_dispatch {
   unsigned version;
   const struct __weavec_rt_heap_t *heap;
   const struct __weavec_rt_shadow_t *shadow;
-  int (*initialise)(void);
+  int (*initialize)(void);
   void *(*alloc)(size_t, size_t);
   void (*release)(void *);
   void *(*realloc)(void *, size_t);
@@ -654,7 +654,7 @@ static inline const struct __weavec_rt_dispatch *weavecRtForward(void) {
 
 /* Reserves the shadow and this copy's arena on first use; 0 when there is
  * no room for the arena. */
-int weavecRtInitialise(void);
+int weavecRtInitialize(void);
 
 /* The runtime's own mappings, which the sweep does not scan. */
 void weavecRtInternal(uintptr_t low, uintptr_t high);
@@ -674,7 +674,7 @@ extern unsigned long long weavecRtSweepLongest;
  * nanoseconds) after `took`; the allocator paces the next one by it. */
 void weavecRtSwept(uint64_t ended, uint64_t took);
 /* The most bytes the live heap's slots and the quarantine held, for
- * WEAVEC_RT_STATS=1 (not synchronised). */
+ * WEAVEC_RT_STATS=1 (not synchronized). */
 void weavecRtPeaks(size_t *live, size_t *quarantine);
 void weavecRtSweepLock(void);
 void weavecRtSweepUnlock(void);
@@ -730,7 +730,7 @@ static inline void weavecRtCount(int stat) {
     ++weavecRtStats[stat];
 }
 
-/* A lock that needs no initialisation and nothing from the C library. */
+/* A lock that needs no initialization and nothing from the C library. */
 typedef struct {
   volatile int held;
 } WeavecRtLock;

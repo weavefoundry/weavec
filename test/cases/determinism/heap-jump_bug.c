@@ -1,5 +1,5 @@
 // An index from `a` that lands in the live block `b` next to it: the bytes
-// it touches are `b`'s, which the redzone guard passes; neighbouring slots
+// it touches are `b`'s, which the redzone guard passes; neighboring slots
 // have different colors (RFC 0037 §8), so the write traps.
 // RUN-INPUT:
 #include <stdio.h>

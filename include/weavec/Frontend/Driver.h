@@ -11,7 +11,7 @@
 //
 //   weavec-cc -c foo.c -o foo.o      compile foo.c with every memory access
 //                                    guarded (the guard pass), locals
-//                                    zero-initialised and array indexes
+//                                    zero-initialized and array indexes
 //                                    bounds-checked
 //   weavec-cc foo.o bar.o -o prog    link, with the WeaveC runtime
 //
@@ -65,8 +65,8 @@ struct DriverOptions {
   [[nodiscard]] bool enforces() const {
     return enabled && checks != Checks::None;
   }
-  /// Whether locals are zero-initialised.
-  [[nodiscard]] bool zeroInitialises() const {
+  /// Whether locals are zero-initialized.
+  [[nodiscard]] bool zeroInitializes() const {
     return enforces() && zeroInit.value_or(true);
   }
 };

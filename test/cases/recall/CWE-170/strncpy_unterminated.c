@@ -18,7 +18,7 @@ void bad_puts(void) {
   puts(name); // TRAP
 }
 
-void bad_initialiser(void) {
+void bad_initializer(void) {
   char name[4] = "abcd";
   printf("%s\n", name); // TRAP
 }
@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
   good();
   if (which == 1) bad();
   if (which == 2) bad_puts();
-  if (which == 3) bad_initialiser();
+  if (which == 3) bad_initializer();
   if (which == 4) bad_memset();
   return 0;
 }

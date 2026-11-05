@@ -140,7 +140,7 @@ limits, annotation precedence and unsafe reporting behavior.
 
 Recursive components use dependency-directed dirty work where possible.
 Whole-program invalidation distinguishes imported function summaries from
-context requests travelling back to their defining unit. A changed export
+context requests traveling back to their defining unit. A changed export
 invalidates consumers that observed its symbol, declared it as an import, or
 use its indirect candidate type. Changed callback/memory requests invalidate
 the unit defining the requested symbol. Global names, counted/sized facts and

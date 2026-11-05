@@ -11,7 +11,7 @@ test/
                  frames and shared frame space, globals, loop ranges) and
                  the programs they build, which must stop at the faulty
                  access with the runtime's report
-  Driver/        command-line behaviour of weavec-cc (compile, link,
+  Driver/        command-line behavior of weavec-cc (compile, link,
                  -fweavec-* flags, fortification, ASan's macros, the
                  runtime's link line and its fallbacks, one runtime per
                  process)

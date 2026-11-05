@@ -232,7 +232,7 @@ struct ShadowRun {
 };
 using ShadowRuns = llvm::SmallVector<ShadowRun, 8>;
 
-/// Appends `count` granules of `value` to `runs`, merging equal neighbours.
+/// Appends `count` granules of `value` to `runs`, merging equal neighbors.
 inline void appendRun(ShadowRuns &runs, std::uint64_t count,
                       std::uint8_t value) {
   if (count == 0)

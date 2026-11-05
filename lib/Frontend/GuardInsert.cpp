@@ -1,4 +1,4 @@
-//===- GuardInsert.cpp - Guards before the optimiser ----------------------===//
+//===- GuardInsert.cpp - Guards before the optimizer ----------------------===//
 //
 // Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// RFC 0035 §2.1. Before the optimiser runs, every access gets a marker: a
+// RFC 0035 §2.1. Before the optimizer runs, every access gets a marker: a
 // load, store or atomic operation a guard of its bytes, a memory intrinsic a
 // guard or range of each operand, a masked or gathered lane a range of its
 // element under its mask bit. An access to a stack or global object at a
@@ -27,7 +27,7 @@ namespace weavec::frontend::guard {
 
 namespace {
 
-/// One access before the optimiser.
+/// One access before the optimizer.
 struct Found {
   llvm::Instruction *instruction = nullptr;
   llvm::Value *pointer = nullptr;
@@ -227,7 +227,7 @@ static llvm::Value *nullBaseOf(llvm::Value *pointer,
 void insertGuards(ModuleContext &module, llvm::Function &function) {
   // RFC 0036 §1: the unit was parsed with AddressSanitizer's language
   // options for its macros; nothing else of ASan's applies, and the
-  // attribute would keep the optimiser from its usual work.
+  // attribute would keep the optimizer from its usual work.
   function.removeFnAttr(llvm::Attribute::SanitizeAddress);
   std::vector<Found> found;
   for (llvm::BasicBlock &block : function)

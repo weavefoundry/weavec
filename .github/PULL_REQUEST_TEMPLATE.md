@@ -28,6 +28,7 @@ Delete this section if not applicable.
 ## Checklist
 
 - [ ] Code is formatted (`scripts/format.sh`) and passes clang-tidy
-- [ ] Public headers and behaviour changes are documented
+- [ ] Public headers and behavior changes are documented
 - [ ] Conventional Commit PR title and user-visible changes documented (changelog is generated)
 - [ ] `scripts/check-hygiene.py` passes (no Clang/LLVM in `lib/Core`, runtime entry points declared in `weavec_rt.h`, line budgets)
+- [ ] `scripts/check-spelling.py` passes (American English)

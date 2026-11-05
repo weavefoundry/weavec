@@ -25,7 +25,7 @@ accepted every recommendation of the milestone analysis. The owner
 explicitly authorized drafting this RFC and then implementing it end to end
 in one large commit. The authorization covers four decisions: runtime checks
 are on by default in `weavec-cc`, locals and heap allocations are
-zero-initialised in enforcing modes, checked mode is deleted outright, and
+zero-initialized in enforcing modes, checked mode is deleted outright, and
 the mechanical deletion of generated evidence lands in the same commit.
 Accepted status records that authorization; it is not a separate review. The
 status becomes Implemented only when every gate in *Acceptance gates* passes
@@ -183,7 +183,7 @@ the text of `docs/pages/reference/guarantees.md`.
 
 Let *U* be a translation unit compiled by `weavec-cc` in an *enforcing
 mode*: `-fweavec-checks=trap` (the default) or `verify`, or `report` with
-`WEAVEC_RT_ABORT=1` in the environment, with zero-initialisation on (the
+`WEAVEC_RT_ABORT=1` in the environment, with zero-initialization on (the
 default). The guarantee covers every execution of a program containing *U*'s
 object code, and every operation site *s* emitted from *U* outside a
 `WEAVEC_UNSAFE` region:
@@ -231,10 +231,10 @@ These hold under assumptions A1–A5:
   `longjmp` changes memory that *U* accesses during *U*'s operations, except
   at sites marked for it: `trusted(concurrency)` or `unresolved(setjmp)`
   facets, and the checked facets §5.3–5.4 substitute for flow proofs.
-- **A5 — initialisation.** The linked allocator answers the usable-size
+- **A5 — initialization.** The linked allocator answers the usable-size
   query (`malloc_usable_size`, `malloc_size`) consistently with its
   `malloc`. Pointer-typed memory that *U* reads and that did not come from a
-  zero-initialising source (automatic storage whose declaration no jump
+  zero-initializing source (automatic storage whose declaration no jump
   bypasses, static storage, and the lowered allocation family of §11) was
   written before *U* loads it. This covers memory from non-lowered
   allocators, unknown callees and *U*'s own free lists. The ledger counts
@@ -292,8 +292,8 @@ Classes caught at runtime by a trap at the offending access (the *checked*
 outcome):
 
 - every dereference whose null outcome is not proven (unknown, maybe-null
-  or allocation-failure values, and uninitialised pointers made null by
-  zero-initialisation);
+  or allocation-failure values, and uninitialized pointers made null by
+  zero-initialization);
 - every index, cursor dereference and library-call length whose extent is
   exact (an array or VLA object, an allocation size in scope, a surviving
   field invariant) or declared, and has a nameable term (§7.1, §10.3).
@@ -342,8 +342,8 @@ int first(const char *s) { return s[0]; } ... first(c->name) // traps on NULL, a
   objects, and `va_arg` of pointer type are not raw under RFC 0004; uses of
   such pointers are `unresolved(raw-cast)`. The null check still runs, but a
   forged non-null pointer passes it.
-- **Uninitialised scalars.** They are outside the three facets. Enforcing
-  modes define them as zero, which neutralises the class (probes 08, 32);
+- **Uninitialized scalars.** They are outside the three facets. Enforcing
+  modes define them as zero, which neutralizes the class (probes 08, 32);
   with `-fno-weavec-zero-init` they are not covered.
 - **Data races and asynchronous signals.** These are assumption A4. For
   places shared with thread or signal entry points (not `atexit` handlers,
@@ -400,7 +400,7 @@ int first(const char *s) { return s[0]; } ... first(c->name) // traps on NULL, a
   followed by known memory, and dereferencing a pointer built from an
   integer inside a struct hack. Such code needs `WEAVEC_UNSAFE`. Gate G11
   requires 0 traps in every corpus project's own test suite.
-- **Zero-initialisation changes behaviour only for programs that read
+- **Zero-initialization changes behavior only for programs that read
   indeterminate values.** Such programs are already undefined in C.
 
 ### Where this is less or more sound than v0.10.0
@@ -421,7 +421,7 @@ Less sound in two respects:
 - Possible temporal findings are warnings rather than errors, so a build
   that used to fail on a real path-dependent use-after-free now succeeds.
   The ledger and the warning keep the finding visible, and
-  `-fweavec-require=checked` restores fail-closed behaviour.
+  `-fweavec-require=checked` restores fail-closed behavior.
 - With the `weavec` tool, or with `-fweavec-checks=none`, possible null and
   spatial findings that v0.10.0 reported as errors ("may be null", "may be
   out of bounds") produce no diagnostic and no check. They are counted as
@@ -440,12 +440,12 @@ actual outcomes.
 
 | Class | Probes | Count |
 | --- | --- | --- |
-| Reported today, still reported (error or warning) | the 36 caught today, plus 26 and 41 (mislabelled today) | 38 |
+| Reported today, still reported (error or warning) | the 36 caught today, plus 26 and 41 (mislabeled today) | 38 |
 | New: definite error | 09 (call-site requirement), 19, 20b, 21, 23, 25, 25b, 38 (link), 45, c03, c06, 18 (format arity), 46 | 13 |
 | New: runtime trap | 06, 07, 07b, 20, 24, 29, 31, 36, 39, 49, c09, c12 | 12 |
 | New: possible warning | 25c (`setenv` invalidates `getenv`), 47 (`qsort` comparator) | 2 |
 | Non-silent ledger row only | 02, 02c, 02d (dangling-escape, propagated to the bug site, §9.4); 10, 17, 42, c04, c14 (raw-cast); 14 (unknown-callee); 14b, 37, c13 (unknown-extent); 14c (caller-contract); c01 (inexpressible); 15, 15b (concurrency); 16, 16b (setjmp) | 18 |
-| Neutralised by zero-initialisation | 08, 32 | 2 |
+| Neutralized by zero-initialization | 08, 32 | 2 |
 
 The projected total reported is 65 of 85, with 0 silent. The gate floor is
 55, against 36 today.
@@ -571,7 +571,7 @@ A facet applies only where it has meaning:
 `offsetof` idiom, `&((T *)0)->f`) create no site. Sites in unevaluated
 operands (`sizeof`, `_Alignof`, `typeof`, unselected `_Generic` branches)
 do not exist, except in operands of variably modified type, which C
-evaluates. Sites in constant expressions (file-scope initialisers, case
+evaluates. Sites in constant expressions (file-scope initializers, case
 labels, array bounds) are decided statically. They can be *proven* or a
 *violation*, and are otherwise `unresolved(inexpressible)`; they are never
 *checked*. Sites whose operand is a pointer into a non-default address
@@ -579,7 +579,7 @@ space, and sites inside the shared operand of a `BinaryConditionalOperator`
 (`a ?: b`) or another `OpaqueValueExpr` source, are
 `unresolved(inexpressible)` for every facet a check would serve, because the
 helper cannot take the operand or the operand cannot be replaced in place.
-`SiteCollector` walks the semantic form of initialiser lists and
+`SiteCollector` walks the semantic form of initializer lists and
 deduplicates sites by `Stmt *`, so shared subtrees are counted once.
 
 The **assertion** facet is used only by Assume sites; the three safety
@@ -619,11 +619,11 @@ result classes):
 | `callback` | As `unknown-callee`, for an indirect call through a function-pointer slot with no known target (§9.3) |
 | `setjmp` | The function calls `setjmp`; values may be stale after a `longjmp` (§5.4) |
 | `budget` | The function exceeded its analysis budget; default outcome (§5.5) |
-| `unanalysed` | The engine did not reach the site or cannot model the construct (the old "unsupported …" and internal-limit incompleteness reasons) |
+| `unanalyzed` | The engine did not reach the site or cannot model the construct (the old "unsupported …" and internal-limit incompleteness reasons) |
 | `raw-cast` | The pointer was created by reinterpretation that RFC 0004 does not mark raw: `va_arg` of pointer type, a union member whose last visible write was a non-pointer member, or a byte-wise or partial copy of a pointer object. Also the outcome of an IntToPtr site's own facets outside an unsafe region |
 | `dangling-escape` | At this boundary, a place reachable from a parameter or global may hold a released pointer or a pointer to storage whose lifetime has ended; or the site relies on the entry assumption for a place class that such a boundary breaks elsewhere (§9.4) |
 | `second-owner` | At this boundary, two owning places reachable from parameters or globals may hold the same owned object; or, as above, the site relies on an owner-uniqueness assumption a boundary breaks (§9.4) |
-| `no-zero-init` | The pointer may be uninitialised: zero-initialisation is disabled, a jump can bypass the variable's declaration, or the storage came from an `alloca` that was not zeroed (§11) |
+| `no-zero-init` | The pointer may be uninitialized: zero-initialization is disabled, a jump can bypass the variable's declaration, or the storage came from an `alloca` that was not zeroed (§11) |
 
 #### 2.4 Trust reasons (closed list)
 
@@ -631,7 +631,7 @@ result classes):
 | --- | --- |
 | `unsafe` | The site is inside a `WEAVEC_UNSAFE` region (§6.1): its spatial and null facets, and every facet of a Raw or IntToPtr site (the only temporal use of this reason) |
 | `system-api` | The facet depends on a function declared in a C library, POSIX or platform header (§5.2), and not in the `LibrarySpec`, having borrow-only effects, or on such a header's attributes |
-| `library-spec` | The facet depends on a `LibrarySpec` statement about the callee's own behaviour: a `static(S)` or `interior-state(S)` result, a `retain`/`reads`/`invalidates` relation, or a callback clause (§8.2) |
+| `library-spec` | The facet depends on a `LibrarySpec` statement about the callee's own behavior: a `static(S)` or `interior-state(S)` result, a `retain`/`reads`/`invalidates` relation, or a callback clause (§8.2) |
 | `extern-contract` | The facet depends on the declared ownership contract of a function defined outside the TU (§5.1), or on external values in a function-pointer slot behaving like its known targets (§9.3) |
 | `caller-contract` | The facet depends on an inferred extent requirement of an exported or address-taken function that callers outside the TU must meet (A1, §7.5). Never used for nullability |
 | `external-unit` | The facet depends on code in a link input that has no WeaveC record |
@@ -671,19 +671,19 @@ The ledger is complete by construction:
    internal-linkage definitions, and C99 `inline` and `gnu_inline`
    (`extern inline`) definitions, which CodeGen emits
    `available_externally` and inlines at `-O1` and above. All of them are
-   analysed and instrumented, whether or not they are referenced; ledger
+   analyzed and instrumented, whether or not they are referenced; ledger
    rows are kept for the ones that are externally visible or used.
 2. The engine publishes decisions for the sites it reaches (§14). A
    decision for an expression that `SiteCollector` did not enumerate is an
    internal error: a debug-build assertion and a release-build
-   `unresolved(unanalysed)` row in the enclosing function.
+   `unresolved(unanalyzed)` row in the enclosing function.
 3. `LedgerAdapter::finish` fills every undecided facet with its default:
 
-| Facet | Undecided, function analysed | Function over budget |
+| Facet | Undecided, function analyzed | Function over budget |
 | --- | --- | --- |
 | null | `checked` (`nonnull` is always expressible, §10.3) | `checked` |
-| spatial | `checked` if the extent is exact from the type or declared, and its terms are constants, `const` locals and parameters that are never assigned or address-taken, else `unresolved(unanalysed)` | the same, with `unresolved(budget)` |
-| temporal | `unresolved(unanalysed)` | `unresolved(budget)` |
+| spatial | `checked` if the extent is exact from the type or declared, and its terms are constants, `const` locals and parameters that are never assigned or address-taken, else `unresolved(unanalyzed)` | the same, with `unresolved(budget)` |
+| temporal | `unresolved(unanalyzed)` | `unresolved(budget)` |
 | assertion | `checked` | `checked` |
 
 Without engine facts, rule 4 of §10.3 (the term's places are unmodified
@@ -699,8 +699,8 @@ invariants that survived (§7.6 says which functions are re-run for that).
 Every other run (fixpoint rounds, later Houdini rounds, the link step's
 refinement rounds before the last) publishes into a discarding adapter.
 
-Context-specialised analyses (RFC 0016 call contexts) never decide the rows
-of the function they analyse. They sharpen the summaries callers see, and
+Context-specialized analyses (RFC 0016 call contexts) never decide the rows
+of the function they analyze. They sharpen the summaries callers see, and
 they keep their diagnostics: a finding a context run makes in the callee is
 reported where v0.10.0 reports it, at the use in the callee, with a note
 naming the call, and its ledger link is that call's Call site in the
@@ -791,7 +791,7 @@ consume path):
 | definite, reason `Uninitialized` | violation of the null facet for a pointer (§3.2); no facet for a scalar (§3.4) | `use-of-uninitialized`, error |
 | not definite, not `unknownOrigin`, `Freed`/`Released` | `unresolved(may-released)` | same id, warning, "may" wording |
 | not definite, not `unknownOrigin`, `Moved` | `unresolved(may-moved)` | same id, warning |
-| not definite, `Uninitialized` | null facet `checked` (zero-initialised) or `unresolved(no-zero-init)` | none |
+| not definite, `Uninitialized` | null facet `checked` (zero-initialized) or `unresolved(no-zero-init)` | none |
 | `unknownOrigin` | `unresolved(unknown-callee)` or `unresolved(callback)` | none |
 | no record, but a may-alias release (below) | `unresolved(may-alias-released)` | none |
 | no record | proven (under the entry assumptions and §9.4) | none |
@@ -859,7 +859,7 @@ operand:
 | `Null`, `allocatorSource` | checked | `allocation-failure` (off by default) |
 | `MaybeNull` | checked | `allocation-failure` if `allocatorSource` |
 | no record (parameter, loaded field, unknown result) | checked | — |
-| possibly uninitialised with `-fno-weavec-zero-init` | `unresolved(no-zero-init)` | — |
+| possibly uninitialized with `-fno-weavec-zero-init` | `unresolved(no-zero-init)` | — |
 
 `Null` is must by construction: the `NullTracker::join` table turns `Null`
 joined with anything else into `MaybeNull`. A finding that rests only on a
@@ -905,7 +905,7 @@ removed:
 | `Unresolved`, `UnknownIndex` (extent exact or declared) | checked if expressible, else `unresolved(inexpressible)` |
 | `Unresolved`, `UnknownIndex` against a lower-bound kind, or `UnknownExtent` | `unresolved(unknown-extent)` |
 | `Unresolved`, `UnknownOffset` | `unresolved(unknown-index)` |
-| `Unresolved`, `Arithmetic` or `UnsupportedExpression` | `unresolved(unanalysed)` |
+| `Unresolved`, `Arithmetic` or `UnsupportedExpression` | `unresolved(unanalyzed)` |
 | `Unresolved`, `InterfaceRequirement` | checked at static call sites when the requirement matches a §7.5 must-access requirement with a trivial `when` guard; otherwise, inside the body, `unresolved(unknown-extent)`, or `trusted(caller-contract)` for an exported or address-taken function whose §7.5 requirement covers the access |
 
 A *violation* needs an exact extent (§7.1). A declared kind is a lower
@@ -1296,7 +1296,7 @@ is invoked.
   unresolvable target gets the unknown-callee default with reason
   `callback`. Probe 47 thereby becomes a possible use-after-free warning.
 - **`entry`** (`pthread_create`, `thrd_create`, `signal`, `sigaction`,
-  `pthread_atfork`): the target is analysed as an entry point, as every
+  `pthread_atfork`): the target is analyzed as an entry point, as every
   emitted function already is. Define G = the pointer-typed globals read,
   written or released by any function reachable from an entry target (call
   graph plus solved slots), together with every object reachable from the
@@ -1318,7 +1318,7 @@ is invoked.
   racing with a handler that sets `g_buf = NULL`, and the worker's own use
   of an object `main` frees, proven.
 - **`at-exit`** (`atexit`, `at_quick_exit`, `on_exit`): the target is
-  analysed as an entry point. It does not contribute to G, because it runs
+  analyzed as an entry point. It does not contribute to G, because it runs
   after the main flow has ended. A dangling global left for it is caught
   instead by the exit boundary at the `exit` call (§9.4).
 
@@ -1347,7 +1347,7 @@ deterministic and does not depend on timing.
   reason `budget`. Its summary's effects become the unknown-callee effects
   (§5.1), so callers stay sound; its result keeps the syntactic kind of
   §7.3.
-- The context-specialised analyses of one function share a second budget
+- The context-specialized analyses of one function share a second budget
   of the same size, counted over all of its contexts together. Once it is
   exhausted, further contexts use the default-context summary. This bounds
   the context runs that dominate Lua's analysis time (gate G15).
@@ -1359,7 +1359,7 @@ produces when `MaxFixpointRounds` is exhausted may under-approximate the
 callee. Callers apply its known effects plus the unknown-callee may-effects
 of §5.1 on every pointer argument, and its result keeps only its §7.3 kind.
 The function's own sites that the engine did not decide take the defaults
-of §2.6 with reason `unanalysed`.
+of §2.6 with reason `unanalyzed`.
 
 The budget is set by `-fweavec-budget=<n>` (`--budget=<n>` in `weavec`);
 `0` means unlimited. The initial default is 200,000 block transfers. S3
@@ -1385,9 +1385,9 @@ budget make callers apply the unknown-callee default at the call.
 #### 5.6 Headers
 
 `-fweavec-analyze-headers` is removed. Every emitted function (§2.6) is
-analysed and instrumented, including `static inline` functions from user
+analyzed and instrumented, including `static inline` functions from user
 headers. Each TU instruments its own copy. Definitions in system headers
-are never analysed or instrumented.
+are never analyzed or instrumented.
 
 #### 5.7 Inline assembly
 
@@ -1430,7 +1430,7 @@ code (a free, a store) is still visible there, as RFC 0004 specifies.
 The Assume site's assertion facet is:
 
 - **proven** when the engine proves `e` at the site. The call stays as
-  `weavec.h` wrote it: a no-op `weavec_assume_`, which the optimiser
+  `weavec.h` wrote it: a no-op `weavec_assume_`, which the optimizer
   removes.
 - **violation** when the engine refutes `e`. This is the
   `contradicted-assumption` error.
@@ -1441,7 +1441,7 @@ The Assume site's assertion facet is:
 In every case the analysis assumes `e` after the site, as today. That is
 sound in the enforcing modes, because the program would have trapped
 otherwise, or the violation fails the build (or traps, §3.4). The header's
-`weavec_assume_` keeps its no-op body, so the behaviour is the same with
+`weavec_assume_` keeps its no-op body, so the behavior is the same with
 any compiler and in every WeaveC mode except the rewrite itself. The
 header's doc comment for `WEAVEC_ASSUME`, which today says it is "trusted
 like every annotation", is rewritten to describe these three outcomes.
@@ -1853,7 +1853,7 @@ Declared kinds are enforced at every call site whatever the linkage.
   gives `sized(offsetof(a) + (k + 1)·sizeof(*a))` and covers the subscript
   (recall `memset_too_much`).
 - **Local copies.** In a static function whose address is not taken, an
-  access through a local initialised from an unmodified parameter through
+  access through a local initialized from an unmodified parameter through
   pointer conversions (`struct big *b = v;`), neither of them ever modified
   or address-taken, is an access through the parameter; the requirement
   counts the bytes it reaches (`sized(n)`, probe 09). An exported
@@ -1912,19 +1912,19 @@ runs Houdini over candidate invariants.
   §14). Every creation site (allocation of the struct, declaration,
   compound literal) and every store group (§7.4 rule 7) touching `d` or `f`
   must re-establish each candidate by the engine's facts at the end of the
-  group. A zeroing creation (`calloc`, a zero-initialised declaration, a
+  group. A zeroing creation (`calloc`, a zero-initialized declaration, a
   lowered allocation, §11) creates `d` null and `f` zero; a null `d`
   satisfies a candidate only when `f + c` is zero, so `c = 1` fails there.
   The engine publishes one `storeVerdict` per candidate and group.
   Candidates that are not re-established are dropped.
-- **Further rounds** re-analyse only the functions containing a store
+- **Further rounds** re-analyze only the functions containing a store
   group of a struct whose candidate was dropped, with the reduced set, and
   publish into a discarding adapter. They repeat until nothing is dropped,
   for at most three rounds in total. Candidates still standing after the
   third round are dropped.
 - **The authoritative rows.** Round 1's rows stand for every function that
   loads or stores no field of a struct with a dropped candidate. Every
-  function that does is analysed once more after the last round, with only
+  function that does is analyzed once more after the last round, with only
   the surviving invariants, and that run replaces its rows
   (`LedgerAdapter::beginFunction`). No published decision rests on a
   dropped candidate.
@@ -1990,7 +1990,7 @@ of these hold:
   fortified call would miss the table;
 - neither the TU nor, at link, the program defines a function of that
   name. A program's own `strlcpy`, `getline` or `malloc` uses its own body
-  and summary, and zero-initialisation never redirects a call to it (§11).
+  and summary, and zero-initialization never redirects a call to it (§11).
 
 A row applies to an indirect call whose solved slot contains the row's
 function (`fp = memcpy; fp(d, s, n)`): exactly, when the slot is closed
@@ -2195,7 +2195,7 @@ Semantics:
   size known to be zero, `q = realloc(p, 0); if (!q) free(p);` is a
   definite double free; with an unknown size the record is conditional and
   the same code is a possible one. In the enforcing modes the zero-init
-  wrapper maps a zero size to one (§11), which makes the behaviour the same
+  wrapper maps a zero size to one (§11), which makes the behavior the same
   on every C library.
 - **`interior-state(S)`** returns a pointer into the value `S` retains:
   `strtok(NULL, …)` points into the string an earlier call retained, not
@@ -2234,7 +2234,7 @@ Clang 23 does not turn a declaration's `nonnull` attribute (glibc's
 `__nonnull` on `memcpy`) into an IR `nonnull` argument, and LLVM does not
 treat a `llvm.memcpy` with a non-constant length as proof of non-null; both
 were checked against the reference toolchain. So a zero-length null
-argument does not let the optimiser fold away a later WeaveC null check. A
+argument does not let the optimizer fold away a later WeaveC null check. A
 rewrite-oracle case (`memcpy(NULL, x, 0)` followed by a checked
 dereference that must trap) keeps it that way across LLVM upgrades.
 
@@ -2299,7 +2299,7 @@ The record's contribution goes to `outcomes[class]` instead of the
 unconditional `effects`. Conjuncts on parameters stay as guards. All
 other conjuncts are dropped, which keeps the effect on more classes.
 
-**Case keys.** After derivation, each consume effect's key is canonicalised
+**Case keys.** After derivation, each consume effect's key is canonicalized
 to the grammar below:
 
 ```
@@ -2377,7 +2377,7 @@ the parameter is not proven non-null at the return: paths where it is
 was never tested. Then for every class `c ∉ K`, `nonNullOn[c]` gains
 `param i`: a result in class `c` implies that the parameter was non-null.
 The rule is the contrapositive, and it is applied when the summary is
-finalised. It is derived only from the default-context analysis within
+finalized. It is derived only from the default-context analysis within
 budget, never from a context run or an incomplete summary.
 
 `if (!cJSON_IsString(x)) return; x->valuestring` then proves `x` non-null
@@ -2400,7 +2400,7 @@ function-pointer value in the TU. Slot keys:
 Constraints:
 
 - `f ∈ S`: a function designator stored, assigned, passed or returned into
-  `S`, including in static initialisers.
+  `S`, including in static initializers.
 - `S ⊆ T`: a copy of a value from slot `S` into `T`. Direct calls add
   argument-to-parameter and result-to-receiver copies. Casts between
   function-pointer types preserve the value.
@@ -2437,7 +2437,7 @@ visible to the solver.
 
 At an indirect call through `S`:
 
-- **`S` closed, one target:** the call is analysed exactly as a direct
+- **`S` closed, one target:** the call is analyzed exactly as a direct
   call.
 - **`S` closed, several targets:** the join of their summaries. A may-effect
   from any target is a may-effect. A consume is unconditional only if
@@ -2485,7 +2485,7 @@ would: `fp = memcpy; fp(dst, src, n)` is checked against memcpy's row. When
 the slot is open, the row still decides only the temporal facts, so those
 needs are `unresolved(callback)`. Only what the row *needs* follows the
 slot: what it allocates or releases decides ownership and §11's
-zero-initialisation, which are the syntactic call's business (gate G8's
+zero-initialization, which are the syntactic call's business (gate G8's
 oracle takes an allocator's address and expects its wrapper), so a row that
 allocates or releases gives the indirect call no sites of its own.
 
@@ -2831,7 +2831,7 @@ read a string argument (`%s`) nor write through one (`%n`): the lowering is
 then the call's whole spatial requirement. Its witness is a `Length`
 witness without a need term, which `CheckPlanner` turns into the result
 form. The prelude's own helpers, in the predefines buffer, are neither sites
-nor zero-initialised. `CheckEmitter` orders one site's rewrites itself
+nor zero-initialized. `CheckEmitter` orders one site's rewrites itself
 (operand, index and argument wraps first, `nonnull` innermost, then the
 replacements, then `BeforeCall`), since the plan's order puts facets before
 templates. A `BeforeCall` check at a `return;` becomes `{ check; return; }`,
@@ -2994,7 +2994,7 @@ files and `ccache -E` never see the prelude, because only code-emitting
 actions inject it. `weavec-cc -fweavec-print-prelude` prints the prelude
 for the current mode, which the rewrite-oracle tests use (G8).
 
-### 11. Zero-initialisation
+### 11. Zero-initialization
 
 In the enforcing modes (checks other than `none`, unless
 `-fno-weavec-zero-init` is given):
@@ -3002,7 +3002,7 @@ In the enforcing modes (checks other than `none`, unless
 - `weavec-cc` adds `-ftrivial-auto-var-init=zero` to the `-cc1` job, which
   covers locals, including VLAs. A local whose declaration a jump can
   bypass (declared in a `switch` body before the first `case`, or skipped
-  by a `goto`) is not initialised by that option; its pointer uses get
+  by a `goto`) is not initialized by that option; its pointer uses get
   null facets `unresolved(no-zero-init)`.
 - `CheckEmitter` rewrites every `DeclRefExpr` to a function whose
   `LibrarySpec` entry has the `zero-init` flag, unless the program defines
@@ -3044,18 +3044,18 @@ headers' declarations). Writing `usable(p)` for that query:
 The invariant is that every byte of a lowered block's usable region is
 either zero or was written by the program, so no `realloc` can expose a
 stale pointer. On any target without a usable-size query,
-zero-initialisation of the allocation family is unavailable: `weavec-cc`
+zero-initialization of the allocation family is unavailable: `weavec-cc`
 warns once and behaves as `-fno-weavec-zero-init` for it.
 
 A comparison of a function pointer with `malloc` (`fp == malloc`) sees the
-wrapper and becomes false. This behaviour change is documented, and
+wrapper and becomes false. This behavior change is documented, and
 `-fno-weavec-zero-init` avoids it.
 
-The effect on the guarantee: a pointer read from uninitialised automatic
+The effect on the guarantee: a pointer read from uninitialized automatic
 or lowered heap storage is null, and the null check traps. Probe c12 traps
 instead of dereferencing garbage, and probes 08 and 32 become defined
 reads of zero. With `-fno-weavec-zero-init`, every null facet whose
-operand may be uninitialised is `unresolved(no-zero-init)`. Memory from
+operand may be uninitialized is `unresolved(no-zero-init)`. Memory from
 other allocators, from unknown callees and from the program's own free
 lists is covered by A5. The usable-size query is only valid for the
 system allocator, or for a replacement that interposes the query along
@@ -3080,7 +3080,7 @@ has exactly the helper's type. Wide-string rows, `alloca` of a size with
 side effects, references in a unit that defines an allocator, and heap rows
 of a freestanding unit or of a target without a usable-size query are not
 lowered, and count in A5. Clang's `-ftrivial-auto-var-init=zero` already
-zeroes `__builtin_alloca`; the explicit `memset` stays, and the optimiser
+zeroes `__builtin_alloca`; the explicit `memset` stays, and the optimizer
 drops one of the two.
 
 ### 12. The ledger: JSON, SARIF, fingerprints and the summary line
@@ -3197,7 +3197,7 @@ fingerprint = hex(SHA-256(UTF-8("weavec-fp/1" ␟ key ␟ path ␟ function ␟ 
   directory.
 - `function` is the enclosing function's name, or `<file-scope>`.
 - `message` is the diagnostic message, or for a facet row the site's
-  `text`, normalised: every maximal run of ASCII digits becomes `0`,
+  `text`, normalized: every maximal run of ASCII digits becomes `0`,
   whitespace runs become one space, and the result is trimmed.
 - `ordinal` is the 0-based index of the row among rows of the same
   function with the same `key` and `message`, in (line, column) order.
@@ -3298,7 +3298,7 @@ codec's field table (`lib/Frontend/RecordPayload.cpp`) is authoritative, and
 the schema fingerprint changes with it:
 
 - `functions[]` also carries `location` and `contexts` (the RFC 0014 and
-  RFC 0016 specialisations a caller requested), and its `kinds` spell their
+  RFC 0016 specializations a caller requested), and its `kinds` spell their
   source (`default single nullable`), so the link step can tell a declared
   kind from a default.
 - `imports[].declared.params` has one object per parameter (`name`, `kind`,
@@ -3316,7 +3316,7 @@ the schema fingerprint changes with it:
   element of the pointee takes, so a `counted` term becomes bytes at a
   caller that never saw the definition.
 - Each entry of `imports[].calls[]` also carries `evidence`, one object per
-  argument: `bytes` (what the §7.3 judgement guarantees behind a pointer
+  argument: `bytes` (what the §7.3 judgment guarantees behind a pointer
   argument, a lower bound; 0 for the null pointer constant), `exact` (the
   width is the whole object's, at offset 0: a complete array, a string
   literal or `&object`), `null`, and `value` (an integer argument's
@@ -3348,7 +3348,7 @@ When `weavec-cc` links (and `weavec --whole-program`, which uses the same
    Homebrew `-lreadline` is not system. Every non-system
    input without a valid record (object, archive, shared library, stale
    record) is named in one `unanalyzed-input` warning per link, which lists
-   them all. Calls from analysed units into functions no record defines
+   them all. Calls from analyzed units into functions no record defines
    are `trusted(external-unit)` when such an input exists, and
    unknown-callee otherwise.
 2. **Solve slots** over all records (§9.3).
@@ -3385,7 +3385,7 @@ When `weavec-cc` links (and `weavec --whole-program`, which uses the same
    - **Propagate boundary rows** program-wide (§9.4).
    - If a unit defines the allocator and another unit lowered allocation
      calls (§11), `weavec-cc` prints one driver warning, "`heap
-     zero-initialisation assumes the system allocator, but '<unit>' defines
+     zero-initialization assumes the system allocator, but '<unit>' defines
      'malloc'; rebuild with -fno-weavec-zero-init`", and the ledger records
      the unit under A5.
 6. **Compose the program ledger.** Spatial, null and assertion facets are
@@ -3427,7 +3427,7 @@ and `functions[].requirements[].element` of §13.1.
   has its `trusted(caller-contract)` rows replaced by `proven` in the
   program ledger, but only when the program is closed for it: no link
   input without a record, an executable link that is not
-  `-rdynamic`, an address that is not taken, its own unit analysed at
+  `-rdynamic`, an address that is not taken, its own unit analyzed at
   link, and no call to it inside that unit left unresolved or violated.
 
 Static archives, shared libraries and ccache still do not carry records;
@@ -3493,7 +3493,7 @@ public:
 class SafetyEngine {
 public:
   virtual ~SafetyEngine();
-  /// Analyse every emitted function of the unit, publishing through `out`.
+  /// Analyze every emitted function of the unit, publishing through `out`.
   virtual void analyzeUnit(const EngineInput &input, LedgerAdapter &out) = 0;
   /// Summaries and exported facts for the unit record (§13.1).
   [[nodiscard]] virtual UnitExports exports() = 0;
@@ -3558,7 +3558,7 @@ The edits are bounded to this list. Anything beyond it needs an amendment:
    the bounds reporter, `reportLeak` and the RFC 0007/0008 ids.
 3. **Replace `reportIncomplete`** with
    `decide(site, facet, Unresolved, reason, detail)`. The reason
-   strings map to `budget` ("… limit reached"), `unanalysed`
+   strings map to `budget` ("… limit reached"), `unanalyzed`
    ("unsupported …", "unresolved array …", "… is ambiguous"),
    `raw-cast` ("incompatible or unknown object view …", "unsupported
    memory copy of pointer-containing storage") and `inexpressible`
@@ -3618,8 +3618,8 @@ The edits are bounded to this list. Anything beyond it needs an amendment:
 19. **Incomplete summaries.** Apply §5.5's rule at every use of a summary
     marked incomplete or produced when `MaxFixpointRounds` was exhausted.
 
-Context-specialised runs publish summaries and diagnostics, never rows of
-the function they analyse. The generic pass added by item 18 costs CPU on
+Context-specialized runs publish summaries and diagnostics, never rows of
+the function they analyze. The generic pass added by item 18 costs CPU on
 Lua, where many functions report only through contexts today; gate G15
 budgets it, and §5.5 bounds the context runs. Gate H2 requires
 `Dataflow*.{h,cpp}` to be at most 25K lines after these changes, down
@@ -3631,7 +3631,7 @@ from 41.1K.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `-fweavec` / `-fno-weavec` | on | analyse, check and zero-initialise; off is plain Clang |
+| `-fweavec` / `-fno-weavec` | on | analyze, check and zero-initialize; off is plain Clang |
 | `-fweavec-checks=trap\|report\|verify\|none` | `trap` | §10.7 |
 | `-fweavec-zero-init` / `-fno-weavec-zero-init` | on unless checks are `none` | §11 |
 | `-fweavec-require=none\|checked\|proven` | `none` | §6.3 |
@@ -3708,7 +3708,7 @@ committed.
 
 #### 17.2 `test/cases`
 
-One tree, organised by feature, replaces `test/evaluation`, `test/recall`
+One tree, organized by feature, replaces `test/evaluation`, `test/recall`
 and the per-RFC populations:
 
 ```
@@ -3770,13 +3770,13 @@ a *file marker* appears before the first declaration.
 // UNRESOLVED: <facet>:<reason>        line: a ledger row here has that facet unresolved with that reason
 // TRUSTED: <facet>:<reason>           line: likewise, trusted
 // NOT-PROVEN: <facet>                 line: no ledger row here has that facet proven
-// NEUTRALISED: zero-init              line: the defect is defined away by zero-initialisation (§11)
+// NEUTRALIZED: zero-init              line: the defect is defined away by zero-initialization (§11)
 // MISS: <reason text>                 line: a known miss; counted in the denominator, expected silent
 // EXPECT-LEDGER: <json-pointer> <op> <value>   file: e.g. /summary/unresolved <= 3; op is == != <= >= < >
 // FLAGS: <weavec-cc flags>            file: extra flags for every compile and link (e.g. -fweavec-require=checked)
 // UNITS: <file.c> [<file.c> …]        file: further translation units linked with this one
 // ASAN                                file: also run the ASan oracle
-// TOOL                                file: analyse with `weavec` (no build, no run)
+// TOOL                                file: analyze with `weavec` (no build, no run)
 ```
 
 Facet names are `spatial`, `null`, `temporal` and `assertion`; reasons are
@@ -3803,7 +3803,7 @@ the §2.3–2.4 spellings. For G4, the runner maps a `BUG` id to its
 - `--legacy` (golden semantics: diagnostics only, no ledger);
 - `--no-emission` (for S3, S4 and fallback points A and B, before checks
   are emitted: a *checked* matching facet at the pinned line satisfies a
-  null or spatial `BUG` marker, as in gate G3, and `NEUTRALISED` markers
+  null or spatial `BUG` marker, as in gate G3, and `NEUTRALIZED` markers
   count as `MISS`);
 - `--no-run` (build, diagnostics and ledger only; used by the ASan CI job,
   gate H1);
@@ -3821,7 +3821,7 @@ Each case is processed in these steps:
      then link the units with `weavec-cc` into `<tmp>/a.out` when some
      unit defines `main`.
    - With no `main`, compile only. Several units without `main` are
-     analysed with `weavec --whole-program`.
+     analyzed with `weavec --whole-program`.
    - `// TOOL` cases use `weavec --ledger`.
    - Timeouts are 120 s per compile or link.
 2. **Diagnostics.** Parse `file:line:col: error|warning: … [weavec::<id>]`
@@ -3853,7 +3853,7 @@ Each case is processed in these steps:
    case, whatever its markers (G6).
 
 Every bug probe is classified as `error`, `warning`, `trap`, `row` (a
-non-proven matching facet or `UNRESOLVED`/`TRUSTED` match), `neutralised`,
+non-proven matching facet or `UNRESOLVED`/`TRUSTED` match), `neutralized`,
 `miss` or `silent`. The results JSON gives per-suite tallies of these
 classes and per-case failures. The exit status is non-zero on any failed
 case. `--legacy` interprets the same markers against the golden binaries;
@@ -3877,7 +3877,7 @@ the Linux Release job in full, and in the ASan job with `--no-run`.
     suite, zlib's `make test`, a named Lua `testes` subset, sds's
     `sds-test`, jsmn's tests);
   - `bench`: a command, an input and a repeat count;
-  - `wholeProgram`: `true` for configs also analysed by
+  - `wholeProgram`: `true` for configs also analyzed by
     `weavec --whole-program`.
 - **`expected.json`.** A ratchet per config: `errors`, `warnings`, ledger
   counts, `unresolvedShare.spatialNull`, `cpuSeconds`, `workCounters`
@@ -3941,10 +3941,10 @@ references across 12 files (`DiagnosticControlTest`, `ArrayOwnershipTest`,
 
 - In S3, their `CHECK` lines and expectations are updated to the new
   messages, severities and ids.
-- Tests of removed flags are rewritten for the replacement behaviour:
+- Tests of removed flags are rewritten for the replacement behavior:
   `--strict-externs` and `--report-unannotated` become ledger fix-its and
   require levels; `--analyze-headers` tests are inverted, since headers are
-  always analysed (`headers-skipped.c` becomes `headers-analysed.c`);
+  always analyzed (`headers-skipped.c` becomes `headers-analyzed.c`);
   `--exclusive-borrows` tests are deleted. The 11 affected files
   (`headers-skipped.c`, `rfc0002-borrows.c`, `rfc0016-clean.c`,
   `version.c`, `rfc0004-posix.c`, `ownership-annotations.c`,
@@ -4066,7 +4066,7 @@ Diagnostic ids removed: `analysis-incomplete`, `annotation-required`,
     sidecars, now `unanalyzed-input`;
   - 0006: `--exclusive-borrows`;
   - 0007: leak severity and main-exit leaks;
-  - 0008: null and uninitialised severities, `annotation-required`;
+  - 0008: null and uninitialized severities, `annotation-required`;
   - 0011: may-out-of-bounds errors;
   - 0012: `WEAVEC_ASSUME` trust;
   - 0013: "no runtime instrumentation";
@@ -4160,7 +4160,7 @@ The limits are gates G14, G15 and H1; this section gives only the reasoning.
 - **Runtime.** Null checks cost 1.02x on Lua (measured with
   `-fsanitize=null`, which checks every dereference). Checks against named
   extents behave like `-fsanitize=array-bounds` (0.99x measured), not like
-  `local-bounds` (1.44x), and the optimiser removes the ones a loop bound
+  `local-bounds` (1.44x), and the optimizer removes the ones a loop bound
   already implies. The zero-init cost is proportional to the slack between
   requested and usable sizes, since `calloc` supplies the rest.
 - **CI.** Removing the 243 populations and running CTest in parallel is
@@ -4248,7 +4248,7 @@ is false only for `allocation-failure`.
 | `leak` | warning, never error | unchanged; **not reported at a return from `main` or after an `exits` call** |
 | `mismatched-release` | definite error / possible warning | unchanged |
 | `null-dereference` | **error, definite only** | `dereference of '<p>', which is null`; `'<p>', which is null, is passed to '<f>', which dereferences it`. **The "may be null" forms are removed: they are checked facets now** |
-| `use-of-uninitialized` | **error, definite only** | `use of '<p>' before it was initialized`. Possible uses are made defined by zero-initialisation |
+| `use-of-uninitialized` | **error, definite only** | `use of '<p>' before it was initialized`. Possible uses are made defined by zero-initialization |
 | `invalid-release` | definite error / possible warning | unchanged; possible: **`'<p>' is released but may point to <x>, which is not a heap object`**, and for an interior pointer at an unknown offset **`'<p>' is released but may not point to the start of its allocation`** |
 | `out-of-bounds` | **error, definite only** (an exact extent, §7.1) | existing definite forms; **new**: `'<f>' writes <n> bytes into '<b>', an object of <m> bytes`; `write through '<p>', which points to a string literal`; `format string of '<f>' reads <n> arguments but <m> are passed`; `'<a>' has <n> elements but '<f>' accesses <m> through parameter '<p>'` (a static-callee requirement at the call); `'<f>' copies <n> bytes between overlapping ranges of '<obj>'` (note `'<obj>' is declared here`). **The "may" forms are removed: they are checked facets now** |
 | `invalid-integer-operation` | error | unchanged (RFC 0017) |
@@ -4288,15 +4288,15 @@ the five the owner's resolutions list.
 | `callback` | `the target of '<slot>' is unknown` |
 | `setjmp` | `'<fn>' calls setjmp` |
 | `budget` | `'<fn>' exceeded the analysis budget` |
-| `unanalysed` | `WeaveC does not model this (<detail>)` |
+| `unanalyzed` | `WeaveC does not model this (<detail>)` |
 | `raw-cast` | `'<p>' was made from a non-pointer value` |
 | `dangling-escape` | `'<place>' may hold a freed pointer here` |
 | `second-owner` | `'<a>' and '<b>' may own the same object here` |
-| `no-zero-init` | `'<p>' may be uninitialised` |
+| `no-zero-init` | `'<p>' may be uninitialized` |
 
 **Removed ids:**
 
-- `analysis-incomplete` becomes `unresolved(unanalysed | budget | …)`
+- `analysis-incomplete` becomes `unresolved(unanalyzed | budget | …)`
   ledger rows plus the summary line;
 - `annotation-required` becomes `unresolved(unknown-callee)` rows with
   fix-its;
@@ -4325,7 +4325,7 @@ numbers. Two fallback points and one abort rule bound the risk.
 | | **Fallback point A.** S0–S3 ship as "one semantics, visible coverage": checks are not emitted, and the summary line says `checkable (not enforced)`. The probes excluded from S3's G4 subset are not yet covered, and the release notes say so. | |
 | **S4 Library table** | `LibrarySpec` (§8) replaces `Builtins`, `RuntimeModels` and the `name ==` tests, with aliases and fortified forms; model fixes; callbacks, threads and signals (§5.3); `allocation-failure`; the leak rule; the §9.2 non-null derivation. | A unit test per row, from the independent expectation table. The ledger diff S3→S4 on `test/cases` and the corpus, with every changed row explained in the PR description. G4 for probes 15, 15b, 25, 25c and 47 under `--no-emission`. Repros `pred`, `zerolen` and `mainleak` meet their exact expectations. |
 | | **Fallback point B.** S0–S4 are a coherent release if check insertion fails: one semantics, recorded outcomes, the library table, and the test reset. | |
-| **S5 Emission** | `CheckEmitter` over the plan for type-derived, allocation and declared extents; the prelude and its forms; the four modes, `weavec_rt` and `weavec_chk`; lowered-violation traps (§3.4); zero-initialisation (§11); the PCH fallback. | G1 and G2 in their trap form; G4 in full except probes 02, 02c, 02d (S7), 09, 14c (S6) and 38 (S8); G5; G6; G8; G11; G14. |
+| **S5 Emission** | `CheckEmitter` over the plan for type-derived, allocation and declared extents; the prelude and its forms; the four modes, `weavec_rt` and `weavec_chk`; lowered-violation traps (§3.4); zero-initialization (§11); the PCH fallback. | G1 and G2 in their trap form; G4 in full except probes 02, 02c, 02d (S7), 09, 14c (S6) and 38 (S8); G5; G6; G8; G11; G14. |
 | | **Abort rule.** If false traps (G5, G6, G11) or overhead (G14) cannot be fixed within S5, emission is reverted. The release is then S0–S4 plus S6's declared kinds, in the ledger only. §10–§11 move to RFC 0031, and this RFC is amended to record the cut; it does not become Implemented until that amendment. | |
 | **S6 Kinds** | `AttributeReader`'s full table and the macros (§7.2); the engine's consumption of kinds (§15 item 14); slot kinds with reliance flags and demotions (§7.3); must-access inference with guarded call-site checks (§7.5); grouping (§7.4). Houdini (§7.6) comes last and is the first thing cut. | A lit test per row of the §7.2 table; G13; G4 for probes 09 and 14c; G5, G11 and G14 still pass. |
 | **S7 Temporal precision** | Case derivation with `lossy` bits (§9.1); slots per TU and in `--whole-program` (§9.3), replacing the RFC 0014 callback-global fixpoint; boundary invariants and their propagation (§9.4). | G9, G10, G14 and G15; G12 measured with `weavec --whole-program` (the `weavec-cc` link half waits for S8); G4 for probes 02, 02c and 02d. Repros `realloc0`–`realloc5` and `luaalloc` meet their exact expectations. |
@@ -4399,9 +4399,9 @@ given.
     25 entries.
 - **G4** *(changed)*. Measured by `run-cases.py --filter 'soundness/**' --asan`.
   - 0 of 85 bug probes are silent. "Non-silent" means error, warning, trap,
-    a non-proven row of the matching facet (§17.3), or `NEUTRALISED` for
-    probes 08 and 32. Those two defects are uninitialised scalars, outside
-    every facet; zero-initialisation defines them away.
+    a non-proven row of the matching facet (§17.3), or `NEUTRALIZED` for
+    probes 08 and 32. Those two defects are uninitialized scalars, outside
+    every facet; zero-initialization defines them away.
   - At least 55 of 85 are reported as an error, warning or trap.
   - Every probe v0.10.0 reports (the 36 caught, plus 26 and 41) is still
     reported, at some severity.
@@ -4441,7 +4441,7 @@ given.
 - **G8.** Measured by `lit test/Emission`.
   - At least 30 `rewrite-oracle-*.c` pairs.
   - In each pair, the `-O0` IR of the instrumented source equals, after
-    `--strip-debug` normalisation, the IR clang produces for the paired
+    `--strip-debug` normalization, the IR clang produces for the paired
     hand-written `*.expected.c`, which calls the same helpers explicitly
     and is compiled with `-include` of the prelude that
     `weavec-cc -fweavec-print-prelude` prints.
@@ -4559,7 +4559,7 @@ given.
   and fails, and the limit is not moved, because the number decomposes into
   one part that meets it and one that has nothing to do with checking.
 
-  With `-fweavec-checks=none` the build is 0.99x and zero-initialisation
+  With `-fweavec-checks=none` the build is 0.99x and zero-initialization
   costs 0.03 s, so the checks are the whole of it; all but 0.07 s of the
   0.40 s lands in the interpreter's dispatch loop. Its 432 `nonnull` and
   122 `index` checks cost 0.01 s and 0.07 s when either family is inserted
@@ -4601,7 +4601,7 @@ given.
   - On a machine other than the reference one, the limit is instead the
     golden binary's time measured in the same run. This is the change: a
     fixed time is only comparable on one machine.
-  - Over-budget functions are at most 1% of analysed functions, and each
+  - Over-budget functions are at most 1% of analyzed functions, and each
     is listed.
 
   **Measurement (S7).** Two of the four clauses pass: over-budget
@@ -4622,7 +4622,7 @@ given.
   What was tried and rejected matters as much as the number. A reverse
   post-order block worklist reached 54 s, but only by exhausting that one
   function's §5.5 budget in 8 runs out of 11 and losing 61 findings, so it
-  was reverted: this gate may not be met by analysing less. Interning
+  was reverted: this gate may not be met by analyzing less. Interning
   `SummaryPath` is the remaining identified lever, worth about 10% of a 2x
   gap, since about 19% of the time is in allocation. Reducing the rounds
   honestly is the real one, and it is the same work as G10's residual —
@@ -4672,7 +4672,7 @@ given.
 ## Drawbacks
 
 - **Binaries can now abort.** A correct program that relied on undefined
-  behaviour that happened to work (§Soundness) will trap in production.
+  behavior that happened to work (§Soundness) will trap in production.
   `-fweavec-checks=report` supports canary rollouts, without a guarantee
   while it lets failed checks continue, and `-fweavec-checks=none` restores
   Clang's exact output. Both are opt-outs a team must know about.
@@ -4687,14 +4687,14 @@ given.
   commits only to "never silent" for temporal safety.
 - **Possible temporal bugs no longer fail the build.** This is the price
   of removing about 92% false errors. `-fweavec-require=checked` restores
-  fail-closed behaviour per unit or per function.
+  fail-closed behavior per unit or per function.
 - **Per-TU compiles see more `unknown-callee` rows.** Calls into sibling
   units are unknown until the link step, which refines them. Archives
   still hide their members until RFC 0032, though the link step now says
   so.
-- **Zero-initialisation has a cost.** It costs `calloc` instead of
+- **Zero-initialization has a cost.** It costs `calloc` instead of
   `malloc`, plus time proportional to the slack between requested and
-  usable sizes, and it changes two observable behaviours: comparing a
+  usable sizes, and it changes two observable behaviors: comparing a
   function pointer with `malloc`, and `realloc(p, 0)`, which returns a
   one-byte block instead of freeing.
 - **Mutating the AST in a release-mode Clang is delicate.** Brew's LLVM
@@ -4770,13 +4770,13 @@ given.
 - **Clang `-fbounds-safety`.** Its lattice (`__single`, `__counted_by`,
   `__sized_by`, `__ended_by`, `__null_terminated`, `__indexable`), its
   checks at conversions from indexable to single, its grouping rule for
-  pointer/count updates, and its reliance on the optimiser
+  pointer/count updates, and its reliance on the optimizer
   (ConstraintElimination) to remove redundant checks are adopted almost
   directly, including the one-past-the-end rule. WeaveC differs in
   inferring kinds for unannotated code and in not changing pointer
   representation.
 - **Rust.** Ownership and borrowing are checked statically, and bounds are
-  checked dynamically unless the optimiser removes them. This RFC gives C
+  checked dynamically unless the optimizer removes them. This RFC gives C
   the same split: temporal safety is static; spatial and null safety are
   proven or checked.
 - **Frama-C RTE and E-ACSL.** Frama-C generates a runtime-error assertion
@@ -4797,7 +4797,7 @@ given.
   enforce temporal safety too, at a cost in ABI or performance. RFC 0031's
   temporal backstop starts from them.
 - **`-ftrivial-auto-var-init=zero`.** Deployed in Chrome, Windows and the
-  Linux kernel, it shows that zero-initialisation is affordable and
+  Linux kernel, it shows that zero-initialization is affordable and
   removes a bug class. WeaveC extends it to the malloc family (§11).
 - **Clang's lifetime-safety analysis** (`-Wlifetime-safety`). It covers
   simple dangling cases in C upstream. WeaveC's niche is the
@@ -4811,7 +4811,7 @@ above:
 
 - **The budget default.** S3 calibrates it by the §5.5 rule. The value is
   recorded in the CLI reference and in a one-line correction to this RFC.
-- **Whether zero-initialisation meets G14 on allocation-heavy code.** If
+- **Whether zero-initialization meets G14 on allocation-heavy code.** If
   it does not, the allowed narrowing is to zero only allocations whose
   size expression is `sizeof` of a type containing pointers, plus
   `realloc` tails. Any narrowing must keep the §11 guarantee for pointer

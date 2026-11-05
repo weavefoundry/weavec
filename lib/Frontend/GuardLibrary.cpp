@@ -621,7 +621,7 @@ static bool redirect(LibraryCall &call, bool late) {
   replacement->setDebugLoc(call.call.getDebugLoc());
   call.call.replaceAllUsesWith(replacement);
   const unsigned row = call.record("checked-call");
-  // A row recorded after the optimiser has its one copy already.
+  // A row recorded after the optimizer has its one copy already.
   if (late)
     module.copy(row, true, "checked-call");
   call.call.eraseFromParent();
@@ -646,7 +646,7 @@ static bool computesItsValue(const core::LibraryEntry &entry) {
 
 /// Whether the row's call writes through no pointer and has no format: a
 /// search, a comparison or a mapping, whose redirection waits until the
-/// optimiser has folded what it can (`strcmp` of two constants).
+/// optimizer has folded what it can (`strcmp` of two constants).
 static bool onlyReads(const core::LibraryEntry &entry) {
   return !entry.format &&
          llvm::all_of(entry.params, [](const core::LibraryParam &param) {
@@ -693,11 +693,11 @@ void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
       continue;
     }
     // A read-only call with a wrapper is the late pass's (GuardExpand, after
-    // the optimiser), which redirects it or guards it inline; the late pass
+    // the optimizer), which redirects it or guards it inline; the late pass
     // touches nothing else.
     const bool deferred = match->entry->wrapper && onlyReads(*match->entry);
     if (deferred && !late) {
-      // What the optimiser may make of the call before then (`strcmp(s,
+      // What the optimizer may make of the call before then (`strcmp(s,
       // "")` becomes a load of `s[0]`): a string has at least its
       // terminator, so its first byte is guarded now.
       library.guardFirstBytes();

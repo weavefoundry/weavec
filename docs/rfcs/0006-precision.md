@@ -7,7 +7,7 @@
 - **Tracking issue**: TBD
 - **Supersedes / superseded by**: Superseded by RFC 0036; supersedes RFC 0002
   *Loans and lifetimes* (loans now end at the holder's last use), the *Borrow
-  rules* paragraph of RFC 0001 *The model* as the default behaviour (exclusive
+  rules* paragraph of RFC 0001 *The model* as the default behavior (exclusive
   borrowing becomes opt-in), RFC 0002 *`realloc` and the null edge* (subsumed
   by outcome-conditional summaries), the RFC 0002 rule that `a[i]` and `a[j]`
   are indistinguishable for moves (element witnesses), and the RFC 0003
@@ -37,7 +37,7 @@ guarantee:
    when the alias came from a plain copy (the model records whether an alias
    is *exact* or *interior*). Tests of a call's result select among the
    callee's *outcomes* (below). This is the mechanism RFC 0002 built for
-   `realloc` alone, generalised.
+   `realloc` alone, generalized.
 3. **Element witnesses.** A move through an element access (`free(a[i])`)
    remembers *which* element: the constant, or the index variable until it
    is next assigned. A later access is a use of that element only if it is
@@ -75,7 +75,7 @@ all triaged as false positives (`scripts/corpus/README.md`). By cause:
 A checker whose every report is wrong is not adoptable however sound it is:
 users learn to ignore it. Each cause above is a *precision* gap, not a
 soundness one, and each has a well-understood remedy (Rust's NLL, standard
-path-sensitive refinement on conditions, weak/strong updates for summarised
+path-sensitive refinement on conditions, weak/strong updates for summarized
 locations, conditional effects in summaries). This RFC adopts the smallest
 form of each that clears the corpus and keeps RFC 0001's guarantee intact.
 
@@ -86,7 +86,7 @@ is "everything it says is noise".
 
 The guarantee of RFC 0001 is unchanged: outside `WEAVEC_UNSAFE`, WeaveC
 reports every use-after-free, double-free and dangling-pointer escape it
-can express, or refuses to analyse. Every change below either keeps the
+can express, or refuses to analyze. Every change below either keeps the
 over-approximation (it only *drops* facts that were known to be stale) or
 trades a bug class the model never reliably caught for one it does. Where a
 change makes the checker less sound in some corner, the corner is named.
@@ -119,7 +119,7 @@ change makes the checker less sound in some corner, the corner is named.
   ubiquitous in C. A summary derived from such a body still says `param 0
   *` is freed (elements are collapsed in summary paths), so callers see the
   strong fact.
-- **Weak reinitialisation.** `free(a[i]); a[i] = NULL;` clears the freed
+- **Weak reinitialization.** `free(a[i]); a[i] = NULL;` clears the freed
   record of `a[*]` because the witnesses match (same `i`, not reassigned
   between). `free(a[i]); a[j] = NULL; use(a[i]);` keeps the record (the
   witnesses differ) and reports the use. `free(a[i]); i = k; a[i] = NULL;
@@ -148,7 +148,7 @@ change makes the checker less sound in some corner, the corner is named.
 - A loan whose holder's address is taken (`&a` for `int *a`) lasts to the
   end of the holder's scope: it may be read through the pointer at any
   time.
-- An outcome test that is not one of the recognised shapes (below) selects
+- An outcome test that is not one of the recognized shapes (below) selects
   nothing; the may-consumption stands.
 
 ### Assumptions
@@ -254,7 +254,7 @@ argument-returning function (`strchr`, `strstr`, `strtok`, `memchr`,
 `basename`, ...) as interior.
 
 **Outcome tests.** A test on a call result selects outcome classes (next
-section). Recognised shapes, for an operand `x` that is a call expression
+section). Recognized shapes, for an operand `x` that is a call expression
 directly, or a place holding a pending outcome (`r = f(p)`, `if ((r = f(p))
 < 0)`):
 
@@ -284,7 +284,7 @@ call depends on the result being in that class (`consumedBy : Map<Outcome,
 - if `S ∩ keys(consumedBy)` is empty the edge is infeasible as far as the
   summary knows; nothing changes;
 - otherwise every place that is consumed in *no* selected class and still
-  carries the move record is reinitialised (`moves.reinitialize`) and its
+  carries the move record is reinitialized (`moves.reinitialize`) and its
   summary path is removed from `consumed` (below: the consumption did not
   happen on this path), and the entry is narrowed to the selected classes.
   The narrowed entry is kept even once nothing more can be retracted: it
@@ -300,7 +300,7 @@ condition) at the assignment; a result that is tested directly (`if
 same block as its terminator, through the dataflow's record of the last
 call with a pending outcome in the block being transferred.
 
-A reinitialisation on an edge is sound for the same reason it was for
+A reinitialization on an edge is sound for the same reason it was for
 `realloc`: any consumption of the same place between the call and the test
 was reported when it happened (`doConsume` sees the place already moved),
 so a retraction only ever follows a report.
@@ -323,7 +323,7 @@ or both are the same variable. `MoveTracker` gains:
 - `movedAt(place, element)`: the record if one exists and its witness
   matches `element`, else nothing;
 - `reinitialize(place, element)`: erases the record only if the witnesses
-  match (a *whole* reinitialisation erases any record);
+  match (a *whole* reinitialization erases any record);
 - `forgetWitness(variable)`: every record whose witness is `variable`
   becomes *unknown*;
 - `join`: where both sides have a record for a place, equal witnesses are
@@ -375,7 +375,7 @@ realloc(p, n); return q;`), the classes are first narrowed to those the
 pending entry still allows (after `if (!q) return NULL;`, `return q` is
 `nonnull` only), and each class then retracts what the pending entry
 retracts for it, so wrappers around `realloc` and around error-returning
-functions inherit the conditional behaviour. When the
+functions inherit the conditional behavior. When the
 classes are done, a summary in which every consumed path is consumed in
 every class has nothing conditional to say and records no `outcomes` at
 all; most summaries are of this kind and stay exactly as small as before.
@@ -428,7 +428,7 @@ program that threads one state pointer through every call (RFC 0007,
 ### Interaction with existing RFCs
 
 - RFC 0001 *The model*, borrow rules: the exclusivity rules become the
-  `--exclusive-borrows` behaviour; the invalidation rule is the default.
+  `--exclusive-borrows` behavior; the invalidation rule is the default.
   The lifetime rules are unchanged.
 - RFC 0002 *Loans and lifetimes*: "a loan lives while its holder is in
   scope" becomes "while its holder is live". *`realloc` and the null
@@ -439,7 +439,7 @@ program that threads one state pointer through every call (RFC 0007,
   gains exactness. `annotation-required`, `annotation-mismatch` unchanged.
   RFC 0003's rule that a consumed *parameter* returned as `copy` makes the
   result the same resource, now owned by the result (the `realloc` wrapper),
-  is generalised to any consumed path: `Value *resizearray(L, t, ...)`
+  is generalized to any consumed path: `Value *resizearray(L, t, ...)`
   reallocates `t->array` and returns `copy *t->array`; the result owns the
   new array, it is not a dangling copy of the old one. A callee that really
   returns a pointer it freed is reported in the callee, at the `return`.
@@ -542,7 +542,7 @@ void replace(struct n *root) { free(root->string); memcpy(root, &tmp, sizeof *ro
   a much larger Core. Deferred; the condition facts here are the subset
   with a bounded state.
 - **General null lattice on every pointer place.** Considered as the
-  vehicle for the `realloc` generalisation. It adds a component that
+  vehicle for the `realloc` generalization. It adds a component that
   nothing else consumes: with `reinit` on `p = NULL` already handled, the
   only consumer of nullness is the outcome test, which pending entries
   serve directly. Rejected as dead weight.
@@ -550,7 +550,7 @@ void replace(struct n *root) { free(root->string); memcpy(root, &tmp, sizeof *ro
   answer to the loop idiom, and the reason Rust forbids moving out of an
   index. It needs a theory of when `a[i]` and `a[j]` are the same place,
   which is the witness in a different coat with unbounded place sets.
-  Rejected in favour of witnesses on the record.
+  Rejected in favor of witnesses on the record.
 - **Do nothing.** Ship a whole-program checker whose reports are all
   noise. Rejected.
 
@@ -565,7 +565,7 @@ void replace(struct n *root) { free(root->string); memcpy(root, &tmp, sizeof *ro
   reborrowing.
 - **Clang static analyzer `MallocChecker`**: path-sensitive with a symbolic
   store; it gets `if (!try_take(p)) free(p)` right by forking the state on
-  the return value's symbol. We take the outcome-class discretisation
+  the return value's symbol. We take the outcome-class discretization
   instead, which fits in a join-based dataflow and a text summary.
 - **Infer's biabduction / Pulse**: summaries with disjunctive
   post-conditions per return class are what `outcomes` is a bounded form

@@ -23,7 +23,7 @@ weavec-cc lookup.o -o lookup
 weavec: lookup.c: 4 accesses: 0 proven, 4 guarded, 0 unguarded
 ```
 
-The build succeeds as it would with Clang. The summary line counts the accesses the compiler saw: `proven` ones lost their guard to a local rule (or the optimiser removed the access), `guarded` ones kept it. The exact counts depend on the WeaveC version and the optimisation level. The ledger `ledger/lookup.o.ledger.json` has one row per access; this is the read of `table[i]`:
+The build succeeds as it would with Clang. The summary line counts the accesses the compiler saw: `proven` ones lost their guard to a local rule (or the optimizer removed the access), `guarded` ones kept it. The exact counts depend on the WeaveC version and the optimization level. The ledger `ledger/lookup.o.ledger.json` has one row per access; this is the read of `table[i]`:
 
 ```json
 {
@@ -131,7 +131,7 @@ $ ./scope
 weavec: stack-use-after-scope at scope.c:9:18: read of 4 bytes at 0x16db82740
 ```
 
-`n`'s address is taken, so `n` gets redzones in the frame and its scope is tracked: the end of its block poisons its bytes, at every optimisation level. A use of a local after its function has returned is not caught; see [what is not caught](/reference/guarantees/#what-is-not-caught).
+`n`'s address is taken, so `n` gets redzones in the frame and its scope is tracked: the end of its block poisons its bytes, at every optimization level. A use of a local after its function has returned is not caught; see [what is not caught](/reference/guarantees/#what-is-not-caught).
 
 ## Investigate a failure
 

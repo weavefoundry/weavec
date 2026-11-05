@@ -14,8 +14,8 @@ Today each bug probe pins where the default `weavec-cc` build stops it with
 `TRAP`, and each twin is `CLEAN`. Six bug probes are `XFAIL`, with the
 reason in their file: three uses after return (11, 12, 27), which RFC 0036
 leaves to a later RFC; two bugs in units built without WeaveC (14b, c13);
-and one inside a `WEAVEC_UNSAFE` region (45). Two read an uninitialised
-value that zero-initialisation defines (08, 32) and are `CLEAN`.
+and one inside a `WEAVEC_UNSAFE` region (45). Two read an uninitialized
+value that zero-initialization defines (08, 32) and are `CLEAN`.
 
 The rest of this page is the record of the import (RFC 0030, S0): the
 markers the probes had then, and the classification of each probe by
@@ -46,7 +46,7 @@ was deleted by RFC 0036.
   to be reported by a ledger row only: the row satisfies their `BUG`
   marker, as G4 counts it, but a diagnostic or trap would too. Their
   projected reasons are in the table; the markers do not pin them.
-- `NEUTRALISED: zero-init` marks 08 and 32 (uninitialised scalars, outside
+- `NEUTRALIZED: zero-init` marks 08 and 32 (uninitialized scalars, outside
   every facet).
 - `ASAN` marks the 74 bug probes the ASan oracle confirms
   (`-fsanitize=address,array-bounds` with `detect_stack_use_after_return=1`)
@@ -68,7 +68,7 @@ was deleted by RFC 0036.
   their units (`14_extern_impl.c`, `14b_extern_impl.c`, and
   `c13_extern_impl.c`, added in the import because c13 did not link) carry
   `FLAGS: -fno-weavec`: they are compiled as plain Clang and the legacy run
-  analyses the probe alone, as v0.10.0 was measured.
+  analyzes the probe alone, as v0.10.0 was measured.
 
 Not imported: `38b_lying_annotation_same_tu_bug.c`, `51_deep_path_uaf_bug.c`,
 `51b_deep_path_uaf_bug.c` and `52_sysheader_unknown_release_bug.c` sat in the
@@ -80,7 +80,7 @@ probe directory but are not among the 113 the RFC's numbers count.
 with the measured table for every probe: 36 CAUGHT, 42 SILENT, 4 SIGNAL,
 2 MISLABEL, 1 LEAK-ONLY. "Projected" is the RFC's class: still reported (38),
 a new definite error (13), a runtime trap (12), a possible warning (2), a
-ledger row only (18, with the projected reason) and neutralised (2). Line
+ledger row only (18, with the projected reason) and neutralized (2). Line
 numbers are those of the files here.
 
 Three probes carry a `MISS` marker instead of their `BUG`, because the build
@@ -111,7 +111,7 @@ possible leak they cannot yet shake: `03_double_free_loop_ok` and
 | `06_int_overflow_malloc_bug` | 11: out-of-bounds | SILENT | trap | heap-buffer-overflow @11 |
 | `07_strcpy_stack_overflow_bug` | 21: `MISS` (was 9: out-of-bounds) | SILENT | trap | stack-buffer-overflow @21 |
 | `07b_sprintf_stack_overflow_bug` | 7: out-of-bounds | SILENT | trap | stack-buffer-overflow @7 |
-| `08_uninit_index_bug` | 7: use-of-uninitialized | SILENT | neutralised | — (uninitialised scalar (MSan class)) |
+| `08_uninit_index_bug` | 7: use-of-uninitialized | SILENT | neutralized | — (uninitialized scalar (MSan class)) |
 | `09_type_confusion_voidp_bug` | 11: out-of-bounds | SILENT | definite error | heap-buffer-overflow @6 |
 | `10_union_punning_bug` | 9: out-of-bounds | SILENT | row: raw-cast | SEGV @9 |
 | `11_dangling_outparam_bug` | 5: lifetime-too-short | CAUGHT | still reported | stack-use-after-return @10 |
@@ -144,7 +144,7 @@ possible leak they cannot yet shake: `03_double_free_loop_ok` and
 | `29_negative_index_bug` | 9: out-of-bounds | SILENT | trap | index -1 out of bounds @9 |
 | `30_unterminated_strlen_bug` | 6: out-of-bounds | CAUGHT | still reported | stack-buffer-overflow @6 |
 | `31_truncation_memcpy_bug` | 10: out-of-bounds | SILENT | trap | stack-buffer-overflow @10 |
-| `32_uninit_heap_read_bug` | 5: use-of-uninitialized | SILENT | neutralised | — (uninitialised heap read (MSan class)) |
+| `32_uninit_heap_read_bug` | 5: use-of-uninitialized | SILENT | neutralized | — (uninitialized heap read (MSan class)) |
 | `33_double_free_aliased_records_bug` | 13: double-free | CAUGHT | still reported | attempting double-free @6 |
 | `34_goto_cleanup_double_free_bug` | 15: double-free | CAUGHT | still reported | attempting double-free @15 |
 | `35_uninit_ptr_field_bug` | 5: use-of-uninitialized | CAUGHT | still reported | — (stack garbage, nondeterministic) |

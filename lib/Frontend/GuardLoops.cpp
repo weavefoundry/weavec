@@ -7,12 +7,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// RFC 0035 §6.4. Before the vectoriser, a loop whose trip count is known
+// RFC 0035 §6.4. Before the vectorizer, a loop whose trip count is known
 // when it is entered, and in which nothing can end an object's lifetime,
 // gets a second version. Its preheader checks the whole range of bytes
 // each guarded access whose address is affine in the loop (or invariant)
 // covers over the trip; when every range is addressable, the version
-// without those guards runs (and may be vectorised), and otherwise the
+// without those guards runs (and may be vectorized), and otherwise the
 // guarded loop runs and stops at the access that fails. A range larger
 // than what the loop reads only sends it to the guarded loop, and so does
 // one whose bounds overflow (RFC 0037 §4): the span is computed from the

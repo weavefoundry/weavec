@@ -1,8 +1,8 @@
 // RFC 0031 *Implementation amendments* (realloc of zero bytes): a failed
-// realloc keeps the buffer in a zero-initialised build.
+// realloc keeps the buffer in a zero-initialized build.
 // STAGE: S7
 // 'append' grows the buffer with realloc and returns on failure, leaving the old
-// buffer in place. The zero-initialisation wrapper never asks realloc for zero bytes, so
+// buffer in place. The zero-initialization wrapper never asks realloc for zero bytes, so
 // the null class keeps the argument: after any number of appends 'b.data' is live on
 // every path, and no call boundary sees a pointer that may be gone (the temporal facets
 // of the buffer's uses rest on nothing a boundary broke). Linenoise's 'abAppend'.

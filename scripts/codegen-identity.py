@@ -2,7 +2,7 @@
 """`weavec-cc -fweavec-checks=none` compiles as Clang does.
 
 RFC 0035, section 1: a unit compiled with `-fweavec-checks=none` gets no
-guards, no zero-initialisation, no array-bounds checks and no location
+guards, no zero-initialization, no array-bounds checks and no location
 tracking: it is compiled as Clang compiles it. (RFC 0030 introduced this
 check as gate G7, for deferred CodeGen, which RFC 0035 deleted.) For each
 translation unit of a list and each configuration (`-O2`, `-O0 -g` and
@@ -16,7 +16,7 @@ unless `--sysroot` says otherwise): Homebrew's clang reads a configuration
 file that may name a different SDK than the one `weavec-cc` finds, and
 `-g` records the SDK. `weavec-cc` gets `-fweavec-checks=none` (see
 `--weavec-flag`); the default trap build guards accesses and
-zero-initialises, so its objects differ by design.
+zero-initializes, so its objects differ by design.
 
 List format (`--list`): one unit per line, `<project>/<path> [args...]`,
 shell-quoted; `#` starts a comment. Each unit compiles in

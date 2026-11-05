@@ -1,5 +1,5 @@
 // RFC 0033 §1: a platform function handed the address of a pointer (through a cast) may
-// write a pointer there; the read after it is not of an uninitialised value (libuv's
+// write a pointer there; the read after it is not of an uninitialized value (libuv's
 // uv_cpu_info on Darwin).
 // STAGE: S1
 // CLEAN

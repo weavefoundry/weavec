@@ -17,7 +17,7 @@
 
 The design below landed as written except where this section says
 otherwise. Each item clarifies *how* a decision was built, not the decision;
-where the text below disagrees with an item here, the item wins. Behaviour is
+where the text below disagrees with an item here, the item wins. Behavior is
 pinned by `test/Analysis/rfc0003-*.c`, `test/Annotations/rfc0003-*.c`,
 `unittests/Analysis/SignatureInferenceTest.cpp`,
 `unittests/Analysis/SummariesTest.cpp` and `unittests/Core/SummaryTest.cpp`.
@@ -28,7 +28,7 @@ pinned by `test/Analysis/rfc0003-*.c`, `test/Annotations/rfc0003-*.c`,
   takes a `SummaryStore &` (not an optional provider) and returns whether
   the callee's summary changed, which is what the SCC fixpoint loop needs.
 - **Effects are recorded where they happen; the exit rule is applied at
-  finalisation.** `FunctionDataflow` records every read, write, free and
+  finalization.** `FunctionDataflow` records every read, write, free and
   move against the *stable* summary path of the place (the path as it was
   at function entry, via `stableSummaryPathOf`). At `finalizeSummary` the
   effects on parameter roots are kept as recorded; effects under `*param`
@@ -173,13 +173,13 @@ void mismatch(struct node *WEAVEC_BORROWED n) {
 }
 ```
 
-Recursion is handled: a recursive `list_free` is summarised as freeing its
+Recursion is handled: a recursive `list_free` is summarized as freeing its
 argument and every caller sees that.
 
 **Deliberately not caught by this RFC:**
 
 - **Calls through function pointers.** No summary is available; the call has
-  no effect (the RFC 0002 behaviour). RFC 0001's *Function pointers and
+  no effect (the RFC 0002 behavior). RFC 0001's *Function pointers and
   callbacks* question remains open. Arguments passed to a function pointer
   are not moved, not borrowed and not checked. *Superseded by
   [RFC 0004](0004-unsafe-boundaries.md), which gives indirect calls a
@@ -204,13 +204,13 @@ argument and every caller sees that.
 **Accepted false positives**, beyond RFC 0001's and RFC 0002's:
 
 - **May-effects are applied as must-effects at the call.** A callee that
-  frees its argument on one path (`if (!ok) free(p)`) is summarised as
+  frees its argument on one path (`if (!ok) free(p)`) is summarized as
   freeing it, so the caller's later use is reported. This is the same
   merge-point conservatism RFC 0001 accepts intra-procedurally, now visible
   across a call. The fix is the same: restructure, or have the callee report
   the outcome and re-null.
 - **Re-pointed parameters** (above): `void f(struct node *p) { p = p->next;
-  free(p->data); }` is summarised as freeing `arg->data`.
+  free(p->data); }` is summarized as freeing `arg->data`.
 - **Borrow-for-the-call conflicts.** A callee that reads through `p` is a
   shared borrow of `*p` for the call; passing `&x` while a mutable loan of
   `x` is live conflicts, exactly as an annotated `WEAVEC_BORROWED` parameter
@@ -221,7 +221,7 @@ argument and every caller sees that.
   callee is contradictory and should be annotated or split.
 
 **Assumptions.** RFC 0001's and RFC 0002's, plus: the shipped library table
-is correct for the platform's libc (it describes ISO C and POSIX behaviour
+is correct for the platform's libc (it describes ISO C and POSIX behavior
 and does not model extensions); a function's *definition* in the TU is the
 one that will be called (no link-time interposition, no `-Wl,--wrap`);
 annotations on a declaration are trusted over the body, per RFC 0001, and
@@ -301,12 +301,12 @@ field names, locations are `core::SourceLocation`. It lives in
    definition is in the TU). Indirect calls are not edges.
 3. Compute strongly connected components (Tarjan) and visit them in reverse
    topological order, callees first.
-4. A trivial SCC (one function, no self-call) is analysed once: the RFC 0002
+4. A trivial SCC (one function, no self-call) is analyzed once: the RFC 0002
    dataflow runs, reports, and produces the summary in the same pass.
 5. A non-trivial SCC starts every member at the bottom summary (no effects)
-   and re-analyses all members, with reporting disabled, until no member's
+   and re-analyzes all members, with reporting disabled, until no member's
    summary changes (cap: 16 rounds; the lattice is finite so the cap is a
-   guard, not a budget). Then each member is analysed once more with
+   guard, not a budget). Then each member is analyzed once more with
    reporting enabled against the fixpoint summaries. Because the summary of a
    callee only ever grows and applying a larger summary only ever produces a
    larger exit state, the iteration is monotone.
@@ -374,7 +374,7 @@ actions so their checks and diagnostics are reused:
    `ValueSource` translated to a `ValueOrigin`: `Fresh` → allocation
    (`Owned`); `Copy(path)` → copy (alias, loans carried, lifetime check);
    `Borrow(path)` → borrow (loan created, lifetime and borrow rules);
-   `Null`/`Unknown` → reinitialise. Several stores to one destination form
+   `Null`/`Unknown` → reinitialize. Several stores to one destination form
    one conditional assignment.
 4. **Result.** The call expression's `ValueOrigin` is the summary's
    `returns` translated the same way (several alternatives form a
@@ -400,7 +400,7 @@ twice.
 - **Reads and writes** are recorded as they happen (flow-insensitive
   may-flags): a load through a dereference of a root-rooted pointer marks
   `read` on the dereferenced path; an assignment through one marks
-  `written`. Aliases are honoured through RFC 0002's mirrors: reading `q->v`
+  `written`. Aliases are honored through RFC 0002's mirrors: reading `q->v`
   after `q = p` marks `param(p)*.v`.
 - **Frees and moves** on a **parameter root itself** are recorded as they
   happen. The parameter variable is the callee's private copy of the
@@ -431,7 +431,7 @@ twice.
 - A summary for a function whose body is skipped (`WEAVEC_UNSAFE`) is its
   annotation-derived summary only (RFC 0001: the signature still applies).
   *Narrowed by [RFC 0004](0004-unsafe-boundaries.md): unsafe bodies are
-  analysed and summarised like any other; only a `WEAVEC_UNSAFE`
+  analyzed and summarized like any other; only a `WEAVEC_UNSAFE`
   declaration without a body keeps the annotation-only summary.*
 
 ### Reconciliation
@@ -459,7 +459,7 @@ mismatch is reported once, in the callee, and does not cascade.
 The scaffold's rule ("every unannotated pointer parameter, behind a flag")
 is replaced by two:
 
-1. **External boundary, on by default.** The first call in analysed code to
+1. **External boundary, on by default.** The first call in analyzed code to
    a callee with no definition in the TU, no annotations, and no library
    entry, where the callee has at least one pointer parameter or a pointer
    result, reports `annotation-required` at the call, once per callee per
@@ -518,7 +518,7 @@ in `Dataflow.cpp`. The frontend's consumer hands the whole TU to
 
 ### Performance
 
-Each function is analysed once, or `rounds + 1` times inside a recursive
+Each function is analyzed once, or `rounds + 1` times inside a recursive
 SCC. Applying a summary costs one place resolution per effect. On the corpus
 harness introduced alongside this RFC (`scripts/corpus.py`) analysis time is
 recorded per TU so regressions are visible; the expectation remains "well
@@ -601,7 +601,7 @@ lit test under `test/Analysis/rfc0003-*.c`.
   procedurally.
 - **Reading all effects from the exit state.** Simplest, but wrong for
   parameter variables that the callee reassigns (`free(p); p = NULL;`
-  would summarise as "not freed"). Hence the split rule.
+  would summarize as "not freed"). Hence the split rule.
 - **Recording all effects as they happen.** Simplest and sound, but reports
   `use-after-free` after `buf_destroy(&b)` when `buf_destroy` re-nulls the
   field, the most common destroy idiom in C. Hence the split rule.
@@ -643,7 +643,7 @@ lit test under `test/Analysis/rfc0003-*.c`.
 | Unannotated externs                   | Default: borrowed-for-the-call, no retention, unknown result; warning once per callee; `--strict-externs` for error (strict mode redefined by RFC 0004). |
 | System-header externs                 | Exempt from the default warning; `--report-unannotated` includes them.                        |
 | Where effects are read from           | Parameter roots: as they happen. Everything else: exit state, unless the parameter variable is reassigned. |
-| Function pointers                     | Not modelled here; resolved by RFC 0004.                                                       |
+| Function pointers                     | Not modeled here; resolved by RFC 0004.                                                       |
 | Partial annotations                   | Annotated roots use the annotation; unannotated roots of the same function use inference.     |
 | Debug output                          | Extend `--dump-analysis` rather than add a flag.                                               |
 
@@ -659,9 +659,9 @@ lit test under `test/Analysis/rfc0003-*.c`.
 ## Future work
 
 - **Unsafe-blocks RFC** (done: [RFC 0004](0004-unsafe-boundaries.md)):
-  `unsafe-operation`, analysed unsafe regions, strict-mode extern results
+  `unsafe-operation`, analyzed unsafe regions, strict-mode extern results
   becoming `Raw`.
-- **Cross-TU summaries** (Milestone 4): serialise `FunctionSummary` next to
+- **Cross-TU summaries** (Milestone 4): serialize `FunctionSummary` next to
   `compile_commands.json`; the format here is designed to be the on-disk
   format, keyed by mangled name.
 - **Return-value-conditional summaries** and general null tracking.

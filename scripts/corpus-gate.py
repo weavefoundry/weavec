@@ -101,7 +101,7 @@ INJECTIONS_VERSION = 2
 LEDGER_SCHEMA = "weavec-ledger"
 LEDGER_VERSION = 3
 LEDGER_COUNTS = ("accesses", "proven", "guarded", "unguarded")
-# The per-file compiles: the optimisation real builds use (a config's own
+# The per-file compiles: the optimization real builds use (a config's own
 # -O in compile.args comes later and wins).
 QUICK_FLAGS = ("-O2",)
 
@@ -374,7 +374,7 @@ def rel_path(file: str, root: Path) -> str:
         return file
 
 
-def normalise_path(file: str) -> str:
+def normalize_path(file: str) -> str:
     """A report's path without the build directory's relative prefixes ("./x.c", "../x.c")."""
     parts = [p for p in Path(file).as_posix().split("/") if p not in (".", "")]
     while parts and parts[0] == "..":
@@ -385,7 +385,7 @@ def normalise_path(file: str) -> str:
 def same_file(reported: str, expected: str) -> bool:
     """Whether a reported path names the expected file: a build may print
     either the full path or one relative to its own directory."""
-    reported, expected = normalise_path(reported), normalise_path(expected)
+    reported, expected = normalize_path(reported), normalize_path(expected)
     return reported == expected or reported.endswith("/" + expected) or expected.endswith("/" + reported)
 
 
@@ -1008,7 +1008,7 @@ def parse_reports(text: str, root: Path) -> list[dict]:
         if m and m.group("kind") in KINDS:
             file = m.group("file")
             if file is not None:
-                file = normalise_path(rel_path(file, root) if os.path.isabs(file) else file)
+                file = normalize_path(rel_path(file, root) if os.path.isabs(file) else file)
             report = {"kind": m.group("kind"), "file": file, "line": int(m.group("line") or 0),
                       "col": int(m.group("col") or 0), "proven": bool(m.group("proven"))}
         elif INVALID_RELEASE_RE.search(line):
@@ -1250,14 +1250,14 @@ def sanitizer_location(text: str, src: Path) -> tuple[bool, str | None, tuple[st
     for index, line in enumerate(lines):
         m = UBSAN_RE.search(line)
         if m:
-            return True, line.strip(), (normalise_path(rel_path(m.group("file"), src)), int(m.group("line")))
+            return True, line.strip(), (normalize_path(rel_path(m.group("file"), src)), int(m.group("line")))
         if "ERROR: AddressSanitizer" in line:
             for frame in lines[index + 1:index + 80]:
                 fm = FRAME_RE.search(frame)
                 if fm:
                     file = rel_path(fm.group("file"), src)
                     if not os.path.isabs(file):
-                        return True, line.strip(), (normalise_path(file), int(fm.group("line")))
+                        return True, line.strip(), (normalize_path(file), int(fm.group("line")))
             return True, line.strip(), None
         if "buffer overflow detected" in line or "detected buffer overflow" in line:
             return True, line.strip(), None

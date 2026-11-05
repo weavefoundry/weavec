@@ -11,8 +11,8 @@ row on that line may have that facet proven (gate G6). Two defects have no
 facet, so those cases use other markers:
 
 - a leak is not a facet (§3.4), so the leak cases use `MISS`;
-- an uninitialised scalar is not a facet either, and zero-initialisation
-  (§11) makes the read well defined, so that case uses `NEUTRALISED: zero-init`.
+- an uninitialized scalar is not a facet either, and zero-initialization
+  (§11) makes the read well defined, so that case uses `NEUTRALIZED: zero-init`.
 
 The sources are copied unchanged, except for:
 
@@ -41,7 +41,7 @@ line.
 | Case | Origin | Defect | Marker |
 | --- | --- | --- | --- |
 | `reader-short.c`, `Inputs/reader-short-cursor.c`, `Inputs/cursor.h` | `short.c`, `cursor.c`, `cursor.h` (case `reader-short`) | `Inputs/reader-short-cursor.c:13` reads `data[2]` and `data[3]` of a 2-byte array. ASan reports a stack-buffer-overflow there. | `UNRESOLVED: spatial:unknown-extent` (S6: the loads through `c` on that line are proven by its Single default, so the marker names the subscript's row) |
-| `reader-uninitialized.c`, `Inputs/reader-uninitialized-cursor.c` | `uninitialized.c`, `cursor.c`, `cursor.h` (case `reader-uninitialized`) | `Inputs/reader-uninitialized-cursor.c:11` reads `data[1..3]`, which are never written. | `NEUTRALISED: zero-init` |
+| `reader-uninitialized.c`, `Inputs/reader-uninitialized-cursor.c` | `uninitialized.c`, `cursor.c`, `cursor.h` (case `reader-uninitialized`) | `Inputs/reader-uninitialized-cursor.c:11` reads `data[1..3]`, which are never written. | `NEUTRALIZED: zero-init` |
 
 ## `p + 1` forwarding (candidate 17)
 

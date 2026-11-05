@@ -11,14 +11,14 @@ religion, or sexual identity and orientation.
 
 ## Our standards
 
-Examples of behaviour that contributes to a positive environment:
+Examples of behavior that contributes to a positive environment:
 
 - Being respectful of differing opinions, viewpoints, and experiences.
 - Giving and gracefully accepting constructive feedback.
 - Focusing on what is best for the project and the community.
 - Showing empathy towards other community members.
 
-Examples of unacceptable behaviour:
+Examples of unacceptable behavior:
 
 - Harassment, insults, or derogatory comments; personal or political attacks.
 - Publishing others' private information without explicit permission.
@@ -29,12 +29,12 @@ Examples of unacceptable behaviour:
 ## Enforcement
 
 Maintainers are responsible for clarifying and enforcing these standards and
-will take appropriate, fair corrective action in response to behaviour they
+will take appropriate, fair corrective action in response to behavior they
 deem inappropriate. They have the right to remove, edit, or reject comments,
 commits, code, issues, and other contributions that are not aligned with this
 Code of Conduct.
 
-Instances of abusive, harassing, or otherwise unacceptable behaviour may be
+Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the maintainers at conduct@weavefoundry.org. All complaints will be
 reviewed and investigated promptly and fairly, and the privacy of the reporter
 will be respected.

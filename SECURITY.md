@@ -11,7 +11,7 @@ following to be security issues:
   pre-1.0 period WeaveC makes no such claim, so these are tracked as normal
   bugs, but please still report them.
 - Memory-safety bugs or crashes in WeaveC itself that are triggerable by
-  untrusted input (e.g. analysing attacker-controlled source code).
+  untrusted input (e.g. analyzing attacker-controlled source code).
 - Vulnerabilities in the build or release process (supply chain).
 
 Crashes on malformed input that do not cross a trust boundary, false

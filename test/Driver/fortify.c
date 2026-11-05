@@ -1,6 +1,6 @@
-// RFC 0036 §6: an optimising enforcing build for glibc defines
+// RFC 0036 §6: an optimizing enforcing build for glibc defines
 // _FORTIFY_SOURCE=3, so that the C library's fortified forms pass object
-// sizes for the guards to check; not without optimisation, not when the
+// sizes for the guards to check; not without optimization, not when the
 // command line chooses a level, not without checks.
 // RUN: %weavec_cc -### --target=x86_64-linux-gnu -O2 -c %s 2>&1 | FileCheck --check-prefix=ON %s
 // RUN: %weavec_cc -### --target=x86_64-linux-gnu -O0 -c %s 2>&1 | FileCheck --check-prefix=OFF %s

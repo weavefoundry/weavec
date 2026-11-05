@@ -25,7 +25,7 @@
 ## Summary
 
 Ten RFCs in, WeaveC checks *temporal* safety (use after free, double
-free, leaks, null, uninitialised reads) and says nothing about *spatial*
+free, leaks, null, uninitialized reads) and says nothing about *spatial*
 safety: `p = malloc(n); p[n] = 0;` is accepted without comment, and so is
 `memcpy(buf, src, 64)` into a 16-byte buffer. README promises "Rust-style
 memory safety"; half of the CWE top 25 is out-of-bounds writes and reads.
@@ -76,7 +76,7 @@ one false negative the current model has around pointers that point
 5. **Relational facts.** RFC 0009's facts are about one integer place;
    the loop reasoning above needs two. The state gains *relations*
    between integer places (`i < n`, `i <= n`, `i == n`, `i >= n`, `i >
-   n`), learnt on condition edges and from copies, dropped when either
+   n`), learned on condition edges and from copies, dropped when either
    side is written, joined by intersection.
 6. **Extents in summaries.** A `fresh` return carries the extent of what
    it allocates in terms of the callee's parameters; a summary records
@@ -146,7 +146,7 @@ void caller(struct outer *o) {
 }
 ```
 
-`&o->in` is modelled as a borrow of `o->in` held by `i`. A borrow gives
+`&o->in` is modeled as a borrow of `o->in` held by `i`. A borrow gives
 `i` a loan, but `i->buf` is a place of its own with no relation to
 `o->in.buf`, so the release never reaches the summary
 (`param 0 *.in.buf: freed` is missing) and the caller's use is missed. A
@@ -437,7 +437,7 @@ sizeof(T))` and `calloc(n, sizeof(T))` are `{n, sizeof(T), 0}`; `malloc(n
 k}`; `"abc"` is `{—, —, 4}`. `n` must be a place `tracksScalar` accepts
 (RFC 0009); the place is the one *at the allocation*, so a later write to
 it drops every extent that names it (`dropExtentsOn`, called where
-`assignScalar`/`forgetScalar` are). Sources are recognised in the
+`assignScalar`/`forgetScalar` are). Sources are recognized in the
 analysis layer by a small `extentOf(sizeExpr)` reader over
 `PlaceBuilder::scalarOperand`'s shapes plus `+ k`.
 
@@ -612,7 +612,7 @@ reported (it is never read).
 enum class Relation : uint8_t { Less, LessEqual, Equal, GreaterEqual, Greater };
 class RelationTracker {         // the state's `relations`
   void learn(PlaceId lhs, Relation, PlaceId rhs);   // narrows an existing relation on the pair
-  std::optional<Relation> between(PlaceId lhs, PlaceId rhs) const;  // normalised to lhs < rhs order
+  std::optional<Relation> between(PlaceId lhs, PlaceId rhs) const;  // normalized to lhs < rhs order
   void learnAtMost(PlaceId, int64_t bound);           // `x <= bound`; narrows an existing bound
   std::optional<int64_t> atMost(PlaceId) const;       // the bound, or one on a place known equal
   void noteBounded(PlaceId); bool isBounded(PlaceId) const;  // compared with a constant by an ordering
@@ -621,7 +621,7 @@ class RelationTracker {         // the state's `relations`
 };
 ```
 
-Learnt from a condition edge `x OP y` on two integer places (both
+Learned from a condition edge `x OP y` on two integer places (both
 `tracksScalar`), through the same operator flips `applyCondition` uses for
 constants; from `x = y` (a scalar copy: `Equal`); narrowed by a later
 edge on the same pair (`i <= n` then `i != n` is `Less`; `i <= n` then
@@ -787,7 +787,7 @@ warnings — a `leak` on the path a bug diverts, Clang's own
 unit tests and before `lit`; CI runs it again by hand so the table is in
 the log. It is deliberately separate from `test/Analysis`: lit pins
 messages and locations exactly and is the regression suite; the recall
-set asks only "was this bug class caught", is organised by bug class,
+set asks only "was this bug class caught", is organized by bug class,
 and is what the README's status table can honestly cite.
 
 ### Performance
@@ -905,7 +905,7 @@ message and a unit test of the core rule that produces it.
   rather than the rule; but a user who relied on the free-site report
   will see it move.
 - **Format bump.** Sidecars and summary text from before this RFC are
-  rejected; the whole program is re-analysed once. This has happened at
+  rejected; the whole program is re-analyzed once. This has happened at
   every RFC since 0003.
 - **`offsetof` matching is symbolic.** `(char *)p - 8` where 8 happens to
   be the field's offset is `Unknown`, and freeing through it is
@@ -965,7 +965,7 @@ message and a unit test of the core rule that produces it.
   analyzer's `ArrayBoundChecker`/`ArrayBoundCheckerV2` (symbolic offsets
   against symbolic extents with a constraint manager: the design of the
   V2 checker's "compare the affine offset to the extent" is what *Bounds
-  checks* rule 2–4 specialise), and `__builtin_dynamic_object_size` /
+  checks* rule 2–4 specialize), and `__builtin_dynamic_object_size` /
   `__counted_by` (the `-fbounds-safety` extension), whose
   `__counted_by(n)` is `WEAVEC_SIZED_BY(n)` with the same "count of
   elements, or bytes for `void *`" rule. We take the checker's
@@ -977,8 +977,8 @@ message and a unit test of the core rule that produces it.
   offsets; the kernel's `container_of` also `static_assert`s the type,
   which is why matching on the `offsetof` field path rather than on a
   number is faithful.
-- **Juliet / SARD.** The CWE-organised test suite whose shape
-  `test/recall/` follows. We do not import Juliet (size, licence, and
+- **Juliet / SARD.** The CWE-organized test suite whose shape
+  `test/recall/` follows. We do not import Juliet (size, license, and
   its C++ and Windows-specific halves); we write our own cases in its
   form.
 

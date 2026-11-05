@@ -10,7 +10,7 @@ Seven checks, the rules of AGENTS.md that a script can hold the tree to:
                      lib/Core/LibrarySpec.txt answers to: an entry, a chk()
                      alias (a fortified form), or the __builtin_ spelling of
                      either. Comparisons inside comments do not count.
-                     Library behaviour goes in the table, which the guard
+                     Library behavior goes in the table, which the guard
                      passes read through GuardLibrary.cpp.
   corpus-word        0 occurrences of the words cJSON, jansson, linenoise,
                      jsmn, zlib, lua, Lua, sds and minigzip, and of the

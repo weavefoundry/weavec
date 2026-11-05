@@ -372,7 +372,7 @@ static int reportLine(const char *kind, uintptr_t address, uint64_t width,
   return 1;
 }
 
-/* Counted without synchronisation: a diagnostic aid, not an account. */
+/* Counted without synchronization: a diagnostic aid, not an account. */
 unsigned long long weavecRtStats[WeavecRtStatCount];
 int weavecRtStatsOn;
 

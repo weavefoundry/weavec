@@ -1,5 +1,5 @@
 // RFC 0033 §1: `(void)x` discards a value without reading it; it is no use of an
-// uninitialised variable (libuv's fs.c).
+// uninitialized variable (libuv's fs.c).
 // STAGE: S1
 // CLEAN
 // RUN-INPUT:

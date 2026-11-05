@@ -70,7 +70,7 @@ void owned_param(char *WEAVEC_OWNED p) { p[0] = 0; }
 
 `leak_path` is the most common real bug in the kind of C WeaveC targets: an
 error return in the middle of a function that has already acquired
-something. `family` and `free(fopen())` are undefined behaviour. The owned
+something. `family` and `free(fopen())` are undefined behavior. The owned
 field case is how every `*_destroy` that forgets a member leaks, and the
 `WEAVEC_OWNED` annotation on fields, accepted since RFC 0001, has never been
 checked.
@@ -161,7 +161,7 @@ argument. Every destructor in C has this shape.
 - **Overwriting a `WEAVEC_OWNED` field with no state fact.** `b->p = x`
   where the checker knows nothing about the current value of `b->p` is not
   reported even though the annotation says it owned something: the shape is
-  every constructor and initialiser. Only a field the function itself made
+  every constructor and initializer. Only a field the function itself made
   owned is checked on overwrite.
 - **A callee overwriting caller memory the caller made owned.** `b->data =
   malloc(8); reset(&b);` where `reset` stores into `b->data` without
@@ -213,7 +213,7 @@ argument. Every destructor in C has this shape.
 
 Unchanged from RFC 0001 through 0006, plus:
 
-- A callee summarised from its body (in this unit or in the program) that
+- A callee summarized from its body (in this unit or in the program) that
   records no effect on a pointer parameter does not retain it. This is what
   the summary means; it is the reason a summary from a *body* is trusted not
   to escape an argument while one from an *annotation* or the *library
@@ -556,7 +556,7 @@ deflateReset(strm)`, whose negative class holds `strm->state`, keeps
 gain an optional family in parentheses, `freed(free)`, `moved(free)`, and
 sources gain `fresh(fclose)`; the bare spellings remain valid and mean
 "unknown family". Nothing else changes. A version-2 sidecar is rejected by
-its header as before and the object re-analysed.
+its header as before and the object re-analyzed.
 
 ### The library table
 
@@ -755,7 +755,7 @@ void wrapper(char *p) { xfree(p); }                               /* xfree calls
 - **Type-level field ownership inference** (a field is owned in every
   function if any function stores a fresh value into it). Powerful, but a
   single constructor would make every consumer of the struct responsible,
-  including code that only borrows it. Rejected in favour of annotations
+  including code that only borrows it. Rejected in favor of annotations
   and per-function facts; a later RFC can add it with the program view.
 - **Do nothing.** Ship a checker that enforces "not twice" but never
   "exactly once".

@@ -1,4 +1,4 @@
-// RFC 0035 §1: locals are zero-initialised in the enforcing modes.
+// RFC 0035 §1: locals are zero-initialized in the enforcing modes.
 // RUN: %weavec_cc -O0 %s -o %t
 // RUN: %t | FileCheck %s
 // RUN: %weavec_cc -O0 -fweavec-checks=none -S -emit-llvm %s -o - | FileCheck %s --check-prefix=NONE

@@ -61,7 +61,7 @@ This RFC:
    Clang emits for `strcpy` into an 8-byte field when the C library
    fortifies, carries the field's size; the guards check it, where v0.16.0
    dropped it and lost an overflow inside a struct that plain Clang stops.
-3. **Honours ASan's contract.** Code compiled by `weavec-cc` sees
+3. **Honors ASan's contract.** Code compiled by `weavec-cc` sees
    `__SANITIZE_ADDRESS__` and `__has_feature(address_sanitizer)`, and the
    runtime implements ASan's poisoning interface, so that code written to be
    ASan-clean (a pool that poisons its free space, an interpreter that sends
@@ -99,7 +99,7 @@ pointer (the cases of `test/cases/determinism` pin them):
 | The same with plain `clang -O2` (Darwin fortifies it to `__strcpy_chk(d, s, 8)`) | | traps | |
 | A global overflow inside a dylib or bundle | passes (the same code in the executable traps) | `global-buffer-overflow` | `global-buffer-overflow` |
 | A pool that poisons its free space through ASan's interface, used after release | passes | `use-after-poison` | `use-after-poison` |
-| Heap index from `a` that lands in a neighbouring live block `b` | passes; `b` corrupted | passes | passes (later RFC) |
+| Heap index from `a` that lands in a neighboring live block `b` | passes; `b` corrupted | passes | passes (later RFC) |
 | Read through a `char *` from one global into the next | passes | passes | passes (later RFC) |
 | Use after return (`return &local`) | passes | `stack-use-after-return` (with its fake stack) | passes (later RFC) |
 
@@ -145,7 +145,7 @@ The advisory analysis is 33,230 lines in `lib/Analysis`, 13,698 in
 projects (libpcap, c-ares, nginx, libssh2; 314 units) `weavec` reported 0
 errors and 69 warnings; every one was read: 0 actionable, 2 true but
 harmless, 5 unclear, 62 false (lists and loops taken as one object,
-allocation only on success not modelled, callbacks taken to free,
+allocation only on success not modeled, callbacks taken to free,
 ownership stored into containers). `--whole-program` took c-ares from 1 to
 169 warnings and libssh2 from 2 to 70 (20 sampled: all false). On the 109
 bug programs of `test/cases/detection{,-blind}` the guards stop 104, the
@@ -235,7 +235,7 @@ to untracked memory (A1); anything in a `WEAVEC_UNSAFE` region or in code
 
 - **ASan's own accepted false traps** stay accepted: a scan that reads
   past an object on purpose traps unless the code keeps it from ASan (now
-  honoured, §5) or marks it `WEAVEC_UNSAFE`.
+  honored, §5) or marks it `WEAVEC_UNSAFE`.
 - **Code paths taken under ASan.** A program that behaves differently when
   it sees `__SANITIZE_ADDRESS__` behaves as it does under ASan; one that
   calls a sanitizer interface the runtime does not implement fails to link
@@ -257,9 +257,9 @@ As RFC 0035 §1 and its amendment 1 (GuardInsert, GuardPrune, GuardLoop,
 GuardExpand), with these additions:
 
 1. **Fortification.** On glibc targets, when the command line neither
-   defines nor undefines `_FORTIFY_SOURCE` and optimises, `weavec-cc`
+   defines nor undefines `_FORTIFY_SOURCE` and optimizes, `weavec-cc`
    defines `_FORTIFY_SOURCE=3`. (Darwin's SDK fortifies at level 2 by
-   default when optimising.)
+   default when optimizing.)
 2. **ASan's contract** (§5): the unit is parsed with AddressSanitizer
    enabled in its language options, so that
    `__has_feature(address_sanitizer)` is true, `__SANITIZE_ADDRESS__` is
@@ -279,7 +279,7 @@ calls), with one change to §3.2:
 **Shared space.** Two tracked static allocas may share bytes of the frame
 when their lifetimes never overlap: LLVM's `StackLifetime` analysis (the
 one SafeStack uses), in its *may be live* mode, over the lifetime markers
-that remain after the optimiser. An alloca without lifetime markers is live
+that remain after the optimizer. An alloca without lifetime markers is live
 for the whole function and shares with none. The layout places the
 allocas in decreasing order of size, each at the lowest 32-byte-aligned
 offset after the left zone where its *extent* (the object and its
@@ -332,7 +332,7 @@ when the quarantine has grown by a sixteenth of `S` since the last check.
 1. **Stop.** Take the sweep lock and every allocator lock (as `fork`
    does), then stop every other thread: on Darwin with `task_threads` and
    `thread_suspend`, reading each thread's registers with
-   `thread_get_state`; on Linux by signalling each task of
+   `thread_get_state`; on Linux by signaling each task of
    `/proc/self/task` (`SIGPWR`, or `WEAVEC_RT_SWEEP_SIGNAL`), whose handler
    records its stack pointer (the kernel saved its registers on its stack)
    and waits. A thread that does not stop within a second ends the sweep
@@ -415,8 +415,8 @@ RFC 0035 §7 stays but:
   `-fweavec-analysis-stats=`, and the `-W…weavec…` flags (they reach Clang
   as unknown warning options).
 - New: `-fno-weavec-asan-compat` (§1).
-- Zero-initialisation keeps its 4 KiB limit: a stale pointer in an
-  uninitialised local is a pointer the sweep sees, so it cannot reach a
+- Zero-initialization keeps its 4 KiB limit: a stale pointer in an
+  uninitialized local is a pointer the sweep sees, so it cannot reach a
   reused block (A6).
 
 ### 8. Deletions
@@ -434,7 +434,7 @@ RFC 0035 §7 stays but:
 - **Tests**: `test/Analysis`, `test/WholeProgram`, the analysis parts of
   `test/Annotations`, `unittests/Analysis`, the `unittests/Core` tests but
   `LibrarySpecTest`, the `unittests/Frontend` tests of deleted files; the
-  case runner's analysis (`BUG`, `MISS` on a `BUG`, `NEUTRALISED`, `ALLOW`,
+  case runner's analysis (`BUG`, `MISS` on a `BUG`, `NEUTRALIZED`, `ALLOW`,
   `TOOL`); the case suites that pin only the analysis; the corpus gate's
   analysis findings, triage entries and whole-program configs; the
   documentation examples of `weavec`.
@@ -589,7 +589,7 @@ override the body.
 7. **The sweep tests.** A conservative scan keeps a block that a stale copy
    of its address in an unused stack slot points to. The runtime test's
    sweep cases scrub the stack below them with a compiler barrier (the
-   optimiser removed the stores to a dead array, and with them the scrub),
+   optimizer removed the stores to a dead array, and with them the scrub),
    and use size classes no other test touches.
 8. **Shared space only in large frames (§2; *Where this is less sound
    than RFC 0035*).** Sharing has a cost the body missed: a use after scope

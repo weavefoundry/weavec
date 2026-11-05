@@ -4,7 +4,7 @@
 // FLAGS: -O2
 // RUN-INPUT:
 /*
- * Path normaliser that strips trailing slashes by walking an end pointer
+ * Path normalizer that strips trailing slashes by walking an end pointer
  * backwards. For the root path "/" the loop removes the only character and
  * then inspects end[-1], the byte before the start of the stack buffer.
  * Category: spatial (stack buffer underflow, read of path[-1]).

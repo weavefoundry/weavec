@@ -1,4 +1,4 @@
-//===- GuardExpand.cpp - Guards after the optimiser -----------------------===//
+//===- GuardExpand.cpp - Guards after the optimizer -----------------------===//
 //
 // Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// RFC 0035 §2.3, §6. After the optimiser, each marker that is left is an
+// RFC 0035 §2.3, §6. After the optimizer, each marker that is left is an
 // access to guard. The rules of §6 remove the guards a local fact makes
 // redundant; the frame is laid out for the stack objects the remaining
 // guards can reach (GuardFrames.cpp); each remaining guard becomes an
@@ -40,7 +40,7 @@ namespace weavec::frontend::guard {
 
 namespace {
 
-/// One marker the optimiser left.
+/// One marker the optimizer left.
 struct Access {
   llvm::CallInst *marker = nullptr;
   enum class Kind : std::uint8_t { Guard, Range, String };
@@ -672,7 +672,7 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
   const llvm::DataLayout &layout = module.layout;
   dropScopes(function, /*orphansOnly=*/false);
   resiteInlinedCalls(module, function);
-  // The read-only library calls the optimiser left (section 2.5).
+  // The read-only library calls the optimizer left (section 2.5).
   guardLibraryCalls(module, function, /*late=*/true);
   std::vector<Access> accesses;
   std::vector<llvm::CallInst *> disjoint;

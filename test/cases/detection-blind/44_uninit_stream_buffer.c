@@ -6,8 +6,8 @@
 /*
  * Output streams allocated with malloc(). stream_open() sets up the buffer
  * pointer only for buffered streams; for an unbuffered stream s->buf is left
- * uninitialised, and stream_close() passes it to free() unconditionally.
- * Category: uninitialized (use of an uninitialised heap pointer, here freed).
+ * uninitialized, and stream_close() passes it to free() unconditionally.
+ * Category: uninitialized (use of an uninitialized heap pointer, here freed).
  * Why it may be missed: the write path checks s->buffered before touching
  * buf, so only close uses the field, and fresh heap memory is often zero.
  */
@@ -77,7 +77,7 @@ static size_t stream_close(struct stream *s)
 {
     stream_flush(s);
     size_t w = s->written;
-    free(s->buf); // STOP // MISS: zero-initialisation makes the never-set pointer null, and free(NULL) is defined (neutralised)
+    free(s->buf); // STOP // MISS: zero-initialization makes the never-set pointer null, and free(NULL) is defined (neutralized)
     free(s);
     return w;
 }

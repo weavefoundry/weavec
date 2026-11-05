@@ -90,7 +90,7 @@ does not add runtime checks, a general theorem prover or archive packaging.
 
 > **Amended by [RFC 0030](0030-prove-or-trap.md).** By default `weavec-cc` now
 > inserts trapping checks for the unproven spatial and null obligations it can
-> express, and zero-initialises locals and heap allocations (§10–§11).
+> express, and zero-initializes locals and heap allocations (§10–§11).
 
 Complete copies mean an entire pointer object or an entire compatible record
 object of a known byte size. Partial, unresolved or incompatible copies must
@@ -346,7 +346,7 @@ It is documented and controllable by the existing warning machinery.
 
 > **Amended by [RFC 0030](0030-prove-or-trap.md).** `analysis-incomplete` is
 > removed: what it reported is now an `unresolved` ledger row with a reason from
-> a closed list (`unanalysed`, `budget`, …) plus the summary line (§2.3, §12).
+> a closed list (`unanalyzed`, `budget`, …) plus the summary line (§2.3, §12).
 
 ## Drawbacks
 

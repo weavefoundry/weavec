@@ -1,6 +1,6 @@
 // RFC 0030 §9.4 and §5.3: 'free(g); exit(0)' with an atexit reader leaves 'g' dangling at the exit call.
 // STAGE: S7
-// An at-exit target is analysed as an entry point but does not contribute to G. The call to
+// An at-exit target is analyzed as an entry point but does not contribute to G. The call to
 // 'exit' is a boundary (a call that does not return), and 'g' holds a released pointer
 // there: unresolved(dangling-escape). Propagation makes the reader's g[0], the
 // ASan-reported bug site, unresolved(dangling-escape) instead of proven.
