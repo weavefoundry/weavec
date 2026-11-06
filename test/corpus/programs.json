@@ -1,0 +1,118 @@
+{
+  "schema": "weavec-corpus-programs",
+  "version": 1,
+  "_comment": [
+    "The programs tier of the corpus gate (RFC 0038, section 5), run by scripts/corpus-gate.py",
+    "--programs: large programs WeaveC is not tuned on, pinned by release archive (`url`, `sha256`),",
+    "built with their own build systems and CC set to weavec-cc in report mode and, once more, to",
+    "the reference compiler, and each run through its own test suite (`test`) with",
+    "WEAVEC_RT_REPORT_LOG collecting the reports. `failures` is a regular expression whose first group",
+    "names failing tests in the suite's output, separated by white space (several per match).",
+    "`referenceFailures` lists, per platform (darwin, linux, linux-x86_64, linux-aarch64; the most",
+    "specific applies), the tests that fail with the reference compiler on the gate's machines, and",
+    "`acceptedFailures`, per platform, the tests that fail with weavec-cc alone for a reason an RFC",
+    "accepts (each maps to that reason, which names the RFC), and",
+    "`platforms` the build or test commands that replace the program's on a platform. The",
+    "gate fails on any report not triaged in triage.json (by the program's name), on any test that",
+    "fails with weavec-cc and is not listed, on an accepted test that weavec-cc passes, and on a listed test that the reference build passes or",
+    "an unlisted one it fails: the list cannot go stale. `programs` are what the suite needs on",
+    "PATH (as in prerequisites.json). Commands run under /bin/sh in the unpacked tree with CC, JOBS,",
+    "PREFIX (an installation directory inside the build) and TCL_CONFIG_DIR (the directory of",
+    "tclConfig.sh, when one is found) set. `timeout` bounds each command, in seconds. Only the test",
+    "suite's reports are judged: those of programs the build runs (configure's probes) are recorded",
+    "as buildReports."
+  ],
+  "programs": [
+    {
+      "name": "sqlite",
+      "url": "https://www.sqlite.org/2025/sqlite-src-3500400.zip",
+      "sha256": "b7b4dc060f36053902fb65b344bbbed592e64b2291a26ac06fe77eec097850e9",
+      "notes": "SQLite 3.50.4's source release (the corpus has only the amalgamation) and its Tcl test harness; `make quicktest` runs about 330,000 tests through testfixture.",
+      "programs": ["tclsh"],
+      "build": [
+        "./configure CC=\"$CC\" --with-tcl=\"$TCL_CONFIG_DIR\" > configure.log",
+        "make -j\"$JOBS\" sqlite3 testfixture > build.log"
+      ],
+      "test": "make quicktest",
+      "failures": "!Failures on these tests: (.*)",
+      "timeout": 7200,
+      "referenceFailures": {}
+    },
+    {
+      "name": "cpython",
+      "url": "https://www.python.org/ftp/python/3.13.7/Python-3.13.7.tar.xz",
+      "sha256": "5462f9099dfd30e238def83c71d91897d8caa5ff6ebc7a50f14d4802cdaaa79a",
+      "notes": "CPython 3.13.7 (on Darwin against Homebrew's OpenSSL 3; 3.13 does not build against OpenSSL 4): an interpreter with its own allocator (pymalloc) over malloc, extension modules built as shared libraries the interpreter loads, and a test suite of about 470 files run in four workers. On Darwin test_compileall fails with the reference compiler too (its quiet-mode test sees a warning from the toolchain).",
+      "build": [
+        "./configure CC=\"$CC\" > configure.log",
+        "make -j\"$JOBS\" > build.log"
+      ],
+      "platforms": {
+        "darwin": {
+          "build": [
+            "./configure CC=\"$CC\" --with-openssl=\"$(brew --prefix openssl@3)\" > configure.log",
+            "make -j\"$JOBS\" > build.log"
+          ]
+        }
+      },
+      "test": "if [ -x python.exe ]; then p=./python.exe; else p=./python; fi; $p -m test -j4 --timeout 900 -u-network,-urlfetch 2>&1 | tail -80",
+      "failures": "(?m)^\\d+ tests? failed:\\n((?: {4}.*\\n)+)",
+      "timeout": 7200,
+      "referenceFailures": {"darwin": ["test_compileall"]}
+    },
+    {
+      "name": "postgresql",
+      "url": "https://ftp.postgresql.org/pub/source/v17.6/postgresql-17.6.tar.bz2",
+      "sha256": "e0630a3600aea27511715563259ec2111cd5f4353a4b040e0be827f94cd7a8b0",
+      "notes": "PostgreSQL 17.6: a server whose memory contexts carve palloc chunks out of malloc'd blocks, run through its main regression suite (pg_regress against a temporary installation). It is installed into the build first, because Darwin's System Integrity Protection drops the library path make check would set.",
+      "programs": ["perl"],
+      "build": [
+        "./configure CC=\"$CC\" --without-icu --without-readline --prefix=\"$PREFIX\" > configure.log",
+        "make -j\"$JOBS\" > build.log",
+        "make install > install.log"
+      ],
+      "test": "make check",
+      "failures": "^not ok\\s+\\d+\\s+[+-]?\\s*(\\S+)",
+      "timeout": 3600,
+      "referenceFailures": {}
+    },
+    {
+      "name": "git",
+      "url": "https://mirrors.edge.kernel.org/pub/software/scm/git/git-2.51.0.tar.xz",
+      "sha256": "60a7c2251cc2e588d5cd87bae567260617c6de0c22dca9cdbfc4c7d2b8990b62",
+      "notes": "git 2.51.0: object parsing, packfiles and a test suite of about 1,000 shell scripts. On Darwin t3900 (i18n commit encodings) and t7528 fail with the reference compiler too. On Linux it builds without curl (NO_CURL), whose headers the gate's machines need not have. git's fsck reads objects from blocks of exactly their size with strcspn, which RFC 0038 section 2 checks over the bytes read.",
+      "programs": ["perl"],
+      "build": ["make -j\"$JOBS\" CC=\"$CC\" NO_GETTEXT=1 NO_TCLTK=1 > build.log"],
+      "platforms": {
+        "linux": {"build": ["make -j\"$JOBS\" CC=\"$CC\" NO_GETTEXT=1 NO_TCLTK=1 NO_CURL=1 > build.log"]}
+      },
+      "test": "cd t && make -k -j\"$JOBS\" $(ls t[0-9]*.sh) > tests.log 2>&1; make aggregate-results 2>&1 | tail -20",
+      "failures": "^failed test\\(s\\): (.*)",
+      "timeout": 7200,
+      "referenceFailures": {"darwin": ["t3900", "t7528"]}
+    },
+    {
+      "name": "coreutils",
+      "url": "https://ftp.gnu.org/gnu/coreutils/coreutils-9.5.tar.xz",
+      "sha256": "cd328edeac92f6a665de9f323c93b712af1858bc2e0d88f3f7100469470a1b8a",
+      "notes": "GNU coreutils 9.5 with gnulib: about 100 programs and 600 test scripts. gnulib's word-at-a-time rawmemchr reads past the string it searches (triaged as the project's bug: ASan stops it too). On Darwin three tests fail with the reference compiler too: sort-debug-keys and sort-h-thousands-sep (the locale's thousands separator) and touch/not-owner. On Linux sort-debug-keys does.",
+      "build": [
+        "./configure CC=\"$CC\" > configure.log",
+        "make -j\"$JOBS\" > build.log"
+      ],
+      "test": "make -j\"$JOBS\" check 2>&1 | grep -E '^(FAIL|ERROR|# )'",
+      "failures": "^(?:FAIL|ERROR): (\\S+?)(?:\\.sh|\\.pl|\\.xpl)?$",
+      "timeout": 7200,
+      "referenceFailures": {
+        "darwin": ["tests/sort/sort-debug-keys", "tests/sort/sort-h-thousands-sep", "tests/touch/not-owner"],
+        "linux": ["tests/sort/sort-debug-keys"]
+      },
+      "acceptedFailures": {
+        "linux": {
+          "tests/cut/cut-huge-range": "RFC 0038, amendment 18: under ulimit -v the shadow cannot be reserved, and the runtime's warning that accesses are not checked is on the stderr the test compares (the test skips under ASan, which refuses to run)",
+          "tests/printf/printf-surprise": "RFC 0038, amendment 18: under ulimit -v the shadow cannot be reserved, and the runtime's warning that accesses are not checked is on the stderr the test compares (the test skips under ASan, which refuses to run)"
+        }
+      }
+    }
+  ]
+}

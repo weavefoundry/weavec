@@ -53,7 +53,7 @@ ctest --preset dev             # unit tests, the runtime test, lit, the cases
 | `dev`            | Debug build for day-to-day work                      |
 | `dev-asan`       | Debug + AddressSanitizer + UBSan                     |
 | `dev-tidy`       | Debug with clang-tidy running as part of compilation |
-| `release`        | Optimized, LTO (the runtime archives excepted)       |
+| `release`        | Optimized, LTO (the runtime excepted), self-contained |
 | `relwithdebinfo` | Optimized with debug info                            |
 | `ci-*`           | What CI runs: warnings are errors                    |
 
@@ -73,16 +73,22 @@ Useful cache variables (`-D...` or in `CMakeUserPresets.json`):
 Build targets of note:
 
 - `weavec-cc` — the drop-in compiler driver, in `build/<preset>/bin/`. It
-  needs Clang's
-  resource directory and (for jobs it does not run in-process, such as
-  `-cc1as`) a `clang` binary; both are recorded at configure time from the
-  LLVM install used to build, and `WEAVEC_CLANG` overrides the binary. It
-  finds `weavec.h` and the runtime archives in WeaveC's own resource
-  directory, `../lib/weavec/` from the executable (the build tree has the
-  same layout), or where `WEAVEC_RESOURCE_DIR` points.
-- `weavec_rt`, `weavec_alloc` — the runtime archives (`libweavec_rt.a`,
-  `libweavec_alloc.a`), in `build/<preset>/lib/weavec/`; `weavec_rt_test`
-  is the runtime's own test.
+  records no path of the LLVM it was built with: it finds Clang's resource
+  directory at `../lib/clang/<major>` from its executable (configure links
+  the LLVM installation's into the build tree there), and `weavec.h` and
+  the runtime's library in `../lib/weavec/` (or where `WEAVEC_RESOURCE_DIR`
+  points). Assembly sources go to the system assembler.
+- `weavec_rt` — the runtime's shared library (`libweavec_rt.dylib`,
+  `libweavec_rt.so.<abi>`), and `weavec_rt_static` its archive
+  (`libweavec_rt.a`, in `lib/weavec` on Linux), from one set of objects;
+  `weavec_rt_test` is the runtime's own test.
+- `WEAVEC_SELF_CONTAINED=ON` (the `release` preset) builds a toolchain that
+  needs no LLVM installation: `weavec-cc` linked against the static LLVM and
+  Clang archives on Linux, and on Darwin the LLVM libraries it loads copied
+  into `lib/weavec/llvm` at install. `cmake --install build/release
+  --prefix <dir>` lays the tree out, `cpack` (in `build/release`) packs
+  `weavec-<version>-<os>-<arch>.tar.xz`, and `scripts/check-toolchain.py
+  <archive or dir>` checks it after moving it.
 - `check-weavec` — build and run all tests.
 - `check-weavec-unit`, `check-weavec-lit` — only one suite.
 
@@ -102,10 +108,11 @@ ledger rows they leave. Run one with
 ### The runtime (`runtime/`)
 
 The runtime is plain C and is built with the host compiler into the build
-tree's `lib/weavec` whatever the preset; `libweavec_rt.a` and
-`libweavec_alloc.a` are always compiled with `-O2`. Its test is one program,
-[`runtime/test/rt_test.c`](../runtime/test/rt_test.c), linked with both
-archives so that its `malloc` is the arena's:
+tree's `lib/weavec` whatever the preset, always with `-O2`, as one shared
+library that exports what `runtime/weavec_rt.exports` lists (the hygiene
+gate checks the list against the `WEAVEC_RT_API` declarations). Its test is
+one program, [`runtime/test/rt_test.c`](../runtime/test/rt_test.c), linked
+with the runtime's objects so that its `malloc` is the arena's:
 
 ```sh
 ctest --preset dev -R '^runtime$'                     # every test
@@ -118,7 +125,7 @@ The tests are `shadow-ready`, `classes`, `shadow-encoding`,
 `pacing`, `library-data-is-scanned`, `invalid-releases`, `huge`,
 `foreign`, `guards`, `strings`, `checked-calls`, `globals`, `allocas`,
 `unpoison-stack`, `asan-interface`, `parsers-and-limits`, `mappings`,
-`array-bounds`, `threads` and `fork`. The sweep tests scrub the stack
+`array-bounds`, `threads`, `fork` and `fault-handler-restored`. The sweep tests scrub the stack
 they leave behind with a compiler barrier and use size classes no other
 test touches: the scan is conservative, and a stale copy of an address in
 an unused stack slot keeps its block. A
@@ -203,7 +210,7 @@ compared outside `lib/Core/LibrarySpec.txt`, no corpus project named under
 `lib/`, no Clang or LLVM header in Core, the runtime's includes, every
 runtime entry point the passes name declared in `runtime/weavec_rt.h`) and
 the line budgets of the libraries (`lib/`, `include/` and `tools/`, 9,000)
-and of the runtime (7,000, counted apart, because it is linked into
+and of the runtime (7,050, counted apart, because it is linked into
 compiled programs, not into the compiler); `--help` lists each check and
 its limit. It runs in the Linux
 Release CI job.
@@ -290,7 +297,7 @@ editor integration.
 - `weavec-cc` runs its `-cc1` jobs in-process, so `lldb -- build/dev/bin/
   weavec-cc -c file.c` stops in the passes directly; `weavec-cc -###
   file.c` prints the jobs Clang's driver planned and the link line with the
-  runtime archives. Run a trapping program under a debugger: it stops in
+  runtime's library. Run a trapping program under a debugger: it stops in
   the runtime, and the backtrace leads from there to the function that made
   the access.
 - The ASan runs of `scripts/run-cases.py --asan` and of the corpus gate set
@@ -305,8 +312,9 @@ editor integration.
 
 ## Releasing
 
-WeaveC publishes source releases to
-[GitHub Releases](https://github.com/weavefoundry/weavec/releases).
+WeaveC publishes a source archive and self-contained toolchains to
+[GitHub Releases](https://github.com/weavefoundry/weavec/releases), a
+container image to `ghcr.io/weavefoundry/weavec` and a Homebrew formula.
 `.github/workflows/ci.yml` calls the reusable `release.yml` workflow only
 after `CI passed` succeeds on a push to `main` or a manual CI run on `main`.
 PRs, merge-queue runs and forks do not publish. The release job skips a tested
@@ -334,6 +342,20 @@ push cannot publish just one of them. A GitHub draft receives the source
 archive and `SHA256SUMS` before it is made public. Release notes link to the
 versioned generated changelog and include its entry inline when it fits GitHub's
 body limit.
+
+RFC 0038 §6: the `toolchains` jobs then build the tag with the `release`
+preset on `ubuntu-22.04` (x86-64), `ubuntu-22.04-arm` and `macos-14`, run
+`ctest`, and pack `weavec-<version>-<os>-<arch>.tar.xz`; the `smoke` jobs
+unpack each on clean `macos-15`, `ubuntu-22.04`, `ubuntu-24.04` and
+`ubuntu-24.04-arm` runners, move it, and run `scripts/check-toolchain.py`
+and `corpus-gate.py --quick --only cJSON --only sds` with it; the
+`publish` job uploads the archives, their checksums and the rendered
+formula (`scripts/render-formula.py` from `packaging/homebrew/weavec.rb.in`;
+copy it into the `weavefoundry/homebrew-tap` repository) to the draft,
+builds and pushes the multi-platform image from `packaging/docker/Dockerfile`,
+and makes the release public. The image needs the repository's
+`packages: write` permission. The macOS archive is not yet signed or
+notarized.
 
 Repository setup: Actions needs permission to write repository contents,
 and the release identity needs to be allowed to push its release commit to

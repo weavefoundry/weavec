@@ -13,17 +13,46 @@ Use a fresh build directory if a previous configuration selected a different LLV
 
 Tests require `lit` plus LLVM's `FileCheck`, `not`, and `count` utilities. Make sure the chosen LLVM tool directory is on PATH and use a matching `lit` release. Building LLVM from source requires its utilities to be installed.
 
-## The installed compiler cannot locate Clang resources
+## The compiler cannot locate Clang's headers or WeaveC's files
 
-Keep the LLVM installation used at configure time available. The driver records Clang's resource directory and executable; `WEAVEC_CLANG` can name a compatible `clang` executable instead. WeaveC's own files (`weavec.h` and the runtime archives) are found in `lib/weavec/` beside the installed `bin/`, or where `WEAVEC_RESOURCE_DIR` points. See [build targets](/contributing/development/#building).
+A toolchain is one directory tree: `bin/weavec-cc`, WeaveC's files in `lib/weavec/` (`weavec.h`, the runtime's library), Clang's headers and builtins in `lib/clang/<major>/`, and on macOS the LLVM libraries `weavec-cc` loads in `lib/weavec/llvm/`. `weavec-cc` finds them all from its own executable, so move or copy the tree as a whole; `WEAVEC_RESOURCE_DIR` names another directory for WeaveC's files. A build tree has the same layout. A missing `<stddef.h>` means `lib/clang/<major>/include` is not beside `bin/`. See [installation](/getting-started/installation/).
+
+## macOS refuses to run weavec-cc
+
+A downloaded toolchain is not yet signed and notarized, and Gatekeeper refuses its unsigned binaries. Remove the quarantine attribute from the unpacked tree (`xattr -dr com.apple.quarantine weavec-<version>-darwin-arm64`), or install with Homebrew, which does not set it.
 
 ## The link cannot find the WeaveC runtime
 
 ```text
-weavec-cc: error: cannot find the WeaveC runtime (libweavec_rt.a, libweavec_alloc.a), which an enforcing link carries (-fweavec-checks=none builds without it)
+weavec-cc: error: cannot find the WeaveC runtime (libweavec_rt.dylib), which an enforcing link carries (-fweavec-checks=none builds without it)
 ```
 
-Every link of a guarded program adds the runtime's two archives, which are installed in `lib/weavec/` (beside the `include/` directory that holds `weavec.h`). The driver looks for them in `../lib/weavec/` from its own executable, or in the directory `WEAVEC_RESOURCE_DIR` names. Install WeaveC with `cmake --install`, or run `weavec-cc` from the build tree, which has the same layout. `-fweavec-checks=none` builds without guards and without the runtime.
+Every link of a guarded program adds the runtime's library (`libweavec_rt.so` on Linux, `libweavec_rt.a` for `-static`), installed in `lib/weavec/` beside the `include/` directory that holds `weavec.h`. The driver looks for it in `../lib/weavec/` from its own executable, or in the directory `WEAVEC_RESOURCE_DIR` names. `-fweavec-checks=none` builds without guards and without the runtime.
+
+## A program cannot load libweavec_rt
+
+```text
+error while loading shared libraries: libweavec_rt.so.38: cannot open shared object file: No such file or directory
+dyld: Library not loaded: @rpath/libweavec_rt.dylib
+```
+
+A guarded program loads the runtime's library where it runs, from the rpath its link recorded: the toolchain's `lib/weavec` unless `-fweavec-rpath` named another directory. A program copied to another machine, or a toolchain moved after the link, needs it there: install `libweavec_rt` beside the program and link with `-fweavec-rpath='$ORIGIN'` (`@loader_path` on macOS), or link a static Linux program (`-static`).
+
+## Two WeaveC runtimes in one process
+
+```text
+weavec: error: two WeaveC runtimes in one process (<first> and <second>): build every image with one weavec-cc
+```
+
+Images built by two WeaveC versions loaded into one process, each with its own runtime: rebuild them with one `weavec-cc`.
+
+## The program's allocator is not WeaveC's
+
+```text
+weavec: note: the program's allocator is not WeaveC's (/lib/x86_64-linux-gnu/libc.so.6 serves it: the program was not linked by weavec-cc): heap accesses are not checked; preload …/libweavec_rt.so.38 to check them
+```
+
+On Linux a guarded library was loaded by a program `weavec-cc` did not link (an interpreter's extension module, a server's plug-in): the C library's allocator serves the process, so the guarded code's heap accesses pass. Run the program with `LD_PRELOAD=<toolchain>/lib/weavec/libweavec_rt.so.<abi>` to check them, or `WEAVEC_RT_NOTES=0` to silence the note.
 
 ## The link fails with undefined `__weavec_rt_` or `__asan_` symbols
 
@@ -127,7 +156,7 @@ An object or archive member on the link line defines `malloc`, `calloc`, `reallo
 weavec: warning: the shadow memory could not be reserved; memory accesses are not checked
 ```
 
-At start-up the runtime reserves address space for its shadow and its arena, without committing memory. A limit on virtual memory (`ulimit -v`, `RLIMIT_AS`) smaller than the reservation makes it fail, and the program then runs with every guard passing. Raise or remove the limit for guarded programs. The similar warning that the heap lies outside the shadow's window means the arena could not be placed where the shadow covers it; heap accesses are then not checked.
+At start-up the runtime reserves address space for its shadow and its arena, without committing memory. A limit on virtual memory (`ulimit -v`, `RLIMIT_AS`) smaller than the reservation makes it fail, and the program then runs with every guard passing, allocating from the C library's allocator. The warning goes to stderr, so a test that compares stderr under such a limit sees it. Raise or remove the limit for guarded programs. The similar warning that the heap lies outside the shadow's window means the arena could not be placed where the shadow covers it; heap accesses are then not checked.
 
 ## The program is slower or uses more memory
 
@@ -141,13 +170,13 @@ A guarded program reads the runtime's shadow memory (one byte per 16 bytes of th
 
 ## A program that uses SIGPWR on Linux
 
-On Linux the sweep stops the program's other threads with a signal, `SIGPWR` by default. When the program has installed its own `SIGPWR` handler by the time of the first sweep, the runtime uses `SIGXCPU` instead; if the program handles both, a process with more than one thread never reuses released memory. A program that installs a handler for the runtime's signal after the first sweep, or that handles both, names another signal for the runtime:
+On Linux the sweep stops the program's other threads with a signal, `SIGPWR` by default. The runtime chooses it the first time the program sets a signal mask or sweeps, whichever comes first: when the program has installed its own `SIGPWR` handler by then, the runtime uses `SIGXCPU` instead; if the program handles both, a process with more than one thread never reuses released memory. A program that installs a handler for the runtime's signal later, or that handles both, names another signal for the runtime:
 
 ```sh
 WEAVEC_RT_SWEEP_SIGNAL=40 ./program
 ```
 
-The runtime takes that signal over, so it must be one the program neither handles nor blocks in any thread. A thread that blocks it, or does not respond within a second, ends that sweep without recycling anything: memory is held longer, but no released block is reused. Darwin stops threads without a signal.
+The runtime takes that signal over, so it must be one the program does not handle. `pthread_sigmask` and `sigprocmask` never block it: the runtime leaves it out of every mask the program sets through them. A thread that blocks it by other means (the system call itself, or a handler or `pselect` mask that includes it), or does not respond within a second, ends that sweep without recycling anything, and the next sweep waits until much more memory has been released: memory is held longer, but no released block is reused. Darwin stops threads without a signal.
 
 ## Report an issue
 

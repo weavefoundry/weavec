@@ -1,0 +1,152 @@
+# RFC 0038, section 1: what libweavec_rt exports. Each line is a symbol
+# (its C name), and a platform (darwin, linux) when only that platform
+# defines it, or linux-if-defined when the runtime defines it only where
+# the C library does; everything else the runtime defines is hidden.
+# scripts/check-hygiene.py checks the list against weavec_rt.h and the
+# definitions marked WEAVEC_RT_API.
+
+# The entry points of weavec_rt.h.
+__weavec_rt_accept
+__weavec_rt_alloc
+__weavec_rt_alloca_poison
+__weavec_rt_alloca_unpoison
+__weavec_rt_asprintf
+__weavec_rt_atof
+__weavec_rt_atoi
+__weavec_rt_atol
+__weavec_rt_atoll
+__weavec_rt_basename_r
+__weavec_rt_color_ok
+__weavec_rt_dirname_r
+__weavec_rt_dprintf
+__weavec_rt_fatal
+__weavec_rt_fprintf
+__weavec_rt_frame_shadow
+__weavec_rt_free
+__weavec_rt_fscanf
+__weavec_rt_fstat
+__weavec_rt_fstatat
+__weavec_rt_getdelim
+__weavec_rt_getline
+__weavec_rt_getpeername
+__weavec_rt_gets
+__weavec_rt_getsockname
+__weavec_rt_getsockopt
+__weavec_rt_globals_register
+__weavec_rt_globals_unregister
+__weavec_rt_gmtime_r
+__weavec_rt_guard
+__weavec_rt_guard_jump
+__weavec_rt_heap
+__weavec_rt_if_indextoname
+__weavec_rt_inet_ntop
+__weavec_rt_inet_pton
+__weavec_rt_jump
+__weavec_rt_limit_fail
+__weavec_rt_localtime_r
+__weavec_rt_lstat
+__weavec_rt_mmap
+__weavec_rt_munmap
+__weavec_rt_null
+__weavec_rt_overlap
+__weavec_rt_preadv
+__weavec_rt_printf
+__weavec_rt_pwritev
+__weavec_rt_range
+__weavec_rt_range_ok
+__weavec_rt_readv
+__weavec_rt_realloc
+__weavec_rt_recvfrom
+__weavec_rt_recvmsg
+__weavec_rt_scanf
+__weavec_rt_sendmsg
+__weavec_rt_shadow
+__weavec_rt_size
+__weavec_rt_snprintf
+__weavec_rt_snprintf_l
+__weavec_rt_sprintf
+__weavec_rt_sprintf_l
+__weavec_rt_sscanf
+__weavec_rt_stat
+__weavec_rt_stpcpy
+__weavec_rt_strcasecmp
+__weavec_rt_strcat
+__weavec_rt_strcmp
+__weavec_rt_strcpy
+__weavec_rt_strlen
+__weavec_rt_strncasecmp
+__weavec_rt_strncmp
+__weavec_rt_strtod
+__weavec_rt_strtof
+__weavec_rt_strtoimax
+__weavec_rt_strtol
+__weavec_rt_strtold
+__weavec_rt_strtoll
+__weavec_rt_strtoul
+__weavec_rt_strtoull
+__weavec_rt_strtoumax
+__weavec_rt_sysctl
+__weavec_rt_sysctlbyname
+__weavec_rt_trapping
+__weavec_rt_uname
+__weavec_rt_unpoison_stack
+__weavec_rt_vasprintf
+__weavec_rt_vdprintf
+__weavec_rt_vfprintf
+__weavec_rt_vfscanf
+__weavec_rt_vprintf
+__weavec_rt_vscanf
+__weavec_rt_vsnprintf
+__weavec_rt_vsnprintf_l
+__weavec_rt_vsprintf
+__weavec_rt_vsscanf
+__weavec_rt_wcslen
+__weavec_rt_writev
+
+# AddressSanitizer's, LeakSanitizer's and UBSan's interfaces
+# (weavec_asan.c, weavec_guard.c).
+__asan_addr_is_in_fake_stack
+__asan_address_is_poisoned
+__asan_describe_address
+__asan_get_current_fake_stack
+__asan_handle_no_return
+__asan_poison_memory_region
+__asan_region_is_poisoned
+__asan_unpoison_memory_region
+__lsan_disable
+__lsan_do_leak_check
+__lsan_do_recoverable_leak_check
+__lsan_enable
+__lsan_ignore_object
+__lsan_register_root_region
+__lsan_unregister_root_region
+__sanitizer_annotate_contiguous_container
+__sanitizer_finish_switch_fiber
+__sanitizer_print_stack_trace
+__sanitizer_set_report_path
+__sanitizer_start_switch_fiber
+__ubsan_handle_out_of_bounds
+__ubsan_handle_out_of_bounds_abort
+
+# The allocator (weavec_malloc.c).
+aligned_alloc
+calloc
+free
+malloc
+malloc_good_size darwin
+malloc_size darwin
+posix_memalign
+realloc
+reallocf darwin
+valloc
+memalign linux
+pvalloc linux
+malloc_usable_size linux
+reallocarray linux
+free_sized linux-if-defined
+free_aligned_sized linux-if-defined
+
+# The signal masks, which keep the sweep's signal deliverable
+# (weavec_sweep.c; RFC 0038, amendment 13).
+pthread_sigmask linux
+sigprocmask linux

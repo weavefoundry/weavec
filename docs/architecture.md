@@ -457,16 +457,21 @@ points), shared by its sources and its test and not installed; compiled
 code reaches the runtime only through the entry points the guard passes
 declare, the shadow descriptor and the standard allocation functions.
 
-| Archive | Source | Holds |
+The sources build one shared library, `libweavec_rt.so.<abi>` (Linux) or
+`libweavec_rt.dylib` (Darwin), which exports what
+[`weavec_rt.exports`](../runtime/weavec_rt.exports) lists (the entry points
+`weavec_rt.h` marks `WEAVEC_RT_API`, ASan's interface and the allocator) and
+hides the rest, and, on Linux, `libweavec_rt.a` for `-static` programs.
+
+| Library | Source | Holds |
 | --- | --- | --- |
-| `libweavec_rt.a` | [`weavec_alloc.c`](../runtime/weavec_alloc.c) | the size-class arena allocator, its slot words and shadow writes, the quarantine and huge blocks, when to sweep, the allocator's side of the sweep; the shadow's reservation |
+| `libweavec_rt` | [`weavec_alloc.c`](../runtime/weavec_alloc.c) | the size-class arena allocator, its slot words and shadow writes, the quarantine and huge blocks, when to sweep, the allocator's side of the sweep; the shadow's reservation |
 | | [`weavec_sweep.c`](../runtime/weavec_sweep.c) | the sweep: stopping the threads, the roots (the image table on Darwin), the conservative mark, recycling |
 | | [`weavec_guard.c`](../runtime/weavec_guard.c) | the guards' slow paths (`__weavec_rt_guard`, `__weavec_rt_range`, `__weavec_rt_range_ok`, `__weavec_rt_strlen`, `__weavec_rt_overlap`, `__weavec_rt_null`, `__weavec_rt_limit_fail`), the frames' (`__weavec_rt_unpoison_stack`, `__weavec_rt_alloca_poison`, `_unpoison`), the globals' registration, and the weak `__ubsan_handle_out_of_bounds[_abort]` |
 | | [`weavec_libc.c`](../runtime/weavec_libc.c) | the checked library wrappers `__weavec_rt_<name>`, with their limits for fortified forms, the number parsers, `mmap` and `munmap` |
 | | [`weavec_asan.c`](../runtime/weavec_asan.c) | ASan's and LeakSanitizer's interface over WeaveC's shadow |
-| | [`weavec_owner.c`](../runtime/weavec_owner.c) | the table of entry points `__weavec_rt_dispatch` (version 4), and on Darwin the choice of the copy that owns the process |
-| | [`weavec_report.c`](../runtime/weavec_report.c) | reports, `__weavec_rt_fatal`, `__weavec_rt_trapping`, the `WEAVEC_RT_*` settings and the counters |
-| `libweavec_alloc.a` | [`weavec_malloc.c`](../runtime/weavec_malloc.c) | the standard allocation functions over the arena, for the image the archive is linked into |
+| | [`weavec_report.c`](../runtime/weavec_report.c) | reports, `__weavec_rt_fatal`, `__weavec_rt_trapping`, the fault handler, the `WEAVEC_RT_*` settings and the counters; the check for a second runtime and a foreign allocator |
+| | [`weavec_malloc.c`](../runtime/weavec_malloc.c) | the standard allocation functions over the arena |
 
 ### The allocator
 
@@ -507,13 +512,15 @@ next allocator (the pointer's own malloc zone on Darwin, `__libc_free` and
 `__libc_realloc` or the next `free` and `realloc` in lookup order
 elsewhere).
 
-`libweavec_alloc.a` defines `malloc`, `calloc`, `realloc` and `free`
-strongly; the rest of the family (`reallocarray`, `aligned_alloc`,
-`posix_memalign`, `valloc`, `free_sized`, `free_aligned_sized`, and
-`malloc_size`, `malloc_good_size`, `reallocf` on Darwin or `memalign`,
-`pvalloc`, `malloc_usable_size` elsewhere) is weak, so a program's own shim
-over `malloc` replaces it and keeps the arena. On ELF the executable's
-definitions serve every shared library.
+The library exports `malloc`, `calloc`, `realloc` and `free` and the rest
+of the family (`reallocarray`, `aligned_alloc`, `posix_memalign`, `valloc`,
+`free_sized`, `free_aligned_sized`, and `malloc_size`, `malloc_good_size`,
+`reallocf` on Darwin or `memalign`, `pvalloc`, `malloc_usable_size`
+elsewhere), unversioned, so that the C library's own versioned references
+(`malloc@GLIBC_2.17`) bind to them too; a program's own definition comes
+first in the loader's search order and replaces one. The family beyond the
+four is weak in the static archive, so a program's own shim over `malloc`
+links beside it.
 
 ### When to sweep
 
@@ -590,19 +597,26 @@ stack's shadow, as before a `noreturn` call),
 announcements, and LeakSanitizer's entry points. What ASan does that
 WeaveC does not (leak checking, fake stacks) does nothing.
 
-### One runtime per process on Darwin
+### One runtime per process
 
-Every image linked by `weavec-cc` carries the archives. On Darwin the copy
-whose `__weavec_rt_dispatch` `dlsym(RTLD_DEFAULT, …)` finds is the *owner*;
-every other copy takes the owner's arena and shadow descriptors and
-forwards to it the allocation and the global registration entry points, so
-one arena, one shadow and one quarantine serve every image (RFC 0033 §6.2,
-RFC 0036 §4). A table
-of another layout (another WeaveC version's runtime) is not used. The arena
-is also registered as a malloc zone and promoted to the process's default
-zone, so `malloc` from any image, the C library's own (`strdup`,
-`getline`, `asprintf`) included, is served by the arena; blocks the
-system's zones allocated before that go back to them.
+Every image linked by `weavec-cc` depends on the library (RFC 0038 §1), so
+the dynamic loader loads one copy, initializes it before them (its
+constructor reserves the shadow and the arena before any image's
+constructor registers its globals) and binds every image's references to
+it, whatever their version scripts or `-Bsymbolic`. On Linux the library
+precedes the C library in the executable's `DT_NEEDED` list, so its
+`malloc` serves every image; its own calls bind inside it
+(`-Bsymbolic-functions`) and its thread-local storage is `initial-exec`,
+so that a library loaded by `dlopen` fits the C library's static TLS. On
+Darwin the arena is also registered as a malloc zone and promoted to the
+process's default zone, so `malloc` from any image, the C library's own
+(`strdup`, `getline`, `asprintf`) included, is served by the arena; blocks
+the system's zones allocated before that go back to them. The library's
+constructor stops the program when another runtime's image is loaded (images
+of two WeaveC versions; it looks through `dl_iterate_phdr` or the dyld image
+list), and on Linux notes once when `dlsym(RTLD_DEFAULT, "malloc")` is
+neither its own nor the executable's (a guarded library in a program
+`weavec-cc` did not link).
 
 ### Reports
 
@@ -640,7 +654,8 @@ with no guarantee. The settings:
 | `WEAVEC_RT_ABORT=1` | report mode traps |
 | `WEAVEC_RT_REPORT_LOG=<path>` | append reports to that file instead of standard error (ignored in set-uid programs) |
 | `WEAVEC_RT_BACKTRACE=1` | print the stack of the access that stops the program |
-| `WEAVEC_RT_STATS=1` | print the counters at exit as `weavec: runtime: <n> <what>` (allocations, releases, recycled slots, huge blocks, slow guards, range guards, string guards, stack unpoisons, sweeps), then the sweeps' total and longest pause, what the last one retained, and the peaks of the live slots and of the quarantine; on Darwin only the owner prints, counting every image's work |
+| `WEAVEC_RT_STATS=1` | print the counters at exit as `weavec: runtime: <n> <what>` (allocations, releases, recycled slots, huge blocks, slow guards, range guards, string guards, stack unpoisons, sweeps), then the sweeps' total and longest pause, what the last one retained, and the peaks of the live slots and of the quarantine; the process's one runtime counts every image's work |
+| `WEAVEC_RT_NOTES=0` | no note that the process's allocator is not the runtime's |
 | `WEAVEC_RT_QUARANTINE=<bytes>` | the quarantine's least growth before a sweep (`Q`) |
 | `WEAVEC_RT_SWEEP_SIGNAL=<n>` | the signal number that stops threads for a sweep on Linux (default `SIGPWR`, or `SIGXCPU` when the program handles `SIGPWR`) |
 
@@ -649,14 +664,16 @@ case runner and the corpus gate attribute traps through this output.
 
 ## Linking
 
-`addRuntimeLibraries` (`lib/Frontend/Driver.cpp`) adds
-`-u malloc libweavec_alloc.a libweavec_rt.a` to every link job of an
-enforcing build that targets the host, before the first library of the
-line, and `-lpthread` on Linux. An archive member is linked only when
-referenced, except the allocator, which `-u` forces in. Missing archives
-are an error: `cannot find the WeaveC runtime (libweavec_rt.a,
-libweavec_alloc.a), which an enforcing link carries (-fweavec-checks=none
-builds without it)`.
+`addRuntimeLibraries` (`lib/Frontend/Driver.cpp`) adds the runtime's library
+(`<rt>/libweavec_rt.dylib` or `<rt>/libweavec_rt.so`, or
+`<rt>/libweavec_rt.a` for `-static` and `-static-pie`), `-rpath <rt>` (or
+`-fweavec-rpath`'s directory; none with `-fno-weavec-rpath` or a static
+link) and `-lpthread` on Linux to every link job of an enforcing build that
+targets the host, executables, shared objects and bundles alike, before the
+first library of the line; a relocatable link (`-r`) gets nothing. `<rt>` is
+the toolchain's `lib/weavec`. A missing library is an error: `cannot find
+the WeaveC runtime (libweavec_rt.dylib), which an enforcing link carries
+(-fweavec-checks=none builds without it)`.
 
 `runtimeObstacle` reads the command line for a reason the build cannot use
 the runtime: `-ffreestanding`; `-nostdlib`, `-nodefaultlibs` or `-nolibc`;
@@ -667,16 +684,34 @@ or Linux. The units are then compiled without guards, as under
 `weavec-cc: note: building without the WeaveC runtime (<reason>): memory
 accesses are not guarded`.
 
-When an input of the link defines a symbol that `libweavec_alloc.a`
-defines strongly (`allocatorDefinedBy` reads the set from the archive
-itself), `dropAllocatorIfDefined` takes the archive and its `-u` off the
-line and prints a note: the program keeps its allocator, its heap is
-untracked (unless it poisons it through ASan's interface), guards pass on
-it, and releases are not validated. Stack and global objects are still
-guarded.
+When an input of the link, an object or a member of an archive, defines
+`malloc` strongly, `noteProgramAllocator` prints a note: the loader binds
+`malloc` to the program's definition first, so the program keeps its
+allocator, its heap is untracked (unless it poisons it through ASan's
+interface), guards pass on it, and releases are not validated. Stack and
+global objects are still guarded.
 
-A Darwin link with `-flto` gets `-lto_library` naming the libLTO of the
-LLVM WeaveC was built with, when the driver's default does not exist.
+A Darwin link's `-lto_library` that names a file the toolchain does not
+have is dropped, so the system linker uses its own.
+
+### The toolchain
+
+`weavec-cc` records no path of the LLVM it was built with (RFC 0038 §6).
+Clang's driver finds the resource directory, `lib/clang/<major>`, from the
+executable, and `createAction` builds Clang's actions for a `-cc1` job
+itself (code generation, preprocessing, syntax checks, precompiled headers),
+so that `clangFrontendTool` and the static analyzer it brings are not in
+the link. Assembly sources and `-save-temps` compiles get
+`-fno-integrated-as` and use the system assembler, since Clang's `-cc1as`
+is not a library. With `WEAVEC_SELF_CONTAINED` (the `release` preset)
+`weavec-cc` links LLVM's and Clang's static archives on Linux
+(`cmake/WeaveCLLVM.cmake`), and on Darwin, whose Homebrew static Clang lacks
+the code generator's target builtins, the install copies the LLVM shared
+libraries it loads, and theirs, into `lib/weavec/llvm` with an rpath to them
+(`cmake/WeaveCBundleLLVM.cmake`). The installed tree (`bin/weavec-cc`,
+`lib/weavec`, `lib/clang/<major>`, `share/doc/weavec`) may be moved anywhere;
+`cpack` packs it as `weavec-<version>-<os>-<arch>.tar.xz`, and
+`scripts/check-toolchain.py` checks an archive moved after unpacking.
 
 ## `weavec::Core` — the library table
 
@@ -700,19 +735,21 @@ goes in the table, never in a comparison of a callee's name.
 | `EnforcementLedger` | The rows the passes record, their rollup, the `weavec-ledger` version 3 JSON writer and the summary line. |
 | `UnsafeRegions` | The `WEAVEC_UNSAFE` and `no_sanitize` ranges of a unit, by file, the AST consumer that collects them, and `UnsafeAnnotation`. |
 | `Driver` | `weavec-cc`: `DriverOptions` (WeaveC's flags, split from Clang's), the in-process `-cc1` jobs with the enforcement set-up (`configureEnforcement`), ASan's contract and fortification, the wrapper action that adds the unsafe-region collector, the runtime's link line (`addRuntimeLibraries`, `runtimeObstacle`, `allocatorDefinedBy`, `dropAllocatorIfDefined`), and `--help-weavec`. |
-| `ResourceDir` | Locates `weavec.h`, the runtime archives, Clang's resource directory and `clang`. |
+| `ResourceDir` | Locates `weavec.h`, the runtime's library and the Apple SDK. |
 
 ## `tools/weavec-cc`
 
 `weavec-cc` is the drop-in compiler: `CC=weavec-cc make`. Its own flags,
 which `weavec-cc --help-weavec` lists, are `-f[no-]weavec`,
 `-fweavec-checks=trap|report|verify|none`, `-f[no-]weavec-zero-init`,
-`-fweavec-ledger=<path>`, `-f[no-]weavec-summary` and
-`-f[no-]weavec-asan-compat`; an unknown `-fweavec-*` flag is an error, and
+`-fweavec-ledger=<path>`, `-f[no-]weavec-summary`,
+`-f[no-]weavec-asan-compat`, `-f[no-]weavec-colors` and
+`-fweavec-rpath=<dir>`/`-fno-weavec-rpath`; an unknown `-fweavec-*` flag is an error, and
 everything else is Clang's. When WeaveC is on, the driver defines
 `__WEAVEC__=1` and adds `weavec.h`'s directory with `-isystem`.
-`--version` prints Clang's version block, then `weavec-cc version …`. The
-command line is that of RFC 0035 §7 as RFC 0036 §7 amends it.
+`--version` prints Clang's version block, then `weavec-cc version …`, the
+LLVM version, and the runtime's interface version and platform. The
+command line is that of RFC 0035 §7 as RFC 0036 §7 and RFC 0038 §7 amend it.
 
 ## Tests and gates
 
@@ -722,25 +759,27 @@ command line is that of RFC 0035 §7 as RFC 0036 §7 amends it.
   (`WeaveCFrontendTests`) runs the guard passes on IR text, each removal
   rule alone, and checks the IR and the ledger rows they leave.
 - **The runtime test** ([`runtime/test/rt_test.c`](../runtime/test/rt_test.c),
-  CTest `runtime`) is one C program linked with `libweavec_rt.a` and
-  `libweavec_alloc.a`, so its `malloc` is the arena's. It tests the shadow
+  CTest `runtime`) is one C program linked with the runtime's objects (its
+  internal functions included), so its `malloc` is the arena's. It tests the shadow
   and its encoding, the size classes, alignment, reallocation, the sweep
   (recycling, retention, following the heap, stopping threads, pacing,
   the C library's data through the image table), invalid releases (in
   child processes that must die), huge blocks, foreign pointers, the
   guards, strings, the checked calls, globals, dynamic allocas and the
   stack's unpoisoning, ASan's interface, the number parsers and limits,
-  mappings, the array-bounds handlers, threads and `fork`. Test
-  names as arguments run only those.
+  mappings, the array-bounds handlers, threads, `fork` and a restored
+  fault handler. Test names as arguments run only those.
 - **Lit tests** (`test/Guards`, `test/Driver`) pin exact output and
   behavior. `test/Guards` pins the passes' IR (FileCheck on `-emit-llvm`:
   `ir-*.c`, among them `ir-frames.c`, and `shared-frame.c`) and, by
   building and running programs, the run-time
   behavior, each report line, and the enforcement ledger;
   `test/Driver` pins the runtime's link line and fallbacks
-  (`runtime-*.c`), fortification (`fortify.c`), ASan's macros
-  (`asan-compat*.c`) and the globals of a dylib and a bundle
-  (`image-globals.c`).
+  (`runtime-link*.c`), one runtime across shared libraries with version
+  scripts, `-Bsymbolic` and any link order, plug-ins in guarded and
+  unguarded programs and two runtimes in one process (`shared-images.c`),
+  fortification (`fortify.c`), ASan's macros (`asan-compat*.c`) and the
+  globals of a shared library and a plug-in (`image-globals.c`).
 - **`test/cases`** is one tree of executable C cases by feature, with
   expectations as line-comment markers (see its
   [README](../test/cases/README.md)).
@@ -756,14 +795,17 @@ command line is that of RFC 0035 §7 as RFC 0036 §7 amends it.
   test per top-level directory, so `ctest -j` runs the suites in parallel.
 - **`test/corpus`** pins real projects, built and tested with `weavec-cc`
   by [`scripts/corpus-gate.py`](../scripts/corpus-gate.py) (`--quick` on
-  every pull request); see its [README](../test/corpus/README.md).
+  every pull request, `--full` and the programs tier `--programs` weekly on
+  linux-x86_64, linux-aarch64 and darwin-arm64); see its
+  [README](../test/corpus/README.md).
 
 RFC 0036's acceptance gates (detection G1–G3, drop-in G4–G5, cost G6–G9,
 hygiene H1–H2) are measured with these tools. `scripts/check-hygiene.py`
 implements gate H1: no libc name comparisons outside the library table, no
 corpus project named under `lib/`, Core free of Clang and LLVM, the
-runtime's includes, its entry points declared in `weavec_rt.h`, and the
-line budgets of the library (9,000) and of the runtime (7,000).
+runtime's includes, its entry points declared in `weavec_rt.h`, its export
+list against its `WEAVEC_RT_API` declarations, and the line budgets of the
+library (9,000) and of the runtime (7,050).
 [`scripts/codegen-identity.py`](../scripts/codegen-identity.py) checks that
 objects built with `-fweavec-checks=none` are byte-identical to Clang's.
 
@@ -773,17 +815,20 @@ objects built with `-fweavec-checks=none` are byte-identical to Clang's.
   `runtime/` and, with `WEAVEC_BUILD_TESTS`, `unittests/` and `test/`.
 - `cmake/WeaveCLLVM.cmake` finds LLVM and Clang and provides the
   `weavec::llvm` interface target and `weavec_link_llvm`/`weavec_link_clang`,
-  which respect `LLVM_LINK_LLVM_DYLIB` and `CLANG_LINK_CLANG_DYLIB`.
+  which respect `LLVM_LINK_LLVM_DYLIB` and `CLANG_LINK_CLANG_DYLIB`, or, with
+  `WEAVEC_SELF_CONTAINED` on Linux, link the static archives. It links
+  Clang's resource directory into the build tree's `lib/clang/<major>`.
 - `cmake/WeaveCHelpers.cmake` provides `weavec_add_library` and
   `weavec_add_executable`. Only `USES_LLVM` targets get LLVM's include
   paths, and Core is not one of them.
 - `lib/Core/CMakeLists.txt` embeds `LibrarySpec.txt` as a byte array at
   configure time; editing the table re-runs the configure step.
-- `runtime/CMakeLists.txt` builds `libweavec_rt.a` and `libweavec_alloc.a`
-  into the build tree's `lib/weavec`, position-independent, never as LTO
-  bitcode, and always with `-O2` and without the allocation builtins,
-  whatever the build type. With `WEAVEC_BUILD_TESTS` it also builds
-  `weavec_rt_test`, which `test/CMakeLists.txt` registers as the CTest
-  `runtime`.
-- A CMake package config (`find_package(WeaveC)`) exports `weavec::Core`
-  and `weavec::Frontend` to external tools.
+- `runtime/CMakeLists.txt` builds the runtime's objects once,
+  position-independent, with hidden visibility, never as LTO bitcode, and
+  always with `-O2` and without the allocation builtins, whatever the build
+  type, and from them the shared library (with the export list) into the
+  build tree's `lib/weavec` and the static archive.
+  With `WEAVEC_BUILD_TESTS` it also builds `weavec_rt_test`, which
+  `test/CMakeLists.txt` registers as the CTest `runtime`.
+- `cmake/WeaveCInstall.cmake` installs the toolchain's tree (only
+  `weavec-cc` of the C++ targets) and configures `cpack`.

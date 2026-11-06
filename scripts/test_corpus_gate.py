@@ -16,6 +16,7 @@ import contextlib
 import difflib
 import importlib.util
 import io
+import dataclasses
 import json
 import os
 import shlex
@@ -338,6 +339,163 @@ class RatchetTest(unittest.TestCase):
                 self.assertEqual(set(record["ledger"]), set(gate.LEDGER_COUNTS) | {"provenShare"})
 
 
+# -- platforms and prerequisites (RFC 0038, section 5) ---------------------------------
+
+
+class PlatformTest(unittest.TestCase):
+    def test_every_config_resolves_on_every_platform(self):
+        for target in ("darwin", "linux-x86_64", "linux-aarch64"):
+            manifest = gate.load_manifest(CORPUS / "manifest.json", CORPUS / "support", target)
+            self.assertTrue(manifest.configs, target)
+            for config in manifest.configs:
+                self.assertTrue(config.files, f"{target} {config.name}")
+        darwin = gate.load_manifest(CORPUS / "manifest.json", CORPUS / "support", "darwin")
+        linux = gate.load_manifest(CORPUS / "manifest.json", CORPUS / "support", "linux-x86_64")
+        self.assertIn("src/unix/kqueue.c", darwin.config("libuv").files)
+        self.assertIn("src/unix/linux.c", linux.config("libuv").files)
+        self.assertNotIn("src/unix/kqueue.c", linux.config("libuv").files)
+        self.assertIn("arch/x86/x86_features.c", linux.config("zlib-ng").files)
+        self.assertNotIn("VERSION_OPT", " ".join(linux.config("lmdb").build))
+
+    def test_the_most_specific_platform_wins(self):
+        self.assertEqual(gate.platform_overlays("linux-aarch64"), ["linux", "linux-aarch64"])
+        self.assertEqual(gate.platform_overlays("darwin"), ["darwin"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            config = {"name": "c", "compile": {"files": ["a.c"]}, "build": ["make"], "test": ["t"],
+                      "platforms": {"linux": {"build": ["make linux"], "test": ["t linux"]},
+                                    "linux-aarch64": {"build": ["make arm"]}}}
+            path.write_text(json.dumps({"schema": gate.MANIFEST_SCHEMA, "version": gate.MANIFEST_VERSION,
+                                        "projects": [{"name": "p", "url": "u", "sha": "0" * 40,
+                                                      "configs": [config]}]}))
+            arm = gate.load_manifest(path, Path(directory), "linux-aarch64").config("c")
+            self.assertEqual((arm.build, arm.test), (["make arm"], ["t linux"]))
+            self.assertEqual(gate.load_manifest(path, Path(directory), "darwin").config("c").build, ["make"])
+            config["platforms"] = {"windows": {}, "linux": {"files": []}}
+            path.write_text(json.dumps({"schema": gate.MANIFEST_SCHEMA, "version": gate.MANIFEST_VERSION,
+                                        "projects": [{"name": "p", "url": "u", "sha": "0" * 40,
+                                                      "configs": [config]}]}))
+            with self.assertRaisesRegex(gate.GateError, "unknown platform 'windows'.*\n.*unknown field"):
+                gate.load_manifest(path, Path(directory), "darwin")
+
+
+class PrerequisitesTest(unittest.TestCase):
+    def test_repository_prerequisites_name_configs(self):
+        manifest = gate.load_manifest(CORPUS / "manifest.json", CORPUS / "support")
+        prerequisites = gate.load_prerequisites(CORPUS / "prerequisites.json")
+        names = {c.name for c in manifest.configs}
+        self.assertTrue(prerequisites)
+        self.assertLessEqual(set(prerequisites), names)
+
+    def test_missing_programs_and_root(self):
+        manifest = gate.load_manifest(CORPUS / "manifest.json", CORPUS / "support")
+        configs = [manifest.config("hiredis"), manifest.config("libuv"), manifest.config("cJSON")]
+        prerequisites = gate.load_prerequisites(CORPUS / "prerequisites.json")
+        none = gate.missing_prerequisites(configs, prerequisites, which=lambda _: None, root=True)
+        self.assertEqual(none, {"hiredis": ["redis-server (not on PATH)"], "libuv": ["a user other than root"]})
+        every = gate.missing_prerequisites(configs, prerequisites, which=lambda p: "/bin/" + p, root=False)
+        self.assertEqual(every, {})
+
+
+class ProgramsTest(unittest.TestCase):
+    def test_repository_programs(self):
+        programs = gate.load_programs(CORPUS / "programs.json")
+        self.assertEqual([p.name for p in programs], ["sqlite", "cpython", "postgresql", "git", "coreutils"])
+        self.assertEqual(programs[4].listed_failures("darwin"),
+                         {"tests/sort/sort-debug-keys", "tests/sort/sort-h-thousands-sep",
+                          "tests/touch/not-owner"})
+        self.assertEqual(programs[4].listed_failures("linux-x86_64"), {"tests/sort/sort-debug-keys"})
+        self.assertEqual(programs[0].listed_failures("linux-aarch64"), set())
+
+    def test_failure_patterns(self):
+        programs = {p.name: p for p in gate.load_programs(CORPUS / "programs.json")}
+        samples = {
+            "sqlite": ("!Failures on these tests: select1-1.1 fts3-2.4\n", {"select1-1.1", "fts3-2.4"}),
+            "cpython": ("2 tests skipped:\n    test_a test_b\n\n2 tests failed:\n    test_compileall"
+                        " test_pty\n\nTotal duration: 1s\n", {"test_compileall", "test_pty"}),
+            "postgresql": ("ok 1         - boolean   12 ms\nnot ok 2     + join      40 ms\n", {"join"}),
+            "git": ("fixed   0\nfailed test(s): t1451-fsck-buffer t3900-i18n-commit\n",
+                    {"t1451-fsck-buffer", "t3900-i18n-commit"}),
+            "coreutils": ("PASS: tests/a.sh\nFAIL: tests/shuf/shuf.sh\n# FAIL:  1\nERROR: tests/b.sh\n"
+                          "FAIL: tests/shuf/shuf\n", {"tests/shuf/shuf", "tests/b"}),
+        }
+        for name, (output, expected) in samples.items():
+            self.assertEqual(gate.failed_tests(programs[name].failures, output), expected, name)
+
+    def test_judging(self):
+        program = gate.Program(name="p", url="u", sha256="0" * 64, build=["b"], test="t", failures="F (.*)",
+                               reference_failures={"linux": ["known", "fixed"]})
+        def run(mode, failures, reports=()):
+            return gate.ProgramRun(mode=mode, built=True, failures=set(failures), reports=list(reports))
+        report = {"kind": "heap-buffer-overflow", "file": "lib/rawmemchr.c", "line": 113, "col": 28,
+                  "proven": False}
+        runs = {"reference": run("reference", ["known", "flaky"]), "report": run("report", ["known", "new"], [report])}
+        problems = gate.judge_program(program, "linux-x86_64", runs, [])
+        self.assertEqual(problems, [
+            "p: fixed passes with the reference compiler: remove it from referenceFailures",
+            "p: flaky fails with the reference compiler too: list it in referenceFailures",
+            "p: new fails with weavec-cc",
+            "p: an untriaged report: heap-buffer-overflow at lib/rawmemchr.c:113:28"])
+        triage = [{"config": "p", "file": "lib/rawmemchr.c", "line": 113, "verdict": "project-bug", "note": "n"}]
+        self.assertEqual(gate.judge_program(program, "linux-x86_64", runs, triage)[-1],
+                         "p: new fails with weavec-cc")
+        self.assertEqual(gate.judge_program(program, "darwin", {"report": run("report", [])}, []), [])
+
+    def test_accepted_failures(self):
+        # RFC 0038 amendment 18: a test that fails with weavec-cc alone for a reason an RFC accepts.
+        program = gate.Program(name="p", url="u", sha256="0" * 64, build=["b"], test="t", failures="F (.*)",
+                               reference_failures={},
+                               accepted_failures={"linux": {"stderr": "RFC 0038: why", "gone": "RFC 0038: why"}})
+        runs = {"reference": gate.ProgramRun(mode="reference", built=True),
+                "report": gate.ProgramRun(mode="report", built=True, failures={"stderr", "new"})}
+        self.assertEqual(gate.judge_program(program, "linux-aarch64", runs, []), [
+            "p: new fails with weavec-cc",
+            "p: gone passes with weavec-cc: remove it from acceptedFailures"])
+        self.assertEqual(gate.judge_program(program, "darwin", runs, []),
+                         ["p: new fails with weavec-cc", "p: stderr fails with weavec-cc"])
+        programs = {p.name: p for p in gate.load_programs(CORPUS / "programs.json")}
+        self.assertEqual(programs["coreutils"].accepted("linux-x86_64"),
+                         {"tests/cut/cut-huge-range", "tests/printf/printf-surprise"})
+        self.assertEqual(programs["coreutils"].accepted("darwin"), set())
+
+    def test_an_accepted_failure_names_its_rfc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "programs.json"
+            path.write_text(json.dumps({"schema": "weavec-corpus-programs", "version": 1, "programs": [
+                {"name": "p", "url": "u", "sha256": "0" * 64, "build": ["b"], "test": "t", "failures": "F (.*)",
+                 "acceptedFailures": {"linux": {"t1": "because"}}}]}))
+            with self.assertRaisesRegex(gate.GateError, "t1 must name the RFC that accepts it"):
+                gate.load_programs(path)
+
+    def test_a_program_from_its_archive(self):
+        import hashlib
+        import tarfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tree = root / "prog-1.0"
+            tree.mkdir()
+            (tree / "configure").write_text("#!/bin/sh\necho \"CC=$CC\" > config.out\n")
+            (tree / "configure").chmod(0o755)
+            archive = root / "prog-1.0.tar.gz"
+            with tarfile.open(archive, "w:gz") as tarred:
+                tarred.add(tree, arcname="prog-1.0")
+            sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+            program = gate.Program(name="prog", url=archive.as_uri(), sha256=sha, build=["./configure"],
+                                   test="cat config.out; echo 'FAIL: one'; echo weavec: heap-buffer-overflow "
+                                        "at a.c:1:2: read of 1 bytes at 0x10 >> \"$WEAVEC_RT_REPORT_LOG\"",
+                                   failures="^FAIL: (\\S+)", reference_failures={})
+            fetched = gate.fetch_archive(program, root / "cache")
+            self.assertEqual(fetched.read_bytes(), archive.read_bytes())
+            result = gate.run_program(program, "report", "/bin/echo", [], fetched, root / "run", 1, keep=True)
+            self.assertTrue(result.built)
+            self.assertEqual(result.failures, {"one"})
+            self.assertEqual([(r["kind"], r["file"], r["line"]) for r in result.reports],
+                             [("heap-buffer-overflow", "a.c", 1)])
+            bad = gate.Program(**{**dataclasses.asdict(program), "sha256": "1" * 64})
+            with self.assertRaisesRegex(gate.GateError, "does not match its sha256"):
+                gate.fetch_archive(bad, root / "other")
+
+
 # -- triage ----------------------------------------------------------------------------
 
 
@@ -347,28 +505,31 @@ class TriageTest(unittest.TestCase):
             path = Path(directory) / "triage.json"
             self.assertEqual(gate.load_triage(path).guard_failures, [])
 
-            def write(failures=(), version=2, **extra):
+            def write(failures=(), version=3, **extra):
                 path.write_text(json.dumps({"schema": gate.TRIAGE_SCHEMA, "version": version,
                                             "guardFailures": list(failures), **extra}))
 
-            good = {"config": "c", "file": "a.c", "line": 1, "verdict": "true", "note": "n"}
+            good = {"config": "c", "file": "a.c", "line": 1, "verdict": "project-bug", "note": "n"}
             write([{**good, "kind": "heap-buffer-overflow"}])
             self.assertEqual(len(gate.load_triage(path).guard_failures), 1)
             for failures, extra, message in (
-                    ([{**good, "verdict": "false"}], {}, "must be \"true\""),
+                    ([{**good, "verdict": "true"}], {}, "must be one of project-bug, accepted"),
+                    ([{**good, "verdict": "accepted"}], {}, "names its RFC"),
                     ([{k: v for k, v in good.items() if k != "note"}], {}, "missing note"),
                     ([{**good, "kind": "object"}], {}, "unknown kind"),
                     ([good], {"entries": []}, "unknown field\\(s\\) entries")):
                 write(failures, **extra)
                 with self.assertRaisesRegex(gate.GateError, message):
                     gate.load_triage(path)
-            write(version=1)
-            with self.assertRaisesRegex(gate.GateError, "version 2"):
+            write([{**good, "verdict": "accepted", "rfc": "0037"}])
+            self.assertEqual(len(gate.load_triage(path).guard_failures), 1)
+            write(version=2)
+            with self.assertRaisesRegex(gate.GateError, "version 3"):
                 gate.load_triage(path)
 
     def test_triaged_guard_failures(self):
-        failures = [{"config": "c", "file": "src/lookup3.h", "line": 259, "verdict": "true", "note": "n"},
-                    {"config": "c", "file": "x.c", "line": 3, "verdict": "true", "note": "n",
+        failures = [{"config": "c", "file": "src/lookup3.h", "line": 259, "verdict": "project-bug", "note": "n"},
+                    {"config": "c", "file": "x.c", "line": 3, "verdict": "project-bug", "note": "n",
                      "kind": "heap-buffer-overflow"}]
         self.assertTrue(gate.triaged_failure(failures, "c", report(file="../src/lookup3.h", line=259)))
         self.assertFalse(gate.triaged_failure(failures, "d", report(file="src/lookup3.h", line=259)))
@@ -381,11 +542,14 @@ class TriageTest(unittest.TestCase):
         triage = gate.load_triage(CORPUS / "triage.json")
         manifest = gate.load_manifest(CORPUS / "manifest.json", CORPUS / "support")
         names = {c.name for c in manifest.configs}
-        # Empty since RFC 0036: jansson's word-at-a-time hash, the last entry,
-        # takes its exact path when it sees AddressSanitizer's macros.
+        programs = {p.name for p in gate.load_programs(CORPUS / "programs.json")}
+        # A config's entries need a build; a program's are the programs tier's.
+        # No false trap is accepted (RFC 0038, gate G3).
         for e in triage.guard_failures:
-            self.assertIn(e["config"], names)
-            self.assertTrue(manifest.config(e["config"]).build, e)
+            self.assertIn(e["config"], names | programs)
+            self.assertEqual(e["verdict"], "project-bug", e)
+            if e["config"] in names:
+                self.assertTrue(manifest.config(e["config"]).build, e)
 
 
 # -- injections ------------------------------------------------------------------------
@@ -684,7 +848,7 @@ class EndToEndTest(unittest.TestCase):
                               text=True).stdout.strip()
 
     def write_triage(self, failures):
-        self.triage.write_text(json.dumps({"schema": gate.TRIAGE_SCHEMA, "version": 2,
+        self.triage.write_text(json.dumps({"schema": gate.TRIAGE_SCHEMA, "version": 3,
                                            "guardFailures": list(failures)}))
 
     def write_injections(self, items):
@@ -802,7 +966,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(self.results()["gates"]["drop-in"]["status"], "fail")
         self.assertEqual(self.results()["configs"]["units"]["traps"], 1)
         # A true bug of the project, triaged: not a trap.
-        self.write_triage([{"config": "units", "file": "prog.c", "line": 3, "verdict": "true", "note": "n"}])
+        self.write_triage([{"config": "units", "file": "prog.c", "line": 3, "verdict": "project-bug", "note": "n"}])
         status, output = self.run_gate("--full", "--only", "units", "--no-asan", env={"FAKE_TRAP": "1"})
         self.assertEqual(status, 0, output)
         self.assertIn("trapped only at guard failures triaged as true bugs", output)

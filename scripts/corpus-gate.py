@@ -21,6 +21,14 @@ Modes (combine freely; at least one, or --update-from):
             its run stops at the injected line.
   --bench   best-of-N user CPU of each benchmark built by weavec-cc, by the
             reference compiler and by the reference compiler with ASan.
+  --programs
+            RFC 0038's programs tier (programs.json): each large program,
+            from its pinned release archive, built and run through its own
+            test suite with weavec-cc in report mode and with the reference
+            compiler; fails on an untriaged report, a test that fails with
+            weavec-cc but not the reference (but those acceptedFailures
+            lists, each with the RFC that accepts it), and a stale
+            referenceFailures or acceptedFailures list. --program NAME selects one (repeatable).
 
 Modifiers:
 
@@ -41,6 +49,13 @@ Modifiers:
                     sets (sealed, sealed34, sealed35) run only when named by
                     --set or --only.
   --no-asan         benchmarks without the ASan build (no ASan ratio).
+  --skip-unavailable
+                    leave out the configs whose test suites need a program or
+                    a user this machine lacks (test/corpus/prerequisites.json),
+                    with a note; without it --full stops with a setup error.
+
+Each config is resolved for this machine's platform (darwin, linux-x86_64,
+linux-aarch64): its `platforms` fields replace its own (RFC 0038, section 5).
 
 Examples:
 
@@ -83,18 +98,22 @@ CORPUS_DIR = ROOT / "test" / "corpus"
 DEFAULT_MANIFEST = CORPUS_DIR / "manifest.json"
 DEFAULT_EXPECTED = CORPUS_DIR / "expected.json"
 DEFAULT_TRIAGE = CORPUS_DIR / "triage.json"
+DEFAULT_PREREQUISITES = CORPUS_DIR / "prerequisites.json"
+DEFAULT_PROGRAMS = CORPUS_DIR / "programs.json"
 DEFAULT_INJECTIONS = CORPUS_DIR / "injections" / "injections.json"
 DEFAULT_WORKDIR = ROOT / "build" / "corpus"
 
 RESULTS_SCHEMA = "weavec-corpus-gate-results"
 EXPECTED_SCHEMA = "weavec-corpus-expected"
 TRIAGE_SCHEMA = "weavec-corpus-triage"
+PREREQUISITES_SCHEMA = "weavec-corpus-prerequisites"
+PROGRAMS_SCHEMA = "weavec-corpus-programs"
 MANIFEST_SCHEMA = "weavec-corpus-manifest"
 INJECTIONS_SCHEMA = "weavec-corpus-injections"
 # The versions this gate reads: RFC 0035 changed every file.
 RESULTS_VERSION = 2
 EXPECTED_VERSION = 2
-TRIAGE_VERSION = 2
+TRIAGE_VERSION = 3
 MANIFEST_VERSION = 2
 INJECTIONS_VERSION = 2
 # The enforcement ledger (RFC 0035, section 9).
@@ -119,6 +138,7 @@ KINDS = (
     "intra-object-overflow", "use-after-poison",
     "null-dereference", "unterminated-string", "index-out-of-bounds",
     "invalid-release", "double-free", "invalid-access", "overlapping-copy",
+    "stack-use-after-return", "memory-fault",
 )
 # How shells, make and CTest describe a process that died by SIGTRAP or
 # SIGILL (a guard's trap), plus the 128+signal exit statuses. CTest 3.29
@@ -467,17 +487,39 @@ class Manifest:
 # during its work) and sealed ones (built once, at its end). A manifest names
 # a set in a config's `set`, which needs `heldOut: true`; without `set` a
 # config is original, or heldOut when it is marked heldOut.
-SETS = ("original", "heldOut", "fresh", "sealed", "fresh34", "sealed34", "fresh35", "sealed35")
+SETS = ("original", "heldOut", "fresh", "sealed", "fresh34", "sealed34", "fresh35", "sealed35", "sealed38")
 NAMED_SETS = SETS[2:]
 # The sets that run only when asked for (--set, --only).
-SEALED_SETS = ("sealed", "sealed34", "sealed35")
-CONFIG_KEYS = frozenset(("name", "notes", "compile", "build", "test", "testTimeout", "bench", "heldOut", "set"))
+SEALED_SETS = ("sealed", "sealed34", "sealed35", "sealed38")
+CONFIG_KEYS = frozenset(("name", "notes", "compile", "build", "test", "testTimeout", "bench", "heldOut", "set",
+                         "platforms"))
+# RFC 0038, section 5: a config's `platforms` replaces its fields on a platform, the most specific
+# key last.
+PLATFORMS = ("darwin", "linux", "linux-x86_64", "linux-aarch64")
+PLATFORM_KEYS = frozenset(("compile", "build", "test", "testTimeout", "bench"))
+
+
+def gate_platform() -> str:
+    """The manifest's name for this machine: darwin, linux-x86_64 or linux-aarch64."""
+    if sys.platform == "darwin":
+        return "darwin"
+    machine = platform.machine().lower()
+    machine = {"amd64": "x86_64", "x64": "x86_64", "arm64": "aarch64"}.get(machine, machine)
+    return f"linux-{machine}"
+
+
+def platform_overlays(target: str) -> list[str]:
+    """The `platforms` keys that apply on `target`, least specific first."""
+    keys = [key for key in PLATFORMS if key == target or target.startswith(key + "-")]
+    return sorted(keys, key=len)
 BENCH_KEYS = frozenset(("name", "build", "command", "repeat", "input", "check"))
 
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 
-def load_manifest(path: Path, support_root: Path) -> Manifest:
+def load_manifest(path: Path, support_root: Path, target: str | None = None) -> Manifest:
+    """The manifest, each config resolved for `target` (this machine's platform by default)."""
+    target = target or gate_platform()
     data = read_json(path)
     check_schema(data, path, MANIFEST_SCHEMA, MANIFEST_VERSION)
     problems: list[str] = []
@@ -503,6 +545,18 @@ def load_manifest(path: Path, support_root: Path) -> Manifest:
             unknown = sorted(set(c) - CONFIG_KEYS)
             if unknown:
                 problems.append(f"config {cname}: unknown field(s) {', '.join(unknown)}")
+            overlays = c.get("platforms") or {}
+            for key in sorted(set(overlays) - set(PLATFORMS)):
+                problems.append(f"config {cname}: unknown platform {key!r} (expected one of "
+                                f"{', '.join(PLATFORMS)})")
+            for key, overlay in overlays.items():
+                bad = sorted(set(overlay) - PLATFORM_KEYS) if isinstance(overlay, dict) else ["(not an object)"]
+                if bad:
+                    problems.append(f"config {cname}: platform {key}: unknown field(s) {', '.join(bad)}")
+            c = dict(c)
+            for key in platform_overlays(target):
+                if isinstance(overlays.get(key), dict):
+                    c.update(overlays[key])
             compile_ = c.get("compile") or {}
             if not compile_.get("files"):
                 problems.append(f"config {cname}: compile.files is missing")
@@ -867,6 +921,8 @@ def load_expected(path: Path, update: bool) -> dict:
 
 TRIAGE_FIELDS = frozenset(("schema", "version", "_comment", "guardFailures"))
 GUARD_FAILURE_KEYS = ("config", "file", "line", "verdict", "note")
+# RFC 0038, section 5: a true bug of the project, or a false trap an Accepted RFC accepts.
+VERDICTS = ("project-bug", "accepted")
 
 
 @dataclasses.dataclass
@@ -890,14 +946,53 @@ def load_triage(path: Path) -> Triage:
         missing = [k for k in GUARD_FAILURE_KEYS if k not in entry]
         if missing:
             problems.append(f"guardFailures entry {where}: missing {', '.join(missing)}")
-        elif entry["verdict"] != "true":
-            # A false trap is a bug to fix, not to triage.
-            problems.append(f"guardFailures entry {where}: the verdict must be \"true\"")
+        elif entry["verdict"] not in VERDICTS:
+            # A false trap is a bug to fix, unless an RFC accepts it.
+            problems.append(f"guardFailures entry {where}: the verdict must be one of "
+                            f"{', '.join(VERDICTS)}")
+        elif entry["verdict"] == "accepted" and not re.fullmatch(r"\d{4}", str(entry.get("rfc", ""))):
+            problems.append(f"guardFailures entry {where}: an accepted false trap names its RFC (rfc)")
         elif "kind" in entry and entry["kind"] not in KINDS:
             problems.append(f"guardFailures entry {where}: unknown kind {entry['kind']!r}")
     if problems:
         raise GateError(f"{path}: invalid triage:\n  " + "\n  ".join(problems))
     return Triage(failures)
+
+
+PREREQUISITE_KEYS = frozenset(("programs", "refusesRoot"))
+
+
+def load_prerequisites(path: Path) -> dict[str, dict]:
+    """RFC 0038, section 5: per config, the programs its tests run and whether they refuse root."""
+    if not path.exists():
+        return {}
+    data = read_json(path)
+    check_schema(data, path, PREREQUISITES_SCHEMA, 1)
+    configs = data.get("configs", {})
+    problems = [f"config {name}: unknown field(s) {', '.join(sorted(set(spec) - PREREQUISITE_KEYS))}"
+                for name, spec in configs.items() if set(spec) - PREREQUISITE_KEYS]
+    if problems:
+        raise GateError(f"{path}: invalid prerequisites:\n  " + "\n  ".join(problems))
+    return configs
+
+
+def missing_prerequisites(configs: Iterable[Config], prerequisites: dict[str, dict],
+                          which: Callable[[str], str | None] = shutil.which,
+                          root: bool | None = None) -> dict[str, list[str]]:
+    """What each config with a test suite lacks on this machine."""
+    if root is None:
+        root = hasattr(os, "geteuid") and os.geteuid() == 0
+    missing: dict[str, list[str]] = {}
+    for config in configs:
+        spec = prerequisites.get(config.name) or {}
+        if not config.test:
+            continue
+        lacks = [f"{program} (not on PATH)" for program in spec.get("programs", []) if which(program) is None]
+        if spec.get("refusesRoot") and root:
+            lacks.append("a user other than root")
+        if lacks:
+            missing[config.name] = lacks
+    return missing
 
 
 def triaged_failure(guard_failures: list[dict], config: str, report: dict) -> bool:
@@ -1031,6 +1126,12 @@ def apply_patch(patch: Path, src: Path) -> str:
     """Apply a -p1 patch to a copy; returns a failure message or ''."""
     result = run_process(["git", "apply", "--whitespace=nowarn", str(patch)], cwd=src, timeout=60)
     if result.returncode == 0:
+        return ""
+    # A source with CRLF lines (printf.c) and a patch with LF ones: GNU patch,
+    # unlike BSD patch, refuses them; git apply takes them loosely.
+    loose = run_process(["git", "apply", "--whitespace=nowarn", "--ignore-whitespace", str(patch)], cwd=src,
+                        timeout=60)
+    if loose.returncode == 0:
         return ""
     fallback = run_process(["patch", "-p1", "--batch", "--forward", "-i", str(patch)], cwd=src, timeout=60)
     if fallback.returncode == 0:
@@ -1358,6 +1459,263 @@ def default_reference_cc() -> str | None:
     return shutil.which("clang")
 
 
+# -- the programs tier (RFC 0038, section 5) ------------------------------------------
+
+
+@dataclasses.dataclass
+class Program:
+    name: str
+    url: str
+    sha256: str
+    build: list[str]
+    test: str
+    failures: str
+    reference_failures: dict[str, list[str]]
+    programs: list[str] = dataclasses.field(default_factory=list)
+    # platform -> {test: why}: tests that fail with weavec-cc alone for a
+    # reason an RFC accepts (RFC 0038, amendment 18).
+    accepted_failures: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
+    timeout: float = 7200
+    notes: str = ""
+
+    def listed_failures(self, target: str) -> set[str]:
+        """The tests that fail with the reference compiler on `target`."""
+        listed: list[str] = []
+        for key in platform_overlays(target):
+            if key in self.reference_failures:
+                listed = self.reference_failures[key]
+        return set(listed)
+
+    def accepted(self, target: str) -> set[str]:
+        """The tests that fail with weavec-cc alone on `target`, as an RFC accepts."""
+        accepted: dict[str, str] = {}
+        for key in platform_overlays(target):
+            if key in self.accepted_failures:
+                accepted = self.accepted_failures[key]
+        return set(accepted)
+
+
+PROGRAM_KEYS = frozenset(("name", "url", "sha256", "build", "test", "failures", "referenceFailures",
+                          "acceptedFailures", "programs", "timeout", "notes", "platforms"))
+
+
+def load_programs(path: Path, target: str | None = None) -> list[Program]:
+    """The programs tier, each program's `platforms` fields (build, test) applied for `target`."""
+    target = target or gate_platform()
+    data = read_json(path)
+    check_schema(data, path, PROGRAMS_SCHEMA, 1)
+    problems: list[str] = []
+    programs: list[Program] = []
+    for p in data.get("programs", []):
+        name = p.get("name", "?")
+        unknown = sorted(set(p) - PROGRAM_KEYS)
+        if unknown:
+            problems.append(f"program {name}: unknown field(s) {', '.join(unknown)}")
+        for key in ("url", "sha256", "build", "test", "failures"):
+            if not p.get(key):
+                problems.append(f"program {name}: {key} is missing")
+        if p.get("sha256") and not re.fullmatch(r"[0-9a-f]{64}", p["sha256"]):
+            problems.append(f"program {name}: sha256 must be 64 lowercase hex digits")
+        try:
+            re.compile(p.get("failures", ""))
+        except re.error as exc:
+            problems.append(f"program {name}: failures is no regular expression: {exc}")
+        listed = p.get("referenceFailures", {})
+        for key in sorted(set(listed) - set(PLATFORMS)):
+            problems.append(f"program {name}: referenceFailures: unknown platform {key!r}")
+        accepted = p.get("acceptedFailures", {})
+        for key, tests in accepted.items():
+            if key not in PLATFORMS or not isinstance(tests, dict):
+                problems.append(f"program {name}: acceptedFailures: bad entry {key!r}")
+                continue
+            for test, why in tests.items():
+                if not isinstance(why, str) or not re.search(r"\bRFC \d{4}\b", why):
+                    problems.append(f"program {name}: acceptedFailures: {test} must name the RFC that "
+                                    f"accepts it")
+        overlays = p.get("platforms") or {}
+        for key, overlay in overlays.items():
+            if key not in PLATFORMS or not isinstance(overlay, dict) or set(overlay) - {"build", "test"}:
+                problems.append(f"program {name}: platforms: bad entry {key!r}")
+        p = dict(p)
+        for key in platform_overlays(target):
+            if isinstance(overlays.get(key), dict):
+                p.update(overlays[key])
+        programs.append(Program(name=name, url=p.get("url", ""), sha256=p.get("sha256", ""),
+                                build=list(p.get("build", [])), test=p.get("test", ""),
+                                failures=p.get("failures", ""), reference_failures=dict(listed),
+                                accepted_failures={k: dict(v) for k, v in accepted.items()
+                                                   if isinstance(v, dict)},
+                                programs=list(p.get("programs", [])), timeout=float(p.get("timeout", 7200)),
+                                notes=p.get("notes", "")))
+    if problems:
+        raise GateError(f"{path}: invalid programs:\n  " + "\n  ".join(problems))
+    return programs
+
+
+def failed_tests(pattern: str, output: str) -> set[str]:
+    """The tests a suite's output names as failing: each match's first group, split at white space."""
+    names: set[str] = set()
+    for match in re.finditer(pattern, output, re.MULTILINE):
+        names.update(match.group(1).split())
+    return names
+
+
+def fetch_archive(program: Program, cache: Path) -> Path:
+    """The program's release archive, downloaded once into `cache` and checked against its sha256."""
+    import hashlib
+    import urllib.request
+    cache.mkdir(parents=True, exist_ok=True)
+    archive = cache / program.url.rsplit("/", 1)[-1]
+
+    def digest(path: Path) -> str:
+        sha = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1 << 20), b""):
+                sha.update(chunk)
+        return sha.hexdigest()
+
+    if not archive.exists() or digest(archive) != program.sha256:
+        partial = archive.with_suffix(archive.suffix + ".part")
+        log(f"[{program.name}] downloading {program.url}")
+        try:
+            with urllib.request.urlopen(program.url, timeout=600) as response, partial.open("wb") as out:
+                shutil.copyfileobj(response, out)
+        except OSError as exc:
+            raise GateError(f"{program.name}: cannot download {program.url}: {exc}") from exc
+        if digest(partial) != program.sha256:
+            partial.unlink()
+            raise GateError(f"{program.name}: {program.url} does not match its sha256")
+        partial.replace(archive)
+    return archive
+
+
+def unpack(archive: Path, dest: Path) -> Path:
+    """Unpacks `archive` into a fresh `dest`; the tree it holds (its one top directory)."""
+    import tarfile
+    import zipfile
+    remove_tree(dest)
+    dest.mkdir(parents=True)
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as zipped:
+            zipped.extractall(dest)
+        # zipfile drops the permission bits: restore the executable ones.
+        with zipfile.ZipFile(archive) as zipped:
+            for info in zipped.infolist():
+                mode = info.external_attr >> 16
+                if mode & 0o111:
+                    (dest / info.filename).chmod(mode & 0o777)
+    else:
+        with tarfile.open(archive) as tarred:
+            tarred.extractall(dest, filter="tar")
+    entries = [p for p in dest.iterdir()]
+    return entries[0] if len(entries) == 1 and entries[0].is_dir() else dest
+
+
+def tcl_config_dir() -> str:
+    """The directory of a tclConfig.sh (SQLite's test harness links Tcl), or empty."""
+    candidates = ["/usr/lib/tcl8.6", "/usr/lib/tcl9.0", f"/usr/lib/{platform.machine()}-linux-gnu/tcl8.6",
+                  "/usr/lib64/tcl8.6", "/opt/homebrew/opt/tcl-tk@8/lib", "/opt/homebrew/opt/tcl-tk/lib",
+                  "/usr/local/opt/tcl-tk@8/lib", "/usr/local/opt/tcl-tk/lib"]
+    extra = os.environ.get("TCL_CONFIG_DIR")
+    for directory in ([extra] if extra else []) + candidates:
+        if (Path(directory) / "tclConfig.sh").is_file():
+            return directory
+    return ""
+
+
+@dataclasses.dataclass
+class ProgramRun:
+    mode: str
+    built: bool = False
+    failures: set[str] = dataclasses.field(default_factory=set)
+    reports: list[dict] = dataclasses.field(default_factory=list)
+    build_reports: list[dict] = dataclasses.field(default_factory=list)
+    steps: list[StepRun] = dataclasses.field(default_factory=list)
+    seconds: float = 0.0
+
+    def to_json(self) -> dict:
+        return {"built": self.built, "failures": sorted(self.failures), "reports": self.reports,
+                "buildReports": self.build_reports,
+                "steps": [s.to_json() for s in self.steps], "seconds": round(self.seconds, 1)}
+
+
+def run_program(program: Program, mode: str, compiler: str, flags: list[str], archive: Path, run_dir: Path,
+                jobs: int, keep: bool) -> ProgramRun:
+    """Builds and tests one program with `compiler`; reports collected through WEAVEC_RT_REPORT_LOG."""
+    run = ProgramRun(mode=mode)
+    start = time.perf_counter()
+    work = run_dir / "programs" / program.name / mode
+    src = unpack(archive, work / "src")
+    cc = write_wrapper(work / "bin" / "cc", compiler, flags)
+    # The test suite's reports are judged; those of the build's own probe
+    # programs (configure's conftest) are kept apart.
+    build_log = work / "build-reports.log"
+    report_log = work / "reports.log"
+    env = dict(os.environ)
+    for key in ("CFLAGS", "CPPFLAGS", "LDFLAGS", "MAKEFLAGS", "MFLAGS", "WEAVEC_RT_ABORT", "WEAVEC_RT_STATS"):
+        env.pop(key, None)
+    env.update({"CC": cc, "JOBS": str(jobs), "PREFIX": str(work / "inst"), "TCL_CONFIG_DIR": tcl_config_dir()})
+    build_env = {**env, "WEAVEC_RT_REPORT_LOG": str(build_log)}
+    env["WEAVEC_RT_REPORT_LOG"] = str(report_log)
+    output = ""
+    for command in program.build:
+        result = run_shell(command, cwd=src, env=build_env, timeout=program.timeout)
+        run.steps.append(StepRun(command=command, status=describe_status(result), ok=result.returncode == 0,
+                                 seconds=round(result.seconds, 1), cpu=round(result.cpu, 1), log="",
+                                 tail=output_tail(result.output)))
+        output += result.output
+        if result.returncode != 0:
+            break
+    else:
+        run.built = True
+        result = run_shell(program.test, cwd=src, env=env, timeout=program.timeout)
+        run.steps.append(StepRun(command=program.test, status=describe_status(result), ok=result.returncode == 0,
+                                 seconds=round(result.seconds, 1), cpu=round(result.cpu, 1), log="",
+                                 tail=output_tail(result.output, 80)))
+        output += result.output
+        run.failures = failed_tests(program.failures, result.output)
+        if result.timed_out:
+            run.failures.add("(the suite timed out)")
+        output = result.output
+    text = (report_log.read_text(errors="replace") if report_log.exists() else "") + output
+    run.reports = parse_reports(text, src)
+    run.build_reports = parse_reports(build_log.read_text(errors="replace"), src) if build_log.exists() else []
+    run.seconds = time.perf_counter() - start
+    if not keep:
+        remove_tree(work / "src")
+    return run
+
+
+def judge_program(program: Program, target: str, runs: dict[str, ProgramRun],
+                  guard_failures: list[dict]) -> list[str]:
+    """What fails the programs tier for one program (RFC 0038 section 5)."""
+    failures: list[str] = []
+    listed = program.listed_failures(target)
+    for mode, run in runs.items():
+        if not run.built:
+            failures.append(f"{program.name} ({mode}): the build failed: {run.steps[-1].status}")
+    reference = runs.get("reference")
+    if reference is not None and reference.built:
+        for name in sorted(listed - reference.failures):
+            failures.append(f"{program.name}: {name} passes with the reference compiler: remove it from "
+                            f"referenceFailures")
+        for name in sorted(reference.failures - listed):
+            failures.append(f"{program.name}: {name} fails with the reference compiler too: list it in "
+                            f"referenceFailures")
+    checked = runs.get("report")
+    accepted = program.accepted(target)
+    if checked is not None and checked.built:
+        for name in sorted(checked.failures - listed - accepted):
+            failures.append(f"{program.name}: {name} fails with weavec-cc")
+        for name in sorted(accepted - checked.failures):
+            failures.append(f"{program.name}: {name} passes with weavec-cc: remove it from "
+                            f"acceptedFailures")
+        for report in checked.reports:
+            if not triaged_failure(guard_failures, program.name, report):
+                failures.append(f"{program.name}: an untriaged report: {describe_report(report)}")
+    return failures
+
+
 # -- the gates of RFC 0035 the corpus measures ----------------------------------------
 #
 # Each takes the selected configs and the results' per-config entries and
@@ -1492,7 +1850,7 @@ class Gate:
         self.results: dict[str, Any] = {
             "schema": RESULTS_SCHEMA, "version": RESULTS_VERSION, "started": now_iso(),
             "platform": self.platform, "machine": self.machine,
-            "modes": [m for m in ("quick", "full", "inject", "bench") if getattr(args, m)],
+            "modes": [m for m in ("quick", "full", "inject", "bench", "programs") if getattr(args, m)],
             "checks": args.checks, "referenceOnly": args.reference_only,
             "sets": {s: sorted(c.name for c in self.configs if c.set == s) for s in SETS
                      if any(c.set == s for c in self.configs)},
@@ -1504,6 +1862,17 @@ class Gate:
         self.run_dir = args.workdir / ".gate" / f"{int(time.time())}-{os.getpid()}"
         self.jobs = max(1, args.jobs)
         self.triage = load_triage(args.triage)
+        if args.full:
+            missing = missing_prerequisites(self.configs, load_prerequisites(args.prerequisites))
+            if missing and args.skip_unavailable:
+                for name, lacks in missing.items():
+                    self.notes.append(f"{name}: left out: needs {', '.join(lacks)}")
+                self.configs = [c for c in self.configs if c.name not in missing]
+                self.selected = {c.name for c in self.configs}
+            elif missing:
+                raise GateError("the test suites need what this machine lacks (test/corpus/prerequisites.json; "
+                                "--skip-unavailable leaves them out):\n  "
+                                + "\n  ".join(f"{name}: {', '.join(lacks)}" for name, lacks in missing.items()))
         self.measured: dict[str, dict] = {}
         self.injection_runs: list[InjectionRun] = []
         self.binaries = self.resolve_binaries()
@@ -1514,8 +1883,8 @@ class Gate:
     def resolve_binaries(self) -> Binaries:
         a = self.args
         built = [ROOT / "build" / "release" / "bin", ROOT / "build" / "dev" / "bin"]
-        cc_needed = (a.quick or a.full or a.inject or a.bench) and not a.reference_only
-        reference_needed = a.reference_only or a.full or a.bench
+        cc_needed = (a.quick or a.full or a.inject or a.bench or a.programs) and not a.reference_only
+        reference_needed = a.reference_only or a.full or a.bench or a.programs
         weavec_cc = resolve_binary(a.weavec_cc, [d / "weavec-cc" for d in built], "--weavec-cc", cc_needed)
         reference = a.cc or default_reference_cc()
         if reference:
@@ -1859,6 +2228,44 @@ class Gate:
 
     # ---- benchmarks ----
 
+    def run_programs(self) -> None:
+        """RFC 0038, section 5: the programs tier."""
+        programs = load_programs(self.args.programs_file)
+        if self.args.program:
+            unknown = sorted(set(self.args.program) - {p.name for p in programs})
+            if unknown:
+                raise GateError(f"unknown program(s): {', '.join(unknown)}")
+            programs = [p for p in programs if p.name in self.args.program]
+        lacking = {p.name: [q for q in p.programs if shutil.which(q) is None] for p in programs}
+        lacking = {name: what for name, what in lacking.items() if what}
+        if lacking:
+            raise GateError("the programs' test suites need what this machine lacks:\n  " + "\n  ".join(
+                f"{name}: {', '.join(what)} (not on PATH)" for name, what in lacking.items()))
+        target = gate_platform()
+        results: dict[str, Any] = {}
+        failed = False
+        for program in programs:
+            archive = fetch_archive(program, self.args.workdir / ".programs")
+            runs: dict[str, ProgramRun] = {}
+            for mode in ("reference",) if self.args.reference_only else ("reference", "report"):
+                compiler, flags = self.compiler_for(mode)
+                log(f"[{program.name}] {mode} build and test suite with {compiler}")
+                runs[mode] = run_program(program, mode, compiler, flags, archive, self.run_dir, self.jobs,
+                                         self.args.keep)
+                log(f"[{program.name}] {mode}: built={runs[mode].built} "
+                    f"failures={len(runs[mode].failures)} reports={len(runs[mode].reports)} "
+                    f"({runs[mode].seconds:.0f} s)")
+            problems = judge_program(program, target, runs, self.triage.guard_failures)
+            for problem in problems:
+                self.fail(f"programs: {problem}")
+            failed = failed or bool(problems)
+            results[program.name] = {"runs": {mode: run.to_json() for mode, run in runs.items()},
+                                     "referenceFailures": sorted(program.listed_failures(target)),
+                                     "acceptedFailures": sorted(program.accepted(target)),
+                                     "problems": problems}
+        self.results["programs"] = results
+        self.gate("programs", not failed, {name: r["problems"] for name, r in results.items()})
+
     def run_benches(self) -> None:
         for config in self.configs:
             if config.bench:
@@ -2035,6 +2442,8 @@ class Gate:
                 self.run_injections()
             if a.bench or a.full:
                 self.run_benches()
+            if a.programs:
+                self.run_programs()
             self.evaluate()
             if (a.quick or a.full) and not a.reference_only:
                 self.ratchet()
@@ -2149,6 +2558,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     modes.add_argument("--full", action="store_true", help="quick + builds, tests, injections, benchmarks")
     modes.add_argument("--inject", action="store_true", help="the injected bugs")
     modes.add_argument("--bench", action="store_true", help="the benchmarks")
+    modes.add_argument("--programs", action="store_true",
+                       help="the programs tier: large programs from release archives (programs.json)")
     modes.add_argument("--update-from", type=Path, metavar="RESULTS",
                        help="record a --json results file (for example from CI) in expected.json and exit")
     mods = ap.add_argument_group("modifiers")
@@ -2158,10 +2569,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                       help="build, test and bench with --cc only; with --inject, check the injections under ASan")
     mods.add_argument("--update", action="store_true", help="record this run's measurements in expected.json")
     mods.add_argument("--no-asan", action="store_true", help="benchmarks without the ASan build")
+    mods.add_argument("--skip-unavailable", action="store_true",
+                      help="leave out the configs whose test prerequisites this machine lacks")
     bins = ap.add_argument_group("binaries")
     bins.add_argument("--weavec-cc", help="weavec-cc under test (default build/release/bin, then build/dev/bin)")
     bins.add_argument("--cc", help="reference compiler (default $WEAVEC_LLVM_PREFIX/bin/clang, else clang)")
     sel = ap.add_argument_group("selection and resources")
+    sel.add_argument("--program", action="append", default=[], metavar="NAME",
+                     help="with --programs, run this program alone (repeatable)")
     sel.add_argument("--only", action="append", nargs="+", default=[], metavar="CONFIG",
                      help="run only these configs (repeatable)")
     sel.add_argument("--held-out", action=argparse.BooleanOptionalAction, default=None,
@@ -2185,13 +2600,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     files.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     files.add_argument("--expected", type=Path, default=DEFAULT_EXPECTED)
     files.add_argument("--triage", type=Path, default=DEFAULT_TRIAGE)
+    files.add_argument("--prerequisites", type=Path, default=DEFAULT_PREREQUISITES)
+    files.add_argument("--programs-file", type=Path, default=DEFAULT_PROGRAMS)
     files.add_argument("--injections", type=Path, default=DEFAULT_INJECTIONS)
     files.add_argument("--support-dir", type=Path, default=CORPUS_DIR / "support")
     files.add_argument("--bench-dir", type=Path, default=CORPUS_DIR / "bench")
     args = ap.parse_args(argv)
     args.only = [name for group in args.only for name in group]
-    if not (args.quick or args.full or args.inject or args.bench or args.update_from):
-        ap.error("choose a mode: --quick, --full, --inject, --bench or --update-from")
+    if not (args.quick or args.full or args.inject or args.bench or args.programs or args.update_from):
+        ap.error("choose a mode: --quick, --full, --inject, --bench, --programs or --update-from")
     if args.reference_only and args.quick:
         ap.error("--reference-only builds, tests, benchmarks and checks injections; it has no --quick")
     if args.update and args.reference_only:
@@ -2200,7 +2617,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ap.error("--update records what --quick (or --full) measures")
     if args.jobs < 1:
         ap.error("--jobs must be at least 1")
-    for key in ("workdir", "manifest", "expected", "triage", "injections", "support_dir", "bench_dir"):
+    for key in ("workdir", "manifest", "expected", "triage", "injections", "support_dir", "bench_dir",
+                "programs_file", "prerequisites"):
         setattr(args, key, getattr(args, key).resolve())
     return args
 

@@ -21,7 +21,7 @@
 
 #include <string.h>
 
-#define WEAVEC_ASAN_API WEAVEC_RT_API __attribute__((weak))
+#define WEAVEC_ASAN_API WEAVEC_RT_REPLACEABLE
 
 WEAVEC_ASAN_API void __asan_poison_memory_region(const volatile void *address,
                                                  size_t size);

@@ -8,21 +8,14 @@
 #   weavec_add_executable(<name> SOURCES <src...> [DEPS <target...>]
 #                         [USES_LLVM])
 #
-# Every target created here gets weavec::options, the public include dirs,
-# an ALIAS of the form weavec::<Component>, and is added to the export set.
-
-include(GNUInstallDirs)
-
-set_property(GLOBAL PROPERTY WEAVEC_EXPORTED_TARGETS "")
+# Every target created here gets weavec::options, the public include dirs and
+# an ALIAS of the form weavec::<Component>. Only weavec-cc is installed
+# (RFC 0038, section 6).
 
 function(_weavec_common_setup target)
   target_link_libraries(${target} PRIVATE weavec::options)
-  target_include_directories(
-    ${target}
-    PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-           $<BUILD_INTERFACE:${WEAVEC_GENERATED_INCLUDE_DIR}>
-           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-  set_property(GLOBAL APPEND PROPERTY WEAVEC_EXPORTED_TARGETS ${target})
+  target_include_directories(${target} PUBLIC ${PROJECT_SOURCE_DIR}/include
+                                              ${WEAVEC_GENERATED_INCLUDE_DIR})
 endfunction()
 
 function(weavec_add_library name)
@@ -47,12 +40,7 @@ function(weavec_add_library name)
   add_library(weavec::${name} ALIAS ${_target})
   _weavec_common_setup(${_target})
 
-  set_target_properties(
-    ${_target}
-    PROPERTIES EXPORT_NAME ${name}
-               OUTPUT_NAME weavec${name}
-               VERSION ${PROJECT_VERSION}
-               SOVERSION ${PROJECT_VERSION_MAJOR})
+  set_target_properties(${_target} PROPERTIES OUTPUT_NAME weavec${name})
 
   if(ARG_PUBLIC_DEPS)
     target_link_libraries(${_target} PUBLIC ${ARG_PUBLIC_DEPS})
@@ -75,9 +63,8 @@ function(weavec_add_executable name)
   add_executable(${name} ${ARG_SOURCES})
   add_executable(weavec::${name} ALIAS ${name})
   _weavec_common_setup(${name})
-  set_target_properties(
-    ${name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin"
-                       EXPORT_NAME ${name})
+  set_target_properties(${name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY
+                                           "${PROJECT_BINARY_DIR}/bin")
 
   if(ARG_DEPS)
     target_link_libraries(${name} PRIVATE ${ARG_DEPS})

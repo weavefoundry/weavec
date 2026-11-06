@@ -14,9 +14,11 @@ the guards cost at build and run time.
 
 | File | What it holds |
 | --- | --- |
-| `manifest.json` | The 48 projects (url, 40-hex `sha`, `support` files) and their 49 configs: `compile` (files and arguments), `build`, `test`, `testTimeout`, `bench`, `heldOut` and `set` (below); and `gates`, the limits of the gates below |
+| `manifest.json` | The 51 projects (url, 40-hex `sha`, `support` files) and their 52 configs: `compile` (files and arguments), `build`, `test`, `testTimeout`, `bench`, `heldOut`, `set` and `platforms` (below); and `gates`, the limits of the gates below |
 | `expected.json` | The ratchet, per platform and config, written by `--update` |
-| `triage.json` | `guardFailures`: the guard failures of test suites that are true bugs of the project |
+| `triage.json` | `guardFailures`: the reports of test suites that are true bugs of the project, or false traps an RFC accepts |
+| `prerequisites.json` | Per config, the programs its test suite runs (`redis-server`, `tclsh`, `perl`) and whether it refuses root (RFC 0038, section 5) |
+| `programs.json` | The programs tier: large programs pinned by release archive and checksum, their build and test commands, how to read their failing tests, and the tests that fail with the reference compiler per platform (RFC 0038, section 5) |
 | `injections/` | `injections.json` and one patch per injected bug, by project (39), plus the drivers some of them build |
 | `bench/` | The benchmark workloads and drivers, and `zlib-input.py`, the generator of the 64 MiB compression input |
 | `support/` | Files a checkout needs that it does not have: generated configuration headers (`{support}` in compile arguments), test wrappers and data fetchers, build files |
@@ -40,6 +42,23 @@ the guards cost at build and run time.
 The projects without a build (log.c, printf) or a C test suite (printf's is
 C++, which includes `printf.c` into a C++ unit) are compile-only: their
 per-file compiles are their build; their injections build drivers.
+
+**Platforms** (RFC 0038, section 5). A config's `platforms` object, keyed by
+`darwin`, `linux`, `linux-x86_64` and `linux-aarch64`, holds fields
+(`compile`, `build`, `test`, `testTimeout`, `bench`) that replace the
+config's on that platform, the most specific key last: libuv's Linux
+sources (`linux.c`, `epoll`) for Darwin's (`darwin.c`, `kqueue.c`,
+`fsevents.c`), libevent's `epoll.c` and the configuration headers its Linux
+build generates (`support/libevent/linux`), zlib-ng's x86 sources and
+features, libdeflate's x86 CPU features, and LMDB's link without Darwin's
+`-current_version`. The gate resolves every config for the machine it runs
+on, and its tests check that each resolves on every platform.
+
+**Prerequisites.** Before `--full` builds anything it checks what
+`prerequisites.json` says the selected configs' test suites need: a
+program missing from `PATH`, or a suite that refuses root run as root, is a
+setup error (exit status 2), never a test failure; `--skip-unavailable`
+leaves those configs out with a note instead.
 
 The Lua test is `support/lua/subset.lua`, which sets up what `testes/all.lua`
 sets up in user mode (`_U`: no `T` library, no long or non-portable tests)
@@ -65,13 +84,14 @@ on. The others are projects nobody tuned WeaveC on, marked
 | `fresh34` | quickjs, lmdb, janet, brotli, xz, libdeflate, zlib-ng, curl, cmark, libgit2 (each with a `bench`) | RFC 0034, section 9 |
 | `sealed34` | libjpeg-turbo, opus, flac, giflib, wren | RFC 0034, section 9 |
 | `fresh35`, `sealed35` | (none yet: RFC 0035's stage S0 adds them) | RFC 0035, section 11 |
+| `sealed38` | jq, tmux, nginx, libarchive, libssh2 | RFC 0038, section 5 |
 
 Each config's `notes` say why its build and test are what they are.
 
 - **Selection.** `--quick` runs the original configs; `--full` adds the
   held-out ones (`heldOut`, `fresh`, `fresh34`, `fresh35`); `--held-out`
   and `--no-held-out` say so explicitly. The sealed sets (`sealed`,
-  `sealed34`, `sealed35`) run only when `--set` or `--only` names them: an
+  `sealed34`, `sealed35`, `sealed38`) run only when `--set` or `--only` names them: an
   RFC builds its sealed set once, at its end, and records what it measured
   (RFC 0035 G2); before that they may be built with `--reference-only`, to
   write their commands. `--set SET` runs one set alone; `--only` names
@@ -109,7 +129,32 @@ scripts/corpus-gate.py --inject --reference-only
 
 # Record a results file written elsewhere (for example by CI).
 scripts/corpus-gate.py --update-from corpus-gate-quick.json
+
+# Weekly: the programs tier (each program twice: report mode, reference).
+scripts/corpus-gate.py --programs [--program git] --json programs.json
 ```
+
+**The programs tier** (`--programs`, RFC 0038, section 5) builds each program
+of `programs.json` (CPython 3.13.7, SQLite 3.50.4's source release with its
+Tcl test harness, PostgreSQL 17.6, git 2.51.0, coreutils 9.5) from its
+release archive, downloaded once into `<workdir>/.programs/` and checked
+against its `sha256`, with its own build system: once with `CC` set to
+`weavec-cc -fweavec-checks=report` and once with the reference compiler, in
+fresh trees under `<workdir>/.gate/`. It runs each one's test suite with
+`WEAVEC_RT_REPORT_LOG` collecting the reports and reads the failing tests
+from its output with the program's `failures` expression. Report mode lets
+a suite run to its end past a report, so every report is seen. The tier
+fails on a report not triaged under the program's name, a test that fails
+with `weavec-cc` but is not in the platform's `referenceFailures` or
+`acceptedFailures`, a `referenceFailures` list that the reference build
+does not reproduce (a listed test that passes, an unlisted one that fails),
+and an `acceptedFailures` test that passes with `weavec-cc`.
+`acceptedFailures` maps each test that fails with `weavec-cc` alone, for a
+reason an RFC accepts, to that reason, which must name the RFC (RFC 0038,
+amendment 18: coreutils' two tests that compare stderr under `ulimit -v`,
+where the runtime warns that it runs unchecked). SQLite needs `tclsh`
+and a `tclConfig.sh` (found in the usual places or named by
+`TCL_CONFIG_DIR`); PostgreSQL and git need `perl`.
 
 The binaries default to `build/release/bin`, then `build/dev/bin` (a Debug
 binary's timings mean nothing: `--bench` refuses one it found itself, and
@@ -211,26 +256,29 @@ configs and the other platforms have none yet: record them with `--quick
 
 ## Triage (`triage.json`)
 
-`guardFailures` lists the guard failures of a test suite that are true
-bugs of the project: `{config, file, line, verdict, note}`, with an
-optional `kind` (a report kind of RFC 0035, section 5.3). The only verdict
-is `"true"`, and the note is the source evidence: the gate refuses an entry
-with any other verdict, so a false trap is never triaged away (it is a bug
-in WeaveC). A report at a listed site is not counted as a trap, and a test
-suite that fails in trap mode only because of such reports passes when its
-report-mode rerun passes. An entry no run names is reported as stale. The file holds nothing else: the
-gate refuses any other field.
+`guardFailures` lists the reports of a test suite the gate does not count
+as traps: `{config, file, line, verdict, note}`, with an optional `kind` (a
+report kind of RFC 0035, section 5.3). The verdict (RFC 0038, section 5)
+is `"project-bug"` for a true bug of the project, with the evidence in the
+note (an ASan run, a reduced program, the source), or `"accepted"` for a
+false trap an Accepted RFC accepts, which the entry's `rfc` names
+(`"0037"`). The gate refuses any other verdict, so a false trap no RFC
+accepts is never triaged away (it is a bug in WeaveC). A report at a listed
+site is not counted as a trap, and a test suite that fails in trap mode only
+because of such reports passes when its report-mode rerun passes. An entry
+no run names is reported as stale. The programs tier triages by the
+program's name. The file holds nothing else: the gate refuses any other
+field.
 
-There are no entries. The last four were jansson's `hashlittle`
-(`src/lookup3.h:259`, `260`, `263`, `264`): its tail switch reads a whole
-32-bit word of the key and masks off the bytes past the key's end, as the
-comment above the switch says; the source selects a byte-wise tail under
-Valgrind and AddressSanitizer (`NO_MASKING_TRICK`), which `weavec-cc`
-selects too since RFC 0036 (it compiles as ASan would). mbedtls's test
-helpers read 239 bytes past a certificate array
-(`library/x509_crt.c:1415`); since RFC 0035 the read lands inside the next
-global, which no redzone separates it from, so no guard fails there (as
-under ASan), and it has no entry.
+The one entry is mbedtls's (`library/x509_crt.c:1415`, a
+`global-buffer-overflow` in the sealed set): its TLS test helper passes the
+EC client certificate's DER buffer with the length of its PEM form, so the
+parser reads `buf[buflen - 1]` 722 bytes past the array, in the next global
+(colors stop it since RFC 0037; ASan, with no redzone between those
+globals, passes). There is no `accepted` entry. jansson's `hashlittle`
+reads a whole word of the key's tail (`src/lookup3.h:259`); `weavec-cc`
+compiles as ASan would since RFC 0036, which selects the byte-wise tail
+(`NO_MASKING_TRICK`).
 
 ## Commands and their environment
 

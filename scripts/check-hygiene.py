@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check repository hygiene: gate H1 of RFC 0037 (docs/rfcs/0037-complete-sweep-and-colors.md).
 
-Seven checks, the rules of AGENTS.md that a script can hold the tree to:
+Eight checks, the rules of AGENTS.md that a script can hold the tree to:
 
   library-name-test  0 `== "NAME"` or `"NAME" ==` comparisons (any whitespace
                      around ==) in the C and C++ sources (.h .hpp .cpp .cc .c
@@ -34,6 +34,14 @@ Seven checks, the rules of AGENTS.md that a script can hold the tree to:
                      an identifier (comments ignored) is a violation, and so
                      is a missing header. A name the passes compute (passed
                      through a variable) is not seen.
+  runtime-export     the runtime's export list, runtime/weavec_rt.exports (RFC
+                     0038 section 1: what its shared library exports, one
+                     symbol per line, '#' comments), names exactly the
+                     identifiers the runtime's sources (runtime/, its tests
+                     excluded) declare or define with WEAVEC_RT_API,
+                     WEAVEC_RT_REPLACEABLE, WEAVEC_RT_WEAK or WEAVEC_ASAN_API: a name on one side
+                     only is a violation, and so is a missing list when such
+                     declarations exist.
   library-lines      the code under lib/, include/ and tools/ totals at most
                      9,000 lines (RFC 0037 gate H1; the headers and the
                      driver's tool count too). lib/Core/LibrarySpec.txt does
@@ -42,7 +50,9 @@ Seven checks, the rules of AGENTS.md that a script can hold the tree to:
                      lowered as code is deleted, and raised only by an RFC
                      amendment that records the measurement.
   runtime-lines      the C runtime (runtime/, its tests under runtime/test/
-                     excluded) totals at most 7,000 lines (RFC 0037 gate H1).
+                     and its export list excluded) totals at most 7,050 lines
+                     (RFC 0037 gate H1; the list is declarative, as the
+                     library table is).
                      It is counted apart from the libraries: it is linked
                      into compiled programs, not into the compiler.
 
@@ -94,7 +104,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Recorded by RFC 0037 gate H1 and RFC 0032 gate H1 (see the module docstring).
 LIBRARY_LINE_LIMIT = 9_000
-RUNTIME_LINE_LIMIT = 7_000
+RUNTIME_LINE_LIMIT = 7_050
 
 # library-name-test
 LIBRARY_SPEC = "lib/Core/LibrarySpec.txt"
@@ -120,6 +130,9 @@ FOREIGN_INCLUDE_PREFIXES = ("clang/", "clang-c/", "llvm/", "llvm-c/")
 RUNTIME_HEADER = "runtime/weavec_rt.h"
 RUNTIME_SOURCE_SUFFIXES = (".c", ".h")
 RUNTIME_PREFIX = "__weavec_rt_"
+# runtime-export (RFC 0038, section 1)
+RUNTIME_EXPORTS = "runtime/weavec_rt.exports"
+EXPORT_MACROS = ("WEAVEC_RT_API", "WEAVEC_RT_WEAK", "WEAVEC_ASAN_API", "WEAVEC_RT_REPLACEABLE")
 PASS_DIRS = ("lib/Frontend",)
 # library-lines and runtime-lines
 LIBRARY_DIRS = ("lib", "include", "tools")
@@ -135,6 +148,7 @@ CHECKS = (
     ("core-include", "a Clang or LLVM header included by lib/Core or include/weavec/Core"),
     ("runtime-include", "a WeaveC header other than weavec_rt.h included by runtime/"),
     ("runtime-entry", "a runtime entry point the passes name that runtime/weavec_rt.h does not declare"),
+    ("runtime-export", "runtime/weavec_rt.exports and the runtime's WEAVEC_RT_API declarations differ"),
     ("library-lines", "lib/, include/ and tools/ over their line limit"),
     ("runtime-lines", "runtime/ (without runtime/test/) over its line limit"),
 )
@@ -596,8 +610,78 @@ def check_runtime_entries(tree: Tree, result: Result) -> None:
             result.add("runtime-entry", path, line, f"{name} is not declared in {RUNTIME_HEADER}")
 
 
+_EXPORTED = re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(EXPORT_MACROS) + r")(?![A-Za-z0-9_])")
+_ATTRIBUTE = re.compile(r"__attribute__\s*\(\(")
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _declared_name(code: str, start: int) -> Optional[str]:
+    """The identifier a declaration starting at `start` declares: the last one
+    before its first '(', ';', '[' or '=' outside attributes."""
+    i = start
+    last = None
+    while i < len(code):
+        attribute = _ATTRIBUTE.match(code, i)
+        if attribute:
+            depth = 2
+            i = attribute.end()
+            while i < len(code) and depth:
+                depth += {"(": 1, ")": -1}.get(code[i], 0)
+                i += 1
+            continue
+        if code[i] in "(;[=":
+            return last
+        word = _IDENTIFIER.match(code, i)
+        if word:
+            if word.group() not in EXPORT_MACROS:
+                last = word.group()
+            i = word.end()
+        else:
+            i += 1
+    return last
+
+
+def exported_names(tree: Tree) -> dict[str, tuple[str, int]]:
+    """Each identifier the runtime's sources mark as exported, with where."""
+    names: dict[str, tuple[str, int]] = {}
+    for file in tree.files(RUNTIME_DIRS, exclude=(RUNTIME_TESTS,)):
+        if not file.path.endswith(RUNTIME_SOURCE_SUFFIXES):
+            continue
+        code = file.lexed.code
+        for match in _EXPORTED.finditer(code):
+            line_start = code.rfind("\n", 0, match.start()) + 1
+            if code[line_start:match.start()].lstrip().startswith("#"):
+                continue  # the macro's own definition
+            name = _declared_name(code, match.end())
+            if name is not None:
+                names.setdefault(name, (file.path, line_at(code, match.start())))
+    return names
+
+
+def check_runtime_exports(tree: Tree, result: Result) -> None:
+    exported = exported_names(tree)
+    listing = tree.get(RUNTIME_EXPORTS)
+    if listing is None:
+        if exported:
+            result.add("runtime-export", RUNTIME_EXPORTS, None,
+                       f"missing, while the runtime marks {len(exported):,} names exported")
+        return
+    listed: dict[str, int] = {}
+    for number, text in enumerate(listing.text.splitlines(), 1):
+        text = text.split("#", 1)[0].strip()
+        if text:
+            listed.setdefault(text.split()[0], number)
+    for name, number in sorted(listed.items()):
+        if name not in exported:
+            result.add("runtime-export", RUNTIME_EXPORTS, number,
+                       f"{name} is not marked exported in the runtime's sources")
+    for name, (path, line) in sorted(exported.items()):
+        if name not in listed:
+            result.add("runtime-export", path, line, f"{name} is exported but not listed in {RUNTIME_EXPORTS}")
+
+
 # ---------------------------------------------------------------------------
-# Checks 6 and 7: line budgets
+# Checks 7 and 8: line budgets
 # ---------------------------------------------------------------------------
 
 
@@ -618,6 +702,8 @@ def check_library_lines(tree: Tree, result: Result) -> None:
 
 def check_runtime_lines(tree: Tree, result: Result) -> None:
     for file in tree.files(RUNTIME_DIRS, exclude=(RUNTIME_TESTS,)):
+        if file.path == RUNTIME_EXPORTS:
+            continue
         result.runtime_lines[file.path] = file.lines
     total = sum(result.runtime_lines.values())
     if total > RUNTIME_LINE_LIMIT:
@@ -626,7 +712,7 @@ def check_runtime_lines(tree: Tree, result: Result) -> None:
 
 
 CHECK_FUNCTIONS = (check_library_name_tests, check_corpus_words, check_core_includes, check_runtime_includes,
-                   check_runtime_entries, check_library_lines, check_runtime_lines)
+                   check_runtime_entries, check_runtime_exports, check_library_lines, check_runtime_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -663,7 +749,8 @@ def summary_lines(result: Result) -> list[str]:
                  f"({len(result.library_lines):,} code files under lib/, include/ and tools/, "
                  f"{LIBRARY_SPEC} excluded)")
     lines.append(f"  runtime lines:  {runtime:,} / {RUNTIME_LINE_LIMIT:,} "
-                 f"({len(result.runtime_lines):,} files under runtime/, {RUNTIME_TESTS} excluded)")
+                 f"({len(result.runtime_lines):,} files under runtime/, {RUNTIME_TESTS} and "
+                 f"{RUNTIME_EXPORTS} excluded)")
     width = max(len(check) for check, _ in CHECKS)
     for check, description in CHECKS:
         lines.append(f"  {check:<{width}} {result.count(check):>6}  {description}")

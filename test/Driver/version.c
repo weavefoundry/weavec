@@ -6,3 +6,4 @@
 // CHECK: clang version
 // CHECK: weavec-cc version {{[0-9]+\.[0-9]+\.[0-9]+}}
 // CHECK-NEXT: built with LLVM {{[0-9]+\.}}
+// CHECK-NEXT: runtime ABI {{[0-9]+}}, for {{(aarch64|arm64|x86_64)-.*}}

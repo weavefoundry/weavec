@@ -823,21 +823,21 @@ static void stopHandler(int signal, siginfo_t *info, void *context) {
   if (!__atomic_load_n(&stopping, __ATOMIC_ACQUIRE))
     return;
   __builtin_unwind_init();
-  for (i = 0; i < stopTargets; ++i)
-    if (stopped[i] == self) {
-      stoppedSp[i] = (uintptr_t)&here;
-      {
-        const ucontext_t *uc = (const ucontext_t *)context;
+  for (i = 0; i < stopTargets && stopped[i] != self; ++i)
+    ;
+  /* Only the threads asked count: not the sweeper, nor one sent it by kill. */
+  if (i == stopTargets)
+    return;
+  stoppedSp[i] = (uintptr_t)&here;
 #if defined(__x86_64__)
-        stoppedInterruptedSp[i] = (uintptr_t)uc->uc_mcontext.gregs[REG_RSP];
+  stoppedInterruptedSp[i] =
+      (uintptr_t)((const ucontext_t *)context)->uc_mcontext.gregs[REG_RSP];
 #elif defined(__aarch64__)
-        stoppedInterruptedSp[i] = (uintptr_t)uc->uc_mcontext.sp;
+  stoppedInterruptedSp[i] =
+      (uintptr_t)((const ucontext_t *)context)->uc_mcontext.sp;
 #else
-        (void)uc;
+  (void)context;
 #endif
-      }
-      break;
-    }
   __atomic_add_fetch(&stoppedCount, 1, __ATOMIC_RELEASE);
   (void)futex(&stoppedCount, FUTEX_WAKE_PRIVATE, 1, NULL);
   while (__atomic_load_n(&stopGeneration, __ATOMIC_ACQUIRE) == generation)
@@ -845,22 +845,15 @@ static void stopHandler(int signal, siginfo_t *info, void *context) {
   errno = saved;
 }
 
-/* The signal that stops threads: SIGPWR, WEAVEC_RT_SWEEP_SIGNAL, or SIGXCPU
+/* The signal that stops threads: WEAVEC_RT_SWEEP_SIGNAL, SIGPWR, or SIGXCPU
  * when the program handles SIGPWR; 0 when none is free. */
-__attribute__((constructor)) static void readSweepSignal(void) {
-  const char *text = getenv("WEAVEC_RT_SWEEP_SIGNAL");
-  stopSignal = text != NULL ? atoi(text) : 0;
-}
-
-static int installHandler(void) {
-  static int installed;
+static void chooseSignal(void) {
   static const int Candidates[2] = {SIGPWR, SIGXCPU};
+  const char *text = getenv("WEAVEC_RT_SWEEP_SIGNAL");
+  const int asked = text != NULL ? atoi(text) : 0;
   int i;
-  if (installed)
-    return stopSignal != 0;
-  installed = 1;
-  for (i = stopSignal != 0 ? -1 : 0; i < 2; ++i) {
-    const int signal = i < 0 ? stopSignal : Candidates[i];
+  for (i = asked != 0 ? -1 : 0; i < 2; ++i) {
+    const int signal = i < 0 ? asked : Candidates[i];
     struct sigaction old;
     struct sigaction action;
     if (sigaction(signal, NULL, &old) != 0)
@@ -873,12 +866,42 @@ static int installHandler(void) {
     action.sa_flags = SA_SIGINFO | SA_RESTART;
     sigfillset(&action.sa_mask);
     if (sigaction(signal, &action, NULL) == 0) {
+      const uint64_t bit = (uint64_t)1 << (signal - 1);
       stopSignal = signal;
-      return 1;
+      (void)syscall(SYS_rt_sigprocmask, SIG_UNBLOCK, &bit, NULL, sizeof bit);
+      return;
     }
   }
-  stopSignal = 0;
-  return 0;
+}
+
+static int installHandler(void) {
+  static pthread_once_t once = PTHREAD_ONCE_INIT;
+  (void)pthread_once(&once, chooseSignal);
+  return stopSignal != 0;
+}
+
+/* RFC 0038, amendment 13: masks the program sets leave out the sweep's
+ * signal (chosen at the first, before a thread can block it), and the C
+ * library's two internal ones as its own functions do. */
+static int setMask(int how, const sigset_t *set, sigset_t *old) {
+  uint64_t mask = 0;
+  if (set != NULL && how != SIG_UNBLOCK && installHandler())
+    mask = (uint64_t)1 << (stopSignal - 1);
+  if (set != NULL && how != SIG_UNBLOCK) {
+    mask = ~(mask | (uint64_t)3 << 31) & *(const uint64_t *)(const void *)set;
+    set = (const sigset_t *)(const void *)&mask;
+  }
+  return (int)syscall(SYS_rt_sigprocmask, how, set, old, sizeof mask);
+}
+
+WEAVEC_RT_REPLACEABLE int sigprocmask(int how, const sigset_t *set,
+                                      sigset_t *old) {
+  return setMask(how, set, old);
+}
+
+WEAVEC_RT_REPLACEABLE int pthread_sigmask(int how, const sigset_t *set,
+                                          sigset_t *old) {
+  return setMask(how, set, old) != 0 ? errno : 0;
 }
 
 /* The tasks of the process, by reading /proc/self/task with getdents64
@@ -1203,7 +1226,7 @@ void weavecRtSweep(void) {
    * which its stack scan covers: it is scanned from `here`. */
   volatile uintptr_t here = 0;
   __builtin_unwind_init();
-  if (weavecRtForward() != 0 || weavecRtAllocatorNested())
+  if (weavecRtAllocatorNested())
     return;
   /* The sweeping thread's released slots join the quarantine, and its free
    * ones the free lists, so that what it released is recycled now and
@@ -1267,7 +1290,7 @@ void weavecRtSweep(void) {
     weavecRtSweepNanos += took;
     if (took > weavecRtSweepLongest)
       weavecRtSweepLongest = took;
-    weavecRtSwept(ended, took);
+    weavecRtSwept(ended, took, stoppedAll);
   }
   weavecRtSweepUnlock();
 }

@@ -394,6 +394,10 @@ void addScopes(ModuleContext &module, llvm::Function &function);
 /// no lifetime marker left.
 void dropScopes(llvm::Function &function, bool orphansOnly);
 /// GuardExpand on one function.
+/// RFC 0037 §8.1, RFC 0038 §3: the root a color check compares an address
+/// computed from a pointer with (GuardExpand.cpp); null for none.
+llvm::Value *colorRoot(llvm::Value *base);
+
 void expandGuards(ModuleContext &module, llvm::Function &function,
                   llvm::FunctionAnalysisManager &analyses);
 

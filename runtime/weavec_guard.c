@@ -409,9 +409,14 @@ static void readStack(void) {
   stackHigh = (uintptr_t)pthread_get_stackaddr_np(self);
   stackLow = stackHigh - pthread_get_stacksize_np(self);
 #elif defined(__linux__)
+  /* It frees under the thread's lock; freeing a libc block asks again. */
+  static __thread int reading;
   pthread_attr_t attributes;
   void *low = NULL;
   size_t size = 0;
+  if (reading)
+    return;
+  reading = 1;
   if (pthread_getattr_np(self, &attributes) == 0) {
     if (pthread_attr_getstack(&attributes, &low, &size) == 0 && low != NULL) {
       stackLow = (uintptr_t)low;
@@ -419,6 +424,7 @@ static void readStack(void) {
     }
     (void)pthread_attr_destroy(&attributes);
   }
+  reading = 0;
 #else
   (void)self;
 #endif
@@ -510,15 +516,6 @@ static uint64_t globalColors;
 void __weavec_rt_globals_register(const struct __weavec_rt_global *globals,
                                   uint64_t n) {
   uint64_t i;
-  /* A shared image registers in the process's runtime, whose shadow its
-   * guards read (RFC 0036 section 4). */
-  {
-    const struct __weavec_rt_dispatch *owner = weavecRtForward();
-    if (owner != 0) {
-      owner->registerGlobals(globals, n);
-      return;
-    }
-  }
   (void)weavecRtInitialize();
   for (i = 0; i < n; ++i) {
     const struct __weavec_rt_global *global = &globals[i];
@@ -539,13 +536,6 @@ void __weavec_rt_globals_register(const struct __weavec_rt_global *globals,
 void __weavec_rt_globals_unregister(const struct __weavec_rt_global *globals,
                                     uint64_t n) {
   uint64_t i;
-  {
-    const struct __weavec_rt_dispatch *owner = weavecRtForward();
-    if (owner != 0) {
-      owner->unregisterGlobals(globals, n);
-      return;
-    }
-  }
   for (i = 0; i < n; ++i)
     weavecRtShadowClear(globals[i].address,
                         globals[i].address + globals[i].padded);
@@ -575,9 +565,9 @@ struct weavecRtUbsanOutOfBounds {
   const void *indexType;
 };
 
-WEAVEC_RT_API __attribute__((weak)) void
+WEAVEC_RT_REPLACEABLE void
 __ubsan_handle_out_of_bounds(void *data, uintptr_t index);
-WEAVEC_RT_API __attribute__((weak, noreturn)) void
+WEAVEC_RT_REPLACEABLE __attribute__((noreturn)) void
 __ubsan_handle_out_of_bounds_abort(void *data, uintptr_t index);
 
 void __ubsan_handle_out_of_bounds(void *data, uintptr_t index) {

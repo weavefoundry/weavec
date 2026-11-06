@@ -20,7 +20,7 @@ A word is matched at the start of a word or of a camelCase hump
 (zeroInitialises), after the prefixes re-, un-, mis-, pre-, non-, de-,
 sub- and auto- too. ALLOWED lists text that must keep a British spelling:
 RFC 0009's file name, which is the URL of its page on the documentation
-site. `--fix` rewrites each file with the American forms, keeping each
+site, and tmux's source file colour.c, which the corpus manifest names. `--fix` rewrites each file with the American forms, keeping each
 word's case.
 
 Exit status: 0 when nothing is found (or everything was fixed), 1 when a
@@ -47,7 +47,7 @@ SKIPPED = frozenset((
 ))
 
 # Text that keeps its British spelling.
-ALLOWED = ("0009-value-conditional-behaviour",)
+ALLOWED = ("0009-value-conditional-behaviour", '"colour.c"')
 
 OUR_STEMS = ("arm", "behavi", "col", "endeav", "fav", "flav", "harb", "hon",
              "hum", "lab", "neighb", "od", "parl", "rum", "sav", "vap")

@@ -1,14 +1,17 @@
 name: Corpus
 
-# Runs the full corpus gate (RFC 0035, section 11) over the projects pinned
-# by SHA in test/corpus/manifest.json, but the sealed sets: the per-file
-# enforcement ledgers (checked against test/corpus/expected.json), each
-# project's build and test suite with CC=weavec-cc in trap mode (rerun in
-# report mode, with the guard failures of test/corpus/triage.json allowed,
-# and built once more with the reference compiler for the build-time gate),
-# the injected bugs and the benchmarks (against the reference compiler and
-# ASan). The gate clones the projects into build/corpus. Pull requests run
-# --quick in CI.
+# RFC 0038, section 5: the full corpus gate (RFC 0035, section 11) and the
+# programs tier, weekly, on every platform WeaveC supports. --full runs the
+# projects pinned by SHA in test/corpus/manifest.json, but the sealed sets,
+# each config resolved for the platform: the per-file enforcement ledgers
+# (against test/corpus/expected.json), each project's build and test suite
+# with CC=weavec-cc in trap mode (rerun in report mode, with the reports of
+# test/corpus/triage.json allowed, and built once more with the reference
+# compiler), the injected bugs and the benchmarks (against the reference
+# compiler and ASan). --programs builds the large programs of
+# test/corpus/programs.json from their release archives and runs their test
+# suites. A platform's failure opens an issue, or comments on the open one.
+# Pull requests run --quick in CI.
 on:
   schedule:
     - cron: "17 6 * * 1"
@@ -22,26 +25,53 @@ env:
 
 jobs:
   corpus:
-    name: Corpus regression
-    runs-on: ubuntu-24.04
+    name: Corpus (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
     # --full builds every project three times (trap, report, reference), runs
     # its tests twice, builds each injection and runs every benchmark three
-    # ways: the longest job GitHub allows.
+    # ways; --programs builds five large programs twice: the longest job
+    # GitHub allows.
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-24.04
+          - platform: linux-aarch64
+            os: ubuntu-24.04-arm
+          - platform: darwin-arm64
+            os: macos-15
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install LLVM
+      - name: Install LLVM and the test suites' programs (Linux)
+        if: runner.os == 'Linux'
         run: |
           # Chrome is unused; its preinstalled apt source can fail with hash
           # mismatches and block LLVM installation during repository updates.
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
             /etc/apt/sources.list.d/google-chrome.sources
-          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- "$LLVM_VERSION" all
-          sudo apt-get install -y ninja-build ccache
+          wget --tries=5 --waitretry=10 --retry-on-http-error=429,500,502,503,504 -qO llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh "$LLVM_VERSION" all
+          # test/corpus/prerequisites.json and programs.json: redis-server
+          # (hiredis), tclsh (Redis, SQLite) and Tcl's headers (SQLite's
+          # testfixture), perl, expect.
+          sudo apt-get install -y ninja-build ccache redis-server tcl tcl-dev expect
           echo "WEAVEC_LLVM_PREFIX=/usr/lib/llvm-$LLVM_VERSION" >> "$GITHUB_ENV"
           echo "CC=clang-$LLVM_VERSION" >> "$GITHUB_ENV"
           echo "CXX=clang++-$LLVM_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install LLVM and the test suites' programs (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm ninja ccache redis tcl-tk@8 expect
+          prefix="$(brew --prefix llvm)"
+          echo "WEAVEC_LLVM_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "CC=$prefix/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=$prefix/bin/clang++" >> "$GITHUB_ENV"
+          echo "TCL_CONFIG_DIR=$(brew --prefix tcl-tk@8)/lib" >> "$GITHUB_ENV"
+          echo "$(brew --prefix tcl-tk@8)/bin" >> "$GITHUB_PATH"
 
       - uses: actions/setup-python@v7
         with:
@@ -50,7 +80,7 @@ jobs:
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1
         with:
-          key: ubuntu-24.04-ci-release-corpus
+          key: ${{ matrix.os }}-ci-release-corpus
           max-size: 500M
 
       - name: Configure and build
@@ -60,14 +90,54 @@ jobs:
 
       - name: Run corpus gate
         run: |
+          ulimit -c 0
           python3 scripts/corpus-gate.py --full \
             --weavec-cc build/ci-release/bin/weavec-cc \
             --json corpus-gate-full.json
+
+      - name: Run programs tier
+        if: always()
+        run: |
+          ulimit -c 0
+          python3 scripts/corpus-gate.py --programs \
+            --weavec-cc build/ci-release/bin/weavec-cc \
+            --json corpus-gate-programs.json
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: corpus-gate-full
-          path: corpus-gate-full.json
+          name: corpus-gate-${{ matrix.platform }}
+          path: |
+            corpus-gate-full.json
+            corpus-gate-programs.json
           if-no-files-found: ignore
+
+  report:
+    name: Report failures
+    needs: corpus
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+      actions: read
+    steps:
+      - name: Open or update one issue per failing platform
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          jobs=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+            --jq '.jobs[] | select(.conclusion == "failure") | .name')
+          printf '%s\n' "$jobs" | while read -r job; do
+            [ -n "$job" ] || continue
+            title="Weekly corpus failing: $job"
+            number=$(gh issue list --repo "${{ github.repository }}" --state open \
+              --search "in:title \"$title\"" --json number --jq '.[0].number')
+            if [ -n "$number" ]; then
+              gh issue comment "$number" --repo "${{ github.repository }}" --body "Still failing: $RUN"
+            else
+              gh issue create --repo "${{ github.repository }}" --title "$title" \
+                --body "The weekly corpus gate failed on this platform: $RUN (the artifacts hold the gate's JSON results)."
+            fi
+          done

@@ -1,0 +1,21 @@
+{
+  "schema": "weavec-corpus-prerequisites",
+  "version": 1,
+  "_comment": [
+    "What a config's test suite needs of the machine beyond a C toolchain, CMake and the POSIX",
+    "tools (RFC 0038, section 5), read by scripts/corpus-gate.py: `programs` it runs (looked up on",
+    "PATH) and `refusesRoot` when the suite does not run as root. Before it builds, --full checks",
+    "the selected configs and stops with a setup error (exit status 2) naming what is missing,",
+    "never with a test failure; --skip-unavailable leaves those configs out instead."
+  ],
+  "configs": {
+    "curl": {"programs": ["perl"]},
+    "flac": {"programs": ["perl"]},
+    "hiredis": {"programs": ["redis-server"]},
+    "inih": {"programs": ["bash"]},
+    "libdeflate": {"programs": ["bash"]},
+    "libuv": {"refusesRoot": true},
+    "redis": {"programs": ["tclsh"]},
+    "wren": {"programs": ["python3"]}
+  }
+}

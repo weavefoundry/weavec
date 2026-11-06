@@ -378,11 +378,43 @@ class RuntimeEntryTest(TreeTest):
                   "void __weavec_rt_free(void *p);\nextern int __weavec_rt_documented;")
         self.assertEqual(self.found("runtime-entry"), [])
 
-    def test_a_missing_runtime_header_is_a_violation(self):
+    def test_a_missing_runtime_header_is_a_violation_too(self):
         (self.root / "runtime/weavec_rt.h").unlink()
         self.assertEqual(self.found("runtime-entry"), [
             ("runtime/weavec_rt.h", None, "missing or unreadable, so the runtime's entry points are unknown"),
         ])
+
+
+class RuntimeExportTest(TreeTest):
+    def test_the_list_names_exactly_what_the_runtime_exports(self):
+        self.write("runtime/weavec_malloc.c", """
+            #include "weavec_rt.h"
+            #define WEAVEC_RT_WEAK WEAVEC_RT_API __attribute__((weak))
+            WEAVEC_RT_API void *malloc(size_t size);
+            WEAVEC_RT_WEAK __attribute__((visibility("default"))) void *valloc(size_t size);
+            // WEAVEC_RT_API void commented(void);
+            WEAVEC_RT_API extern struct __weavec_rt_shadow_t __weavec_rt_shadow;
+            WEAVEC_RT_API const char unlisted[2] = "x";
+            """)
+        self.write("runtime/weavec_rt.exports", """
+            # The list.
+            malloc
+            valloc linux
+            __weavec_rt_shadow   # the descriptor
+            __weavec_rt_gone
+            """)
+        self.write("runtime/test/rt_test.c", '#include "../weavec_rt.h"\nWEAVEC_RT_API int test_only;\n')
+        self.assertEqual(self.found("runtime-export"), [
+            ("runtime/weavec_rt.exports", 5, "__weavec_rt_gone is not marked exported in the runtime's sources"),
+            ("runtime/weavec_malloc.c", 7,
+             "unlisted is exported but not listed in runtime/weavec_rt.exports"),
+        ])
+
+    def test_a_missing_list_is_a_violation_when_something_is_exported(self):
+        self.assertEqual(self.found("runtime-export"), [])
+        self.write("runtime/weavec_guard.c", '#include "weavec_rt.h"\nWEAVEC_RT_API void f(void) {}\n')
+        self.assertEqual(self.found("runtime-export"), [
+            ("runtime/weavec_rt.exports", None, "missing, while the runtime marks 1 names exported")])
 
 
 class LineLimitTest(TreeTest):
@@ -392,7 +424,7 @@ class LineLimitTest(TreeTest):
 
     def test_the_real_limits(self):
         """RFC 0037 gate H1 and RFC 0032 gate H1 (the module docstring)."""
-        self.assertEqual((hygiene.LIBRARY_LINE_LIMIT, hygiene.RUNTIME_LINE_LIMIT), (9_000, 7_000))
+        self.assertEqual((hygiene.LIBRARY_LINE_LIMIT, hygiene.RUNTIME_LINE_LIMIT), (9_000, 7_050))
 
     def test_runtime_total_leaves_out_its_tests(self):
         """RFC 0032 gate H1: the runtime is counted apart, without runtime/test/."""
@@ -459,10 +491,11 @@ class MainTest(TreeTest):
         self.assertRegex(output, r"\n  entry points: +4 of 4 declared in runtime/weavec_rt\.h\n")
         self.assertRegex(output, r"\n  library lines: +\d+ / 10 \(8 code files under lib/, include/ and "
                                  r"tools/, lib/Core/LibrarySpec\.txt excluded\)\n")
-        self.assertRegex(output, r"\n  runtime lines: +\d+ / 7,000 \(2 files under runtime/, runtime/test/ "
-                                 r"excluded\)\n")
+        self.assertRegex(output, r"\n  runtime lines: +\d+ / 7,050 \(2 files under runtime/, runtime/test/ "
+                                 r"and runtime/weavec_rt\.exports excluded\)\n")
         for check, count in (("library-name-test", 0), ("corpus-word", 1), ("core-include", 0),
-                             ("runtime-include", 0), ("runtime-entry", 0), ("library-lines", 1),
+                             ("runtime-include", 0), ("runtime-entry", 0), ("runtime-export", 0),
+                             ("library-lines", 1),
                              ("runtime-lines", 0)):
             self.assertRegex(output, rf"\n  {check} +{count}  ")
         self.assertEqual(lines[-1], "H1: FAIL (2 violations)")

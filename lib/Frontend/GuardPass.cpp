@@ -307,8 +307,15 @@ llvm::FunctionCallee ModuleContext::runtime(llvm::StringRef name,
                                             llvm::FunctionType *type) {
   const std::string full = ("__weavec_rt_" + name).str();
   llvm::FunctionCallee callee = module.getOrInsertFunction(full, type);
-  if (auto *function = llvm::dyn_cast<llvm::Function>(callee.getCallee()))
+  if (auto *function = llvm::dyn_cast<llvm::Function>(callee.getCallee())) {
     function->setDoesNotThrow();
+    // RFC 0038 amendment 12: the runtime is a shared library, and a lazily
+    // bound call's first trip through the dynamic linker's resolver keeps
+    // only the argument registers, where a preserve_all slow path promises
+    // its caller every register: every call goes through the GOT, bound at
+    // load time.
+    function->addFnAttr(llvm::Attribute::NonLazyBind);
+  }
   return callee;
 }
 

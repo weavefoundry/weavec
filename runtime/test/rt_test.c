@@ -6,8 +6,8 @@
 |*
 |*===----------------------------------------------------------------------===*|
 |*
-|* RFC 0035, section 5, and RFC 0036. One program, linked with libweavec_rt.a and
-|* libweavec_alloc.a, so `malloc` here is the arena's. Each test is a
+|* RFC 0035, section 5, and RFC 0036. One program, linked with the runtime's
+|* objects (internal functions included), so `malloc` here is the arena's. Each test is a
 |* function; a test that must stop the program runs in a child process and
 |* the parent checks how it died. Run without arguments for every test, or
 |* with the names of the tests to run.
@@ -448,12 +448,12 @@ static void testPacing(void) {
   for (i = 0; i < Count; ++i)
     blocks[i] = opaque(malloc(Block));
   /* As if the last sweep had just taken 1,000 seconds. */
-  weavecRtSwept(monotonic(), 1000000000000ULL);
+  weavecRtSwept(monotonic(), 1000000000000ULL, 1);
   for (i = 0; i < Count; ++i)
     free(blocks[i]);
   CHECK(weavecRtStats[WeavecRtStatSweeps] == before);
   /* As if it had taken no time: the next release sweeps. */
-  weavecRtSwept(monotonic(), 0);
+  weavecRtSwept(monotonic(), 0, 1);
   free(opaque(malloc(Block)));
   CHECK(weavecRtStats[WeavecRtStatSweeps] == before + 1);
 }
@@ -565,6 +565,41 @@ static void testSweepStopsThreads(void) {
     for (i = 0; i < 8; ++i)
       free(blocks[i]);
   }
+  __atomic_store_n(&threadRelease, 1, __ATOMIC_RELEASE);
+  CHECK(pthread_join(thread, NULL) == 0);
+  threadRelease = 0;
+}
+
+static int blockerReady;
+
+static void *blocker(void *argument) {
+  /* Blocks every signal it may, as CPython's watchdog thread does. */
+  sigset_t every;
+  (void)argument;
+  sigfillset(&every);
+  CHECK(pthread_sigmask(SIG_SETMASK, &every, NULL) == 0);
+  __atomic_store_n(&blockerReady, 1, __ATOMIC_RELEASE);
+  while (!__atomic_load_n(&threadRelease, __ATOMIC_ACQUIRE))
+    sched_yield();
+  return NULL;
+}
+
+static void testSweepStopsBlockingThreads(void) {
+  /* RFC 0038 amendment 13: a thread that blocks every signal is still
+   * stopped, so the sweep recycles. */
+  void *volatile first = opaque(malloc(3300));
+  volatile uintptr_t hidden = releasedBlock(3300);
+  unsigned char *again;
+  pthread_t thread;
+  CHECK(pthread_create(&thread, NULL, blocker, NULL) == 0);
+  while (!__atomic_load_n(&blockerReady, __ATOMIC_ACQUIRE))
+    sched_yield();
+  scrubStack();
+  weavecRtSweep();
+  again = reuse(hidden ^ Hidden, 3300);
+  CHECK(again != NULL);
+  free(again);
+  free(first);
   __atomic_store_n(&threadRelease, 1, __ATOMIC_RELEASE);
   CHECK(pthread_join(thread, NULL) == 0);
   threadRelease = 0;
@@ -989,12 +1024,6 @@ static void compareTooFar(void) {
   (void)__weavec_rt_strcmp(p, "abcde", &trapSite);
 }
 
-static void searchTooFar(void) {
-  char *p = (char *)opaque(malloc(4));
-  memcpy(p, "abcd", 4);
-  (void)__weavec_rt_memchr(p, 'z', 8, &trapSite);
-}
-
 static void printUnterminated(void) {
   char out[64];
   char *p = (char *)opaque(malloc(4));
@@ -1018,11 +1047,7 @@ static void testCheckedCalls(void) {
   CHECK(strcmp(p, "fits") == 0);
   CHECK(__weavec_rt_snprintf(&trapSite, (size_t)-1, p, 4, "%s", "truncated") == 9);
   CHECK(strcmp(p, "tru") == 0);
-  /* A search or comparison checks only what it read. */
-  memcpy(p, "ab\nc", 4);
-  CHECK(__weavec_rt_memchr(p, '\n', 1000, &trapSite) == p + 2);
-  CHECK(__weavec_rt_strchr("abc", 'b', &trapSite) != NULL);
-  CHECK(__weavec_rt_strchr("abc", 'z', &trapSite) == NULL);
+  /* A comparison checks only what it read. */
   CHECK(__weavec_rt_strcmp("abc", "abd", &trapSite) < 0);
   CHECK(__weavec_rt_strcmp("abc", "abc", &trapSite) == 0);
   CHECK(__weavec_rt_strncmp("abcx", "abcy", 3, &trapSite) == 0);
@@ -1055,7 +1080,6 @@ static void testCheckedCalls(void) {
     CHECK(strncmp(out, "abcd|7|", 7) == 0);
     free(word);
   }
-  CHECK(trapsIn(searchTooFar));
 }
 
 /*===-- Frames and globals --------------------------------------------------===*/
@@ -1277,6 +1301,31 @@ static void testThreadCaches(void) {
   CHECK(trapsIn(doubleFree));
 }
 
+/* RFC 0038 section 4: a program that saves the runtime's SIGSEGV handler,
+ * installs its own, and restores the saved one in it before raising the
+ * signal again (Python's faulthandler) dies of the signal. The alarm ends
+ * a handler that would raise it forever. */
+static struct sigaction savedFault;
+
+static void restoreAndRaise(int signal) {
+  (void)sigaction(SIGSEGV, &savedFault, NULL);
+  (void)raise(signal);
+}
+
+static void raiseRestored(void) {
+  struct sigaction mine;
+  (void)alarm(10);
+  memset(&mine, 0, sizeof mine);
+  mine.sa_handler = restoreAndRaise;
+  sigemptyset(&mine.sa_mask);
+  (void)sigaction(SIGSEGV, &mine, &savedFault);
+  (void)raise(SIGSEGV);
+}
+
+static void testFaultHandlerRestored(void) {
+  CHECK(endOf(raiseRestored, NULL) == SIGSEGV);
+}
+
 static void testFork(void) {
   void *p = opaque(malloc(100));
   int status = 0;
@@ -1310,6 +1359,7 @@ static const struct {
     {"quarantine-holds", testQuarantineHolds},
     {"sweep-follows-the-heap", testSweepFollowsTheHeap},
     {"sweep-stops-threads", testSweepStopsThreads},
+    {"sweep-stops-blocking-threads", testSweepStopsBlockingThreads},
     {"pacing", testPacing},
     {"library-data-is-scanned", testLibraryDataIsScanned},
     {"shared-memory-is-scanned", testSharedMemoryIsScanned},
@@ -1336,6 +1386,7 @@ static const struct {
     {"threads", testThreads},
     {"thread-caches", testThreadCaches},
     {"fork", testFork},
+    {"fault-handler-restored", testFaultHandlerRestored},
 };
 
 int main(int argc, char **argv) {

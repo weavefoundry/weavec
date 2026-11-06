@@ -22,7 +22,9 @@
 // function whose address the unit takes is replaced there by a thunk that
 // calls it directly, so that a call through the pointer is guarded too.
 // RFC 0037 §10: a string or formatting call into an array field of a
-// struct is limited to the field.
+// struct is limited to the field. RFC 0038 §2: a search (`strchr`,
+// `strcspn`, `memchr`) is guarded after the call, over what it read up to
+// where its result says it stopped.
 //
 //===----------------------------------------------------------------------===//
 
@@ -316,6 +318,14 @@ struct LibraryCall {
   /// Guards each pointer argument the row reads or writes.
   void guardArguments() const;
 
+  /// RFC 0038 §2: before the call, a `scan` argument's null check and its
+  /// first byte, which every search reads (none when its count is zero).
+  void guardScanStart(unsigned index) const;
+  /// After the call, the elements it read: up to where its result stopped
+  /// and the scan's term from there, or, for a null result, the row's
+  /// extent (its bytes or count, or the string).
+  void guardScan(unsigned index) const;
+
   /// Guards the first byte of each string argument that must not be null
   /// and is not a literal.
   void guardFirstBytes() const {
@@ -336,14 +346,97 @@ struct LibraryCall {
 
 } // namespace
 
+void LibraryCall::guardScanStart(unsigned index) const {
+  const core::LibraryParam &param = match.entry->params[index];
+  llvm::Value *pointer = argument(index);
+  llvm::IRBuilder<> builder(&call);
+  llvm::Value *one = llvm::ConstantInt::get(module().i64, 1);
+  llvm::Value *bytes = one;
+  if (const std::optional<core::LibTerm> &term =
+          param.bytes ? param.bytes : param.count) {
+    llvm::Value *count = evaluate(*term, builder);
+    if (count == nullptr)
+      return;
+    bytes = builder.CreateBinaryIntrinsic(llvm::Intrinsic::umin, count, one);
+  }
+  if (param.null == core::LibraryParam::Null::Allowed)
+    bytes =
+        builder.CreateSelect(builder.CreateIsNull(pointer),
+                             llvm::ConstantInt::get(module().i64, 0), bytes);
+  guardBytes(pointer, bytes, false);
+}
+
+void LibraryCall::guardScan(unsigned index) const {
+  const core::LibraryEntry &entry = *match.entry;
+  const core::LibraryParam &param = entry.params[index];
+  llvm::Value *pointer = argument(index);
+  llvm::Instruction *after = call.getNextNode();
+  if (after == nullptr)
+    return;
+  const std::uint64_t element = entry.wide ? wcharSize() : 1;
+  llvm::Value *elementBytes = llvm::ConstantInt::get(module().i64, element);
+  // The bytes from `pointer` to `stop` (an i64 of bytes) and the scan's
+  // term of elements from there.
+  auto readTo = [&](llvm::IRBuilder<> &builder, llvm::Value *stop) {
+    llvm::Value *tail = evaluate(*param.scan, builder);
+    if (tail == nullptr)
+      return static_cast<llvm::Value *>(nullptr);
+    return builder.CreateAdd(stop, builder.CreateMul(tail, elementBytes));
+  };
+  if (!call.getType()->isPointerTy()) {
+    llvm::IRBuilder<> builder(after);
+    llvm::Value *stop = builder.CreateMul(
+        builder.CreateZExtOrTrunc(&call, module().i64), elementBytes);
+    if (llvm::Value *bytes = readTo(builder, stop))
+      module().insertRange(after, pointer, bytes, 0, record("scan"));
+    return;
+  }
+  llvm::IRBuilder<> test(after);
+  llvm::Instruction *found = nullptr;
+  llvm::Instruction *missed = nullptr;
+  llvm::SplitBlockAndInsertIfThenElse(test.CreateIsNotNull(&call), after,
+                                      &found, &missed);
+  llvm::IRBuilder<> atFound(found);
+  llvm::Value *stop =
+      atFound.CreateSub(atFound.CreatePtrToInt(&call, module().i64),
+                        atFound.CreatePtrToInt(pointer, module().i64));
+  if (llvm::Value *bytes = readTo(atFound, stop))
+    module().insertRange(found, pointer, bytes, 0, record("scan"));
+  // Not found: the whole extent was read.
+  llvm::IRBuilder<> atMissed(missed);
+  const std::optional<core::LibTerm> &term =
+      param.bytes ? param.bytes : param.count;
+  if (!term) {
+    (void)stringLength(atMissed, pointer, nullptr, 0);
+    return;
+  }
+  if (llvm::Value *count = evaluate(*term, atMissed))
+    module().insertRange(missed, pointer,
+                         param.bytes ? count
+                                     : atMissed.CreateMul(count, elementBytes),
+                         0, record("scan"));
+}
+
 void LibraryCall::guardArguments() const {
   const core::LibraryEntry &entry = *match.entry;
   llvm::Value *limit = objectSize();
+  llvm::SmallVector<unsigned, 2> scans;
   for (unsigned index = 0; index < entry.params.size(); ++index) {
     const core::LibraryParam &param = entry.params[index];
     if (param.type != core::LibraryParam::Type::Pointer ||
         param.access == core::LibraryParam::Access::None)
       continue;
+    if (param.scan) {
+      const llvm::Value *pointer = argument(index);
+      llvm::StringRef literal;
+      if (pointer == nullptr || !pointer->getType()->isPointerTy() ||
+          pointer->getType()->getPointerAddressSpace() != 0 ||
+          (!entry.wide && llvm::getConstantStringInfo(pointer, literal)))
+        continue;
+      guardScanStart(index);
+      scans.push_back(index);
+      continue;
+    }
     // What `free` and `realloc` release the allocator validates; a block
     // they take may have no bytes (`malloc(0)`).
     if (param.effect == core::LibraryParam::Effect::Release ||
@@ -410,6 +503,8 @@ void LibraryCall::guardArguments() const {
     if (llvm::Value *length = evaluate(disjoint.length, builder))
       module().insertDisjoint(&call, first, second, length);
   }
+  for (const unsigned index : scans)
+    guardScan(index);
 }
 
 void LibraryCall::guardFormat(const core::LibFormat &format) const {

@@ -497,7 +497,15 @@
             "cmake --build out -j \"$JOBS\" --target uv_run_tests_a"
           ],
           "test": ["sh \"$SUPPORT/run-tests.sh\""],
-          "testTimeout": 1800
+          "testTimeout": 1800,
+          "platforms": {
+            "linux": {
+              "compile": {
+                "files": ["src/*.c", "src/unix/async.c", "src/unix/core.c", "src/unix/dl.c", "src/unix/fs.c", "src/unix/getaddrinfo.c", "src/unix/getnameinfo.c", "src/unix/loop-watcher.c", "src/unix/loop.c", "src/unix/pipe.c", "src/unix/poll.c", "src/unix/process.c", "src/unix/proctitle.c", "src/unix/random-devurandom.c", "src/unix/signal.c", "src/unix/stream.c", "src/unix/tcp.c", "src/unix/thread.c", "src/unix/tty.c", "src/unix/udp.c", "src/unix/linux.c", "src/unix/procfs-exepath.c", "src/unix/random-getrandom.c", "src/unix/random-sysctl-linux.c"],
+                "args": ["-std=gnu11", "-Iinclude", "-Isrc", "-D_GNU_SOURCE", "-D_POSIX_C_SOURCE=200112", "-D_FILE_OFFSET_BITS=64", "-D_LARGEFILE_SOURCE"]
+              }
+            }
+          }
         }
       ]
     },
@@ -619,7 +627,15 @@
             "EVENT_NOSELECT=1 EVENT_NOPOLL=1 out/bin/regress --quiet :dns/initialize_nameservers",
             "EVENT_NOKQUEUE=1 EVENT_NOSELECT=1 EVENT_DEBUG_MODE=1 out/bin/regress --quiet :dns/initialize_nameservers"
           ],
-          "testTimeout": 1800
+          "testTimeout": 1800,
+          "platforms": {
+            "linux": {
+              "compile": {
+                "files": ["buffer.c", "bufferevent.c", "bufferevent_filter.c", "bufferevent_pair.c", "bufferevent_ratelim.c", "bufferevent_sock.c", "event.c", "evmap.c", "evthread.c", "evutil.c", "evutil_rand.c", "evutil_time.c", "listener.c", "log.c", "signal.c", "strlcpy.c", "select.c", "poll.c", "epoll.c", "evdns.c", "event_tagging.c", "evrpc.c", "http.c", "evthread_pthread.c"],
+                "args": ["-I{support}/linux", "-I{support}", "-Iinclude", "-Icompat", "-I.", "-DHAVE_CONFIG_H"]
+              }
+            }
+          }
         }
       ]
     },
@@ -643,7 +659,60 @@
             "make -j\"$JOBS\"",
             "make -j\"$JOBS\" check TESTS="
           ],
-          "test": ["make -j\"$JOBS\" check"]
+          "test": ["make -j\"$JOBS\" check"],
+          "platforms": {
+            "linux": {
+              "compile": {
+                "files": [
+                  "src/libsodium/crypto_aead/chacha20poly1305/aead_chacha20poly1305.c",
+                  "src/libsodium/crypto_aead/xchacha20poly1305/aead_xchacha20poly1305.c",
+                  "src/libsodium/crypto_aead/aegis256/aead_aegis256.c",
+                  "src/libsodium/crypto_aead/aegis256/aegis256_soft.c",
+                  "src/libsodium/crypto_auth/hmacsha256/auth_hmacsha256.c",
+                  "src/libsodium/crypto_auth/hmacsha512/auth_hmacsha512.c",
+                  "src/libsodium/crypto_box/crypto_box_easy.c",
+                  "src/libsodium/crypto_box/crypto_box_seal.c",
+                  "src/libsodium/crypto_box/curve25519xsalsa20poly1305/box_curve25519xsalsa20poly1305.c",
+                  "src/libsodium/crypto_core/ed25519/ref10/ed25519_ref10.c",
+                  "src/libsodium/crypto_core/ed25519/core_ed25519.c",
+                  "src/libsodium/crypto_core/ed25519/core_ristretto255.c",
+                  "src/libsodium/crypto_core/hchacha20/core_hchacha20.c",
+                  "src/libsodium/crypto_core/salsa/ref/core_salsa_ref.c",
+                  "src/libsodium/crypto_generichash/blake2b/ref/blake2b-ref.c",
+                  "src/libsodium/crypto_generichash/blake2b/ref/blake2b-compress-ref.c",
+                  "src/libsodium/crypto_generichash/blake2b/ref/generichash_blake2b.c",
+                  "src/libsodium/crypto_hash/sha256/cp/hash_sha256_cp.c",
+                  "src/libsodium/crypto_hash/sha512/cp/hash_sha512_cp.c",
+                  "src/libsodium/crypto_kdf/hkdf/kdf_hkdf_sha256.c",
+                  "src/libsodium/crypto_onetimeauth/poly1305/donna/poly1305_donna.c",
+                  "src/libsodium/crypto_pwhash/argon2/argon2-core.c",
+                  "src/libsodium/crypto_pwhash/argon2/argon2-encoding.c",
+                  "src/libsodium/crypto_pwhash/argon2/argon2-fill-block-ref.c",
+                  "src/libsodium/crypto_pwhash/argon2/argon2.c",
+                  "src/libsodium/crypto_pwhash/argon2/blake2b-long.c",
+                  "src/libsodium/crypto_pwhash/argon2/pwhash_argon2id.c",
+                  "src/libsodium/crypto_pwhash/scryptsalsa208sha256/crypto_scrypt-common.c",
+                  "src/libsodium/crypto_pwhash/scryptsalsa208sha256/pbkdf2-sha256.c",
+                  "src/libsodium/crypto_scalarmult/curve25519/ref10/x25519_ref10.c",
+                  "src/libsodium/crypto_secretbox/crypto_secretbox_easy.c",
+                  "src/libsodium/crypto_secretstream/xchacha20poly1305/secretstream_xchacha20poly1305.c",
+                  "src/libsodium/crypto_shorthash/siphash24/ref/shorthash_siphash24_ref.c",
+                  "src/libsodium/crypto_sign/ed25519/ref10/sign.c",
+                  "src/libsodium/crypto_sign/ed25519/ref10/open.c",
+                  "src/libsodium/crypto_sign/ed25519/ref10/keypair.c",
+                  "src/libsodium/crypto_stream/chacha20/ref/chacha20_ref.c",
+                  "src/libsodium/crypto_stream/salsa20/ref/salsa20_ref.c",
+                  "src/libsodium/randombytes/randombytes.c",
+                  "src/libsodium/randombytes/sysrandom/randombytes_sysrandom.c",
+                  "src/libsodium/sodium/codecs.c",
+                  "src/libsodium/sodium/core.c",
+                  "src/libsodium/sodium/utils.c",
+                  "src/libsodium/sodium/runtime.c"
+                ],
+                "args": ["-Isrc/libsodium/include", "-Isrc/libsodium/include/sodium", "-I{support}", "-DCONFIGURED=1", "-DNATIVE_LITTLE_ENDIAN=1", "-DHAVE_TI_MODE=1", "-DTLS=_Thread_local", "-DHAVE_PTHREAD=1", "-DHAVE_SYS_MMAN_H=1", "-DHAVE_SYS_PARAM_H=1", "-DHAVE_SYS_RANDOM_H=1", "-DHAVE_MMAP=1", "-DHAVE_MLOCK=1", "-DHAVE_MADVISE=1", "-DHAVE_MPROTECT=1", "-DHAVE_GETENTROPY=1", "-DHAVE_POSIX_MEMALIGN=1", "-DHAVE_SYSCONF=1", "-DHAVE_C11_MEMORY_FENCES=1", "-DHAVE_GCC_MEMORY_FENCES=1", "-DHAVE_ATOMIC_OPS=1", "-DHAVE_WEAK_SYMBOLS=1", "-DHAVE_ALLOCA_H=1", "-DHAVE_ALLOCA=1", "-DHAVE_CATCHABLE_SEGV=1", "-DHAVE_CATCHABLE_ABRT=1", "-D_GNU_SOURCE", "-DHAVE_GETRANDOM=1", "-DHAVE_EXPLICIT_BZERO=1"]
+              }
+            }
+          }
         }
       ]
     },
@@ -828,6 +897,14 @@
             "command": "rm -rf bench-db && libraries/liblmdb/lmdb-bench bench-db > bench.out && cat bench.out",
             "check": "grep -qx 163099980 bench.out",
             "repeat": 7
+          },
+          "platforms": {
+            "linux": {
+              "build": [
+                "cd libraries/liblmdb && make -j\"$JOBS\" CC=\"$CC\" liblmdb.a liblmdb.so.1.0 mdb_stat mdb_copy mdb_dump mdb_load mdb_drop",
+                "cd libraries/liblmdb && make -j\"$JOBS\" CC=\"$CC\" XCFLAGS=\"-include $SUPPORT/fixed-seed.h\" mtest mtest2 mtest3 mtest4 mtest5"
+              ]
+            }
           }
         }
       ]
@@ -972,6 +1049,11 @@
             "command": "for l in 1 6 9; do ./out/programs/libdeflate-gzip -$l -c \"$INPUT\" > bench.gz && ./out/programs/libdeflate-gzip -d -c bench.gz > /dev/null || exit 1; done",
             "check": "./out/programs/libdeflate-gzip -d -c bench.gz | cmp - \"$INPUT\"",
             "repeat": 7
+          },
+          "platforms": {
+            "linux-x86_64": {
+              "compile": {"files": ["lib/*.c", "lib/x86/cpu_features.c"], "args": ["-std=gnu11", "-I."]}
+            }
           }
         }
       ]
@@ -1010,6 +1092,20 @@
             "command": "for l in 1 6 9; do ./out/minigzip -$l < \"$INPUT\" > bench.gz && ./out/minigzip -d < bench.gz > /dev/null || exit 1; done",
             "check": "./out/minigzip -d < bench.gz | cmp - \"$INPUT\"",
             "repeat": 7
+          },
+          "platforms": {
+            "linux-aarch64": {
+              "compile": {
+                "files": ["adler32.c", "arch/arm/adler32_neon.c", "arch/arm/adler32_neon_dotprod.c", "arch/arm/arm_features.c", "arch/arm/chunkset_neon.c", "arch/arm/compare256_neon.c", "arch/arm/crc32_armv8.c", "arch/arm/crc32_armv8_pmull_eor3.c", "arch/arm/slide_hash_neon.c", "arch/generic/adler32_c.c", "arch/generic/chunkset_c.c", "arch/generic/compare256_c.c", "arch/generic/crc32_braid_c.c", "arch/generic/crc32_chorba_c.c", "arch/generic/slide_hash_c.c", "compress.c", "cpu_features.c", "crc32.c", "crc32_braid_comb.c", "deflate.c", "deflate_fast.c", "deflate_huff.c", "deflate_medium.c", "deflate_quick.c", "deflate_rle.c", "deflate_slow.c", "deflate_stored.c", "functable.c", "gzlib.c", "gzread.c", "gzwrite.c", "infback.c", "inflate.c", "inftrees.c", "insert_string.c", "trees.c", "uncompr.c", "zutil.c"],
+                "args": ["-std=c11", "-I{support}", "-I.", "-DARM_CRC32", "-DARM_CRC32_INTRIN", "-DARM_FEATURES", "-DARM_NEON", "-DARM_NEON_DOTPROD", "-DARM_NEON_HASLD4", "-DARM_PMULL_EOR3", "-DHAVE_ARM_ACLE_H", "-DHAVE_ATTRIBUTE_ALIGNED", "-DHAVE_BUILTIN_ASSUME_ALIGNED", "-DHAVE_VISIBILITY_HIDDEN", "-DHAVE_VISIBILITY_INTERNAL", "-DWITH_GZFILEOP", "-DWITH_OPTIM", "-DZLIB_COMPAT", "-DHAVE_SYS_AUXV_H"]
+              }
+            },
+            "linux-x86_64": {
+              "compile": {
+                "files": ["adler32.c", "arch/generic/adler32_c.c", "arch/generic/chunkset_c.c", "arch/generic/compare256_c.c", "arch/generic/crc32_braid_c.c", "arch/generic/crc32_chorba_c.c", "arch/generic/slide_hash_c.c", "arch/x86/chunkset_sse2.c", "arch/x86/compare256_sse2.c", "arch/x86/crc32_chorba_sse2.c", "arch/x86/slide_hash_sse2.c", "arch/x86/x86_features.c", "compress.c", "cpu_features.c", "crc32.c", "crc32_braid_comb.c", "deflate.c", "deflate_fast.c", "deflate_huff.c", "deflate_medium.c", "deflate_quick.c", "deflate_rle.c", "deflate_slow.c", "deflate_stored.c", "functable.c", "gzlib.c", "gzread.c", "gzwrite.c", "infback.c", "inflate.c", "inftrees.c", "insert_string.c", "trees.c", "uncompr.c", "zutil.c"],
+                "args": ["-std=c11", "-I{support}", "-I.", "-DHAVE_ATTRIBUTE_ALIGNED", "-DHAVE_BUILTIN_ASSUME_ALIGNED", "-DHAVE_VISIBILITY_HIDDEN", "-DHAVE_VISIBILITY_INTERNAL", "-DWITH_GZFILEOP", "-DWITH_OPTIM", "-DZLIB_COMPAT", "-DX86_FEATURES", "-DX86_SSE2"]
+              }
+            }
           }
         }
       ]
@@ -1087,7 +1183,7 @@
       "name": "libgit2",
       "url": "https://github.com/libgit2/libgit2.git",
       "sha": "0551dfd4ad989b6a3d5683c0d4cf326c6efef929",
-      "support": ["libgit2/git2_features.h", "libgit2/experimental.h"],
+      "support": ["libgit2/git2_features.h", "libgit2/experimental.h", "libgit2/linux/git2_features.h", "libgit2/linux/experimental.h"],
       "configs": [
         {
           "name": "libgit2",
@@ -1112,10 +1208,18 @@
             "build": [
               "cmake -S . -B bench-out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DUSE_HTTPS=OFF -DUSE_SSH=OFF -DUSE_GSSAPI=OFF -DUSE_NTLMCLIENT=OFF -DBUILD_TESTS=OFF -DBUILD_CLI=OFF -DBUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF",
               "cmake --build bench-out -j \"$JOBS\"",
-              "\"$CC\" -O2 -Ibench-out/include \"$BENCH/libgit2-bench.c\" bench-out/libgit2.a $(sed -n 's/^Libs.private: //p' bench-out/libgit2.pc) -o libgit2-bench"
+              "\"$CC\" -O2 -Ibench-out/include \"$BENCH/libgit2-bench.c\" bench-out/libgit2.a $(sed -n 's/^Libs.private: //p' bench-out/libgit2.pc) -lz -o libgit2-bench"
             ],
             "command": "./libgit2-bench 1500",
             "repeat": 7
+          },
+          "platforms": {
+            "linux": {
+              "compile": {
+                "files": ["src/util/alloc.c", "src/util/date.c", "src/util/errors.c", "src/util/filebuf.c", "src/util/fs_path.c", "src/util/futils.c", "src/util/pool.c", "src/util/pqueue.c", "src/util/str.c", "src/util/strlist.c", "src/util/tsort.c", "src/util/utf8.c", "src/util/varint.c", "src/util/vector.c", "src/util/zstream.c", "src/libgit2/buf.c", "src/libgit2/cache.c", "src/libgit2/commit.c", "src/libgit2/commit_list.c", "src/libgit2/config.c", "src/libgit2/config_file.c", "src/libgit2/config_parse.c", "src/libgit2/delta.c", "src/libgit2/diff.c", "src/libgit2/diff_generate.c", "src/libgit2/diff_tform.c", "src/libgit2/index.c", "src/libgit2/index_map.c", "src/libgit2/iterator.c", "src/libgit2/merge.c", "src/libgit2/mwindow.c", "src/libgit2/object.c", "src/libgit2/odb.c", "src/libgit2/odb_loose.c", "src/libgit2/odb_pack.c", "src/libgit2/oid.c", "src/libgit2/pack.c", "src/libgit2/refdb_fs.c", "src/libgit2/refs.c", "src/libgit2/revwalk.c", "src/libgit2/status.c", "src/libgit2/tree.c", "deps/xdiff/xdiffi.c", "deps/xdiff/xprepare.c", "deps/llhttp/llhttp.c"],
+                "args": ["-std=c90", "-D_GNU_SOURCE", "-D_FILE_OFFSET_BITS=64", "-Isrc/libgit2", "-Isrc/util", "-Iinclude", "-I{support}/linux", "-Ideps/llhttp", "-Ideps/xdiff", "-Ideps/reftable", "-Ideps/pcre2"]
+              }
+            }
           }
         }
       ]
@@ -1235,6 +1339,168 @@
           "build": ["make -C projects/make.mac -j\"$JOBS\" CC=\"$CC\" config=release_64bit"],
           "test": ["python3 util/test.py"],
           "testTimeout": 1800
+        }
+      ]
+    },
+    {
+      "name": "jq",
+      "url": "https://github.com/jqlang/jq.git",
+      "sha": "34f7186b86743a083a589741b6cea95293524108",
+      "support": ["jq/config.h", "jq/linux/config.h"],
+      "configs": [
+        {
+          "name": "jq",
+          "heldOut": true,
+          "set": "sealed38",
+          "notes": "SEALED (RFC 0038, section 5): built with the reference compiler only until gate G2. jq 1.8.2: a JSON processor whose values (jv) are reference-counted unions over strings, arrays and objects with copy-on-write, a lexer and parser for its language, a compiler to bytecode with closures, a backtracking interpreter, decNumber's arbitrary-precision literals and dtoa's number formatting. The build is autoreconf and configure without Oniguruma (the regular-expression builtins) and without the manual; the test is make check (jq's language tests, shell tests, UTF-8, base64 and man-page examples that need no regular expressions). The per-file compiles use configure's definitions in support/jq/config.h (support/jq/linux on Linux).",
+          "compile": {
+            "files": ["src/bytecode.c", "src/compile.c", "src/execute.c", "src/inject_errors.c", "src/jq_test.c", "src/jv_alloc.c", "src/jv_aux.c", "src/jv_dtoa.c", "src/jv_dtoa_tsd.c", "src/jv_file.c", "src/jv_parse.c", "src/jv_print.c", "src/jv_unicode.c", "src/lexer.c", "src/linker.c", "src/locfile.c", "src/parser.c", "src/util.c"],
+            "args": ["-std=gnu99", "-include", "{support}/config.h", "-Isrc", "-Isrc/decNumber"]
+          },
+          "build": [
+            "autoreconf -fi > autoreconf.log 2>&1",
+            "./configure CC=\"$CC\" --without-oniguruma --disable-docs --disable-valgrind > configure.log",
+            "make -j\"$JOBS\" > make.log"
+          ],
+          "test": ["make -j\"$JOBS\" check"],
+          "testTimeout": 1800,
+          "platforms": {
+            "linux": {
+              "compile": {
+                "files": ["src/bytecode.c", "src/compile.c", "src/execute.c", "src/inject_errors.c", "src/jq_test.c", "src/jv_alloc.c", "src/jv_aux.c", "src/jv_dtoa.c", "src/jv_dtoa_tsd.c", "src/jv_file.c", "src/jv_parse.c", "src/jv_print.c", "src/jv_unicode.c", "src/lexer.c", "src/linker.c", "src/locfile.c", "src/parser.c", "src/util.c"],
+                "args": ["-std=gnu99", "-include", "{support}/linux/config.h", "-Isrc", "-Isrc/decNumber"]
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "tmux",
+      "url": "https://github.com/tmux/tmux.git",
+      "sha": "7f2a35ad3321f9ba57a1062ca73b1f3ff26aca53",
+      "support": ["tmux/config.h", "tmux/linux/config.h", "tmux/run-tests.sh"],
+      "configs": [
+        {
+          "name": "tmux",
+          "heldOut": true,
+          "set": "sealed38",
+          "notes": "SEALED (RFC 0038, section 5): built with the reference compiler only until gate G2. tmux 3.8: a terminal multiplexer over libevent: a client and a server over a Unix socket and imsg messages, a terminal emulator writing grids of cells with their history, layouts, copy mode, formats, a command parser (yacc), key tables, hooks and control mode. The build is autogen and configure without utf8proc and jemalloc; the test is support/tmux/run-tests.sh, which runs regress/*.sh (180 scripts that start servers, drive panes and compare captures) against the built tmux. The per-file compiles use configure's definitions in support/tmux/config.h (support/tmux/linux on Linux) and libevent's headers.",
+          "compile": {
+            "files": ["alerts.c", "arguments.c", "attributes.c", "cfg.c", "client.c", "cmd-attach-session.c", "cmd-bind-key.c", "cmd-break-pane.c", "cmd-capture-pane.c", "cmd-choose-tree.c", "cmd-command-prompt.c", "cmd-confirm-before.c", "cmd-copy-mode.c", "cmd-detach-client.c", "cmd-display-menu.c", "cmd-display-message.c", "cmd-find-window.c", "cmd-find.c", "cmd-if-shell.c", "cmd-join-pane.c", "cmd-kill-pane.c", "cmd-kill-server.c", "cmd-kill-session.c", "cmd-kill-window.c", "cmd-list-buffers.c", "cmd-list-clients.c", "cmd-list-commands.c", "cmd-list-keys.c", "cmd-list-panes.c", "cmd-list-sessions.c", "cmd-list-windows.c", "cmd-load-buffer.c", "cmd-lock-server.c", "cmd-move-window.c", "cmd-new-session.c", "cmd-new-window.c", "cmd-paste-buffer.c", "cmd-pipe-pane.c", "cmd-queue.c", "cmd-refresh-client.c", "cmd-rename-session.c", "cmd-rename-window.c", "cmd-resize-pane.c", "cmd-resize-window.c", "cmd-respawn-pane.c", "cmd-respawn-window.c", "cmd-rotate-window.c", "cmd-run-shell.c", "cmd-save-buffer.c", "cmd-select-layout.c", "cmd-select-pane.c", "cmd-select-window.c", "cmd-send-keys.c", "cmd-server-access.c", "cmd-set-buffer.c", "cmd-set-environment.c", "cmd-set-option.c", "cmd-show-environment.c", "cmd-show-messages.c", "cmd-show-options.c", "cmd-show-prompt-history.c", "cmd-source-file.c", "cmd-split-window.c", "cmd-swap-pane.c", "cmd-swap-window.c", "cmd-switch-client.c", "cmd-unbind-key.c", "cmd-wait-for.c", "cmd.c", "colour.c", "control-notify.c", "control.c", "environ.c", "events-payload.c", "events.c", "file.c", "format-draw.c", "format.c", "fuzzy.c", "grid-reader.c", "grid-view.c", "grid.c", "hooks.c", "hyperlinks.c", "input-keys.c", "input.c", "job.c", "json.c", "key-bindings.c", "key-string.c", "layout-custom.c", "layout-set.c", "layout.c", "log.c", "menu.c", "mode-tree.c", "monitor.c", "names.c", "options-table.c", "options.c", "paste.c", "popup.c", "proc.c", "prompt-history.c", "prompt.c", "regsub.c", "resize.c", "screen-redraw.c", "screen-write.c", "screen.c", "server-acl.c", "server-client.c", "server-fn.c", "server.c", "session.c", "sort.c", "spawn.c", "status.c", "style.c", "tmux.c", "tty-acs.c", "tty-draw.c", "tty-features.c", "tty-keys.c", "tty-term.c", "tty.c", "utf8-combined.c", "utf8.c", "window-border.c", "window-buffer.c", "window-client.c", "window-clock.c", "window-copy.c", "window-customize.c", "window-panes.c", "window-switch.c", "window-tree.c", "window-visible.c", "window.c", "xmalloc.c", "osdep-darwin.c"],
+            "args": ["-include", "{support}/config.h", "-I.", "-I/opt/homebrew/opt/libevent/include"]
+          },
+          "build": ["sh autogen.sh > autogen.log 2>&1", "./configure CC=\"$CC\" --disable-utf8proc --disable-jemalloc > configure.log", "make -j\"$JOBS\" > make.log"],
+          "test": ["sh \"$SUPPORT/run-tests.sh\""],
+          "testTimeout": 3600,
+          "platforms": {
+            "linux": {
+              "compile": {
+                "files": ["alerts.c", "arguments.c", "attributes.c", "cfg.c", "client.c", "cmd-attach-session.c", "cmd-bind-key.c", "cmd-break-pane.c", "cmd-capture-pane.c", "cmd-choose-tree.c", "cmd-command-prompt.c", "cmd-confirm-before.c", "cmd-copy-mode.c", "cmd-detach-client.c", "cmd-display-menu.c", "cmd-display-message.c", "cmd-find-window.c", "cmd-find.c", "cmd-if-shell.c", "cmd-join-pane.c", "cmd-kill-pane.c", "cmd-kill-server.c", "cmd-kill-session.c", "cmd-kill-window.c", "cmd-list-buffers.c", "cmd-list-clients.c", "cmd-list-commands.c", "cmd-list-keys.c", "cmd-list-panes.c", "cmd-list-sessions.c", "cmd-list-windows.c", "cmd-load-buffer.c", "cmd-lock-server.c", "cmd-move-window.c", "cmd-new-session.c", "cmd-new-window.c", "cmd-paste-buffer.c", "cmd-pipe-pane.c", "cmd-queue.c", "cmd-refresh-client.c", "cmd-rename-session.c", "cmd-rename-window.c", "cmd-resize-pane.c", "cmd-resize-window.c", "cmd-respawn-pane.c", "cmd-respawn-window.c", "cmd-rotate-window.c", "cmd-run-shell.c", "cmd-save-buffer.c", "cmd-select-layout.c", "cmd-select-pane.c", "cmd-select-window.c", "cmd-send-keys.c", "cmd-server-access.c", "cmd-set-buffer.c", "cmd-set-environment.c", "cmd-set-option.c", "cmd-show-environment.c", "cmd-show-messages.c", "cmd-show-options.c", "cmd-show-prompt-history.c", "cmd-source-file.c", "cmd-split-window.c", "cmd-swap-pane.c", "cmd-swap-window.c", "cmd-switch-client.c", "cmd-unbind-key.c", "cmd-wait-for.c", "cmd.c", "colour.c", "control-notify.c", "control.c", "environ.c", "events-payload.c", "events.c", "file.c", "format-draw.c", "format.c", "fuzzy.c", "grid-reader.c", "grid-view.c", "grid.c", "hooks.c", "hyperlinks.c", "input-keys.c", "input.c", "job.c", "json.c", "key-bindings.c", "key-string.c", "layout-custom.c", "layout-set.c", "layout.c", "log.c", "menu.c", "mode-tree.c", "monitor.c", "names.c", "options-table.c", "options.c", "paste.c", "popup.c", "proc.c", "prompt-history.c", "prompt.c", "regsub.c", "resize.c", "screen-redraw.c", "screen-write.c", "screen.c", "server-acl.c", "server-client.c", "server-fn.c", "server.c", "session.c", "sort.c", "spawn.c", "status.c", "style.c", "tmux.c", "tty-acs.c", "tty-draw.c", "tty-features.c", "tty-keys.c", "tty-term.c", "tty.c", "utf8-combined.c", "utf8.c", "window-border.c", "window-buffer.c", "window-client.c", "window-clock.c", "window-copy.c", "window-customize.c", "window-panes.c", "window-switch.c", "window-tree.c", "window-visible.c", "window.c", "xmalloc.c", "osdep-linux.c"],
+                "args": ["-include", "{support}/linux/config.h", "-I."]
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "nginx",
+      "url": "https://github.com/nginx/nginx.git",
+      "sha": "140aa942711868a8daeb95810bc9a81f272ada72",
+      "support": ["nginx/ngx_auto_config.h", "nginx/ngx_auto_headers.h", "nginx/linux/ngx_auto_config.h", "nginx/linux/ngx_auto_headers.h", "nginx/smoke.sh"],
+      "configs": [
+        {
+          "name": "nginx",
+          "heldOut": true,
+          "set": "sealed38",
+          "notes": "SEALED (RFC 0038, section 5): built with the reference compiler only until gate G2. nginx 1.31.8: an event-driven HTTP server with its own memory pools (ngx_palloc: blocks carved into allocations freed together), chained buffers, red-black and radix trees, a slab allocator over shared memory between a master and worker processes, and the HTTP parser and static, index, autoindex and range modules. The build is its configure without the modules that need PCRE and zlib; the test (nginx's own suite is a separate repository) is support/nginx/smoke.sh, which serves files, a listing, ranges and HEAD requests from two workers and compares them. The per-file compiles use the configure headers in support/nginx (support/nginx/linux on Linux).",
+          "compile": {
+            "files": ["src/core/nginx.c", "src/core/ngx_array.c", "src/core/ngx_buf.c", "src/core/ngx_conf_file.c", "src/core/ngx_connection.c", "src/core/ngx_cpuinfo.c", "src/core/ngx_crypt.c", "src/core/ngx_cycle.c", "src/core/ngx_data.c", "src/core/ngx_file.c", "src/core/ngx_hash.c", "src/core/ngx_inet.c", "src/core/ngx_json.c", "src/core/ngx_json_parse.c", "src/core/ngx_json_unescape.c", "src/core/ngx_list.c", "src/core/ngx_log.c", "src/core/ngx_module.c", "src/core/ngx_murmurhash.c", "src/core/ngx_open_file_cache.c", "src/core/ngx_output_chain.c", "src/core/ngx_palloc.c", "src/core/ngx_parse.c", "src/core/ngx_parse_time.c", "src/core/ngx_proxy_protocol.c", "src/core/ngx_queue.c", "src/core/ngx_radix_tree.c", "src/core/ngx_rbtree.c", "src/core/ngx_resolver.c", "src/core/ngx_rwlock.c", "src/core/ngx_shmtx.c", "src/core/ngx_siphash.c", "src/core/ngx_slab.c", "src/core/ngx_spinlock.c", "src/core/ngx_string.c", "src/core/ngx_syslog.c", "src/core/ngx_times.c", "src/event/ngx_event.c", "src/event/ngx_event_accept.c", "src/event/ngx_event_connect.c", "src/event/ngx_event_pipe.c", "src/event/ngx_event_posted.c", "src/event/ngx_event_timer.c", "src/event/ngx_event_udp.c", "src/http/modules/ngx_http_access_module.c", "src/http/modules/ngx_http_auth_basic_module.c", "src/http/modules/ngx_http_autoindex_module.c", "src/http/modules/ngx_http_browser_module.c", "src/http/modules/ngx_http_charset_filter_module.c", "src/http/modules/ngx_http_chunked_filter_module.c", "src/http/modules/ngx_http_empty_gif_module.c", "src/http/modules/ngx_http_fastcgi_module.c", "src/http/modules/ngx_http_geo_module.c", "src/http/modules/ngx_http_headers_filter_module.c", "src/http/modules/ngx_http_index_module.c", "src/http/modules/ngx_http_limit_conn_module.c", "src/http/modules/ngx_http_limit_req_module.c", "src/http/modules/ngx_http_log_module.c", "src/http/modules/ngx_http_map_module.c", "src/http/modules/ngx_http_memcached_module.c", "src/http/modules/ngx_http_mirror_module.c", "src/http/modules/ngx_http_not_modified_filter_module.c", "src/http/modules/ngx_http_proxy_module.c", "src/http/modules/ngx_http_range_filter_module.c", "src/http/modules/ngx_http_referer_module.c", "src/http/modules/ngx_http_scgi_module.c", "src/http/modules/ngx_http_split_clients_module.c", "src/http/modules/ngx_http_ssi_filter_module.c", "src/http/modules/ngx_http_static_module.c", "src/http/modules/ngx_http_try_files_module.c", "src/http/modules/ngx_http_upstream_hash_module.c", "src/http/modules/ngx_http_upstream_ip_hash_module.c", "src/http/modules/ngx_http_upstream_keepalive_module.c", "src/http/modules/ngx_http_upstream_least_conn_module.c", "src/http/modules/ngx_http_upstream_random_module.c", "src/http/modules/ngx_http_upstream_zone_module.c", "src/http/modules/ngx_http_userid_filter_module.c", "src/http/modules/ngx_http_uwsgi_module.c", "src/http/ngx_http.c", "src/http/ngx_http_copy_filter_module.c", "src/http/ngx_http_core_module.c", "src/http/ngx_http_file_cache.c", "src/http/ngx_http_header_filter_module.c", "src/http/ngx_http_parse.c", "src/http/ngx_http_postpone_filter_module.c", "src/http/ngx_http_request.c", "src/http/ngx_http_request_body.c", "src/http/ngx_http_script.c", "src/http/ngx_http_special_response.c", "src/http/ngx_http_upstream.c", "src/http/ngx_http_upstream_round_robin.c", "src/http/ngx_http_variables.c", "src/http/ngx_http_write_filter_module.c", "src/os/unix/ngx_alloc.c", "src/os/unix/ngx_channel.c", "src/os/unix/ngx_daemon.c", "src/os/unix/ngx_dlopen.c", "src/os/unix/ngx_errno.c", "src/os/unix/ngx_files.c", "src/os/unix/ngx_posix_init.c", "src/os/unix/ngx_process.c", "src/os/unix/ngx_process_cycle.c", "src/os/unix/ngx_readv_chain.c", "src/os/unix/ngx_recv.c", "src/os/unix/ngx_send.c", "src/os/unix/ngx_setaffinity.c", "src/os/unix/ngx_setproctitle.c", "src/os/unix/ngx_shmem.c", "src/os/unix/ngx_socket.c", "src/os/unix/ngx_time.c", "src/os/unix/ngx_udp_recv.c", "src/os/unix/ngx_udp_send.c", "src/os/unix/ngx_udp_sendmsg_chain.c", "src/os/unix/ngx_user.c", "src/os/unix/ngx_writev_chain.c", "src/event/modules/ngx_kqueue_module.c", "src/os/unix/ngx_darwin_init.c", "src/os/unix/ngx_darwin_sendfile_chain.c"],
+            "args": ["-I{support}", "-Isrc/core", "-Isrc/event", "-Isrc/event/modules", "-Isrc/os/unix", "-Isrc/http", "-Isrc/http/modules"]
+          },
+          "build": [
+            "auto/configure --with-cc=\"$CC\" --without-http_rewrite_module --without-http_gzip_module > configure.log",
+            "make -j\"$JOBS\" > make.log"
+          ],
+          "test": ["sh \"$SUPPORT/smoke.sh\""],
+          "testTimeout": 600,
+          "platforms": {
+            "linux": {
+              "compile": {
+                "files": ["src/core/nginx.c", "src/core/ngx_array.c", "src/core/ngx_buf.c", "src/core/ngx_conf_file.c", "src/core/ngx_connection.c", "src/core/ngx_cpuinfo.c", "src/core/ngx_crypt.c", "src/core/ngx_cycle.c", "src/core/ngx_data.c", "src/core/ngx_file.c", "src/core/ngx_hash.c", "src/core/ngx_inet.c", "src/core/ngx_json.c", "src/core/ngx_json_parse.c", "src/core/ngx_json_unescape.c", "src/core/ngx_list.c", "src/core/ngx_log.c", "src/core/ngx_module.c", "src/core/ngx_murmurhash.c", "src/core/ngx_open_file_cache.c", "src/core/ngx_output_chain.c", "src/core/ngx_palloc.c", "src/core/ngx_parse.c", "src/core/ngx_parse_time.c", "src/core/ngx_proxy_protocol.c", "src/core/ngx_queue.c", "src/core/ngx_radix_tree.c", "src/core/ngx_rbtree.c", "src/core/ngx_resolver.c", "src/core/ngx_rwlock.c", "src/core/ngx_shmtx.c", "src/core/ngx_siphash.c", "src/core/ngx_slab.c", "src/core/ngx_spinlock.c", "src/core/ngx_string.c", "src/core/ngx_syslog.c", "src/core/ngx_times.c", "src/event/ngx_event.c", "src/event/ngx_event_accept.c", "src/event/ngx_event_connect.c", "src/event/ngx_event_pipe.c", "src/event/ngx_event_posted.c", "src/event/ngx_event_timer.c", "src/event/ngx_event_udp.c", "src/http/modules/ngx_http_access_module.c", "src/http/modules/ngx_http_auth_basic_module.c", "src/http/modules/ngx_http_autoindex_module.c", "src/http/modules/ngx_http_browser_module.c", "src/http/modules/ngx_http_charset_filter_module.c", "src/http/modules/ngx_http_chunked_filter_module.c", "src/http/modules/ngx_http_empty_gif_module.c", "src/http/modules/ngx_http_fastcgi_module.c", "src/http/modules/ngx_http_geo_module.c", "src/http/modules/ngx_http_headers_filter_module.c", "src/http/modules/ngx_http_index_module.c", "src/http/modules/ngx_http_limit_conn_module.c", "src/http/modules/ngx_http_limit_req_module.c", "src/http/modules/ngx_http_log_module.c", "src/http/modules/ngx_http_map_module.c", "src/http/modules/ngx_http_memcached_module.c", "src/http/modules/ngx_http_mirror_module.c", "src/http/modules/ngx_http_not_modified_filter_module.c", "src/http/modules/ngx_http_proxy_module.c", "src/http/modules/ngx_http_range_filter_module.c", "src/http/modules/ngx_http_referer_module.c", "src/http/modules/ngx_http_scgi_module.c", "src/http/modules/ngx_http_split_clients_module.c", "src/http/modules/ngx_http_ssi_filter_module.c", "src/http/modules/ngx_http_static_module.c", "src/http/modules/ngx_http_try_files_module.c", "src/http/modules/ngx_http_upstream_hash_module.c", "src/http/modules/ngx_http_upstream_ip_hash_module.c", "src/http/modules/ngx_http_upstream_keepalive_module.c", "src/http/modules/ngx_http_upstream_least_conn_module.c", "src/http/modules/ngx_http_upstream_random_module.c", "src/http/modules/ngx_http_upstream_zone_module.c", "src/http/modules/ngx_http_userid_filter_module.c", "src/http/modules/ngx_http_uwsgi_module.c", "src/http/ngx_http.c", "src/http/ngx_http_copy_filter_module.c", "src/http/ngx_http_core_module.c", "src/http/ngx_http_file_cache.c", "src/http/ngx_http_header_filter_module.c", "src/http/ngx_http_parse.c", "src/http/ngx_http_postpone_filter_module.c", "src/http/ngx_http_request.c", "src/http/ngx_http_request_body.c", "src/http/ngx_http_script.c", "src/http/ngx_http_special_response.c", "src/http/ngx_http_upstream.c", "src/http/ngx_http_upstream_round_robin.c", "src/http/ngx_http_variables.c", "src/http/ngx_http_write_filter_module.c", "src/os/unix/ngx_alloc.c", "src/os/unix/ngx_channel.c", "src/os/unix/ngx_daemon.c", "src/os/unix/ngx_dlopen.c", "src/os/unix/ngx_errno.c", "src/os/unix/ngx_files.c", "src/os/unix/ngx_posix_init.c", "src/os/unix/ngx_process.c", "src/os/unix/ngx_process_cycle.c", "src/os/unix/ngx_readv_chain.c", "src/os/unix/ngx_recv.c", "src/os/unix/ngx_send.c", "src/os/unix/ngx_setaffinity.c", "src/os/unix/ngx_setproctitle.c", "src/os/unix/ngx_shmem.c", "src/os/unix/ngx_socket.c", "src/os/unix/ngx_time.c", "src/os/unix/ngx_udp_recv.c", "src/os/unix/ngx_udp_send.c", "src/os/unix/ngx_udp_sendmsg_chain.c", "src/os/unix/ngx_user.c", "src/os/unix/ngx_writev_chain.c", "src/event/modules/ngx_epoll_module.c", "src/os/unix/ngx_linux_init.c", "src/os/unix/ngx_linux_sendfile_chain.c"],
+                "args": ["-I{support}/linux", "-I{support}", "-Isrc/core", "-Isrc/event", "-Isrc/event/modules", "-Isrc/os/unix", "-Isrc/http", "-Isrc/http/modules"]
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "libarchive",
+      "url": "https://github.com/libarchive/libarchive.git",
+      "sha": "03036ffa409a2aa1c5bbad35be2202641a040fda",
+      "support": ["libarchive/config.h", "libarchive/linux/config.h"],
+      "configs": [
+        {
+          "name": "libarchive",
+          "heldOut": true,
+          "set": "sealed38",
+          "notes": "SEALED (RFC 0038, section 5): built with the reference compiler only until gate G2. libarchive 3.8.11: readers and writers of tar, cpio, zip, 7-Zip, ISO 9660, RAR and more over a chain of filters (gzip, bzip2's own decoder, uu, ...), with string conversions, entry metadata, sparse files and the disk reader and writer, and the bsdtar, bsdcpio, bsdcat and bsdunzip front ends. The build is CMake without the optional external libraries; the test is its CTest suite (libarchive_test and each front end's test), several thousand checks over reference archives, but read_format_zip_lzma_alone_large_size, which fails with the reference compiler too without liblzma. The per-file compiles use the CMake build's config.h in support/libarchive (support/libarchive/linux on Linux).",
+          "compile": {
+            "files": ["libarchive/archive_*.c", "libarchive/filter_fork_posix.c", "libarchive/xxhash.c"],
+            "args": ["-I{support}", "-Ilibarchive", "-DHAVE_CONFIG_H"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DENABLE_TEST=ON -DENABLE_OPENSSL=OFF -DENABLE_LIBXML2=OFF -DENABLE_EXPAT=OFF -DENABLE_LZMA=OFF -DENABLE_ZSTD=OFF -DENABLE_LZ4=OFF -DENABLE_BZip2=OFF -DENABLE_ICONV=OFF -DENABLE_LIBB2=OFF > cmake.log",
+            "cmake --build out -j \"$JOBS\" > build.log"
+          ],
+          "test": ["ctest --test-dir out -j \"$JOBS\" --output-on-failure -E '^libarchive_test_read_format_zip_lzma_alone_large_size$'"],
+          "testTimeout": 3600,
+          "platforms": {
+            "linux": {
+              "compile": {
+                "files": ["libarchive/archive_*.c", "libarchive/filter_fork_posix.c", "libarchive/xxhash.c"],
+                "args": ["-I{support}/linux", "-Ilibarchive", "-DHAVE_CONFIG_H"]
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "libssh2",
+      "url": "https://github.com/libssh2/libssh2.git",
+      "sha": "a312b43325e3383c865a87bb1d26cb52e3292641",
+      "support": ["libssh2/libssh2_config.h", "libssh2/linux/libssh2_config.h"],
+      "configs": [
+        {
+          "name": "libssh2",
+          "heldOut": true,
+          "set": "sealed38",
+          "notes": "SEALED (RFC 0038, section 5): built with the reference compiler only until gate G2. libssh2 1.11.1: the SSH-2 protocol's client side, packets parsed out of a transport buffer, the key exchange, ciphers and MACs over OpenSSL, public-key and keyboard-interactive authentication, channels, SFTP and SCP, known hosts and PEM key files. The build is CMake with OpenSSL; the test is its CTest suite without the tests that need an SSH server (Docker or sshd): the unit tests of the key exchange, packets, authentication parsing and key files. The per-file compiles use the CMake build's libssh2_config.h in support/libssh2 (support/libssh2/linux on Linux).",
+          "compile": {
+            "files": ["src/*.c"],
+            "args": ["-I{support}", "-Iinclude", "-Isrc", "-DHAVE_CONFIG_H", "-DLIBSSH2_OPENSSL", "-I/opt/homebrew/opt/openssl@3/include"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DCRYPTO_BACKEND=OpenSSL -DBUILD_TESTING=ON -DRUN_DOCKER_TESTS=OFF -DRUN_SSHD_TESTS=OFF -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 > cmake.log",
+            "cmake --build out -j \"$JOBS\" > build.log"
+          ],
+          "test": ["ctest --test-dir out -j \"$JOBS\" --output-on-failure"],
+          "testTimeout": 1800,
+          "platforms": {
+            "linux": {
+              "compile": {
+                "files": ["src/*.c"],
+                "args": ["-I{support}/linux", "-Iinclude", "-Isrc", "-DHAVE_CONFIG_H", "-DLIBSSH2_OPENSSL"]
+              },
+              "build": [
+                "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DCRYPTO_BACKEND=OpenSSL -DBUILD_TESTING=ON -DRUN_DOCKER_TESTS=OFF -DRUN_SSHD_TESTS=OFF > cmake.log",
+                "cmake --build out -j \"$JOBS\" > build.log"
+              ]
+            }
+          }
         }
       ]
     }

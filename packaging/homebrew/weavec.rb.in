@@ -1,0 +1,43 @@
+# RFC 0038, section 6: the formula of the project's tap, rendered by
+# scripts/render-formula.py from a release's archives and their checksums.
+class Weavec < Formula
+  desc "Memory-safe drop-in C compiler: every access checked at run time"
+  homepage "https://weavec.com"
+  version "@VERSION@"
+  license "Apache-2.0" => { with: "LLVM-exception" }
+
+  on_macos do
+    on_arm do
+      url "@URL_DARWIN_ARM64@"
+      sha256 "@SHA256_DARWIN_ARM64@"
+    end
+  end
+
+  on_linux do
+    on_intel do
+      url "@URL_LINUX_X86_64@"
+      sha256 "@SHA256_LINUX_X86_64@"
+    end
+    on_arm do
+      url "@URL_LINUX_AARCH64@"
+      sha256 "@SHA256_LINUX_AARCH64@"
+    end
+  end
+
+  def install
+    # The toolchain finds its runtime and resource headers relative to
+    # bin/weavec-cc, so the tree is kept whole.
+    libexec.install Dir["*"]
+    bin.install_symlink libexec/"bin/weavec-cc"
+  end
+
+  test do
+    (testpath/"t.c").write <<~C
+      #include <stdlib.h>
+      int main(int argc, char **argv) { char *p = malloc(4); p[argc + 3] = 1; return 0; }
+    C
+    system bin/"weavec-cc", "-O1", "t.c", "-o", "t"
+    # The guard traps (SIGTRAP, or SIGILL on x86-64) after its report.
+    assert_match "heap-buffer-overflow", shell_output("./t 2>&1 || true")
+  end
+end

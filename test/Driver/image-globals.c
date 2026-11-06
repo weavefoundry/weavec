@@ -1,10 +1,9 @@
-// RFC 0036 §4: a dylib's and a bundle's globals get redzones that the
-// process's runtime knows, so an overflow of one inside the image stops as
-// it does in the executable.
-// REQUIRES: host-darwin
+// RFC 0036 §4, RFC 0038 §1: a shared library's and a plug-in's globals get
+// redzones that the process's runtime knows, so an overflow of one inside
+// the image stops as it does in the executable.
 // RUN: rm -rf %t && mkdir -p %t
-// RUN: %weavec_cc -dynamiclib -O1 %S/Inputs/image-globals-lib.c -o %t/libimage.dylib
-// RUN: %weavec_cc -bundle -O1 %S/Inputs/image-globals-lib.c -o %t/image.bundle
+// RUN: %weavec_cc %shared -O1 %S/Inputs/image-globals-lib.c -o %t/libimage%so
+// RUN: %weavec_cc %if host-darwin %{ -bundle %} %else %{ -shared -fPIC %} -O1 %S/Inputs/image-globals-lib.c -o %t/image.bundle
 // RUN: %weavec_cc -O1 %s -L%t -limage -Wl,-rpath,%t -o %t/prog
 // RUN: %t/prog dylib 3
 // RUN: not --crash %t/prog dylib 4 2>&1 | FileCheck %s

@@ -53,6 +53,10 @@ struct DriverOptions {
   /// `-f[no-]weavec-summary`; unset means on exactly when a ledger is
   /// written.
   std::optional<bool> summary;
+  /// `-fweavec-rpath=<dir>` / `-fno-weavec-rpath` (RFC 0038 §1): the rpath a
+  /// link gets for the runtime's library; unset means the toolchain's
+  /// runtime directory, empty means none. Link-only, never forwarded.
+  std::optional<std::string> rpath;
   /// The flags consumed, in order, for forwarding to `-cc1` jobs.
   std::vector<std::string> spellings;
 

@@ -1,21 +1,38 @@
-// RFC 0035 §9: a guarded link carries the runtime: the allocator's archive
-// first, forced in by `-u malloc`, then the runtime. Without guards no
-// runtime is on the line. A sanitizer that replaces the allocator, and a
-// unit that defines one, turn the allocator off with a note.
+// RFC 0038 §1: a guarded link carries the runtime's library before the first
+// library on its line, with an rpath to the toolchain's runtime directory
+// (or the one -fweavec-rpath names, or none). Shared objects get it too; a
+// relocatable link and an unguarded one get nothing. A sanitizer that
+// replaces the allocator turns the runtime off with a note; a unit that
+// defines the allocator keeps it, with a note.
 //
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %s -o %t/main.o
-// RUN: %weavec_cc -### %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=LINK %s
+// RUN: %weavec_cc -### %t/main.o -lm -o %t/prog 2>&1 | FileCheck --check-prefix=LINK %s
+// RUN: %weavec_cc -### %shared %t/main.o -lm -o %t/lib%so 2>&1 | FileCheck --check-prefix=LINK %s
+// RUN: %weavec_cc -### -fweavec-rpath=/opt/app/lib %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=RPATH %s
+// RUN: %weavec_cc -### -fno-weavec-rpath %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=NORPATH %s
+// RUN: %weavec_cc -### -r %t/main.o -o %t/all.o 2>&1 | FileCheck --check-prefix=NONE %s
 // RUN: %weavec_cc -### -fweavec-checks=none %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=NONE %s
 // RUN: %weavec_cc -### -fsanitize=address %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=ASAN %s
 // RUN: %weavec_cc -### -nostdlib %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=NOSTDLIB %s
+// RUN: not %weavec_cc -fweavec-rpath %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=MISSING %s
+//
+// The archive after the library is what a link by another driver finds in a
+// weavec-cc link's implicit libraries (CMake's mixed C and C++ targets): that
+// program carries the runtime itself, and a weavec-cc link takes nothing
+// from it.
+// RUN: %weavec_cc -O1 -c %S/Inputs/runtime-overflow.c -o %t/overflow.o
+// RUN: %clang %t/overflow.o %{rt_dir}/libweavec_rt.a %if host-linux %{ -lpthread -ldl %} -o %t/foreign
+// RUN: %t/foreign 4
+// RUN: not --crash %t/foreign 5 2>&1 | FileCheck --check-prefix=FOREIGN %s
+// RUN: %weavec_cc %t/overflow.o -o %t/own-link
+// RUN: llvm-nm --defined-only %t/own-link | FileCheck --check-prefix=NOCOPY %s
 //
 // RUN: %weavec_cc -c %S/Inputs/rfc0030-allocator.c -o %t/alloc.o
 // RUN: %weavec_cc %t/alloc.o %t/main.o -o %t/own 2>&1 | FileCheck --check-prefix=OWN %s
 // RUN: %t/own
 //
-// The allocator is what libweavec_alloc.a defines strongly (malloc, calloc, realloc, free):
-// a program's own shim over those replaces a weak definition and keeps the arena.
+// A program's own shim over the standard functions keeps the arena.
 // RUN: %weavec_cc %S/Inputs/runtime-shim.c -o %t/shim 2>&1 | FileCheck --allow-empty --check-prefix=SHIM %s
 // RUN: env WEAVEC_RT_STATS=1 %t/shim 2>&1 | FileCheck --check-prefix=SHIMMED %s
 //
@@ -33,17 +50,26 @@ int main(void) {
   return 0;
 }
 
-// LINK: "-u" "{{_?}}malloc" "{{[^"]*}}libweavec_alloc.a" "{{[^"]*}}libweavec_rt.a"
+// LINK: "{{[^"]*}}lib/weavec{{/|\\\\}}libweavec_rt.{{dylib|so}}" "-rpath" "{{[^"]*}}lib/weavec" "{{[^"]*}}libweavec_rt.a"{{.*}} "-lm"
 
-// NONE-NOT: libweavec_
+// RPATH: libweavec_rt.{{dylib|so}}" "-rpath" "/opt/app/lib"
+
+// NORPATH: libweavec_rt.{{dylib|so}}"
+// NORPATH-NOT: "-rpath"
+
+// NONE-NOT: libweavec_rt
 
 // ASAN: weavec-cc: note: building without the WeaveC runtime (-fsanitize=address replaces the allocator): memory accesses are not guarded
-// ASAN-NOT: libweavec_alloc.a
+// ASAN-NOT: libweavec_rt
 
 // NOSTDLIB: weavec-cc: note: building without the WeaveC runtime (-nostdlib links no C library): memory accesses are not guarded
-// NOSTDLIB-NOT: libweavec_alloc.a
+// NOSTDLIB-NOT: libweavec_rt
 
-// OWN: weavec-cc: note: '{{.*}}alloc.o' defines the allocator, so the WeaveC runtime's is not linked: the heap is untracked, guards pass on it and releases are not validated
+// MISSING: weavec-cc: error: missing value for '-fweavec-rpath'
+// FOREIGN: weavec: heap-buffer-overflow
+// NOCOPY-NOT: __weavec_rt_shadow
+
+// OWN: weavec-cc: note: '{{.*}}alloc.o' defines the allocator, which serves the program instead of the WeaveC runtime's: the heap is untracked, guards pass on it and releases are not validated
 
 // SHIM-NOT: defines the allocator
 

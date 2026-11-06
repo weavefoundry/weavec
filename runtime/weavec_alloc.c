@@ -583,12 +583,15 @@ static int reserve(unsigned shift) {
 }
 
 int weavecRtInitialize(void) {
-  int ok = 1;
+  static int tried; /* once: a failed reservation is not tried again */
+  int ok;
   if (__atomic_load_n(&__weavec_rt_heap.bytes, __ATOMIC_ACQUIRE) != 0)
     return 1;
   weavecRtLock(&initLock);
-  if (__weavec_rt_heap.bytes == 0) {
+  ok = __weavec_rt_heap.bytes != 0;
+  if (!ok && !tried) {
     const long page = sysconf(_SC_PAGESIZE);
+    tried = 1;
     pageBytes = page > 0 ? (size_t)page : 4096;
     reserveShadow();
     /* Regions of 2 GiB (1 GiB when that much cannot be reserved): a full
@@ -628,15 +631,15 @@ int weavecRtInitialize(void) {
   return ok;
 }
 
-#if !defined(__APPLE__)
 /* Before the program's own code: a function reads the shadow descriptor
  * once on entry, so `main` would otherwise keep the empty one, and pass
- * every guard, when its first allocation reserves the shadow. On Darwin
- * weavec_owner.c does this once it has found the owner. */
+ * every guard, when its first allocation reserves the shadow. The library
+ * is every guarded image's dependency, so this runs before their
+ * constructors; on Darwin it also promotes the zone, so that the C
+ * library's allocations in the program's first statements are in it. */
 __attribute__((constructor(101))) static void initializeEarly(void) {
   (void)weavecRtInitialize();
 }
-#endif
 
 /*===-- Slots ---------------------------------------------------------------===*/
 
@@ -1098,17 +1101,26 @@ void weavecRtPeaks(size_t *live, size_t *quarantine) {
   *quarantine = peakQuarantine;
 }
 
-void weavecRtSwept(uint64_t ended, uint64_t took) {
+/* After a sweep that could not stop every thread (it recycled nothing), the
+ * next waits for another hard budget of releases (RFC 0038, amendment 13):
+ * a thread that never answers costs a second per hard budget. */
+void weavecRtSwept(uint64_t ended, uint64_t took, int complete) {
   __atomic_store_n(&lastSweepEnd, ended, __ATOMIC_RELAXED);
   __atomic_store_n(&lastSweepTook, took, __ATOMIC_RELAXED);
-  __atomic_store_n(&nextPacingCheck, 0, __ATOMIC_RELAXED);
+  __atomic_store_n(&nextPacingCheck,
+                   complete ? 0
+                            : __atomic_load_n(&quarantineBytes, __ATOMIC_RELAXED) +
+                                  __atomic_load_n(&hugeDeadBytes, __ATOMIC_RELAXED) +
+                                  2 * quarantineBudget + liveNow() / 2,
+                   __ATOMIC_RELAXED);
 }
 
 /* Gives the whole pages inside a dead slot back to the system, at once: a
  * released slot waits for a sweep while fresh slots are taken, so its pages
  * must not stay resident meanwhile (Darwin's MADV_FREE leaves them resident
- * until the system needs memory; a fresh mapping drops them). */
-static void giveBack(uintptr_t base, size_t bytes) {
+ * until the system needs memory; a fresh mapping drops them). Its shadow
+ * stays: it says the slot is released (a page given back reads 0). */
+static void decommit(uintptr_t base, size_t bytes) {
   const uintptr_t first = (base + pageBytes - 1) & ~(uintptr_t)(pageBytes - 1);
   const uintptr_t last = (base + bytes) & ~(uintptr_t)(pageBytes - 1);
   if (last <= first)
@@ -1121,10 +1133,6 @@ static void giveBack(uintptr_t base, size_t bytes) {
   (void)madvise((void *)first, last - first, MADV_DONTNEED);
 #endif
 }
-
-/* The pages of a dead slot. Its shadow stays: it says the slot is
- * released, and a page given back would read 0, addressable. */
-static void decommit(uintptr_t base, size_t bytes) { giveBack(base, bytes); }
 
 /* Takes the live slot `ref`, whose word was `word`, for its release: its
  * word says released, with the value `CachedDead` (a sweep leaves it be
@@ -1359,10 +1367,15 @@ static size_t nextSize(const void *p) {
   return zone != NULL ? zone->size(zone, p) : 0;
 }
 
+static void *nextAlign(size_t alignment, size_t size) {
+  return malloc_zone_memalign(malloc_default_zone(), alignment, size);
+}
+
 #else
 
 extern void __libc_free(void *) __attribute__((weak));
 extern void *__libc_realloc(void *, size_t) __attribute__((weak));
+extern void *__libc_memalign(size_t, size_t) __attribute__((weak));
 extern void *dlsym(void *, const char *) __attribute__((weak));
 extern int dladdr(const void *, Dl_info *) __attribute__((weak));
 
@@ -1412,15 +1425,16 @@ static void *nextRealloc(void *p, size_t size) {
 
 static size_t nextSize(const void *p) {
   size_t (*usable)(void *) = (size_t (*)(void *))nextSymbol("malloc_usable_size");
-  /* With libweavec_alloc.a linked, the runtime's own definition may be the
-   * first in lookup order, and it would ask again; without it, the first is
-   * the C library's, which answers. */
-  extern size_t malloc_usable_size(void *) __attribute__((weak));
-  extern const char __weavec_alloc_linked __attribute__((weak));
-  if (usable == NULL ||
-      (&__weavec_alloc_linked != NULL && usable == malloc_usable_size))
+  /* The next definition after the runtime's is the C library's, which
+   * answers; in a static program there is none. */
+  extern size_t malloc_usable_size(void *);
+  if (usable == NULL || usable == malloc_usable_size)
     return 0;
   return usable((void *)(uintptr_t)p);
+}
+
+static void *nextAlign(size_t alignment, size_t size) {
+  return __libc_memalign != NULL ? __libc_memalign(alignment, size) : NULL;
 }
 
 #endif
@@ -1438,8 +1452,12 @@ static void *allocate(size_t size, size_t alignment) {
   unsigned region;
   void *block;
   if (!weavecRtInitialize()) {
-    errno = ENOMEM;
-    return NULL;
+    /* Without an arena (a limit on the address space), the C library's
+     * blocks, zero-filled as the arena's are (RFC 0038, amendment 15). */
+    block = nextAlign(alignment > 16 ? alignment : 16, size);
+    if (block == NULL)
+      errno = ENOMEM;
+    return block != NULL ? memset(block, 0, size) : NULL;
   }
   if (alignment > 16) {
     /* The smallest power-of-two class above the size and at least the
@@ -1539,7 +1557,6 @@ static void release(void *p) {
 void *__weavec_rt_alloc(size_t size, size_t alignment) {
   ThreadCache *self;
   void *block;
-  WEAVEC_RT_FORWARD(alloc, size, alignment);
   self = ownCache();
   if (self != NULL && self->depth != 0 && self->locks != 0) {
     errno = ENOMEM;
@@ -1558,7 +1575,6 @@ void *__weavec_rt_alloc(size_t size, size_t alignment) {
 
 void __weavec_rt_free(void *p) {
   ThreadCache *self;
-  WEAVEC_RT_FORWARD_VOID(release, p);
   if (p == NULL)
     return;
   self = ownCache();
@@ -1587,7 +1603,6 @@ void *__weavec_rt_realloc(void *p, size_t size) {
   const uintptr_t address = (uintptr_t)p;
   size_t old = 0;
   void *moved;
-  WEAVEC_RT_FORWARD(realloc, p, size);
   if (p == NULL)
     return __weavec_rt_alloc(size, 0);
   if (inArena(address)) {
@@ -1621,7 +1636,6 @@ void *__weavec_rt_realloc(void *p, size_t size) {
 
 size_t __weavec_rt_size(const void *p) {
   size_t size = 0;
-  WEAVEC_RT_FORWARD(size, p);
   if (p == NULL)
     return 0;
   if (ownedSize(p, &size))
@@ -1640,7 +1654,6 @@ size_t __weavec_rt_size(const void *p) {
 
 struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address) {
   struct weavecRtHeapObject object = {0, 0, 0, 0};
-  WEAVEC_RT_FORWARD(object, address);
   if (inArena(address)) {
     const SlotRef ref = slotOf(address);
     const uint32_t word = wordOf(ref);

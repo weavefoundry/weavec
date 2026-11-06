@@ -30,9 +30,16 @@ if not os.path.exists(weavec_cc):
     lit_config.fatal(f"weavec-cc binary not found at {weavec_cc}; build it first")
 
 config.substitutions.append(("%weavec_cc", weavec_cc))
-# RFC 0035: the runtime archive.
+# RFC 0038: the runtime's library, the extension of shared libraries, and
+# the reference compiler's flags for one.
+shared = ".dylib" if platform.system() == "Darwin" else ".so"
 config.substitutions.append(
-    ("%weavec_rt", os.path.join(config.weavec_lib_dir, "libweavec_rt.a"))
+    ("%weavec_rt", os.path.join(config.weavec_lib_dir, "libweavec_rt" + shared))
+)
+config.substitutions.append(("%so", shared))
+config.substitutions.append(("%{rt_dir}", config.weavec_lib_dir))
+config.substitutions.append(
+    ("%shared", "-dynamiclib" if platform.system() == "Darwin" else "-shared -fPIC")
 )
 # The reference compiler: the clang of the LLVM WeaveC is built against.
 config.substitutions.append(("%clang", config.clang or "clang"))

@@ -21,7 +21,7 @@ WeaveC is a drop-in C compiler, `weavec-cc`, that makes the C code you already h
 WeaveC is built on Clang and LLVM, which provide parsing, code generation and platform support. WeaveC adds LLVM passes that guard the code, and a runtime in C.
 
 > [!NOTE]
-> WeaveC is early, v0.x software: flags, report formats and the ledger can change between minor versions. The design is [RFC 0037, *A complete sweep and object colors*](docs/rfcs/0037-complete-sweep-and-colors.md), which completes the reuse after a sweep of [RFC 0036](docs/rfcs/0036-deterministic-heap-reuse.md) over the guards of [RFC 0035](docs/rfcs/0035-guard-by-default.md). The [roadmap](docs/roadmap.md) tracks progress.
+> WeaveC is early, v0.x software: flags, report formats and the ledger can change between minor versions. The design is [RFC 0038, *Drop-in everywhere*](docs/rfcs/0038-drop-in-everywhere.md), which makes one shared runtime serve every image on every platform and ships self-contained toolchains, over the sweep and colors of [RFC 0037](docs/rfcs/0037-complete-sweep-and-colors.md), the reuse after a sweep of [RFC 0036](docs/rfcs/0036-deterministic-heap-reuse.md) and the guards of [RFC 0035](docs/rfcs/0035-guard-by-default.md). The [roadmap](docs/roadmap.md) tracks progress.
 
 ## Highlights
 
@@ -85,7 +85,7 @@ make CC=weavec-cc
 cmake -S . -B build -DCMAKE_C_COMPILER=weavec-cc
 ```
 
-Every link adds the runtime (`libweavec_rt.a`) and its allocator (`libweavec_alloc.a`). On Darwin one runtime serves the whole process, and its allocator also serves the C library's own allocations (`strdup`, `getline`, `asprintf`). `weavec-cc` builds without the runtime, and without guards, under a sanitizer that replaces the allocator, with `-ffreestanding` or `-nostdlib`, and on targets other than 64-bit Darwin and Linux, and prints a note at the link. A program that defines `malloc` itself keeps its allocator, and its heap is untracked. On optimizing glibc builds `weavec-cc` adds `-D_FORTIFY_SOURCE=3` unless the command line chooses a level.
+Every link, of a program or a shared library, adds the runtime, one shared library (`libweavec_rt.so.<abi>`, `libweavec_rt.dylib`) that every image `weavec-cc` links depends on, so one runtime serves the whole process whatever its libraries' version scripts or link order, and its allocator also serves the C library's own allocations (`strdup`, `getline`, `asprintf`). A program loads it from the toolchain, or from where `-fweavec-rpath` says; a `-static` Linux program carries it. `weavec-cc` builds without the runtime, and without guards, under a sanitizer that replaces the allocator, with `-ffreestanding` or `-nostdlib`, and on targets other than 64-bit Darwin and Linux, and prints a note at the link. A program that defines `malloc` itself keeps its allocator, and its heap is untracked. On optimizing glibc builds `weavec-cc` adds `-D_FORTIFY_SOURCE=3` unless the command line chooses a level.
 
 `-fweavec-checks=` selects what a failed guard does:
 
@@ -133,7 +133,19 @@ RFC 0035 put a guard on every access. Measured at v0.16.0, before RFC 0036: ten 
 
 RFC 0036 makes use after free and double free deterministic (reuse only after a sweep), keeps fortified sizes, honors ASan's contract and lets large frames share space between locals. Measured on darwin-arm64 (its [measured gates](docs/rfcs/0036-deterministic-heap-reuse.md#measured-gates)): CPython 3.13.7, SQLite 3.50.4 and coreutils 9.5 configure as with the reference compiler and pass their suites as it does, but for a deliberate null read in CPython's `test_faulthandler` and four coreutils tests that reach gnulib's word-at-a-time `rawmemchr` over-read, which ASan stops too; every corpus project builds and passes its tests; the corpus benchmarks run at a geometric mean of 1.6× the reference compiler (1.05× v0.16.0; QuickJS 2.4×, because it sends every object to `malloc` when it sees ASan's macros), with peak memory within 1.5× v0.16.0's; and a sweep over 256 MiB of live heap pauses the program for 33 ms. Interpreters and allocation-heavy programs pay the most: measure on your own workload.
 
-RFC 0037 makes the sweep read every pointer v0.17.0's missed (vector registers, coroutine stacks, thread-specific data, memory made read-only, file pages written back), closes holes in the guards (a loop range that wrapped, tagged pointers, large atomics) and in the library calls (58 of 84 probes stop, from 24), gives the allocator thread caches and marks in parallel, and catches jumps into a neighbor and uses after return. Measured on darwin-arm64 (its [measured gates](docs/rfcs/0037-complete-sweep-and-colors.md#measured-gates)): the corpus benchmarks run at 1.72× the reference compiler (1.05× v0.17.0); a sweep over 1 GiB of live heap pauses for at most 71 ms (289 before); allocation at 8 threads is 12 times v0.17.0's; Redis at ~1 GiB serves 0.86–0.88 of the reference's requests with its longest request at about 60 ms (150 before). Builds are up to 1.2× v0.17.0's. Linux is not yet measured for these designs.
+RFC 0037 makes the sweep read every pointer v0.17.0's missed (vector registers, coroutine stacks, thread-specific data, memory made read-only, file pages written back), closes holes in the guards (a loop range that wrapped, tagged pointers, large atomics) and in the library calls (58 of 84 probes stop, from 24), gives the allocator thread caches and marks in parallel, and catches jumps into a neighbor and uses after return. Measured on darwin-arm64 (its [measured gates](docs/rfcs/0037-complete-sweep-and-colors.md#measured-gates)): the corpus benchmarks run at 1.72× the reference compiler (1.05× v0.17.0); a sweep over 1 GiB of live heap pauses for at most 71 ms (289 before); allocation at 8 threads is 12 times v0.17.0's; Redis at ~1 GiB serves 0.86–0.88 of the reference's requests with its longest request at about 60 ms (150 before). Builds are up to 1.2× v0.17.0's.
+
+RFC 0038 makes the runtime one shared library per process, so shared libraries and plugins built with `weavec-cc` are checked on Linux as on macOS; checks search calls (`strchr`, `memchr`, `strcspn` and the like) over the bytes they actually read; and ships self-contained toolchains that need no LLVM installation. Measured on darwin-arm64 and on linux-aarch64 (its [measured gates](docs/rfcs/0038-drop-in-everywhere.md#measured-gates)): SQLite 3.50.4, CPython 3.13.7, PostgreSQL 17.6, git 2.51.0 and coreutils 9.5 build with `CC=weavec-cc` and fail only the tests that fail with the reference compiler, but for two coreutils tests on Linux that compare stderr under `ulimit -v`, where WeaveC runs unchecked and says so on stderr; five projects held back until the end (jq, tmux, nginx, libarchive, libssh2) build and pass their suites with no report; every corpus project passes in both modes on both platforms, zstd included; and the corpus benchmarks run at 0.99× v0.18.0's CPU time on darwin-arm64 (1.70× the reference compiler). linux-x86_64 is not yet measured.
+
+## Installing
+
+Each [release](https://github.com/weavefoundry/weavec/releases) publishes a self-contained toolchain for macOS on Apple silicon and Linux on x86-64 and AArch64, `weavec-X.Y.Z-<os>-<arch>.tar.xz`: unpack it anywhere and put its `bin` on `PATH`. It needs no LLVM installation, only the platform's linker and C library headers (Xcode's Command Line Tools, or `build-essential`). Or `brew install weavefoundry/tap/weavec`, or the container image `ghcr.io/weavefoundry/weavec:X.Y.Z`. See [installation](docs/pages/getting-started/installation.mdx).
+
+```sh
+tar -xJf weavec-X.Y.Z-linux-x86_64.tar.xz -C "$HOME/.local/opt"
+export PATH="$HOME/.local/opt/weavec-X.Y.Z-linux-x86_64/bin:$PATH"
+weavec-cc --version
+```
 
 ## Building
 
@@ -155,26 +167,7 @@ cmake --build --preset dev  # build
 ctest --preset dev          # unit, runtime, lit and test/cases suites, in parallel
 ```
 
-Other presets are `dev-asan`, `dev-tidy`, `release` and `relwithdebinfo`; see [`CMakePresets.json`](CMakePresets.json) for the full list and the [developer guide](docs/development.md) for testing, debugging and tooling.
-
-## Installing a release
-
-Releases are published on [GitHub Releases](https://github.com/weavefoundry/weavec/releases). Each provides a source archive, `weavec-X.Y.Z-source.tar.gz`, and a `SHA256SUMS` file; release notes are in [CHANGELOG.md](CHANGELOG.md).
-
-1. Download both files into the same directory and verify the archive with `shasum -a 256 -c SHA256SUMS` (or `sha256sum -c SHA256SUMS` on Linux).
-2. Install the [build requirements](#building).
-3. Extract the archive and, from its `weavec-X.Y.Z` directory, build, test and install:
-
-```sh
-cmake --preset release -DWEAVEC_VERSION_SUFFIX=""
-cmake --build --preset release
-ctest --preset release
-cmake --install build/release --prefix "$HOME/.local"
-export PATH="$HOME/.local/bin:$PATH"
-weavec-cc --version
-```
-
-The install puts `weavec-cc` in `bin/`, and `weavec.h` and the runtime archives under `lib/weavec/`. Keep the LLVM/Clang installation used for the build available at run time: the compiler records LLVM's resource and executable paths at configure time. Prebuilt portable binaries and package-manager distribution are planned. The [release workflow](docs/development.md#releasing) describes how versions are selected and published.
+Other presets are `dev-asan`, `dev-tidy`, `release` and `relwithdebinfo`; see [`CMakePresets.json`](CMakePresets.json) for the full list and the [developer guide](docs/development.md) for testing, debugging and tooling. The `release` preset builds a self-contained toolchain: `cmake --install build/release --prefix <dir>` lays it out, and `cpack` in `build/release` packs the release archive. Releases also carry the source archive, `weavec-X.Y.Z-source.tar.gz`, and `SHA256SUMS`; release notes are in [CHANGELOG.md](CHANGELOG.md), and the [release workflow](docs/development.md#releasing) describes how versions are selected and published.
 
 ## Documentation
 

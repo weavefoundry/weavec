@@ -13,25 +13,25 @@
   "platforms": {
     "darwin-arm64": {
       "machine": "darwin-arm64 Apple M3 x8",
-      "producer": "weavec-cc version 0.17.0 (1f12e5cd61aa-dirty)",
-      "updated": "2026-11-03",
+      "producer": "weavec-cc version 0.18.0 (5b790bfefca9-dirty)",
+      "updated": "2026-11-05",
       "configs": {
         "brotli": {
           "ledger": {
-            "accesses": 8902,
+            "accesses": 8904,
             "proven": 3990,
-            "guarded": 4912,
+            "guarded": 4914,
             "unguarded": 0,
-            "provenShare": 0.4482
+            "provenShare": 0.4481
           }
         },
         "bzip2": {
           "ledger": {
-            "accesses": 4274,
-            "proven": 2425,
-            "guarded": 1849,
+            "accesses": 4286,
+            "proven": 2430,
+            "guarded": 1856,
             "unguarded": 0,
-            "provenShare": 0.5674
+            "provenShare": 0.567
           }
         },
         "cJSON": {
@@ -45,20 +45,20 @@
         },
         "cmark": {
           "ledger": {
-            "accesses": 2979,
-            "proven": 1081,
-            "guarded": 1898,
+            "accesses": 2982,
+            "proven": 1082,
+            "guarded": 1900,
             "unguarded": 0,
-            "provenShare": 0.3629
+            "provenShare": 0.3628
           }
         },
         "curl": {
           "ledger": {
-            "accesses": 12330,
-            "proven": 4633,
-            "guarded": 7697,
+            "accesses": 12412,
+            "proven": 4651,
+            "guarded": 7761,
             "unguarded": 0,
-            "provenShare": 0.3758
+            "provenShare": 0.3747
           }
         },
         "expat": {
@@ -72,47 +72,47 @@
         },
         "hiredis": {
           "ledger": {
-            "accesses": 3249,
-            "proven": 1739,
-            "guarded": 1510,
+            "accesses": 3256,
+            "proven": 1743,
+            "guarded": 1513,
             "unguarded": 0,
-            "provenShare": 0.5352
+            "provenShare": 0.5353
           }
         },
         "http-parser": {
           "ledger": {
-            "accesses": 1340,
+            "accesses": 1339,
             "proven": 868,
-            "guarded": 472,
+            "guarded": 471,
             "unguarded": 0,
-            "provenShare": 0.6478
+            "provenShare": 0.6482
           }
         },
         "inih": {
           "ledger": {
-            "accesses": 58,
-            "proven": 27,
+            "accesses": 59,
+            "proven": 28,
             "guarded": 31,
             "unguarded": 0,
-            "provenShare": 0.4655
+            "provenShare": 0.4746
           }
         },
         "janet": {
           "ledger": {
-            "accesses": 11930,
-            "proven": 4593,
-            "guarded": 7337,
+            "accesses": 11934,
+            "proven": 4596,
+            "guarded": 7338,
             "unguarded": 0,
-            "provenShare": 0.385
+            "provenShare": 0.3851
           }
         },
         "jansson": {
           "ledger": {
-            "accesses": 840,
-            "proven": 346,
-            "guarded": 494,
+            "accesses": 845,
+            "proven": 348,
+            "guarded": 497,
             "unguarded": 0,
-            "provenShare": 0.4119
+            "provenShare": 0.4118
           }
         },
         "jsmn": {
@@ -127,46 +127,46 @@
         "libdeflate": {
           "ledger": {
             "accesses": 974,
-            "proven": 419,
-            "guarded": 555,
+            "proven": 428,
+            "guarded": 546,
             "unguarded": 0,
-            "provenShare": 0.4302
+            "provenShare": 0.4394
           }
         },
         "libevent": {
           "ledger": {
-            "accesses": 9421,
-            "proven": 3684,
-            "guarded": 5737,
+            "accesses": 9446,
+            "proven": 3700,
+            "guarded": 5746,
             "unguarded": 0,
-            "provenShare": 0.391
+            "provenShare": 0.3917
           }
         },
         "libgit2": {
           "ledger": {
-            "accesses": 12189,
-            "proven": 4979,
-            "guarded": 7210,
+            "accesses": 12245,
+            "proven": 5005,
+            "guarded": 7240,
             "unguarded": 0,
-            "provenShare": 0.4085
+            "provenShare": 0.4087
           }
         },
         "libsodium": {
           "ledger": {
-            "accesses": 3396,
-            "proven": 2747,
-            "guarded": 649,
+            "accesses": 3399,
+            "proven": 2751,
+            "guarded": 648,
             "unguarded": 0,
-            "provenShare": 0.8089
+            "provenShare": 0.8094
           }
         },
         "libuv": {
           "ledger": {
-            "accesses": 5053,
-            "proven": 2306,
-            "guarded": 2747,
+            "accesses": 5063,
+            "proven": 2315,
+            "guarded": 2748,
             "unguarded": 0,
-            "provenShare": 0.4564
+            "provenShare": 0.4572
           }
         },
         "libyaml": {
@@ -180,29 +180,29 @@
         },
         "linenoise": {
           "ledger": {
-            "accesses": 661,
+            "accesses": 666,
             "proven": 321,
-            "guarded": 340,
+            "guarded": 345,
             "unguarded": 0,
-            "provenShare": 0.4856
+            "provenShare": 0.482
           }
         },
         "linenoise-program": {
           "ledger": {
-            "accesses": 700,
+            "accesses": 705,
             "proven": 337,
-            "guarded": 363,
+            "guarded": 368,
             "unguarded": 0,
-            "provenShare": 0.4814
+            "provenShare": 0.478
           }
         },
         "lmdb": {
           "ledger": {
-            "accesses": 5447,
+            "accesses": 5459,
             "proven": 1961,
-            "guarded": 3486,
+            "guarded": 3498,
             "unguarded": 0,
-            "provenShare": 0.36
+            "provenShare": 0.3592
           }
         },
         "log.c": {
@@ -216,38 +216,38 @@
         },
         "lua": {
           "ledger": {
-            "accesses": 7481,
-            "proven": 2753,
-            "guarded": 4728,
+            "accesses": 7529,
+            "proven": 2774,
+            "guarded": 4755,
             "unguarded": 0,
-            "provenShare": 0.368
+            "provenShare": 0.3684
           }
         },
         "lz4": {
           "ledger": {
             "accesses": 1472,
-            "proven": 732,
-            "guarded": 740,
+            "proven": 733,
+            "guarded": 739,
             "unguarded": 0,
-            "provenShare": 0.4973
+            "provenShare": 0.498
           }
         },
         "miniz": {
           "ledger": {
             "accesses": 2994,
-            "proven": 1767,
-            "guarded": 1227,
+            "proven": 1772,
+            "guarded": 1222,
             "unguarded": 0,
-            "provenShare": 0.5902
+            "provenShare": 0.5919
           }
         },
         "mujs": {
           "ledger": {
-            "accesses": 3975,
-            "proven": 1661,
-            "guarded": 2314,
+            "accesses": 3984,
+            "proven": 1666,
+            "guarded": 2318,
             "unguarded": 0,
-            "provenShare": 0.4179
+            "provenShare": 0.4182
           }
         },
         "oniguruma": {
@@ -261,11 +261,11 @@
         },
         "pcre2": {
           "ledger": {
-            "accesses": 13968,
-            "proven": 7604,
-            "guarded": 6364,
+            "accesses": 14002,
+            "proven": 7608,
+            "guarded": 6394,
             "unguarded": 0,
-            "provenShare": 0.5444
+            "provenShare": 0.5434
           }
         },
         "printf": {
@@ -279,38 +279,38 @@
         },
         "quickjs": {
           "ledger": {
-            "accesses": 14717,
-            "proven": 5117,
-            "guarded": 9600,
+            "accesses": 14730,
+            "proven": 5123,
+            "guarded": 9607,
             "unguarded": 0,
-            "provenShare": 0.3477
+            "provenShare": 0.3478
           }
         },
         "redis": {
           "ledger": {
-            "accesses": 21060,
-            "proven": 7657,
-            "guarded": 13403,
+            "accesses": 21072,
+            "proven": 7682,
+            "guarded": 13390,
             "unguarded": 0,
-            "provenShare": 0.3636
+            "provenShare": 0.3646
           }
         },
         "sds": {
           "ledger": {
-            "accesses": 212,
-            "proven": 59,
+            "accesses": 214,
+            "proven": 61,
             "guarded": 153,
             "unguarded": 0,
-            "provenShare": 0.2783
+            "provenShare": 0.285
           }
         },
         "sqlite": {
           "ledger": {
-            "accesses": 32179,
-            "proven": 10797,
-            "guarded": 21382,
+            "accesses": 32199,
+            "proven": 10810,
+            "guarded": 21389,
             "unguarded": 0,
-            "provenShare": 0.3355
+            "provenShare": 0.3357
           }
         },
         "tinyexpr": {
@@ -333,29 +333,29 @@
         },
         "xz": {
           "ledger": {
-            "accesses": 5699,
-            "proven": 2914,
-            "guarded": 2785,
+            "accesses": 5705,
+            "proven": 2915,
+            "guarded": 2790,
             "unguarded": 0,
-            "provenShare": 0.5113
+            "provenShare": 0.511
           }
         },
         "zlib": {
           "ledger": {
-            "accesses": 4241,
-            "proven": 2175,
-            "guarded": 2066,
+            "accesses": 4243,
+            "proven": 2181,
+            "guarded": 2062,
             "unguarded": 0,
-            "provenShare": 0.5129
+            "provenShare": 0.514
           }
         },
         "zlib-ng": {
           "ledger": {
-            "accesses": 4177,
-            "proven": 2098,
-            "guarded": 2079,
+            "accesses": 4179,
+            "proven": 2107,
+            "guarded": 2072,
             "unguarded": 0,
-            "provenShare": 0.5023
+            "provenShare": 0.5042
           }
         },
         "zstd": {
