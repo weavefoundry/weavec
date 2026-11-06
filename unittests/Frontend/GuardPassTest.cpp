@@ -27,6 +27,10 @@
 #include <memory>
 #include <string>
 
+// The passes' own colorRoot (RFC 0038 §3), not part of the library's
+// interface.
+#include "../../lib/Frontend/GuardPassImpl.h"
+
 namespace weavec::frontend {
 namespace {
 
@@ -374,6 +378,101 @@ define i64 @length(ptr %s) {
   run.expand();
   EXPECT_TRUE(run.valid());
   EXPECT_EQ(run.calls("__weavec_rt_strlen"), 1U);
+}
+
+/// The value named `name` in the module's only function.
+static llvm::Value *named(const PassRun &run, llvm::StringRef name) {
+  for (llvm::Function &function : *run.module)
+    for (llvm::BasicBlock &block : function)
+      for (llvm::Instruction &instruction : block)
+        if (instruction.getName() == name)
+          return &instruction;
+  return nullptr;
+}
+
+TEST(ColorRootTest, DeepArithmeticHasNoRoot) {
+  // RFC 0038 amendment 25: `p + (q - p)` hidden under more than eight
+  // operations may land in q's object: no root, rather than p.
+  PassRun run(R"(
+define ptr @moved(ptr %p, ptr %q, i64 %x) {
+  %pi = ptrtoint ptr %p to i64
+  %qi = ptrtoint ptr %q to i64
+  %a0 = sub i64 %qi, %pi
+  %a1 = add i64 %a0, %x
+  %a2 = add i64 %a1, %x
+  %a3 = add i64 %a2, %x
+  %a4 = add i64 %a3, %x
+  %a5 = add i64 %a4, %x
+  %a6 = add i64 %a5, %x
+  %a7 = add i64 %a6, %x
+  %a8 = add i64 %a7, %x
+  %a9 = add i64 %a8, %x
+  %sum = add i64 %pi, %a9
+  %deep = inttoptr i64 %sum to ptr
+  %near = add i64 %pi, %x
+  %shallow = inttoptr i64 %near to ptr
+  ret ptr %deep
+}
+)");
+  EXPECT_EQ(guard::colorRoot(named(run, "deep")), nullptr);
+  EXPECT_EQ(guard::colorRoot(named(run, "shallow")),
+            run.module->begin()->getArg(0));
+}
+
+TEST(ColorRootTest, SharedInputsAreWalkedOnce) {
+  // Amendment 25: forty selects whose two inputs are the one before: 2^40
+  // paths, one root.
+  PassRun run(R"(
+define ptr @chain(ptr %p, i1 %c, i64 %x) {
+  %s0 = getelementptr i8, ptr %p, i64 %x
+  %s1 = select i1 %c, ptr %s0, ptr %s0
+  %s2 = select i1 %c, ptr %s1, ptr %s1
+  %s3 = select i1 %c, ptr %s2, ptr %s2
+  %s4 = select i1 %c, ptr %s3, ptr %s3
+  %s5 = select i1 %c, ptr %s4, ptr %s4
+  %s6 = select i1 %c, ptr %s5, ptr %s5
+  %s7 = select i1 %c, ptr %s6, ptr %s6
+  %s8 = select i1 %c, ptr %s7, ptr %s7
+  %s9 = select i1 %c, ptr %s8, ptr %s8
+  %s10 = select i1 %c, ptr %s9, ptr %s9
+  %s11 = select i1 %c, ptr %s10, ptr %s10
+  %s12 = select i1 %c, ptr %s11, ptr %s11
+  %s13 = select i1 %c, ptr %s12, ptr %s12
+  %s14 = select i1 %c, ptr %s13, ptr %s13
+  %s15 = select i1 %c, ptr %s14, ptr %s14
+  %s16 = select i1 %c, ptr %s15, ptr %s15
+  %s17 = select i1 %c, ptr %s16, ptr %s16
+  %s18 = select i1 %c, ptr %s17, ptr %s17
+  %s19 = select i1 %c, ptr %s18, ptr %s18
+  %s20 = select i1 %c, ptr %s19, ptr %s19
+  %s21 = select i1 %c, ptr %s20, ptr %s20
+  %s22 = select i1 %c, ptr %s21, ptr %s21
+  %s23 = select i1 %c, ptr %s22, ptr %s22
+  %s24 = select i1 %c, ptr %s23, ptr %s23
+  %s25 = select i1 %c, ptr %s24, ptr %s24
+  %s26 = select i1 %c, ptr %s25, ptr %s25
+  %s27 = select i1 %c, ptr %s26, ptr %s26
+  %s28 = select i1 %c, ptr %s27, ptr %s27
+  %s29 = select i1 %c, ptr %s28, ptr %s28
+  %s30 = select i1 %c, ptr %s29, ptr %s29
+  %s31 = select i1 %c, ptr %s30, ptr %s30
+  %s32 = select i1 %c, ptr %s31, ptr %s31
+  %s33 = select i1 %c, ptr %s32, ptr %s32
+  %s34 = select i1 %c, ptr %s33, ptr %s33
+  %s35 = select i1 %c, ptr %s34, ptr %s34
+  %s36 = select i1 %c, ptr %s35, ptr %s35
+  %s37 = select i1 %c, ptr %s36, ptr %s36
+  %s38 = select i1 %c, ptr %s37, ptr %s37
+  %s39 = select i1 %c, ptr %s38, ptr %s38
+  %s40 = select i1 %c, ptr %s39, ptr %s39
+  %e = getelementptr i8, ptr %s40, i64 1
+  ret ptr %e
+}
+)");
+  guard::RootCache cache;
+  EXPECT_EQ(guard::colorRoot(named(run, "e"), &cache),
+            run.module->begin()->getArg(0));
+  EXPECT_EQ(guard::colorRoot(named(run, "e")), run.module->begin()->getArg(0));
 }
 
 } // namespace

@@ -147,6 +147,18 @@ class Checker:
             self.check(stopped.returncode != 0 and "weavec: heap-buffer-overflow at lib.c:" in stopped.stderr,
                        "an overflow inside the library stops")
 
+    def lto_program(self) -> None:
+        """RFC 0038 amendment 22: a Darwin -flto link uses the tree's libLTO."""
+        if sys.platform != "darwin":
+            return
+        lto = self.prefix / "lib" / "libLTO.dylib"
+        self.check(lto.is_file(), "lib/libLTO.dylib is there")
+        program = self.compile("lto", VEC, "-flto=thin")
+        if program:
+            stopped = self.run(program, "4")
+            self.check(stopped.returncode != 0 and "heap-buffer-overflow" in stopped.stderr,
+                       "an -flto program stops an overflow")
+
     def static_program(self) -> None:
         if not sys.platform.startswith("linux"):
             return
@@ -185,6 +197,7 @@ def main(argv: list[str]) -> int:
         checker.examples()
         checker.shared_library()
         checker.static_program()
+        checker.lto_program()
         if checker.failures:
             print(f"{len(checker.failures)} check(s) failed")
             return 1

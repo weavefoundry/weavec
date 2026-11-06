@@ -78,9 +78,10 @@ struct DriverOptions {
 /// The help text of WeaveC's `weavec-cc` flags (`weavec-cc --help-weavec`).
 [[nodiscard]] llvm::StringRef driverFlagsHelp();
 
-/// Runs `weavec-cc` with the given command line (`argv[0]` included).
+/// Runs `weavec-cc` with the given command line (`commandLine[0]` included,
+/// response files not yet expanded).
 /// `mainAddress` is any address inside the executable, for locating it.
-int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress);
+int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress);
 
 /// Runs a `-cc1` command line (`argv` excludes `-cc1`): Clang's compiler
 /// proper with WeaveC's guard passes and unsafe-region collector.

@@ -89,6 +89,15 @@ if(WEAVEC_CLANG_RESOURCES)
     file(CREATE_LINK "${WEAVEC_CLANG_RESOURCES}" "${_weavec_build_resources}"
          SYMBOLIC)
   endif()
+  # Darwin's driver names <weavec-cc>/../lib/libLTO.dylib for -flto: the
+  # libLTO of this LLVM, which reads the bitcode weavec-cc writes (RFC 0038,
+  # amendment 22).
+  if(APPLE
+     AND EXISTS "${LLVM_LIBRARY_DIR}/libLTO.dylib"
+     AND NOT EXISTS "${PROJECT_BINARY_DIR}/lib/libLTO.dylib")
+    file(CREATE_LINK "${LLVM_LIBRARY_DIR}/libLTO.dylib"
+         "${PROJECT_BINARY_DIR}/lib/libLTO.dylib" SYMBOLIC)
+  endif()
 else()
   message(WARNING "Could not determine Clang's resource directory; "
                   "weavec-cc will not find builtin headers such as <stddef.h>")

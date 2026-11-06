@@ -625,8 +625,9 @@ void weavecRtLastSweep(struct weavecRtSweepCounts *out);
 extern unsigned long long weavecRtSweepNanos;
 extern unsigned long long weavecRtSweepLongest;
 /* RFC 0036 section 3.3: a sweep ended at `ended` (CLOCK_MONOTONIC
- * nanoseconds) after `took`; the allocator paces the next one by it. */
-void weavecRtSwept(uint64_t ended, uint64_t took, int complete);
+ * nanoseconds) after `took`, having `marked` the heap or not; the allocator
+ * paces the next one by it. */
+void weavecRtSwept(uint64_t ended, uint64_t took, int marked);
 /* The most bytes the live heap's slots and the quarantine held, for
  * WEAVEC_RT_STATS=1 (not synchronized). */
 void weavecRtPeaks(size_t *live, size_t *quarantine);

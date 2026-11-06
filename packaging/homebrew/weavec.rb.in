@@ -29,6 +29,9 @@ class Weavec < Formula
     # bin/weavec-cc, so the tree is kept whole.
     libexec.install Dir["*"]
     bin.install_symlink libexec/"bin/weavec-cc"
+    # Programs record the stable path, which an upgrade keeps (RFC 0038,
+    # amendment 23), not this version's Cellar directory.
+    (libexec/"lib/weavec/default-rpath").write "#{opt_libexec}/lib/weavec\n"
   end
 
   test do

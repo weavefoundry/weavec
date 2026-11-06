@@ -8,6 +8,7 @@
 #   lib/clang/<llvm-major>/include  Clang's resource headers
 #   lib/clang/<llvm-major>/lib/...  the compiler-rt builtins Clang's driver
 #                                   links (Darwin)
+#   lib/libLTO.dylib                LLVM's, for -flto links (Darwin)
 #   share/doc/weavec/               LICENSE
 #
 # `cpack` packs it as weavec-<version>-<os>-<arch>.tar.xz.

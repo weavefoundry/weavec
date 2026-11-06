@@ -45,8 +45,10 @@
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Object/SymbolicFile.h"
 #include "llvm/Option/ArgList.h"
+#include "llvm/Support/Allocator.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/TargetSelect.h"
@@ -188,9 +190,9 @@ llvm::StringRef driverFlagsHelp() {
 // The -cc1 step
 //===----------------------------------------------------------------------===//
 
-/// RFC 0038 §6: Clang's action for a `-cc1` job, of those a C build asks
-/// for: code generation, preprocessing, syntax checks and precompiled
-/// headers. (Clang's own selection, in clangFrontendTool, links the static
+/// RFC 0038 §6: Clang's action for a `-cc1` job: code generation,
+/// preprocessing, syntax checks, precompiled headers and modules, and the
+/// dumps. (Clang's own selection, in clangFrontendTool, links the static
 /// analyzer and its solver into the driver.) Null, with an error, for
 /// another.
 static std::unique_ptr<clang::FrontendAction>
@@ -224,9 +226,38 @@ createAction(clang::CompilerInstance &compiler) {
     return std::make_unique<clang::ASTDumpAction>();
   case clang::frontend::DumpCompilerOptions:
     return std::make_unique<clang::DumpCompilerOptionsAction>();
+  // Modules and inspection, for C++ and Objective-C builds too (RFC 0038,
+  // amendment 27).
+  case clang::frontend::GenerateModule:
+    return std::make_unique<clang::GenerateModuleFromModuleMapAction>();
+  case clang::frontend::GenerateModuleInterface:
+    return std::make_unique<clang::GenerateModuleInterfaceAction>();
+  case clang::frontend::GenerateReducedModuleInterface:
+    return std::make_unique<clang::GenerateReducedModuleInterfaceAction>();
+  case clang::frontend::GenerateHeaderUnit:
+    return std::make_unique<clang::GenerateHeaderUnitAction>();
+  case clang::frontend::ModuleFileInfo:
+    return std::make_unique<clang::DumpModuleInfoAction>();
+  case clang::frontend::VerifyPCH:
+    return std::make_unique<clang::VerifyPCHAction>();
+  case clang::frontend::ASTDeclList:
+    return std::make_unique<clang::ASTDeclListAction>();
+  case clang::frontend::ASTPrint:
+    return std::make_unique<clang::ASTPrintAction>();
+  case clang::frontend::ASTView:
+    return std::make_unique<clang::ASTViewAction>();
+  case clang::frontend::DumpRawTokens:
+    return std::make_unique<clang::DumpRawTokensAction>();
+  case clang::frontend::TemplightDump:
+    return std::make_unique<clang::TemplightDumpAction>();
+  case clang::frontend::PrintPreamble:
+    return std::make_unique<clang::PrintPreambleAction>();
+  case clang::frontend::PrintDependencyDirectivesSourceMinimizerOutput:
+    return std::make_unique<
+        clang::PrintDependencyDirectivesSourceMinimizerAction>();
   default:
     llvm::errs() << "weavec-cc: error: this job's action (static analysis, "
-                    "modules, rewriting) is not in weavec-cc\n";
+                    "rewriting, a plug-in) is not in weavec-cc\n";
     return nullptr;
   }
 }
@@ -581,8 +612,10 @@ static std::size_t countLedgers(const clang::driver::Compilation &compilation) {
   return count;
 }
 
-/// RFC 0033 §10: the driver names `<weavec-cc>/../lib/libLTO.dylib`, which
-/// a WeaveC toolchain does not have: the link uses the linker's own.
+/// RFC 0033 §10, RFC 0038 amendment 22: the driver names
+/// `<weavec-cc>/../lib/libLTO.dylib`, which a toolchain carries (LLVM's,
+/// which reads the bitcode weavec-cc writes); a tree without one links with
+/// the linker's own.
 static void replaceMissingLtoLibrary(clang::driver::Compilation &compilation) {
   for (clang::driver::Command &job : compilation.getJobs()) {
     if (job.getSource().getKind() != clang::driver::Action::LinkJobClass)
@@ -657,6 +690,21 @@ static bool wantsFortification(llvm::ArrayRef<const char *> args) {
   return optimizes && target.isOSLinux() && target.isGNUEnvironment();
 }
 
+/// RFC 0038 amendment 23: the rpath a link records by default, the runtime's
+/// directory, or what its `default-rpath` file says: a package whose tree
+/// lives under a versioned path (Homebrew's Cellar) names its stable one.
+static std::string defaultRpath(llvm::StringRef directory) {
+  llvm::SmallString<256> file(directory);
+  llvm::sys::path::append(file, "default-rpath");
+  if (llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> text =
+          llvm::MemoryBuffer::getFile(file)) {
+    const llvm::StringRef line = (*text)->getBuffer().split('\n').first.trim();
+    if (!line.empty())
+      return line.str();
+  }
+  return directory.str();
+}
+
 /// Whether the command line links a static program (`-static`,
 /// `-static-pie`).
 static bool linksStatically(llvm::ArrayRef<const char *> args) {
@@ -701,8 +749,8 @@ static bool addRuntimeLibraries(clang::driver::Compilation &compilation,
   const auto owned = [&compilation](const std::string &text) {
     return compilation.getArgs().MakeArgString(text);
   };
-  const std::string rpath =
-      weavec.rpath.value_or(llvm::sys::path::parent_path(runtime).str());
+  const std::string rpath = weavec.rpath.value_or(
+      defaultRpath(llvm::sys::path::parent_path(runtime)));
   // After the shared library, its archive: no member is taken, since the
   // library defines every entry point, but a build system that copies a C
   // compiler's implicit libraries into another language's link (CMake's
@@ -860,7 +908,21 @@ int runCc1(llvm::ArrayRef<const char *> argv, const char *argv0) {
   return runCc1Job(argv, argv0);
 }
 
-int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
+int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
+  // RFC 0038 amendment 24: response files (`@file`) expanded first, as
+  // Clang's own driver does, so that what is read below (sources, assembly,
+  // the sysroot) sees their arguments.
+  llvm::BumpPtrAllocator responseStorage;
+  llvm::SmallVector<const char *, 64> expanded(commandLine.begin(),
+                                               commandLine.end());
+  if (llvm::Error error = llvm::cl::ExpansionContext(
+                              responseStorage, llvm::cl::TokenizeGNUCommandLine)
+                              .expandResponseFiles(expanded)) {
+    llvm::errs() << "weavec-cc: error: " << llvm::toString(std::move(error))
+                 << '\n';
+    return 1;
+  }
+  const llvm::ArrayRef<const char *> argv = expanded;
   // RFC 0033 §10: printed after everything Clang prints for `--version`.
   struct VersionTrailer {
     bool print = false;
@@ -996,6 +1058,13 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
   driver.setTargetAndMode(
       clang::driver::ToolChain::getTargetAndModeFromProgramName("clang"));
   const auto cc1 = [](llvm::SmallVectorImpl<const char *> &args) {
+    // A job of a tool Clang does not ship as a library (`-cc1as`).
+    if (args.size() < 2 || llvm::StringRef(args[1]) != "-cc1") {
+      llvm::errs() << "weavec-cc: error: '" << (args.size() < 2 ? "" : args[1])
+                   << "' is Clang's tool, which weavec-cc does not include; "
+                      "pass -fno-integrated-as\n";
+      return 1;
+    }
     return runCc1Job(llvm::ArrayRef(args).drop_front(2), args[0]);
   };
   driver.CC1Main = cc1;

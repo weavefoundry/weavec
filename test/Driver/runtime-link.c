@@ -18,6 +18,12 @@
 // RUN: %weavec_cc -### -nostdlib %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=NOSTDLIB %s
 // RUN: not %weavec_cc -fweavec-rpath %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=MISSING %s
 //
+// Amendment 23: a toolchain's default-rpath file names the rpath a link
+// records by default (Homebrew's stable path).
+// RUN: mkdir -p %t/rt && touch %t/rt/libweavec_rt.so %t/rt/libweavec_rt.dylib %t/rt/libweavec_rt.a
+// RUN: echo /opt/stable/lib/weavec > %t/rt/default-rpath
+// RUN: env WEAVEC_RESOURCE_DIR=%t/rt %weavec_cc -### %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=STABLE %s
+//
 // Amendment 20: the archive is never loaded whole, which would put a second
 // runtime in the image.
 // RUN: %if host-linux %{ %weavec_cc -### %t/main.o -Wl,--whole-archive -lm -Wl,--no-whole-archive -o %t/prog 2>&1 | FileCheck --check-prefix=WHOLE %s %}
@@ -73,6 +79,8 @@ int main(void) {
 // NOSTDLIB-NOT: libweavec_rt
 
 // MISSING: weavec-cc: error: missing value for '-fweavec-rpath'
+
+// STABLE: "-rpath" "/opt/stable/lib/weavec"
 
 // WHOLE: "--whole-archive" "{{[^"]*}}libweavec_rt.so" "-rpath" "{{[^"]*}}" "--no-whole-archive" "{{[^"]*}}libweavec_rt.a" "--whole-archive" "-lpthread" "-lm" "--no-whole-archive"
 

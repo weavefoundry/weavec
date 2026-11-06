@@ -1,4 +1,5 @@
-/*===- weavec_alloc.c - The size-class arena allocator -------------*- C -*-===*\
+/*===- weavec_alloc.c - The size-class arena allocator -------------*- C
+-*-===*\
 |*
 |* Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 |* See LICENSE for license information.
@@ -45,9 +46,10 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
+
+#include <sys/mman.h>
 
 #if defined(__APPLE__)
 #include <malloc/malloc.h>
@@ -73,7 +75,8 @@ struct __weavec_rt_shadow_t __weavec_rt_shadow = {(uintptr_t)scratchShadow, 0,
 /* Until the arena exists `bytes` is 0, so every pointer is outside it. */
 struct __weavec_rt_heap_t __weavec_rt_heap = {0, 0, 0, 0, 0, 0, {{0, 0, 0, 0}}};
 
-/*===-- State ---------------------------------------------------------------===*/
+/*===-- State
+ * ---------------------------------------------------------------===*/
 
 /* What one region needs besides the public table; guarded by `lock`. Each
  * on its own cache line, so that threads in different classes do not share
@@ -261,7 +264,8 @@ static size_t nextPacingCheck;
 
 enum { DataChunk = 1 << 20, MetaChunk = 64 * 1024 };
 
-/*===-- Classes -------------------------------------------------------------===*/
+/*===-- Classes
+ * -------------------------------------------------------------===*/
 
 /* The class whose slots are the smallest that are strictly larger than
  * `size`; the class count when there is none. */
@@ -273,7 +277,8 @@ static unsigned classFor(size_t size) {
     return WeavecRtClassCount;
   {
     /* Sizes are m << k with m in 5..8 and k >= 5. */
-    const unsigned k = (unsigned)(63 - __builtin_clzll((unsigned long long)(need - 1))) - 2;
+    const unsigned k =
+        (unsigned)(63 - __builtin_clzll((unsigned long long)(need - 1))) - 2;
     const unsigned m = (unsigned)((need - 1) >> k) + 1;
     return WeavecRtSmallClasses + 4 * (k - 5) + (m - 5);
   }
@@ -324,7 +329,8 @@ static inline uintptr_t regionStart(unsigned region) {
   return __weavec_rt_heap.base + ((uintptr_t)region << __weavec_rt_heap.shift);
 }
 
-/*===-- The shadow (RFC 0034, section 2) -----------------------------------===*/
+/*===-- The shadow (RFC 0034, section 2)
+ * -----------------------------------===*/
 
 /* Whether a core dump includes [p, p + bytes). The shadow and the arena's
  * reservations are terabytes a dump would otherwise walk page by page (and,
@@ -510,7 +516,8 @@ static inline void storeWord(uint32_t *word, uint32_t value) {
   __atomic_store_n(word, value, __ATOMIC_RELAXED);
 }
 
-/*===-- Initialization ------------------------------------------------------===*/
+/*===-- Initialization
+ * ------------------------------------------------------===*/
 
 static void forkPrepare(void);
 static void forkParent(void);
@@ -601,9 +608,9 @@ int weavecRtInitialize(void) {
     if (ok) {
       unsigned index;
       cachedClasses = 0;
-      for (index = 0; index < __weavec_rt_heap.classes &&
-                      index < CachedClasses &&
-                      __weavec_rt_heap.table[index].size <= CacheBytes;
+      for (index = 0;
+           index < __weavec_rt_heap.classes && index < CachedClasses &&
+           __weavec_rt_heap.table[index].size <= CacheBytes;
            ++index)
         cachedClasses = index + 1;
       if (pthread_key_create(&cacheKey, dropCache) == 0)
@@ -641,7 +648,8 @@ __attribute__((constructor(101))) static void initializeEarly(void) {
   (void)weavecRtInitialize();
 }
 
-/*===-- Slots ---------------------------------------------------------------===*/
+/*===-- Slots
+ * ---------------------------------------------------------------===*/
 
 /* Makes [committed, end) of a range accessible, in chunks; `limit` is the
  * range's size. */
@@ -682,8 +690,8 @@ static inline SlotRef slotOf(uintptr_t address) {
   const uint64_t units = in >> entry->shift;
   SlotRef ref;
   ref.region = region;
-  ref.slot =
-      entry->magic == 0 ? (uint32_t)units : (uint32_t)((units * entry->magic) >> 32);
+  ref.slot = entry->magic == 0 ? (uint32_t)units
+                               : (uint32_t)((units * entry->magic) >> 32);
   ref.base = regionStart(region) + (uintptr_t)ref.slot * entry->size;
   return ref;
 }
@@ -868,13 +876,13 @@ static void *takeSlot(unsigned c, size_t size) {
   return makeLive(taken, size, slotBytes);
 }
 
-/*===-- Thread caches (RFC 0037 section 2.1) --------------------------------===*/
+/*===-- Thread caches (RFC 0037 section 2.1)
+ * --------------------------------===*/
 
 static unsigned cacheLimit(unsigned c) {
   const size_t fit = CacheBytes / __weavec_rt_heap.table[c].size;
   return fit == 0 ? 1 : fit < CacheSlots ? (unsigned)fit : CacheSlots;
 }
-
 
 /* The calling thread's cache, made on its first use; null when it has none
  * (it is exiting, or the cache cannot be mapped). */
@@ -936,9 +944,9 @@ static void flushReleases(ThreadCache *cache, unsigned c, int check) {
     const uint32_t slot = entrySlot(released->slots[i]);
     RegionState *state = &regionState[region];
     uint32_t *words = slotWords(region);
-    if (check && (region >= __weavec_rt_heap.regions ||
-                  regionClass[region] != c || slot >= state->bump ||
-                  loadWord(&words[slot]) != claimed))
+    if (check &&
+        (region >= __weavec_rt_heap.regions || regionClass[region] != c ||
+         slot >= state->bump || loadWord(&words[slot]) != claimed))
       continue;
     if (state != held) {
       if (held != NULL)
@@ -976,10 +984,11 @@ static void returnSlots(ThreadCache *cache, unsigned c, int check) {
     const uint32_t slot = entrySlot(available->slots[i]);
     RegionState *state = &regionState[region];
     uint32_t *words = slotWords(region);
-    if (check && (region >= __weavec_rt_heap.regions ||
-                  regionClass[region] != c || slot >= state->bump ||
-                  (loadWord(&words[slot]) & WeavecRtWordState) == WeavecRtLive ||
-                  (loadWord(&words[slot]) & WeavecRtWordState) == WeavecRtDead))
+    if (check &&
+        (region >= __weavec_rt_heap.regions || regionClass[region] != c ||
+         slot >= state->bump ||
+         (loadWord(&words[slot]) & WeavecRtWordState) == WeavecRtLive ||
+         (loadWord(&words[slot]) & WeavecRtWordState) == WeavecRtDead))
       continue;
     take(&state->lock);
     storeWord(&words[slot],
@@ -1054,7 +1063,8 @@ static void *cachedAlloc(ThreadCache *cache, unsigned c, size_t size) {
   return makeLive(available->slots[--available->count], size, slotBytes);
 }
 
-/*===-- The quarantine (section 2.4) ----------------------------------------===*/
+/*===-- The quarantine (section 2.4)
+ * ----------------------------------------===*/
 
 /* Read in a constructor, never by `free`: the C library frees with its
  * environment lock held (`unsetenv`), and `getenv` takes it again. */
@@ -1101,17 +1111,21 @@ void weavecRtPeaks(size_t *live, size_t *quarantine) {
   *quarantine = peakQuarantine;
 }
 
-/* After a sweep that could not stop every thread (it recycled nothing), the
- * next waits for another hard budget of releases (RFC 0038, amendment 13):
- * a thread that never answers costs a second per hard budget. */
-void weavecRtSwept(uint64_t ended, uint64_t took, int complete) {
+/* After a sweep that could not mark (a thread that never answered, no
+ * memory for the marks), which recycled nothing, the next waits for another
+ * hard budget of releases (RFC 0038, amendments 13 and 26): a thread that
+ * never answers costs a second per hard budget. */
+void weavecRtSwept(uint64_t ended, uint64_t took, int marked) {
+  const size_t held = __atomic_load_n(&quarantineBytes, __ATOMIC_RELAXED) +
+                      __atomic_load_n(&hugeDeadBytes, __ATOMIC_RELAXED);
+  const size_t kept = __atomic_load_n(&retainedBytes, __ATOMIC_RELAXED);
+  const size_t live = liveNow();
+  const size_t hard =
+      2 * quarantineBudget > live / 2 ? 2 * quarantineBudget : live / 2;
   __atomic_store_n(&lastSweepEnd, ended, __ATOMIC_RELAXED);
   __atomic_store_n(&lastSweepTook, took, __ATOMIC_RELAXED);
   __atomic_store_n(&nextPacingCheck,
-                   complete ? 0
-                            : __atomic_load_n(&quarantineBytes, __ATOMIC_RELAXED) +
-                                  __atomic_load_n(&hugeDeadBytes, __ATOMIC_RELAXED) +
-                                  2 * quarantineBudget + liveNow() / 2,
+                   marked ? 0 : (held > kept ? held - kept : 0) + hard,
                    __ATOMIC_RELAXED);
 }
 
@@ -1195,7 +1209,8 @@ static void cachedRelease(ThreadCache *cache, unsigned c, SlotRef ref) {
   }
 }
 
-/*===-- Huge blocks ---------------------------------------------------------===*/
+/*===-- Huge blocks
+ * ---------------------------------------------------------===*/
 
 /* The index of the last block whose base is at most `address`, or -1. The
  * lock is held. */
@@ -1247,10 +1262,9 @@ static void *hugeAlloc(size_t size, size_t alignment) {
   take(&hugeLock);
   if (hugeCount == hugeCapacity) {
     const size_t capacity = hugeCapacity != 0 ? hugeCapacity * 2 : 256;
-    HugeBlock *grown =
-        (HugeBlock *)mmap(NULL, capacity * sizeof(HugeBlock),
-                          PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
-                          -1, 0);
+    HugeBlock *grown = (HugeBlock *)mmap(NULL, capacity * sizeof(HugeBlock),
+                                         PROT_READ | PROT_WRITE,
+                                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if ((void *)grown == MAP_FAILED) {
       give(&hugeLock);
       (void)munmap((void *)map, mapBytes);
@@ -1300,7 +1314,8 @@ static int hugeFind(uintptr_t address, HugeBlock *out) {
     return 0;
   take(&hugeLock);
   index = hugeIndex(address);
-  if (index >= 0 && address < hugeBlocks[index].map + hugeBlocks[index].mapBytes) {
+  if (index >= 0 &&
+      address < hugeBlocks[index].map + hugeBlocks[index].mapBytes) {
     *out = hugeBlocks[index];
     found = 1;
   }
@@ -1344,7 +1359,8 @@ static int hugeFree(uintptr_t address) {
   return ok;
 }
 
-/*===-- The next allocator (section 2.5) ------------------------------------===*/
+/*===-- The next allocator (section 2.5)
+ * ------------------------------------===*/
 
 #if defined(__APPLE__)
 
@@ -1424,7 +1440,8 @@ static void *nextRealloc(void *p, size_t size) {
 }
 
 static size_t nextSize(const void *p) {
-  size_t (*usable)(void *) = (size_t (*)(void *))nextSymbol("malloc_usable_size");
+  size_t (*usable)(void *) =
+      (size_t (*)(void *))nextSymbol("malloc_usable_size");
   /* The next definition after the runtime's is the C library's, which
    * answers; in a static program there is none. */
   extern size_t malloc_usable_size(void *);
@@ -1439,7 +1456,8 @@ static void *nextAlign(size_t alignment, size_t size) {
 
 #endif
 
-/*===-- Allocate, release, reallocate (section 2.3) -------------------------===*/
+/*===-- Allocate, release, reallocate (section 2.3)
+ * -------------------------===*/
 
 /* The cache of a call that is the thread's only one in the allocator; null
  * for a nested one (a signal handler's), which uses none. */
@@ -1545,7 +1563,7 @@ static void release(void *p) {
     if (hugeFind(address, &block))
       __weavec_rt_fatal("invalid release", p,
                         block.dead != 0 ? "the block was already released"
-                                   : "not the start of its block");
+                                        : "not the start of its block");
   }
   nextFree(p);
 }
@@ -1650,7 +1668,8 @@ size_t __weavec_rt_size(const void *p) {
   return nextSize(p);
 }
 
-/*===-- Reports ------------------------------------------------------------===*/
+/*===-- Reports
+ * ------------------------------------------------------------===*/
 
 struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address) {
   struct weavecRtHeapObject object = {0, 0, 0, 0};
@@ -1677,7 +1696,8 @@ struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address) {
   return object;
 }
 
-/*===-- fork ----------------------------------------------------------------===*/
+/*===-- fork
+ * ----------------------------------------------------------------===*/
 
 void weavecRtLockAll(void) {
   unsigned i;
@@ -1735,7 +1755,8 @@ static void forkChild(void) {
   weavecRtSweepUnlock();
 }
 
-/*===-- The allocator's side of the sweep (RFC 0036 section 3.4) -----------===*/
+/*===-- The allocator's side of the sweep (RFC 0036 section 3.4)
+ * -----------===*/
 
 /* Whether the quarantine or the released huge blocks hold anything. */
 int weavecRtSweepWanted(void) {
@@ -1804,7 +1825,8 @@ void weavecRtMarkSlots(unsigned region, uint32_t first, uint32_t last) {
   for (slot = first; slot < last; ++slot) {
     const uint32_t word = loadWord(&words[slot]);
     if ((word & WeavecRtWordState) == WeavecRtLive) {
-      const uintptr_t base = regionStart(region) + (uintptr_t)slot * entry->size;
+      const uintptr_t base =
+          regionStart(region) + (uintptr_t)slot * entry->size;
       weavecRtMarkWords(base, base + weavecRtWordValue(word));
     }
   }
@@ -1837,7 +1859,9 @@ void weavecRtMarkHeap(void) {
   weavecRtMarkHuge();
 }
 
-size_t weavecRtLiveBytes(void) { return liveNow(); }
+size_t weavecRtLiveBytes(void) {
+  return liveNow();
+}
 
 void weavecRtRecycle(struct weavecRtSweepCounts *counts, int recycle) {
   unsigned region;
@@ -1865,8 +1889,7 @@ void weavecRtRecycle(struct weavecRtSweepCounts *counts, int recycle) {
       if (!recycle || (state->marks[slot >> 6] >> (slot & 63) & 1) != 0) {
         if (keptHead == 0)
           state->deadTail = slot + 1;
-        storeWord(&words[slot],
-                  (keptHead << WeavecRtWordShift) | WeavecRtDead);
+        storeWord(&words[slot], (keptHead << WeavecRtWordShift) | WeavecRtDead);
         keptHead = slot + 1;
         ++counts->retained;
         counts->retainedBytes += size;
@@ -1907,7 +1930,8 @@ void weavecRtRecycle(struct weavecRtSweepCounts *counts, int recycle) {
                    __ATOMIC_RELAXED);
 }
 
-/*===-- The Darwin zone (section 2.5) ---------------------------------------===*/
+/*===-- The Darwin zone (section 2.5)
+ * ---------------------------------------===*/
 
 #if defined(__APPLE__)
 
@@ -1963,7 +1987,9 @@ static void *zoneRealloc(malloc_zone_t *zone, void *p, size_t size) {
   return __weavec_rt_realloc(p, size);
 }
 
-static void zoneDestroy(malloc_zone_t *zone) { (void)zone; }
+static void zoneDestroy(malloc_zone_t *zone) {
+  (void)zone;
+}
 
 static unsigned zoneBatchMalloc(malloc_zone_t *zone, size_t size,
                                 void **results, unsigned count) {

@@ -901,6 +901,49 @@ override the body.
     `WEAVEC_RT_SWEEP_SIGNAL` names too), or stops no thread and recycles
     nothing.
 
+22. **Darwin's `-flto` links read the toolchain's libLTO (§6).** Darwin's
+    driver names `<weavec-cc>/../lib/libLTO.dylib` for a link of bitcode.
+    The self-contained tree carries the libLTO of the LLVM `weavec-cc` is
+    built with there, its LLVM libraries in `lib/weavec/llvm`, and the
+    build tree links it; the system linker's own libLTO cannot read the
+    bitcode a newer LLVM writes. `scripts/check-toolchain.py` builds and
+    runs an `-flto=thin` program.
+
+23. **A package names the rpath programs record (§1, §6).** The default
+    rpath is the runtime's directory, found from the resolved executable:
+    under Homebrew, the version's Cellar directory, which an upgrade
+    removes. A one-line `default-rpath` file in the runtime's directory
+    names the path to record instead; the formula writes its stable
+    `opt` path there. `-fweavec-rpath` still overrides both.
+
+24. **Response files are expanded first (§6).** `weavec-cc @file` expands
+    the file as Clang's own driver does before it reads the command line,
+    so that a source in it is compiled as WeaveC (its macro, its header
+    directory) and an assembly source in it goes to the system assembler.
+    A job of a Clang tool that `weavec-cc` does not include (`-cc1as`)
+    fails with an error naming it, rather than reaching the `-cc1` parser.
+
+25. **Roots past the search's limits have none (§3).** Integer arithmetic
+    deeper than eight operations may hold a second pointer, and a chain of
+    more than 64 getelementptrs and casts may not end at one: such an
+    address has no root (it had the shallower pointer, which could stop
+    correct code). A search looks through at most 256 phis and selects,
+    and a node's root that does not depend on the nodes being looked
+    through is remembered for the function's other accesses, so that a
+    web of phis is walked once rather than along every path.
+
+26. **The back-off follows the mark (amendment 13).** A sweep that stopped
+    every thread but could not prepare its marks recycled nothing, yet
+    reset the pacing, so every release swept again. The back-off applies
+    to every sweep that did not mark, and waits for a hard budget,
+    max(2 Q, live / 2), of releases past those the sweep left.
+
+27. **The other languages keep Clang's actions (§6).** `createAction`
+    serves every `-cc1` job, C++ and Objective-C ones too, so it includes
+    module interfaces, header units and module maps, module file and PCH
+    checks, and the AST and token dumps of `clangFrontend`. Only the
+    static analyzer, the rewriters and plug-ins are left out.
+
 ## Measured gates
 
 Measured 2026-11-05 on the branch: darwin-arm64 on an Apple M3 (`release`

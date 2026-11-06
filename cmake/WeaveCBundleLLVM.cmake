@@ -60,7 +60,27 @@ function(_weavec_resolve reference from out)
   endif()
 endfunction()
 
+# lib/libLTO.dylib, which Darwin's driver names for -flto (RFC 0038,
+# amendment 22), with the LLVM libraries it loads in lib/weavec/llvm too.
 set(_queue "${_bin}")
+if(EXISTS "${WEAVEC_BUNDLE_LLVM_LIBRARY_DIR}/libLTO.dylib")
+  get_filename_component(_lto "${WEAVEC_BUNDLE_LLVM_LIBRARY_DIR}/libLTO.dylib"
+                         REALPATH)
+  file(COPY_FILE "${_lto}" "${_prefix}/lib/libLTO.dylib")
+  file(
+    CHMOD
+    "${_prefix}/lib/libLTO.dylib"
+    PERMISSIONS
+    OWNER_READ
+    OWNER_WRITE
+    GROUP_READ
+    WORLD_READ)
+  execute_process(
+    COMMAND install_name_tool -id "@rpath/libLTO.dylib" -add_rpath
+            "@loader_path/weavec/llvm" "${_prefix}/lib/libLTO.dylib"
+    ERROR_QUIET)
+  list(APPEND _queue "${_prefix}/lib/libLTO.dylib")
+endif()
 set(_done)
 while(_queue)
   list(POP_FRONT _queue _image)
@@ -71,6 +91,12 @@ while(_queue)
   _weavec_dependencies("${_image}" _references)
   foreach(_reference IN LISTS _references)
     if(_image STREQUAL _bin AND _reference MATCHES "^@rpath/libweavec_rt")
+      continue()
+    endif()
+    # A library's own install name, which otool lists first.
+    get_filename_component(_own "${_image}" NAME)
+    get_filename_component(_named "${_reference}" NAME)
+    if(_own STREQUAL _named)
       continue()
     endif()
     _weavec_resolve("${_reference}" "${_image}" _path)
@@ -124,3 +150,16 @@ foreach(_image IN LISTS _copies _bin)
 endforeach()
 list(LENGTH _copies _count)
 message(STATUS "weavec: ${_count} LLVM libraries bundled in ${_dest}")
+
+# install_name_tool leaves a changed image's signature invalid, and arm64
+# kills a process that loads one (ld64 loads lib/libLTO.dylib for every
+# link): each image is signed again, ad hoc.
+foreach(_image IN LISTS _done)
+  execute_process(
+    COMMAND codesign --force --sign - "${_image}"
+    RESULT_VARIABLE _signed
+    ERROR_QUIET)
+  if(NOT _signed EQUAL 0)
+    message(FATAL_ERROR "weavec: cannot sign ${_image}")
+  endif()
+endforeach()

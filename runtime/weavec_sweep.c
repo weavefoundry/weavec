@@ -1,4 +1,5 @@
-/*===- weavec_sweep.c - Reuse after a sweep -------------------------*- C -*-===*\
+/*===- weavec_sweep.c - Reuse after a sweep -------------------------*- C
+-*-===*\
 |*
 |* Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 |* See LICENSE for license information.
@@ -42,9 +43,10 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
+
+#include <sys/mman.h>
 
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -52,15 +54,16 @@
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #else
-#include <sys/syscall.h>
 #include <linux/futex.h>
+#include <sys/syscall.h>
 #endif
 
 #ifndef MAP_ANONYMOUS
 #define MAP_ANONYMOUS MAP_ANON
 #endif
 
-/*===-- Internal mappings ---------------------------------------------------===*/
+/*===-- Internal mappings
+ * ---------------------------------------------------===*/
 
 /* The runtime's own mappings, which hold no program pointer (the shadow,
  * the arena's reservation and metadata, the huge table, the marks). */
@@ -93,7 +96,8 @@ void weavecRtInternalDrop(uintptr_t low) {
   weavecRtUnlock(&internalLock);
 }
 
-/*===-- The stopped world ---------------------------------------------------===*/
+/*===-- The stopped world
+ * ---------------------------------------------------===*/
 
 /* A stretch of memory to scan, and the stacks: a thread's stack is scanned
  * from its stack pointer (less the red zone below it) to the end of the
@@ -125,8 +129,12 @@ typedef struct {
 static World *world;
 static WeavecRtLock sweepLock;
 
-void weavecRtSweepLock(void) { weavecRtLock(&sweepLock); }
-void weavecRtSweepUnlock(void) { weavecRtUnlock(&sweepLock); }
+void weavecRtSweepLock(void) {
+  weavecRtLock(&sweepLock);
+}
+void weavecRtSweepUnlock(void) {
+  weavecRtUnlock(&sweepLock);
+}
 
 static int trySweepLock(void) {
   return __atomic_exchange_n(&sweepLock.held, 1, __ATOMIC_ACQUIRE) == 0;
@@ -154,7 +162,8 @@ static void sortInternal(void) {
   }
 }
 
-/*===-- Mark workers (RFC 0037 section 3) ----------------------------------===*/
+/*===-- Mark workers (RFC 0037 section 3)
+ * ----------------------------------===*/
 
 /* The mark reads every root and every live heap block once, with no
  * tracing, so it divides without coordination: a large sweep lists its
@@ -212,8 +221,7 @@ static void markWork(const Work *item) {
   if (item->region == WordsWork)
     weavecRtMarkWords(item->low, item->high);
   else
-    weavecRtMarkSlots(item->region, (uint32_t)item->low,
-                      (uint32_t)item->high);
+    weavecRtMarkSlots(item->region, (uint32_t)item->low, (uint32_t)item->high);
 }
 
 /* Lists an item, or marks it at once when the list is full. */
@@ -402,7 +410,8 @@ static uintptr_t skipInternal(uintptr_t address) {
 
 #if defined(__APPLE__)
 
-/*===-- Darwin --------------------------------------------------------------===*/
+/*===-- Darwin
+ * --------------------------------------------------------------===*/
 
 static thread_act_array_t threads;
 static mach_msg_type_number_t threadCount;
@@ -450,8 +459,7 @@ static int stopThreads(void) {
   for (i = 0; i < threadCount; ++i) {
     thread_identifier_info_data_t identity;
     mach_msg_type_number_t count = THREAD_IDENTIFIER_INFO_COUNT;
-    if (threads[i] == MACH_PORT_NULL || isWorker(threads[i]) ||
-        gone[i])
+    if (threads[i] == MACH_PORT_NULL || isWorker(threads[i]) || gone[i])
       continue;
     if (thread_info(threads[i], THREAD_IDENTIFIER_INFO,
                     (thread_info_t)&identity, &count) != KERN_SUCCESS)
@@ -499,8 +507,8 @@ static int stopThreads(void) {
       memcpy(words, &state, general * sizeof(uintptr_t));
       world->stacks[world->stackCount] = state.__rsp;
       count = x86_AVX_STATE64_COUNT;
-      if (thread_get_state(threads[i], x86_AVX_STATE64,
-                           (thread_state_t)&vector, &count) != KERN_SUCCESS) {
+      if (thread_get_state(threads[i], x86_AVX_STATE64, (thread_state_t)&vector,
+                           &count) != KERN_SUCCESS) {
         /* No AVX: the SSE registers. */
         x86_float_state64_t sse;
         count = x86_FLOAT_STATE64_COUNT;
@@ -602,8 +610,8 @@ static void scanResident(uintptr_t low, uintptr_t high, int resident) {
       if (touched)
         continue;
       if (i > run) {
-        const uintptr_t end = low + i * page < low + chunk ? low + i * page
-                                                           : low + chunk;
+        const uintptr_t end =
+            low + i * page < low + chunk ? low + i * page : low + chunk;
         scanExcluding(low + run * page, end);
       }
       run = i + 1;
@@ -638,7 +646,7 @@ static int scanKind(const vm_region_submap_info_data_64_t *info) {
   if (info->external_pager && writable && info->pages_resident != 0)
     return ScanResident;
   return info->pages_dirtied != 0 || info->pages_swapped_out != 0 ? ScanTouched
-                                                                   : ScanNone;
+                                                                  : ScanNone;
 }
 
 /* RFC 0036 section 3.4: the writable segments of the images the process
@@ -686,8 +694,8 @@ static void addImage(const struct mach_header *header, intptr_t slide) {
         ++imageSegmentCount;
       }
     }
-    command = (const struct load_command *)((const char *)command +
-                                            command->cmdsize);
+    command =
+        (const struct load_command *)((const char *)command + command->cmdsize);
   }
   weavecRtUnlock(&imageLock);
 }
@@ -716,8 +724,12 @@ __attribute__((constructor)) static void watchImages(void) {
   _dyld_register_func_for_remove_image(removeImage);
 }
 
-static void lockImages(void) { weavecRtLock(&imageLock); }
-static void unlockImages(void) { weavecRtUnlock(&imageLock); }
+static void lockImages(void) {
+  weavecRtLock(&imageLock);
+}
+static void unlockImages(void) {
+  weavecRtUnlock(&imageLock);
+}
 
 /* Every readable, writable mapping that was touched, but the shared
  * cache's, whose loaded images' writable segments are scanned instead;
@@ -742,7 +754,8 @@ static int scanMappings(void) {
       break;
     if (result != KERN_SUCCESS)
       return 0;
-    if (!info.is_submap && (address + size <= cacheLow || address >= cacheHigh)) {
+    if (!info.is_submap &&
+        (address + size <= cacheLow || address >= cacheHigh)) {
       const int kind = scanKind(&info);
       const uintptr_t low = (uintptr_t)address;
       const uintptr_t high = (uintptr_t)(address + size);
@@ -794,7 +807,8 @@ static int scanMappings(void) {
 
 #else
 
-/*===-- Linux ---------------------------------------------------------------===*/
+/*===-- Linux
+ * ---------------------------------------------------------------===*/
 
 static int stopSignal;
 static pid_t stopped[MaxThreads];
@@ -877,7 +891,9 @@ static void chooseSignal(int again) {
   }
 }
 
-static void chooseFirst(void) { chooseSignal(0); }
+static void chooseFirst(void) {
+  chooseSignal(0);
+}
 
 static int installHandler(void) {
   static pthread_once_t once = PTHREAD_ONCE_INIT;
@@ -1214,7 +1230,8 @@ static void unlockImages(void) {}
 
 #endif
 
-/*===-- The sweep -----------------------------------------------------------===*/
+/*===-- The sweep
+ * -----------------------------------------------------------===*/
 
 static struct weavecRtSweepCounts lastCounts;
 unsigned long long weavecRtSweepNanos;
@@ -1242,7 +1259,7 @@ static int mapWorld(void) {
 void weavecRtSweep(void) {
   uint64_t started;
   struct weavecRtSweepCounts counts = {0, 0, 0};
-  int stoppedAll;
+  int marked = 0;
   sigset_t every;
   sigset_t saved;
   /* The calling thread's callee-saved registers are spilled to this frame,
@@ -1274,9 +1291,9 @@ void weavecRtSweep(void) {
   world->stackCount = 0;
   world->registerCount = 0;
   world->tsdCount = 0;
-  stoppedAll = stopThreads();
-  if (stoppedAll && weavecRtPrepareMarks()) {
+  if (stopThreads() && weavecRtPrepareMarks()) {
     unsigned i;
+    marked = 1;
     world->stacks[world->stackCount] = (uintptr_t)&here;
     ++world->stackCount;
     sortInternal();
@@ -1285,7 +1302,8 @@ void weavecRtSweep(void) {
                         (uintptr_t)(world->registers[i] + Registers));
     /* Without every root, nothing is recycled. A large heap is marked by
      * the workers too (RFC 0037 section 3). */
-    const int parallel = workerCount != 0 && weavecRtLiveBytes() >= ParallelBytes;
+    const int parallel =
+        workerCount != 0 && weavecRtLiveBytes() >= ParallelBytes;
     int scanned;
     if (parallel) {
       workCount = 0;
@@ -1313,9 +1331,11 @@ void weavecRtSweep(void) {
     weavecRtSweepNanos += took;
     if (took > weavecRtSweepLongest)
       weavecRtSweepLongest = took;
-    weavecRtSwept(ended, took, stoppedAll);
+    weavecRtSwept(ended, took, marked);
   }
   weavecRtSweepUnlock();
 }
 
-void weavecRtLastSweep(struct weavecRtSweepCounts *out) { *out = lastCounts; }
+void weavecRtLastSweep(struct weavecRtSweepCounts *out) {
+  *out = lastCounts;
+}
