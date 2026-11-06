@@ -1,6 +1,21 @@
 # CHANGELOG
 
 
+## v0.19.0 (2026-11-06)
+
+### Chores
+
+- Use American spelling throughout the repository
+  ([#54](https://github.com/weavefoundry/weavec/pull/54),
+  [`5b790bf`](https://github.com/weavefoundry/weavec/commit/5b790bfefca98a12215eee7c6179406822213d75))
+
+### Features
+
+- Share one runtime, check searches, and ship toolchains
+  ([#55](https://github.com/weavefoundry/weavec/pull/55),
+  [`854501a`](https://github.com/weavefoundry/weavec/commit/854501a0beacfa1c88f5ea380df85e94a8e9740e))
+
+
 ## v0.18.0 (2026-11-04)
 
 ### Features
