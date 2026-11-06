@@ -393,6 +393,14 @@ void addScopes(ModuleContext &module, llvm::Function &function);
 /// Removes the scope barriers, or with `orphansOnly` those in a block with
 /// no lifetime marker left.
 void dropScopes(llvm::Function &function, bool orphansOnly);
+/// The roots of the phis and selects a function's searches looked through.
+using RootCache = llvm::DenseMap<llvm::Value *, llvm::Value *>;
+/// RFC 0037 §8.1, RFC 0038 §3: the root a color check compares an address
+/// computed from a pointer with (GuardExpand.cpp); null for none. `cache`,
+/// kept while the function's IR is not changed, spares a search the nodes
+/// another looked through.
+llvm::Value *colorRoot(llvm::Value *base, RootCache *cache = nullptr);
+
 /// GuardExpand on one function.
 void expandGuards(ModuleContext &module, llvm::Function &function,
                   llvm::FunctionAnalysisManager &analyses);

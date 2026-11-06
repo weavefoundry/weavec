@@ -1,6 +1,6 @@
 # RFC 0037: A complete sweep and object colors
 
-- **Status**: Accepted
+- **Status**: Implemented
 - **Authors**: WeaveC authors
 - **Created**: 2026-11-02
 - **Tracking issue**: TBD
@@ -990,6 +990,14 @@ and G8, G11 and G12 miss in part (below).
 | G12 Servers | **In part**: Redis 8.10.2 at ~1 GiB: `SET` 216,000 and `GET` 224–226,000 requests a second, 0.86 and 0.88 times the reference's (250,000 and 255,000), short of 0.9; the longest request 60–62 ms (v0.17.0: 149–162; the limit 60), 68–70 ms during `BGSAVE` (limit 75); peak memory 1,736 MiB as v0.17.0. The 1 kHz timer whose handler allocates runs 60 s (59,320 handler calls). |
 | H1 | **Pass**: library 7,912 lines of 9,000, runtime 6,918 of 7,000. |
 | H2 | **Pass but for the status**: the documentation describes the change (README, guarantees, CLI, compatibility, troubleshooting, architecture, roadmap, AGENTS.md); `npm test` and `npm run build` in `docs/` and the documentation examples pass; `ctest --preset dev` passes; RFC 0036 is marked Implemented; this RFC stays Accepted. |
+
+Measured again on 2026-11-05 under RFC 0038's S7 (its *Measured gates*),
+linux-aarch64 included: `rt_test`'s root tests (`read-only-memory-is-scanned`,
+`file-mapping-is-scanned`, `stack-pool-is-scanned`, `thread-data-is-scanned`,
+`vector-registers-are-scanned`) and `signals-during-sweeps` pass on
+linux-aarch64; zstd passes with colors on (RFC 0038 §3), so G5 passes on
+darwin-arm64 and linux-aarch64; the injections stop 33 of 39 on both. On
+these measurements this RFC is marked Implemented.
 
 ## Drawbacks
 

@@ -483,22 +483,151 @@ static void expand(FunctionContext &context, const Access &access,
   marker->eraseFromParent();
 }
 
-/// RFC 0037 §8.1: the pointer an address is computed from (its root): every
-/// getelementptr and cast stripped; null when the address is the pointer
-/// itself, or the root is not a pointer the program holds.
-static llvm::Value *rootOf(llvm::Value *base) {
-  if (base == nullptr || !llvm::isa<llvm::GEPOperator>(base))
-    return nullptr;
-  llvm::Value *value = base;
-  for (;;) {
+namespace {
+/// The pointer an integer is computed from by `add`, `sub` and `or`: none,
+/// one, or several (`p + (q - p)`, which has no root).
+struct IntegerPointer {
+  llvm::Value *pointer = nullptr;
+  bool mixed = false;
+};
+} // namespace
+
+static IntegerPointer pointerUnder(llvm::Value *integer, unsigned depth) {
+  if (auto *cast = llvm::dyn_cast<llvm::PtrToIntOperator>(integer))
+    return {.pointer = cast->getPointerOperand()};
+  const auto *operation = llvm::dyn_cast<llvm::BinaryOperator>(integer);
+  if (operation == nullptr)
+    return {};
+  const llvm::Instruction::BinaryOps opcode = operation->getOpcode();
+  if (opcode != llvm::Instruction::Add && opcode != llvm::Instruction::Sub &&
+      opcode != llvm::Instruction::Or)
+    return {};
+  // Deeper arithmetic may hold another pointer: no root (amendment 25).
+  if (depth > 8)
+    return {.mixed = true};
+  const IntegerPointer left = pointerUnder(operation->getOperand(0), depth + 1);
+  const IntegerPointer right =
+      pointerUnder(operation->getOperand(1), depth + 1);
+  // A pointer subtracted, or two added, is a distance, not an address.
+  if (left.mixed || right.mixed || (left.pointer && right.pointer) ||
+      (opcode == llvm::Instruction::Sub && right.pointer))
+    return {.mixed = true};
+  return left.pointer != nullptr ? left : right;
+}
+
+namespace {
+/// One search for a root: the nodes being looked through, the phis and
+/// selects whose root is known, how often an input came back to a node
+/// being looked through, and how many more nodes it may look through.
+struct RootSearch {
+  llvm::SmallPtrSet<llvm::Value *, 8> visiting;
+  RootCache *known = nullptr;
+  unsigned cycles = 0;
+  unsigned budget = 256;
+};
+} // namespace
+
+/// RFC 0038 §3: the root under `value`: its getelementptrs and casts
+/// stripped, through `inttoptr` of integer arithmetic on one pointer, and
+/// through a phi or select whose inputs have one root (a loop-carried input
+/// is the node itself). A phi or select whose inputs' roots differ is its own
+/// root when each input is a pointer the program holds; when one is computed
+/// from another root (an offset the optimizer hoisted, a match finder's
+/// `dictBase - delta` beside `base`) it has none. Null for no root, and past
+/// the search's budget. A node's root that does not depend on the nodes
+/// being looked through is remembered (amendment 25).
+static llvm::Value *rootUnder(llvm::Value *value, RootSearch &search) {
+  unsigned steps = 0;
+  for (; steps < 64; ++steps) {
     value = value->stripPointerCasts();
-    auto *gep = llvm::dyn_cast<llvm::GEPOperator>(value);
-    if (gep == nullptr)
-      break;
-    value = gep->getPointerOperand();
+    if (auto *gep = llvm::dyn_cast<llvm::GEPOperator>(value)) {
+      value = gep->getPointerOperand();
+      continue;
+    }
+    if (const auto *cast = llvm::dyn_cast<llvm::IntToPtrInst>(value)) {
+      const IntegerPointer under = pointerUnder(cast->getOperand(0), 0);
+      if (under.pointer == nullptr || under.mixed)
+        return nullptr;
+      value = under.pointer;
+      continue;
+    }
+    break;
   }
-  if (llvm::isa<llvm::ConstantPointerNull, llvm::IntToPtrInst, llvm::UndefValue,
-                llvm::ConstantExpr>(value))
+  if (steps == 64)
+    return nullptr;
+  if (!llvm::isa<llvm::PHINode, llvm::SelectInst>(value))
+    return value;
+  if (search.visiting.contains(value)) {
+    ++search.cycles;
+    return value;
+  }
+  if (const auto found = search.known->find(value);
+      found != search.known->end())
+    return found->second;
+  if (search.budget == 0)
+    return nullptr;
+  --search.budget;
+  search.visiting.insert(value);
+  const unsigned cycles = search.cycles;
+  llvm::SmallVector<llvm::Value *, 4> inputs;
+  if (auto *select = llvm::dyn_cast<llvm::SelectInst>(value))
+    inputs = {select->getTrueValue(), select->getFalseValue()};
+  else
+    inputs.append(llvm::cast<llvm::PHINode>(value)->incoming_values().begin(),
+                  llvm::cast<llvm::PHINode>(value)->incoming_values().end());
+  llvm::Value *common = nullptr;
+  llvm::Value *cycle = nullptr;
+  bool differ = false;
+  bool derived = false;
+  bool none = false;
+  for (llvm::Value *input : inputs) {
+    llvm::Value *root = rootUnder(input, search);
+    if (root == nullptr) {
+      none = true;
+      break;
+    }
+    // An input that comes back to a node being looked through constrains
+    // nothing.
+    if (search.visiting.contains(root)) {
+      cycle = root;
+      continue;
+    }
+    derived = derived || root != input->stripPointerCasts();
+    if (common == nullptr)
+      common = root;
+    else if (common != root)
+      differ = true;
+  }
+  search.visiting.erase(value);
+  llvm::Value *root = nullptr;
+  if (none)
+    root = nullptr;
+  else if (common == nullptr)
+    root = cycle;
+  else if (!differ)
+    root = common;
+  else if (!derived)
+    root = value;
+  // (A budget spent below makes the answer this search's alone.)
+  if (search.cycles == cycles && search.budget != 0)
+    (*search.known)[value] = root;
+  return root;
+}
+
+/// RFC 0037 §8.1, RFC 0038 §3: the pointer an address is computed from (its
+/// root); null when the address is the pointer itself, or the root is not
+/// a pointer the program holds.
+llvm::Value *colorRoot(llvm::Value *base, RootCache *cache) {
+  if (base == nullptr ||
+      !llvm::isa<llvm::GEPOperator, llvm::IntToPtrInst>(base))
+    return nullptr;
+  RootCache own;
+  RootSearch search;
+  search.known = cache != nullptr ? cache : &own;
+  llvm::Value *value = rootUnder(base, search);
+  if (value == nullptr ||
+      llvm::isa<llvm::ConstantPointerNull, llvm::IntToPtrInst, llvm::UndefValue,
+                llvm::ConstantExpr, llvm::PoisonValue>(value))
     return nullptr;
   return value;
 }
@@ -539,14 +668,17 @@ static void loadRootShadows(FunctionContext &context,
     return;
   llvm::DenseMap<llvm::Value *, llvm::SmallVector<std::size_t, 4>> byRoot;
   llvm::SmallVector<llvm::Value *, 8> order;
+  // (Nothing below changes the IR until every root is found.)
+  RootCache roots;
   for (std::size_t i = 0; i < accesses.size(); ++i) {
     Access &access = accesses[i];
     if (access.state != Access::State::Guard || access.pruned)
       continue;
     const bool string = access.kind == Access::Kind::String;
     llvm::Value *root =
-        string ? rootOf(access.pointer->stripInBoundsConstantOffsets())
-               : rootOf(access.base);
+        string
+            ? colorRoot(access.pointer->stripInBoundsConstantOffsets(), &roots)
+            : colorRoot(access.base, &roots);
     if (root == nullptr)
       continue;
     if (!string && contiguousOffset(access, root, evolution, false)) {

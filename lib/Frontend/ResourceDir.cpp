@@ -25,13 +25,6 @@
 #ifndef WEAVEC_RESOURCE_DIR_RELATIVE
 #define WEAVEC_RESOURCE_DIR_RELATIVE "lib/weavec"
 #endif
-#ifndef WEAVEC_CLANG_RESOURCE_DIR
-#define WEAVEC_CLANG_RESOURCE_DIR ""
-#endif
-#ifndef WEAVEC_CLANG_EXECUTABLE
-#define WEAVEC_CLANG_EXECUTABLE ""
-#endif
-
 namespace weavec::frontend {
 
 static bool hasHeader(llvm::StringRef dir) {
@@ -89,26 +82,6 @@ std::string findRuntimeLibrary(const char *argv0, void *mainAddr,
   llvm::sys::path::remove_dots(path, /*remove_dot_dot=*/true);
   if (llvm::sys::fs::exists(path))
     return path.str().str();
-  return {};
-}
-
-std::string getClangResourceDir() {
-  const llvm::StringRef dir(WEAVEC_CLANG_RESOURCE_DIR);
-  if (dir.empty() || !llvm::sys::fs::is_directory(dir))
-    return {};
-  return dir.str();
-}
-
-std::string getClangExecutable() {
-  // NOLINTNEXTLINE(concurrency-mt-unsafe) -- read once at startup.
-  if (const char *env = std::getenv("WEAVEC_CLANG");
-      env != nullptr && llvm::sys::fs::can_execute(env))
-    return env;
-  const llvm::StringRef built(WEAVEC_CLANG_EXECUTABLE);
-  if (!built.empty() && llvm::sys::fs::can_execute(built))
-    return built.str();
-  if (llvm::ErrorOr<std::string> found = llvm::sys::findProgramByName("clang"))
-    return *found;
   return {};
 }
 

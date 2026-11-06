@@ -89,7 +89,7 @@ set(WEAVEC_LIT_JOBS
 add_custom_target(
   check-weavec-lit
   COMMAND "${WEAVEC_LIT}" ${WEAVEC_LIT_ARGS} "${CMAKE_CURRENT_BINARY_DIR}"
-  DEPENDS weavec-cc weavec_rt weavec_alloc
+  DEPENDS weavec-cc weavec_rt
   COMMENT "Running WeaveC lit tests"
   USES_TERMINAL)
 add_dependencies(check-weavec check-weavec-lit)
@@ -99,8 +99,23 @@ add_test(NAME lit COMMAND "${WEAVEC_LIT}" ${WEAVEC_LIT_ARGS} -j
                           "${WEAVEC_LIT_JOBS}" "${CMAKE_CURRENT_BINARY_DIR}")
 set_tests_properties(lit PROPERTIES LABELS "integration" PROCESSORS
                                     "${WEAVEC_LIT_JOBS}")
-# RFC 0032, section 12: the runtime's own tests (runtime/test/rt_test.c).
-if(TARGET weavec_rt_test)
+# RFC 0032, section 12: the runtime's own tests, the runtime alone with the
+# image's allocator replaced as in a WeaveC-built program. The test frees and
+# indexes what no correct program would, so the compiler's own diagnostics
+# are off for it.
+if(TARGET weavec_rt_static)
+  find_package(Threads REQUIRED)
+  add_executable(weavec_rt_test "${PROJECT_SOURCE_DIR}/runtime/test/rt_test.c")
+  target_link_libraries(
+    weavec_rt_test PRIVATE weavec_rt_static Threads::Threads ${CMAKE_DL_LIBS})
+  set_target_properties(
+    weavec_rt_test
+    PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/runtime"
+               C_STANDARD 11
+               INTERPROCEDURAL_OPTIMIZATION OFF
+               INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
+               INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF)
+  target_compile_options(weavec_rt_test PRIVATE -w)
   add_test(NAME runtime COMMAND weavec_rt_test)
   set_tests_properties(runtime PROPERTIES LABELS "unit")
 endif()

@@ -1,13 +1,55 @@
 {
   "schema": "weavec-corpus-triage",
-  "version": 2,
+  "version": 3,
   "_comment": [
-    "Triage of the corpus's guard failures (RFC 0035, section 11), checked by",
-    "scripts/corpus-gate.py. `guardFailures` lists the guard failures of a test suite that are true",
-    "bugs of the project: {config, file, line, verdict, note, kind (optional, a run-time report",
-    "kind)}, verdict always \"true\" and note the source evidence. A report at such a site is not",
-    "counted as a trap; an entry no run names is reported as stale without failing. A false trap",
-    "is never triaged: it is a bug in WeaveC."
+    "Triage of the corpus's guard failures (RFC 0035, section 11; RFC 0038, section 5), checked by",
+    "scripts/corpus-gate.py. `guardFailures` lists the reports of a test suite that the gate does",
+    "not count as traps: {config, file, line, verdict, note, kind (optional, a run-time report",
+    "kind), rfc}. The verdict is \"project-bug\" for a true bug of the project, its note the",
+    "evidence (an ASan run, a reduced program, the source), or \"accepted\" for a false trap an",
+    "Accepted RFC accepts, which `rfc` names (\"0037\"). Any other false trap is a bug in WeaveC",
+    "and is never triaged. An entry no run names is reported as stale without failing."
   ],
-  "guardFailures": []
+  "guardFailures": [
+    {
+      "config": "cpython",
+      "file": "Modules/faulthandler.c",
+      "line": 1017,
+      "kind": "null-dereference",
+      "verdict": "project-bug",
+      "note": "RFC 0038, the programs tier: faulthandler._read_null reads through a null pointer on purpose (x = NULL; y = *x), for test_faulthandler, which checks that the process dies of it."
+    },
+    {
+      "config": "cpython",
+      "file": "Include/internal/pycore_pystate.h",
+      "line": 214,
+      "kind": "null-dereference",
+      "verdict": "project-bug",
+      "note": "RFC 0038, the programs tier: _PyInterpreterState_GET reads tstate->interp with no thread state when a fatal error test (Py_FatalError without the GIL) reaches _PyFaulthandler_Fini; the reference build dies of the same SIGSEGV there (a macOS crash report of the reference run on darwin-arm64: _PyInterpreterState_GET, get_state, _PyObject_Free, _PyFaulthandler_Fini, fatal_error)."
+    },
+    {
+      "config": "git",
+      "file": "builtin/fsmonitor--daemon.c",
+      "line": 1098,
+      "kind": "null-dereference",
+      "verdict": "project-bug",
+      "note": "RFC 0038, the programs tier: fsmonitor_publish reads state->current_token_data->batch_head while the daemon's token data is null (an FSEvents callback during shutdown); the reference build's daemon dies of the same SIGSEGV in fsmonitor_publish (a macOS crash report of the reference run on darwin-arm64), which the tests tolerate."
+    },
+    {
+      "config": "coreutils",
+      "file": "lib/rawmemchr.c",
+      "line": 113,
+      "kind": "heap-buffer-overflow",
+      "verdict": "project-bug",
+      "note": "RFC 0038, the programs tier: gnulib's rawmemchr (coreutils 9.5) reads the string a word at a time, past the byte it stops at and so past the end of its object; AddressSanitizer stops the same reads (help-version, shuf, csplit, tty-eof)."
+    },
+    {
+      "config": "mbedtls",
+      "file": "library/x509_crt.c",
+      "line": 1415,
+      "kind": "global-buffer-overflow",
+      "verdict": "project-bug",
+      "note": "RFC 0038: the TLS test helper (tests/src/test_helpers/ssl_helpers.c at c765c831) passes the EC client certificate's DER buffer with mbedtls_test_cli_crt_ec_len, the length of its PEM form, so mbedtls_x509_crt_parse reads buf[buflen - 1] 722 bytes past the DER array, in the next global. ASan, which leaves no redzone between those globals, passes all 886 tests of the suite."
+    }
+  ]
 }

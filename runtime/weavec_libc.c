@@ -599,31 +599,6 @@ static void readsNull(const void *s, uint64_t n,
     weavecRtFail("null-dereference", 0, n, site);
 }
 
-void *__weavec_rt_memchr(const void *s, int c, size_t n,
-                         const struct __weavec_rt_site *site) {
-  void *found;
-  readsNull(s, n, site);
-  found = memchr(s, c, n);
-  checkRange((uintptr_t)s,
-                    found != NULL
-                        ? (uint64_t)((const char *)found - (const char *)s) + 1
-                        : (uint64_t)n,
-                    site);
-  return found;
-}
-
-char *__weavec_rt_strchr(const char *s, int c,
-                         const struct __weavec_rt_site *site) {
-  char *found;
-  readsNull(s, 1, site);
-  found = strchr(s, c);
-  if (found != NULL)
-    checkRange((uintptr_t)s, (uint64_t)(found - s) + 1, site);
-  else
-    (void)__weavec_rt_strlen(s, ~(uint64_t)0, site);
-  return found;
-}
-
 /* Compares at most n bytes of a and b, ignoring case when asked, then
  * checks those it read. */
 static int compare(const char *a, const char *b, uint64_t n, int folded,

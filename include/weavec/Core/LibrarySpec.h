@@ -146,6 +146,13 @@ struct LibraryParam {
   std::optional<LibTerm> count;
   /// The pointee holds a terminated string.
   bool string = false;
+  /// `scan(t)` (RFC 0038 §2): the call reads from the pointer up to the
+  /// element where it stopped, which its result says (a pointer result
+  /// stopped at `result - pointer`, an integer result at `result`), and `t`
+  /// elements from there (`scan` alone is `scan(1)`). A null result means
+  /// it did not stop early: the extent is then `bytes`, `count` or the
+  /// string. The argument is guarded after the call.
+  std::optional<LibTerm> scan;
   enum class Null : std::uint8_t { Forbidden, Allowed, AllowedIfZero };
   Null null = Null::Forbidden;
   /// AllowedIfZero: null is allowed when this term is zero.

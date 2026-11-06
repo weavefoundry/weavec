@@ -19,6 +19,7 @@
 #include "clang/Basic/DiagnosticIDs.h"
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/Sanitizers.h"
+#include "clang/CodeGen/CodeGenAction.h"
 #include "clang/Driver/Action.h"
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
@@ -29,24 +30,25 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/FrontendAction.h"
+#include "clang/Frontend/FrontendActions.h"
 #include "clang/Frontend/MultiplexConsumer.h"
 #include "clang/Frontend/TextDiagnosticBuffer.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
-#include "clang/FrontendTool/Utils.h"
 #include "clang/Lex/PreprocessorOptions.h"
 
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/Binary.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Object/SymbolicFile.h"
 #include "llvm/Option/ArgList.h"
+#include "llvm/Support/Allocator.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/TargetSelect.h"
@@ -64,6 +66,10 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#ifndef WEAVEC_RUNTIME_ABI
+#define WEAVEC_RUNTIME_ABI 0
+#endif
 
 namespace weavec::frontend {
 
@@ -112,6 +118,17 @@ static bool consumeValueFlag(DriverOptions &options, llvm::StringRef arg,
 bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
   if (consumeValueFlag(*this, arg, error))
     return true;
+  if (arg == "-fno-weavec-rpath") {
+    rpath = std::string();
+    return true;
+  }
+  if (llvm::StringRef dir = arg; dir.consume_front("-fweavec-rpath")) {
+    if (!dir.consume_front("=") || dir.empty())
+      error = "missing value for '-fweavec-rpath'";
+    else
+      rpath = dir.str();
+    return true;
+  }
   bool value = true;
   llvm::StringRef name = arg;
   if (name.consume_front("-fno-")) {
@@ -162,12 +179,92 @@ llvm::StringRef driverFlagsHelp() {
   -fweavec-colors, -fno-weavec-colors
       Check an access computed from a pointer against the color of the
       pointer's object, so that a jump into a neighbor traps (default: on).
+  -fweavec-rpath=<dir>, -fno-weavec-rpath
+      Where a linked image finds the runtime's library (libweavec_rt):
+      <dir> ($ORIGIN, @loader_path or an installation path) instead of the
+      toolchain's runtime directory, or no rpath at all.
 )";
 }
 
 //===----------------------------------------------------------------------===//
 // The -cc1 step
 //===----------------------------------------------------------------------===//
+
+/// RFC 0038 §6: Clang's action for a `-cc1` job: code generation,
+/// preprocessing, syntax checks, precompiled headers and modules, and the
+/// dumps. (Clang's own selection, in clangFrontendTool, links the static
+/// analyzer and its solver into the driver.) Null, with an error, for
+/// another.
+static std::unique_ptr<clang::FrontendAction>
+createAction(clang::CompilerInstance &compiler) {
+  switch (compiler.getFrontendOpts().ProgramAction) {
+  case clang::frontend::EmitAssembly:
+    return std::make_unique<clang::EmitAssemblyAction>();
+  case clang::frontend::EmitBC:
+    return std::make_unique<clang::EmitBCAction>();
+  case clang::frontend::EmitLLVM:
+    return std::make_unique<clang::EmitLLVMAction>();
+  case clang::frontend::EmitLLVMOnly:
+    return std::make_unique<clang::EmitLLVMOnlyAction>();
+  case clang::frontend::EmitCodeGenOnly:
+    return std::make_unique<clang::EmitCodeGenOnlyAction>();
+  case clang::frontend::EmitObj:
+    return std::make_unique<clang::EmitObjAction>();
+  case clang::frontend::GeneratePCH:
+    return std::make_unique<clang::GeneratePCHAction>();
+  case clang::frontend::InitOnly:
+    return std::make_unique<clang::InitOnlyAction>();
+  case clang::frontend::ParseSyntaxOnly:
+    return std::make_unique<clang::SyntaxOnlyAction>();
+  case clang::frontend::PrintPreprocessedInput:
+    return std::make_unique<clang::PrintPreprocessedAction>();
+  case clang::frontend::RunPreprocessorOnly:
+    return std::make_unique<clang::PreprocessOnlyAction>();
+  case clang::frontend::DumpTokens:
+    return std::make_unique<clang::DumpTokensAction>();
+  case clang::frontend::ASTDump:
+    return std::make_unique<clang::ASTDumpAction>();
+  case clang::frontend::DumpCompilerOptions:
+    return std::make_unique<clang::DumpCompilerOptionsAction>();
+  // Modules and inspection, for C++ and Objective-C builds too (RFC 0038,
+  // amendment 27).
+  case clang::frontend::GenerateModule:
+    return std::make_unique<clang::GenerateModuleFromModuleMapAction>();
+  case clang::frontend::GenerateModuleInterface:
+    return std::make_unique<clang::GenerateModuleInterfaceAction>();
+  case clang::frontend::GenerateReducedModuleInterface:
+    return std::make_unique<clang::GenerateReducedModuleInterfaceAction>();
+  case clang::frontend::GenerateHeaderUnit:
+    return std::make_unique<clang::GenerateHeaderUnitAction>();
+  case clang::frontend::ModuleFileInfo:
+    return std::make_unique<clang::DumpModuleInfoAction>();
+  case clang::frontend::VerifyPCH:
+    return std::make_unique<clang::VerifyPCHAction>();
+  case clang::frontend::ASTDeclList:
+    return std::make_unique<clang::ASTDeclListAction>();
+  case clang::frontend::ASTPrint:
+    return std::make_unique<clang::ASTPrintAction>();
+  case clang::frontend::ASTView:
+    return std::make_unique<clang::ASTViewAction>();
+  case clang::frontend::DumpRawTokens:
+    return std::make_unique<clang::DumpRawTokensAction>();
+  case clang::frontend::TemplightDump:
+    return std::make_unique<clang::TemplightDumpAction>();
+  case clang::frontend::PrintPreamble:
+    return std::make_unique<clang::PrintPreambleAction>();
+  case clang::frontend::PrintDependencyDirectivesSourceMinimizerOutput:
+    return std::make_unique<
+        clang::PrintDependencyDirectivesSourceMinimizerAction>();
+  default:
+    llvm::errs() << "weavec-cc: error: this job's action (static analysis, "
+                    "rewriting, a plug-in) is not in weavec-cc\n";
+    return nullptr;
+  }
+}
+
+/// An object inside this executable, for finding it (its address only).
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+static int executableAnchor = 0;
 
 /// Whether `action` generates code, so that the guard pass runs.
 static bool isCodeGenAction(clang::frontend::ActionKind action) {
@@ -393,11 +490,12 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   bool success = clang::CompilerInvocation::CreateFromArgs(
       compiler->getInvocation(), cc1Args, parseDiags, argv0);
 
-  // The driver passes -resource-dir; a hand-written cc1 line may not. Clang
-  // would guess relative to this executable, which is wrong for us.
+  // The driver passes -resource-dir; a hand-written cc1 line may not: the
+  // toolchain's, beside this executable (RFC 0038 §6).
   clang::HeaderSearchOptions &headers = compiler->getHeaderSearchOpts();
   if (headers.UseBuiltinIncludes && headers.ResourceDir.empty())
-    headers.ResourceDir = getClangResourceDir();
+    headers.ResourceDir = clang::GetResourcesPath(
+        llvm::sys::fs::getMainExecutable(argv0, &executableAnchor));
 
   compiler->createDiagnostics();
   if (!compiler->hasDiagnostics())
@@ -426,14 +524,12 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
 
   // WeaveC guards C. Anything else is Clang's alone.
   const clang::LangOptions &lang = compiler->getLangOpts();
-  if (!weavec.enabled || lang.CPlusPlus || lang.ObjC || lang.OpenCL ||
-      lang.CUDA)
-    return clang::ExecuteCompilerInvocation(compiler.get()) ? 0 : 1;
-
-  std::unique_ptr<clang::FrontendAction> inner =
-      clang::CreateFrontendAction(*compiler);
+  std::unique_ptr<clang::FrontendAction> inner = createAction(*compiler);
   if (!inner)
     return 1;
+  if (!weavec.enabled || lang.CPlusPlus || lang.ObjC || lang.OpenCL ||
+      lang.CUDA)
+    return compiler->ExecuteAction(*inner) ? 0 : 1;
   if (inner->usesPreprocessorOnly()) {
     // The same macros as the compile that follows (ccache's preprocessor
     // mode, Autoconf's CPP checks).
@@ -476,23 +572,14 @@ static bool looksLikeSource(llvm::StringRef arg) {
          clang::driver::types::isSrcFile(type);
 }
 
-static int delegateToClang(llvm::ArrayRef<const char *> argv) {
-  const std::string clang = getClangExecutable();
-  if (clang.empty()) {
-    llvm::errs() << "weavec-cc: error: cannot find a clang binary to run '"
-                 << argv[1] << "' (set WEAVEC_CLANG)\n";
-    return 1;
-  }
-  std::vector<llvm::StringRef> args;
-  args.emplace_back(clang);
-  for (const char *arg : argv.drop_front())
-    args.emplace_back(arg);
-  std::string error;
-  const int rc =
-      llvm::sys::ExecuteAndWait(clang, args, std::nullopt, {}, 0, 0, &error);
-  if (!error.empty())
-    llvm::errs() << "weavec-cc: error: " << error << '\n';
-  return rc;
+/// Whether `arg` is an assembly source (`.s`, `.S`, `.sx`), which Clang's
+/// integrated assembler (`-cc1as`, a tool Clang does not ship as a library)
+/// would assemble.
+static bool looksLikeAssembly(llvm::StringRef arg) {
+  if (arg.starts_with("-"))
+    return false;
+  const llvm::StringRef ext = llvm::sys::path::extension(arg);
+  return ext == ".s" || ext == ".S" || ext == ".sx";
 }
 
 static void printVersion(llvm::raw_ostream &os) {
@@ -500,7 +587,9 @@ static void printVersion(llvm::raw_ostream &os) {
      << WEAVEC_GIT_REVISION;
   if (WEAVEC_GIT_DIRTY)
     os << "-dirty";
-  os << ")\n  built with LLVM " << WEAVEC_LLVM_VERSION_STRING << "\n";
+  os << ")\n  built with LLVM " << WEAVEC_LLVM_VERSION_STRING << "\n"
+     << "  runtime ABI " << WEAVEC_RUNTIME_ABI << ", for "
+     << llvm::sys::getProcessTriple() << "\n";
 }
 
 /// The ledgers one invocation writes: one per compile job of a C source.
@@ -523,20 +612,11 @@ static std::size_t countLedgers(const clang::driver::Compilation &compilation) {
   return count;
 }
 
-/// RFC 0033 §10: the driver names `<weavec-cc>/../lib/libLTO.dylib`, which
-/// a WeaveC install does not have. The link then uses the libLTO of the
-/// LLVM WeaveC was built with, which reads the bitcode its own compiler
-/// writes (the system linker's own cannot read a newer LLVM's), or, when
-/// that LLVM has none, the linker's own.
+/// RFC 0033 §10, RFC 0038 amendment 22: the driver names
+/// `<weavec-cc>/../lib/libLTO.dylib`, which a toolchain carries (LLVM's,
+/// which reads the bitcode weavec-cc writes); a tree without one links with
+/// the linker's own.
 static void replaceMissingLtoLibrary(clang::driver::Compilation &compilation) {
-  std::string ownLto;
-  if (const std::string clang = getClangExecutable(); !clang.empty()) {
-    llvm::SmallString<256> path(
-        llvm::sys::path::parent_path(llvm::sys::path::parent_path(clang)));
-    llvm::sys::path::append(path, "lib", "libLTO.dylib");
-    if (llvm::sys::fs::exists(path))
-      ownLto = path.str().str();
-  }
   for (clang::driver::Command &job : compilation.getJobs()) {
     if (job.getSource().getKind() != clang::driver::Action::LinkJobClass)
       continue;
@@ -548,10 +628,6 @@ static void replaceMissingLtoLibrary(clang::driver::Compilation &compilation) {
           !llvm::sys::fs::exists(old[i + 1])) {
         changed = true;
         ++i;
-        if (!ownLto.empty()) {
-          args.push_back("-lto_library");
-          args.push_back(compilation.getArgs().MakeArgString(ownLto));
-        }
         continue;
       }
       args.push_back(old[i]);
@@ -614,52 +690,113 @@ static bool wantsFortification(llvm::ArrayRef<const char *> args) {
   return optimizes && target.isOSLinux() && target.isGNUEnvironment();
 }
 
-/// RFC 0035 §7: adds the runtime archives to every link job, before the
-/// first library on its line (a linker takes a symbol from the first
-/// library that defines it, and scans an archive only for what is undefined
-/// so far):
+/// RFC 0038 amendment 23: the rpath a link records by default, the runtime's
+/// directory, or what its `default-rpath` file says: a package whose tree
+/// lives under a versioned path (Homebrew's Cellar) names its stable one.
+static std::string defaultRpath(llvm::StringRef directory) {
+  llvm::SmallString<256> file(directory);
+  llvm::sys::path::append(file, "default-rpath");
+  if (llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> text =
+          llvm::MemoryBuffer::getFile(file)) {
+    const llvm::StringRef line = (*text)->getBuffer().split('\n').first.trim();
+    if (!line.empty())
+      return line.str();
+  }
+  return directory.str();
+}
+
+/// Whether the command line links a static program (`-static`,
+/// `-static-pie`).
+static bool linksStatically(llvm::ArrayRef<const char *> args) {
+  return llvm::any_of(args.drop_front(), [](const char *arg) {
+    const llvm::StringRef text(arg);
+    return text == "-static" || text == "-static-pie";
+  });
+}
+
+/// RFC 0038 §1: adds the runtime's library to every link job, before the
+/// first library on its line, so that the image depends on it before the C
+/// library and the loader gives the process one runtime:
 ///
-///   libweavec_alloc.a  the image's allocator, forced in by `-u malloc`
-///   libweavec_rt.a     the shadow, the guards' slow paths and the reports
+///   Darwin  <rt>/libweavec_rt.dylib, -rpath <rt>, <rt>/libweavec_rt.a
+///   Linux   <rt>/libweavec_rt.so (soname libweavec_rt.so.<abi>), -rpath
+///           <rt>, <rt>/libweavec_rt.a and -lpthread; a static program
+///           takes libweavec_rt.a alone
 ///
-/// The archives are host code, so they are added only when the link targets
-/// the host.
+/// `<rt>` is the toolchain's runtime directory, and the rpath what
+/// -fweavec-rpath says. The library is host code, so it is added only when
+/// the link targets the host.
 static bool addRuntimeLibraries(clang::driver::Compilation &compilation,
-                                const char *argv0, void *mainAddress) {
+                                const char *argv0, void *mainAddress,
+                                const DriverOptions &weavec, bool linkStatic) {
   const llvm::Triple target = compilation.getDefaultToolChain().getTriple();
   const llvm::Triple host(llvm::sys::getProcessTriple());
   if (target.getArch() != host.getArch() || target.getOS() != host.getOS())
     return true;
-  const std::string runtime =
-      findRuntimeLibrary(argv0, mainAddress, "libweavec_rt.a");
-  const std::string allocator =
-      findRuntimeLibrary(argv0, mainAddress, "libweavec_alloc.a");
-  if (runtime.empty() || allocator.empty()) {
-    llvm::errs() << "weavec-cc: error: cannot find the WeaveC runtime "
-                    "(libweavec_rt.a, libweavec_alloc.a), which an enforcing "
-                    "link carries (-fweavec-checks=none builds without it)\n";
+  const bool archive = linkStatic && !target.isOSDarwin();
+  const char *name = "libweavec_rt.so";
+  if (target.isOSDarwin())
+    name = "libweavec_rt.dylib";
+  else if (archive)
+    name = "libweavec_rt.a";
+  const std::string runtime = findRuntimeLibrary(argv0, mainAddress, name);
+  if (runtime.empty()) {
+    llvm::errs() << "weavec-cc: error: cannot find the WeaveC runtime (" << name
+                 << "), which an enforcing link carries "
+                    "(-fweavec-checks=none builds without it)\n";
     return false;
   }
   const auto owned = [&compilation](const std::string &text) {
     return compilation.getArgs().MakeArgString(text);
   };
+  const std::string rpath = weavec.rpath.value_or(
+      defaultRpath(llvm::sys::path::parent_path(runtime)));
+  // After the shared library, its archive: no member is taken, since the
+  // library defines every entry point, but a build system that copies a C
+  // compiler's implicit libraries into another language's link (CMake's
+  // mixed C and C++ targets, linked by c++) finds it there, and that program
+  // carries the runtime itself.
+  const std::string fallback =
+      archive ? std::string()
+              : findRuntimeLibrary(argv0, mainAddress, "libweavec_rt.a");
   for (clang::driver::Command &job : compilation.getJobs()) {
     if (job.getSource().getKind() != clang::driver::Action::LinkJobClass)
       continue;
     const llvm::opt::ArgStringList &old = job.getArguments();
-    llvm::opt::ArgStringList added;
-    added.push_back("-u");
-    added.push_back(target.isOSDarwin() ? "_malloc" : "malloc");
-    added.push_back(owned(allocator));
-    added.push_back(owned(runtime));
-    if (target.isOSLinux() && !target.isAndroid())
-      added.push_back("-lpthread");
+    // A relocatable link (`-r`) makes an object, not an image.
+    if (llvm::is_contained(old, llvm::StringRef("-r")))
+      continue;
     // The first library of the line: `-l<name>`, which Darwin's
     // `-lto_library <path>` is not.
     const auto *const firstLibrary = llvm::find_if(old, [](const char *arg) {
       const llvm::StringRef text(arg);
       return text.starts_with("-l") && text != "-lto_library";
     });
+    // The archive must not be loaded whole, or the image would carry a
+    // second runtime (RFC 0038, amendment 20): outside an ELF line's
+    // --whole-archive, and not at all under ld64's -all_load.
+    bool whole = false;
+    for (const char *arg : llvm::make_range(old.begin(), firstLibrary)) {
+      const llvm::StringRef text = llvm::StringRef(arg).ltrim('-');
+      if (text == "whole-archive" || text == "no-whole-archive")
+        whole = text == "whole-archive";
+    }
+    const bool loadsAll = llvm::is_contained(old, llvm::StringRef("-all_load"));
+    llvm::opt::ArgStringList added;
+    added.push_back(owned(runtime));
+    if (!archive && !rpath.empty()) {
+      added.push_back("-rpath");
+      added.push_back(owned(rpath));
+    }
+    if (!fallback.empty() && !loadsAll) {
+      if (whole)
+        added.push_back("--no-whole-archive");
+      added.push_back(owned(fallback));
+      if (whole)
+        added.push_back("--whole-archive");
+    }
+    if (target.isOSLinux() && !target.isAndroid())
+      added.push_back("-lpthread");
     llvm::opt::ArgStringList args(old.begin(), firstLibrary);
     args.append(added.begin(), added.end());
     args.append(firstLibrary, old.end());
@@ -738,79 +875,54 @@ static bool anyGlobalDefinition(const llvm::object::SymbolicFile &file,
   return false;
 }
 
-/// The first input of a link, an object or a member of an archive, that
-/// defines the allocator itself; empty when none does. The allocator is what
-/// libweavec_alloc.a defines strongly: a second definition of one of those
-/// could not be linked with it.
-static std::string allocatorDefinedBy(const clang::driver::Command &link,
-                                      const std::string &ownAllocator) {
-  llvm::StringSet<> allocator;
-  (void)anyRelocatableObject(
-      ownAllocator, [&](const llvm::object::SymbolicFile &file) {
-        return anyGlobalDefinition(file,
-                                   [&](const std::string &name, bool weak) {
-                                     if (!weak)
-                                       allocator.insert(name);
-                                     return false;
-                                   });
-      });
-  if (allocator.empty())
-    return {};
+/// A program that defines the allocator keeps it: the loader binds
+/// `malloc` to the program's definition before the runtime's. Says so once,
+/// naming the first input of the link, an object or a member of an archive,
+/// that defines `malloc` strongly.
+static void noteProgramAllocator(const clang::driver::Command &link,
+                                 const llvm::Triple &target) {
+  const llvm::StringRef malloc = target.isOSDarwin() ? "_malloc" : "malloc";
   for (const clang::driver::InputInfo &input : link.getInputInfos()) {
     if (!input.isFilename())
       continue;
     const std::string path = input.getFilename();
-    if (path == ownAllocator)
-      continue;
     const bool defines =
         anyRelocatableObject(path, [&](const llvm::object::SymbolicFile &file) {
-          return anyGlobalDefinition(
-              file, [&](const std::string &name, bool /*weak*/) {
-                return allocator.contains(name);
-              });
+          return anyGlobalDefinition(file,
+                                     [&](const std::string &name, bool weak) {
+                                       return !weak && name == malloc;
+                                     });
         });
-    if (defines)
-      return path;
-  }
-  return {};
-}
-
-/// A program that defines the allocator keeps it. Takes libweavec_alloc.a
-/// (and the `-u` that forces it) off the link line, and says once what that
-/// means.
-static void dropAllocatorIfDefined(clang::driver::Command &link) {
-  const llvm::opt::ArgStringList &old = link.getArguments();
-  const auto *const own = llvm::find_if(old, [](const char *arg) {
-    return llvm::sys::path::filename(arg) == "libweavec_alloc.a";
-  });
-  if (own == old.end())
-    return;
-  const std::string definer = allocatorDefinedBy(link, *own);
-  if (definer.empty())
-    return;
-  llvm::opt::ArgStringList args;
-  for (const auto *it = old.begin(); it != old.end(); ++it) {
-    // `-u <malloc>` is the two arguments before the archive.
-    if (it + 2 == own && llvm::StringRef(*it) == "-u") {
-      ++it;
-      continue;
+    if (defines) {
+      llvm::errs() << "weavec-cc: note: '" << path
+                   << "' defines the allocator, which serves the program "
+                      "instead of the WeaveC runtime's: the heap is "
+                      "untracked, guards pass on it and releases are not "
+                      "validated\n";
+      return;
     }
-    if (it == own)
-      continue;
-    args.push_back(*it);
   }
-  link.replaceArguments(args);
-  llvm::errs() << "weavec-cc: note: '" << definer
-               << "' defines the allocator, so the WeaveC runtime's is not "
-                  "linked: the heap is untracked, guards pass on it and "
-                  "releases are not validated\n";
 }
 
 int runCc1(llvm::ArrayRef<const char *> argv, const char *argv0) {
   return runCc1Job(argv, argv0);
 }
 
-int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
+int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
+  // RFC 0038 amendment 24: response files (`@file`) expanded first, as
+  // Clang's own driver does, so that what is read below (sources, assembly,
+  // the sysroot) sees their arguments.
+  llvm::BumpPtrAllocator responseStorage;
+  llvm::SmallVector<const char *, 64> expanded(commandLine.begin(),
+                                               commandLine.end());
+  if (llvm::Error error = llvm::cl::ExpansionContext(
+                              responseStorage, llvm::cl::TokenizeGNUCommandLine)
+                              .expandResponseFiles(expanded)) {
+    llvm::errs() << "weavec-cc: error: " << llvm::toString(std::move(error))
+                 << '\n';
+    return 1;
+  }
+  const llvm::ArrayRef<const char *> argv = expanded;
   // RFC 0033 §10: printed after everything Clang prints for `--version`.
   struct VersionTrailer {
     bool print = false;
@@ -826,8 +938,13 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
     const llvm::StringRef mode = argv[1];
     if (mode == "-cc1")
       return runCc1(argv.drop_front(2), argv[0]);
-    if (mode.starts_with("-cc1"))
-      return delegateToClang(argv);
+    if (mode.starts_with("-cc1")) {
+      llvm::errs() << "weavec-cc: error: '" << mode
+                   << "' is Clang's tool, which weavec-cc does not include; "
+                      "assembly sources are assembled by the system "
+                      "assembler\n";
+      return 1;
+    }
   }
 
   const std::string executable =
@@ -841,6 +958,10 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
   bool printJobsOnly = false;
   bool hasSysroot = false;
   bool hasSource = false;
+  // RFC 0038 §6: an assembly source, or a compile that keeps its assembly,
+  // goes through the system assembler (`-cc1as` is not in Clang's
+  // libraries).
+  bool assembles = false;
   clangArgs.push_back(argv[0]);
   for (const char *arg : argv.drop_front()) {
     std::string error;
@@ -864,6 +985,11 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
       printJobsOnly = true;
     if (text.starts_with("-isysroot") || text.starts_with("--sysroot"))
       hasSysroot = true;
+    if (looksLikeAssembly(text) || text.starts_with("-save-temps") ||
+        (llvm::StringRef(clangArgs.back()) == "-x" &&
+         text.starts_with("assembler")) ||
+        text.starts_with("-xassembler"))
+      assembles = true;
     // A source file, or `-` (standard input) other than `-o`'s operand.
     if (looksLikeSource(text) ||
         (text == "-" && llvm::StringRef(clangArgs.back()) != "-o"))
@@ -885,6 +1011,10 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
     owned.push_back(std::move(arg));
     clangArgs.push_back(owned.back().c_str());
   };
+  if (assembles && llvm::none_of(clangArgs, [](const char *arg) {
+        return llvm::StringRef(arg).ends_with("integrated-as");
+      }))
+    add("-fno-integrated-as");
   if (hasSource) {
     // Every cc1 job gets WeaveC's flags back, `-fno-weavec` included.
     for (const std::string &flag : weavec.spellings) {
@@ -928,11 +1058,16 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
   driver.setTargetAndMode(
       clang::driver::ToolChain::getTargetAndModeFromProgramName("clang"));
   const auto cc1 = [](llvm::SmallVectorImpl<const char *> &args) {
+    // A job of a tool Clang does not ship as a library (`-cc1as`).
+    if (args.size() < 2 || llvm::StringRef(args[1]) != "-cc1") {
+      llvm::errs() << "weavec-cc: error: '" << (args.size() < 2 ? "" : args[1])
+                   << "' is Clang's tool, which weavec-cc does not include; "
+                      "pass -fno-integrated-as\n";
+      return 1;
+    }
     return runCc1Job(llvm::ArrayRef(args).drop_front(2), args[0]);
   };
   driver.CC1Main = cc1;
-  if (const std::string resources = getClangResourceDir(); !resources.empty())
-    driver.ResourceDir = resources;
 
   initializeTargets();
   const std::unique_ptr<clang::driver::Compilation> compilation(
@@ -950,7 +1085,8 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
     }
   }
   if (weavec.enforces() &&
-      !addRuntimeLibraries(*compilation, argv[0], mainAddress))
+      !addRuntimeLibraries(*compilation, argv[0], mainAddress, weavec,
+                           linksStatically(clangArgs)))
     return 1;
   const bool links = llvm::any_of(
       compilation->getJobs(), [](const clang::driver::Command &job) {
@@ -974,11 +1110,11 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
   }
 
   int status = 0;
-  for (clang::driver::Command &job : compilation->getJobs()) {
+  for (const clang::driver::Command &job : compilation->getJobs()) {
     // The objects exist now: a program-defined allocator is visible.
     if (job.getSource().getKind() == clang::driver::Action::LinkJobClass &&
         weavec.enforces())
-      dropAllocatorIfDefined(job);
+      noteProgramAllocator(job, compilation->getDefaultToolChain().getTriple());
     const clang::driver::Command *failing = nullptr;
     const int rc = compilation->ExecuteCommand(job, failing);
     if (rc != 0) {

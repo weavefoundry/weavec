@@ -1,93 +1,105 @@
 ---
 title: Installation
-description: Build and install WeaveC from source on macOS or Linux using LLVM, Clang, CMake, and Ninja.
+description: Install WeaveC from a release toolchain, Homebrew or the container image on macOS or Linux, or build it from source.
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-WeaveC currently ships source releases. Build it against an LLVM/Clang development installation, and keep that LLVM installation available at run time: `weavec-cc` uses its Clang resources and linker. The CI-tested platforms are macOS and Linux. The runtime that `weavec-cc` links into the programs it builds supports 64-bit macOS and Linux targets; for any other target `weavec-cc` builds without it.
+Each release publishes a self-contained toolchain for **macOS on Apple silicon** (macOS 14 or later) and for **Linux on x86-64 and AArch64** (glibc 2.35 or later: Ubuntu 22.04, Debian 12, Fedora 36 and later). A toolchain is one directory: `weavec-cc`, WeaveC's runtime, and Clang's headers and builtins. It needs no LLVM installation, only the platform's linker, C library headers and start-up files, and it may be moved anywhere. The runtime that `weavec-cc` links into the programs it builds supports 64-bit macOS and Linux targets; for any other target `weavec-cc` builds without it.
 
-## 1. Install the toolchain
-
-You need **CMake 3.25 or newer** for the supplied presets, Ninja, a C++20 compiler, and the LLVM/Clang development libraries. LLVM **23.x** is recommended; the project supports LLVM **20 and newer**. Tests also require `lit` and LLVM's `FileCheck`.
+## 1. Install the platform's C toolchain
 
 <Tabs>
 <TabItem label="macOS">
 
 ```sh
-brew install cmake llvm ninja lit
-export WEAVEC_LLVM_PREFIX="$(brew --prefix llvm)"
+xcode-select --install
 ```
 
-Apple's system Clang can compile WeaveC, but the development libraries come from Homebrew's LLVM package. Xcode does not include them.
+The Command Line Tools provide the linker, the SDK's headers and the system assembler.
 
 </TabItem>
 <TabItem label="Ubuntu / Debian">
 
-Install LLVM from the [official LLVM packages](https://apt.llvm.org/) for your distribution. Review the installer before running it with elevated privileges:
-
 ```sh
-wget https://apt.llvm.org/llvm.sh
-less llvm.sh
-sudo bash llvm.sh 23 all
-sudo apt-get install -y cmake ninja-build python3-venv
-python3 -m venv .venv
-. .venv/bin/activate
-pip install lit==23.1.0
-export WEAVEC_LLVM_PREFIX=/usr/lib/llvm-23
-export CC=clang-23 CXX=clang++-23
+sudo apt-get install -y build-essential
 ```
 
-Check `cmake --version`; older distributions may need a newer CMake installation to use the presets.
+`build-essential` provides the linker (`ld`), the assembler, and the C library's headers and start-up files.
 
 </TabItem>
 </Tabs>
 
-## 2. Get a release
+## 2. Install WeaveC
 
-Download the source archive and `SHA256SUMS` from [GitHub Releases](https://github.com/weavefoundry/weavec/releases) into the same directory. Verify the archive with one of:
+<Tabs>
+<TabItem label="Release archive">
 
-```sh
-shasum -a 256 -c SHA256SUMS  # macOS
-sha256sum -c SHA256SUMS     # Linux
-```
-
-Extract `weavec-X.Y.Z-source.tar.gz`, replacing `X.Y.Z` with the downloaded version, and enter its `weavec-X.Y.Z` directory.
-
-For development, you can instead clone the current source:
+Download `weavec-X.Y.Z-<os>-<arch>.tar.xz` for your platform (`darwin-arm64`, `linux-x86_64` or `linux-aarch64`) and `SHA256SUMS` from [GitHub Releases](https://github.com/weavefoundry/weavec/releases) into one directory, check the archive, unpack it and put its `bin` on `PATH`:
 
 ```sh
-git clone https://github.com/weavefoundry/weavec.git
-cd weavec
+shasum -a 256 --ignore-missing -c SHA256SUMS   # sha256sum --ignore-missing -c on Linux
+tar -xJf weavec-X.Y.Z-linux-x86_64.tar.xz -C "$HOME/.local/opt"
+export PATH="$HOME/.local/opt/weavec-X.Y.Z-linux-x86_64/bin:$PATH"
 ```
 
-## 3. Build, test, and install
-
-Run these commands from the source directory:
+On macOS, remove the quarantine attribute a browser sets on the download before the first run; the toolchain is not yet notarized:
 
 ```sh
-cmake --preset release -DWEAVEC_VERSION_SUFFIX=""
-cmake --build --preset release
-ctest --preset release
-cmake --install build/release --prefix "$HOME/.local"
-export PATH="$HOME/.local/bin:$PATH"
+xattr -dr com.apple.quarantine weavec-X.Y.Z-darwin-arm64
 ```
 
-The install puts `weavec-cc` in `bin/`, and `weavec.h` (under `lib/weavec/include/`) and the runtime archives (`libweavec_rt.a`, `libweavec_alloc.a`) under `lib/weavec/`. It also installs WeaveC's C++ libraries, their headers and a CMake package, which compiling C programs does not need. `weavec-cc` finds the archives relative to its own location, so move the prefix as a whole. Add the PATH export to your shell configuration to retain it in new terminals. Use the [developer guide](/contributing/development/) for debug builds, alternative LLVM installations, and build options.
+Add the `PATH` export to your shell configuration to keep it in new terminals.
 
-## 4. Verify the installation
+</TabItem>
+<TabItem label="Homebrew">
+
+```sh
+brew install weavefoundry/tap/weavec
+```
+
+</TabItem>
+<TabItem label="Container">
+
+```sh
+docker run --rm -v "$PWD:/src" ghcr.io/weavefoundry/weavec:X.Y.Z weavec-cc -O2 main.c -o main
+```
+
+The image is Ubuntu 24.04 with the toolchain on `PATH`, `CC=weavec-cc` and `build-essential`, for linux/amd64 and linux/arm64.
+
+</TabItem>
+</Tabs>
+
+The tree holds `bin/weavec-cc`, WeaveC's files in `lib/weavec/` (`weavec.h` under `include/`, the runtime's library `libweavec_rt.<abi>.dylib` or `libweavec_rt.so.<abi>`, and on Linux `libweavec_rt.a` for static programs), and Clang's headers and builtins in `lib/clang/<major>/`; on macOS `lib/weavec/llvm/` holds the LLVM libraries `weavec-cc` loads. `weavec-cc` finds all of them from its own location, so move the tree as a whole.
+
+A program `weavec-cc` builds loads `libweavec_rt` from the toolchain at run time. To run it elsewhere, ship the library with it (see [build integration](/guides/build-integration/)).
+
+## 3. Verify the installation
 
 ```sh
 weavec-cc --version
 ```
 
-It prints Clang's version, then `weavec-cc version X.Y.Z` and the LLVM version it was built with. To check that the runtime links, compile and run an empty program:
+It prints Clang's version, then `weavec-cc version X.Y.Z`, the LLVM version it was built with, and the runtime's interface version and platform. To check that the runtime links, compile and run an empty program:
 
 ```sh
 printf 'int main(void) { return 0; }\n' > empty.c
 weavec-cc empty.c -o empty && ./empty && echo ok
 ```
 
-It should print `ok` with no note about building without the WeaveC runtime. If Clang resources or shared libraries cannot be found, check [installation troubleshooting](/reference/troubleshooting/).
+It should print `ok` with no note about building without the WeaveC runtime. If something cannot be found, check [troubleshooting](/reference/troubleshooting/).
+
+## Building from source
+
+Building needs **CMake 3.25 or newer**, Ninja, a C++20 compiler, and an LLVM/Clang development installation (LLVM **23.x** recommended, **20 and newer** supported); the tests also need `lit` and LLVM's `FileCheck`. On macOS, `brew install cmake llvm ninja lit` and `export WEAVEC_LLVM_PREFIX="$(brew --prefix llvm)"`; on Ubuntu, the [official LLVM packages](https://apt.llvm.org/) (`sudo bash llvm.sh 23 all`, then `WEAVEC_LLVM_PREFIX=/usr/lib/llvm-23 CC=clang-23 CXX=clang++-23`). Then, from a source archive or a clone:
+
+```sh
+cmake --preset release -DWEAVEC_VERSION_SUFFIX=""
+cmake --build --preset release
+ctest --preset release
+cmake --install build/release --prefix "$HOME/.local/opt/weavec"
+```
+
+The `release` preset builds a self-contained toolchain (`WEAVEC_SELF_CONTAINED`: LLVM linked statically on Linux, its libraries copied into the tree on macOS); `cpack` in `build/release` packs it as a release archive. The [developer guide](/contributing/development/) covers debug builds, other LLVM installations and the build options.
 
 **Next:** [Run your first check](/getting-started/first-check/).

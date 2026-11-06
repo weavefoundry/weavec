@@ -35,6 +35,7 @@
 
 #include "weavec_rt.h"
 
+#include <dlfcn.h>
 #include <execinfo.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -46,7 +47,10 @@
 #endif
 #include <string.h>
 #include <unistd.h>
-#if !defined(__APPLE__)
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#else
+#include <link.h>
 #include <sys/auxv.h>
 #endif
 
@@ -389,8 +393,7 @@ __attribute__((destructor)) static void printStats(void) {
       "sweeps"};
   const char *value = getenv("WEAVEC_RT_STATS");
   int i;
-  /* (The owner's counters count every image's work.) */
-  if (weavecRtForward() != 0 || value == NULL || strcmp(value, "1") != 0)
+  if (value == NULL || strcmp(value, "1") != 0)
     return;
   for (i = 0; i < WeavecRtStatCount; ++i) {
     char text[128];
@@ -441,6 +444,102 @@ __attribute__((destructor)) static void printStats(void) {
   }
 }
 
+/*===-- One runtime per process (RFC 0038 section 1) -----------------------===*/
+
+static int isRuntime(const char *path) {
+  const char *slash = path != NULL ? strrchr(path, '/') : NULL;
+  const char *name = slash != NULL ? slash + 1 : path;
+  return name != NULL && strncmp(name, "libweavec_rt.", 13) == 0;
+}
+
+#if !defined(__APPLE__)
+struct OtherRuntime {
+  uintptr_t own;
+  const char *found;
+};
+
+static int findOtherRuntime(struct dl_phdr_info *info, size_t size,
+                            void *data) {
+  struct OtherRuntime *search = (struct OtherRuntime *)data;
+  (void)size;
+  if (info->dlpi_addr != search->own && isRuntime(info->dlpi_name))
+    search->found = info->dlpi_name;
+  return search->found != NULL;
+}
+#endif
+
+/* Another runtime's image in the process, or null. */
+static const char *otherRuntime(const Dl_info *own) {
+#if defined(__APPLE__)
+  uint32_t i;
+  for (i = 0; i < _dyld_image_count(); ++i)
+    if ((const void *)_dyld_get_image_header(i) != own->dli_fbase &&
+        isRuntime(_dyld_get_image_name(i)))
+      return _dyld_get_image_name(i);
+  return NULL;
+#else
+  struct OtherRuntime search = {(uintptr_t)own->dli_fbase, NULL};
+  (void)dl_iterate_phdr(findOtherRuntime, &search);
+  return search.found;
+#endif
+}
+
+/* Two runtimes would mean two shadows and two heaps: images built by two
+ * WeaveC versions, which the loader cannot reconcile, stop here. A process
+ * whose allocator is another's (a guarded library loaded by a program
+ * weavec-cc did not link, on Linux) is told so once. */
+__attribute__((constructor)) static void checkProcess(void) {
+  Dl_info own;
+  const char *other;
+  char text[1024];
+  struct Line line = {text, text + sizeof text - 1};
+  if (dladdr((const void *)checkProcess, &own) == 0 || own.dli_fname == NULL)
+    return;
+  other = otherRuntime(&own);
+  /* A copy of the archive in an image another driver linked (RFC 0038
+   * amendment 11) has another shadow descriptor than the one the process
+   * resolves. */
+  if (other == NULL) {
+    Dl_info where;
+    const void *shadow = dlsym(RTLD_DEFAULT, "__weavec_rt_shadow");
+    if (shadow != NULL && shadow != (const void *)&__weavec_rt_shadow &&
+        dladdr(shadow, &where) != 0)
+      other = where.dli_fname;
+  }
+  if (other != NULL) {
+    put(&line, "weavec: error: two WeaveC runtimes in one process (");
+    put(&line, other);
+    put(&line, " and ");
+    put(&line, own.dli_fname);
+    put(&line, "): build every image with one weavec-cc");
+    emit(text, finish(&line, text));
+    _exit(127);
+  }
+#if !defined(__APPLE__)
+  {
+    const char *notes = getenv("WEAVEC_RT_NOTES");
+    void *found = dlsym(RTLD_DEFAULT, "malloc");
+    Dl_info where;
+    Dl_info program;
+    if ((notes != NULL && strcmp(notes, "0") == 0) || found == NULL ||
+        dladdr(found, &where) == 0 || where.dli_fbase == own.dli_fbase)
+      return;
+    /* A program that defines the allocator itself was told so when it was
+     * linked. */
+    if (dladdr((const void *)getauxval(AT_PHDR), &program) != 0 &&
+        program.dli_fbase == where.dli_fbase)
+      return;
+    put(&line, "weavec: note: the program's allocator is not WeaveC's (");
+    put(&line, where.dli_fname != NULL ? where.dli_fname : "?");
+    put(&line, " serves it: the program was not linked by weavec-cc): heap "
+               "accesses are not checked; preload ");
+    put(&line, own.dli_fname);
+    put(&line, " to check them");
+    emit(text, finish(&line, text));
+  }
+#endif
+}
+
 /*===-- Faults (RFC 0037 section 6) ----------------------------------------===*/
 
 /* The faulting instruction's address and, where the context says, whether
@@ -466,10 +565,23 @@ static uintptr_t faultPc(const void *context, int *write) {
 #endif
 }
 
+/* RFC 0038 section 4: the default disposition, set here rather than left to
+ * SA_RESETHAND, which a program that saved and restored this handler has
+ * dropped (Python's faulthandler): raising the signal again under this
+ * handler would never end. */
+static void raiseDefault(int signal) {
+  struct sigaction action;
+  memset(&action, 0, sizeof action);
+  action.sa_handler = SIG_DFL;
+  sigemptyset(&action.sa_mask);
+  (void)sigaction(signal, &action, NULL);
+  (void)raise(signal);
+}
+
 /* A fault the shadow did not see (a wild access, the inaccessible middle of
  * a huge block): one report, then the signal again under the default
- * disposition, now restored, which ends the program as it would have when
- * the handler returns (a signal sent, which no access would retry, too). */
+ * disposition, which ends the program as it would have when the handler
+ * returns (a signal sent, which no access would retry, too). */
 static void onFault(int signal, siginfo_t *info, void *context) {
   char text[256];
   struct Line line = {text, text + sizeof text - 1};
@@ -486,7 +598,7 @@ static void onFault(int signal, siginfo_t *info, void *context) {
   const int sent = info->si_code <= 0;
 #endif
   if (sent) {
-    (void)raise(signal);
+    raiseDefault(signal);
     return;
   }
   put(&line, "weavec: memory-fault at pc ");
@@ -501,7 +613,7 @@ static void onFault(int signal, siginfo_t *info, void *context) {
     void *frames[64];
     backtrace_symbols_fd(frames, backtrace(frames, 64), 2);
   }
-  (void)raise(signal);
+  raiseDefault(signal);
 }
 
 /* The handlers go where the disposition is the default, so that a program's
@@ -527,13 +639,6 @@ __attribute__((constructor)) static void watchFaults(void) {
 }
 
 void __weavec_rt_fatal(const char *what, const void *p, const char *why) {
-  {
-    const struct __weavec_rt_dispatch *owner = weavecRtForward();
-    if (owner != 0) {
-      owner->fatal(what, p, why);
-      __builtin_unreachable();
-    }
-  }
   char text[256];
   struct Line line = {text, text + sizeof text - 1};
   put(&line, "weavec: ");

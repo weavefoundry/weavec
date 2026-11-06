@@ -21,8 +21,7 @@ target_compile_definitions(
   weavecFrontend
   PRIVATE "WEAVEC_BUILD_RESOURCE_DIR=\"${WEAVEC_BUILD_RESOURCE_DIR}\""
           "WEAVEC_RESOURCE_DIR_RELATIVE=\"${WEAVEC_RESOURCE_DIR_RELATIVE}\""
-          "WEAVEC_CLANG_RESOURCE_DIR=\"${WEAVEC_CLANG_RESOURCE_DIR}\""
-          "WEAVEC_CLANG_EXECUTABLE=\"${WEAVEC_CLANG_EXECUTABLE}\"")
+          "WEAVEC_RUNTIME_ABI=${WEAVEC_RUNTIME_ABI}")
 
 weavec_link_llvm(
   weavecFrontend
@@ -37,7 +36,6 @@ weavec_link_llvm(
   TransformUtils)
 weavec_link_clang(
   weavecFrontend
-  clangFrontendTool
   clangFrontend
   clangCodeGen
   clangDriver

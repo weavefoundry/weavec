@@ -135,5 +135,31 @@ class ReleaseTest(unittest.TestCase):
         self.assertFalse((self.repo / "dist/SHA256SUMS").exists())
 
 
+
+class FormulaTest(unittest.TestCase):
+    """RFC 0038 section 6: the Homebrew formula names each platform's archive and checksum."""
+
+    def test_render(self):
+        import hashlib
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("render_formula", ROOT / "scripts" / "render-formula.py")
+        render = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(render)
+        with tempfile.TemporaryDirectory() as directory:
+            dist = Path(directory)
+            sums = {}
+            for target in ("darwin-arm64", "linux-x86_64", "linux-aarch64"):
+                archive = dist / f"weavec-1.2.3-{target}.tar.xz"
+                archive.write_bytes(target.encode())
+                sums[target] = hashlib.sha256(target.encode()).hexdigest()
+            formula = render.render("1.2.3", dist)
+            self.assertIn('version "1.2.3"', formula)
+            for target, digest in sums.items():
+                self.assertIn(f"/v1.2.3/weavec-1.2.3-{target}.tar.xz", formula)
+                self.assertIn(f'sha256 "{digest}"', formula)
+            (dist / "weavec-1.2.3-linux-aarch64.tar.xz").unlink()
+            with self.assertRaises(SystemExit):
+                render.render("1.2.3", dist)
+
 if __name__ == "__main__":
     unittest.main()

@@ -110,21 +110,11 @@ static std::optional<Ranged> rangeOf(llvm::CallInst &marker,
     return std::nullopt;
   const llvm::SCEV *at = evolution.getSCEV(marker.getArgOperand(0));
   // The root (as GuardExpand finds it), which must be there before the loop.
-  llvm::Value *root = nullptr;
-  if (auto *gep =
-          colors ? llvm::dyn_cast<llvm::GEPOperator>(marker.getArgOperand(0))
-                 : nullptr) {
-    llvm::Value *value = gep->getPointerOperand();
-    while (auto *inner =
-               llvm::dyn_cast<llvm::GEPOperator>(value->stripPointerCasts()))
-      value = inner->getPointerOperand();
-    value = value->stripPointerCasts();
-    if (!llvm::isa<llvm::Constant, llvm::IntToPtrInst>(value)) {
-      if (!loop.isLoopInvariant(value))
-        return std::nullopt;
-      root = value;
-    }
-  }
+  llvm::Value *root = colors ? colorRoot(marker.getArgOperand(0)) : nullptr;
+  if (root != nullptr && llvm::isa<llvm::Constant>(root))
+    root = nullptr;
+  if (root != nullptr && !loop.isLoopInvariant(root))
+    return std::nullopt;
   if (evolution.isLoopInvariant(at, &loop))
     return Ranged{.marker = &marker,
                   .start = at,

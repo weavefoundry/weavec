@@ -97,6 +97,13 @@ configure_file(include/weavec/Config/Version.h.in
 set(WEAVEC_RESOURCE_DIR_RELATIVE "lib/weavec")
 set(WEAVEC_BUILD_RESOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resources")
 
+# The runtime's interface version (RFC 0038, section 1): WEAVEC_RT_ABI in
+# runtime/weavec_rt.h, the library's soname and weavec-cc's --version.
+file(STRINGS runtime/weavec_rt.h _weavec_abi_line
+     REGEX "^#define WEAVEC_RT_ABI [0-9]+")
+string(REGEX REPLACE "^#define WEAVEC_RT_ABI ([0-9]+).*" "\\1"
+                     WEAVEC_RUNTIME_ABI "${_weavec_abi_line}")
+
 # ---------------------------------------------------------------------------
 # Components
 # ---------------------------------------------------------------------------
@@ -104,7 +111,7 @@ add_subdirectory(lib)
 
 if(WEAVEC_BUILD_TOOLS)
   add_subdirectory(tools)
-  # RFC 0035: libweavec_rt.a and libweavec_alloc.a.
+  # RFC 0038: the runtime's library, libweavec_rt.
   add_subdirectory(runtime)
 endif()
 

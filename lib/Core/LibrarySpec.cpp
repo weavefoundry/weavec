@@ -589,6 +589,16 @@ std::optional<LibraryParam> LibrarySpecParser::parseParam() {
       (flag == "bytes" ? param.bytes : param.count) = std::move(*value);
     } else if (flag == "str") {
       param.string = true;
+    } else if (flag == "scan") {
+      skipSpace();
+      if (pos < line->text.size() && line->text[pos] == '(') {
+        auto value = parenthesisedTerm(flag);
+        if (!value)
+          return std::nullopt;
+        param.scan = std::move(*value);
+      } else {
+        param.scan = LibTerm::constant(1);
+      }
     } else if (flag == "null-ok") {
       param.null = LibraryParam::Null::Allowed;
     } else if (flag == "null-if-zero") {
@@ -617,6 +627,10 @@ std::optional<LibraryParam> LibrarySpecParser::parseParam() {
   if (param.string && param.access != LibraryParam::Access::Read &&
       param.access != LibraryParam::Access::ReadWrite) {
     fail("'str' needs 'r' or 'rw'");
+    return std::nullopt;
+  }
+  if (param.scan && param.access != LibraryParam::Access::Read) {
+    fail("'scan' needs 'r'");
     return std::nullopt;
   }
   return param;
@@ -751,7 +765,7 @@ bool LibrarySpecParser::validateEntry(const LibraryEntry &entry) {
     const LibraryParam &param = entry.params[i];
     const std::string where = "parameter " + std::to_string(i);
     for (const std::optional<LibTerm> *value :
-         {&param.bytes, &param.count, &param.zeroTerm})
+         {&param.bytes, &param.count, &param.zeroTerm, &param.scan})
       if (*value && !validateTerm(entry, **value, where))
         return false;
     if (param.count && !entry.wide)
@@ -768,6 +782,16 @@ bool LibrarySpecParser::validateEntry(const LibraryEntry &entry) {
       (entry.format->format >= entry.params.size() ||
        (!entry.variadic && entry.format->first >= entry.params.size())))
     return fail("the format clause names an argument past the parameters");
+  // A scan ends where the result says (RFC 0038 §2), and a wrapper checks
+  // its arguments itself.
+  if (std::ranges::any_of(entry.params, [](const LibraryParam &param) {
+        return param.scan.has_value();
+      })) {
+    if (entry.result == LibraryEntry::Result::Void)
+      return fail("'scan' needs a result");
+    if (entry.wrapper)
+      return fail("'scan' excludes 'wrapper'");
+  }
   // The runtime's wrapper is the row's own: a row that redirects to
   // another's would check that row's arguments.
   if (entry.wrapper && entry.wrapper->name != entry.name)

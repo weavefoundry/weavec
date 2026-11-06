@@ -55,7 +55,8 @@
       "inherits": ["base", "llvm-from-env"],
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "WEAVEC_ENABLE_LTO": "ON"
+        "WEAVEC_ENABLE_LTO": "ON",
+        "WEAVEC_SELF_CONTAINED": "ON"
       }
     },
     {

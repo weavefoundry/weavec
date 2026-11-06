@@ -11,7 +11,7 @@
 |* not installed. Compiled code reaches the runtime through the entry points
 |* the guard pass calls (lib/Frontend/GuardPass*.cpp declares the same
 |* ones), the shadow descriptor it reads inline, and the standard allocation
-|* functions libweavec_alloc.a defines.
+|* functions weavec_malloc.c defines.
 |*
 \*===----------------------------------------------------------------------===*/
 
@@ -25,9 +25,18 @@
 #include <string.h>
 #include <wchar.h>
 
-/* Every entry point has default visibility: on ELF the first definition the
- * dynamic linker finds then serves every image. */
+/* The entry points the library exports (runtime/weavec_rt.exports lists
+ * them); everything else the runtime defines is hidden. */
 #define WEAVEC_RT_API __attribute__((visibility("default")))
+/* An entry point a program may define itself (an allocation function, ASan's
+ * and UBSan's interface): weak on ELF, so that a -static program's own links
+ * beside the archive. Not on Darwin, where ld64 would take an archive
+ * member's strong definition over the library's weak one. */
+#if defined(__APPLE__)
+#define WEAVEC_RT_REPLACEABLE WEAVEC_RT_API
+#else
+#define WEAVEC_RT_REPLACEABLE WEAVEC_RT_API __attribute__((weak))
+#endif
 
 /* The guards' slow paths keep every register of their caller, so that an
  * inline guard costs the code around it no spills and the register
@@ -355,12 +364,8 @@ WEAVEC_RT_API int __weavec_rt_scanf(const struct __weavec_rt_site *site,
                                     const char *format, ...);
 WEAVEC_RT_API int __weavec_rt_vscanf(const char *format, va_list arguments,
                                      const struct __weavec_rt_site *site);
-/* The searches and comparisons check the bytes they read, up to where
- * they stop. */
-WEAVEC_RT_API void *__weavec_rt_memchr(const void *s, int c, size_t n,
-                                       const struct __weavec_rt_site *site);
-WEAVEC_RT_API char *__weavec_rt_strchr(const char *s, int c,
-                                       const struct __weavec_rt_site *site);
+/* The comparisons check the bytes they read, up to where they stop (the
+ * searches are checked by the guards, after the call: RFC 0038 section 2). */
 WEAVEC_RT_API int __weavec_rt_strcmp(const char *a, const char *b,
                                      const struct __weavec_rt_site *site);
 WEAVEC_RT_API int __weavec_rt_strncmp(const char *a, const char *b, size_t n,
@@ -590,65 +595,12 @@ WEAVEC_RT_API void __weavec_rt_fatal(const char *what, const void *p,
                                      const char *why)
     __attribute__((noreturn));
 
-/*===-- One runtime per process --------------------------------------------===*/
+/*===-- One runtime per process (RFC 0038 section 1) -----------------------===*/
 
-/* Every image linked by weavec-cc carries a copy of the runtime. On Darwin
- * each copy would have its own arena and shadow, so one of them, the one
- * `dlsym(RTLD_DEFAULT, "__weavec_rt_dispatch")` finds (the same for every
- * image), owns the process: the others forward their allocation entry
- * points to it and copy its shadow descriptor, which their inline guards
- * read. On ELF the dynamic linker already binds every image to the first
- * definition, and nothing forwards. */
-struct __weavec_rt_dispatch {
-  unsigned magic;
-  unsigned version;
-  const struct __weavec_rt_heap_t *heap;
-  const struct __weavec_rt_shadow_t *shadow;
-  int (*initialize)(void);
-  void *(*alloc)(size_t, size_t);
-  void (*release)(void *);
-  void *(*realloc)(void *, size_t);
-  size_t (*size)(const void *);
-  struct weavecRtHeapObject (*object)(uintptr_t);
-  void (*fatal)(const char *, const void *, const char *);
-  /* RFC 0036 section 4: version 4. */
-  void (*registerGlobals)(const struct __weavec_rt_global *, uint64_t);
-  void (*unregisterGlobals)(const struct __weavec_rt_global *, uint64_t);
-};
-WEAVEC_RT_API extern const struct __weavec_rt_dispatch __weavec_rt_dispatch;
-
-#if defined(__APPLE__)
-/* The owner's table when this copy forwards to it; null when this copy is
- * the owner (or while it is finding out, on the thread doing so). */
-enum { WeavecRtOwnerResolved = 2 };
-extern unsigned weavecRtOwnerState;
-extern const struct __weavec_rt_dispatch *weavecRtOwner;
-const struct __weavec_rt_dispatch *weavecRtResolveOwner(void);
-static inline const struct __weavec_rt_dispatch *weavecRtForward(void) {
-  if (__builtin_expect(__atomic_load_n(&weavecRtOwnerState, __ATOMIC_ACQUIRE) ==
-                           WeavecRtOwnerResolved,
-                       1))
-    return weavecRtOwner;
-  return weavecRtResolveOwner();
-}
-#else
-#define weavecRtForward() ((const struct __weavec_rt_dispatch *)0)
-#endif
-/* Forwards a call of this copy's entry point to the owner's. */
-#define WEAVEC_RT_FORWARD(entry, ...)                                          \
-  do {                                                                         \
-    const struct __weavec_rt_dispatch *weavecRtOwner_ = weavecRtForward();      \
-    if (weavecRtOwner_ != 0)                                                   \
-      return weavecRtOwner_->entry(__VA_ARGS__);                               \
-  } while (0)
-#define WEAVEC_RT_FORWARD_VOID(entry, ...)                                     \
-  do {                                                                         \
-    const struct __weavec_rt_dispatch *weavecRtOwner_ = weavecRtForward();      \
-    if (weavecRtOwner_ != 0) {                                                 \
-      weavecRtOwner_->entry(__VA_ARGS__);                                      \
-      return;                                                                  \
-    }                                                                          \
-  } while (0)
+/* The library's interface version (libweavec_rt.so.<abi>,
+ * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
+ * encoding or a site record changes. */
+#define WEAVEC_RT_ABI 38
 
 /*===-- Internal -----------------------------------------------------------===*/
 
@@ -670,9 +622,9 @@ void weavecRtSweep(void);
 void weavecRtLastSweep(struct weavecRtSweepCounts *out);
 extern unsigned long long weavecRtSweepNanos;
 extern unsigned long long weavecRtSweepLongest;
-/* RFC 0036 section 3.3: a sweep ended at `ended` (CLOCK_MONOTONIC
- * nanoseconds) after `took`; the allocator paces the next one by it. */
-void weavecRtSwept(uint64_t ended, uint64_t took);
+/* RFC 0036 section 3.3: a sweep that ended at `ended` (CLOCK_MONOTONIC
+ * nanoseconds) after `took`, and `marked` the heap or not, paces the next. */
+void weavecRtSwept(uint64_t ended, uint64_t took, int marked);
 /* The most bytes the live heap's slots and the quarantine held, for
  * WEAVEC_RT_STATS=1 (not synchronized). */
 void weavecRtPeaks(size_t *live, size_t *quarantine);

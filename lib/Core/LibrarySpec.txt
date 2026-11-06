@@ -25,6 +25,7 @@
 #   access   ::= 'r' | 'w' | 'rw' | 'none'
 #   pflag    ::= 'bytes(' term ')' | 'count(' term ')' | 'str' | 'null-ok'
 #              | 'null-if-zero(' term ')' | 'release' | 'realloc'
+#              | 'scan' | 'scan(' term ')'
 #   result   ::= 'void' | 'int' [ ':value(' term ')' ] | 'ptr'
 #   clause   ::= 'disjoint(' INT ',' INT ',' term ')' | 'wide'
 #              | 'printf(' INT ',' INT ')' | 'scanf(' INT ',' INT ')'
@@ -44,6 +45,16 @@
 #   count(t)         (wide rows only) t wchar_t elements are guarded.
 #   str              a string, guarded up to its terminator (a zero wchar_t
 #                    in wide rows, which the guards do not scan).
+#   scan(t)          (RFC 0038 section 2; read arguments of rows with a
+#                    result and no wrapper) the call reads from the pointer
+#                    up to the element where it stopped and t elements from
+#                    there; scan alone is scan(1). A pointer result p stopped
+#                    at element p - aN, an integer result n at element n; a
+#                    null result means the whole extent was read: bytes(t)
+#                    or count(t) when the row has one, else the string. The
+#                    argument is guarded after the call, over those bytes;
+#                    before it, only its null check and its first byte (none
+#                    when bytes or count is zero).
 #   null-ok          null is allowed. null-if-zero(t): allowed when t is
 #                    zero. Otherwise null is forbidden.
 #   release, realloc the call releases (free) or reallocates (realloc) the
@@ -156,13 +167,11 @@ memset (w:bytes(a2):null-if-zero(a2), int, int) -> ptr \
 memset_explicit (w:bytes(a2):null-if-zero(a2), int, int) -> ptr;
 memcmp (r:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) -> \
     int;
-# C11: memchr stops at the first match, so a NUL ends what memchr(s, 0, n)
-# reads; a byte other than NUL found earlier is not described.
-memchr (r:bytes(min(a2,strlen(a0)+1)):null-if-zero(a2), int, int) -> ptr \
-    wrapper(memchr);
+# RFC 0038 section 2: memchr reads up to the match, or all n bytes.
+memchr (r:scan:bytes(a2):null-if-zero(a2), int, int) -> ptr;
 memrchr (r:bytes(a2):null-if-zero(a2), int, int) -> ptr;
 # GNU: searches without a bound for a byte the caller promises is there.
-rawmemchr (r, int) -> ptr;
+rawmemchr (r:scan, int) -> ptr;
 memmem (r:bytes(a1):null-if-zero(a1), int, r:bytes(a3):null-if-zero(a3), int) \
     -> ptr;
 mempcpy (w:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) -> \
@@ -213,14 +222,17 @@ strcoll_l (r:str, r:str, none:null-ok) -> int;
 strxfrm (w:bytes(a2):null-if-zero(a2), r:str, int) -> int;
 strxfrm_l (w:bytes(a2):null-if-zero(a2), r:str, int, none:null-ok) -> int;
 strverscmp (r:str, r:str) -> int;
-strchr (r:str, int) -> ptr wrapper(strchr);
+# RFC 0038 section 2: a search reads the string up to where it stopped (the
+# match, or the terminator when the result is null); strstr also reads the
+# needle's length from the match. strrchr reads the whole string.
+strchr (r:str:scan, int) -> ptr;
 strrchr (r:str, int) -> ptr;
-strchrnul (r:str, int) -> ptr;
-strstr (r:str, r:str) -> ptr;
-strcasestr (r:str, r:str) -> ptr;
-strpbrk (r:str, r:str) -> ptr;
-strspn (r:str, r:str) -> int;
-strcspn (r:str, r:str) -> int;
+strchrnul (r:str:scan, int) -> ptr;
+strstr (r:scan(strlen(a1)), r:str) -> ptr;
+strcasestr (r:scan(strlen(a1)), r:str) -> ptr;
+strpbrk (r:scan, r:str) -> ptr;
+strspn (r:scan, r:str) -> int;
+strcspn (r:scan, r:str) -> int;
 strtok (rw:str:null-ok, r:str) -> ptr;
 strtok_r (rw:str:null-ok, r:str, rw:bytes(8)) -> ptr;
 strsep (rw, r:str) -> ptr;
@@ -237,7 +249,7 @@ bcopy (r:bytes(a2):null-if-zero(a2), w:bytes(a2):null-if-zero(a2), int) -> \
     void;
 bcmp (r:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) -> \
     int;
-index (r:str, int) -> ptr;
+index (r:str:scan, int) -> ptr;
 rindex (r:str, int) -> ptr;
 strcasecmp (r:str, r:str) -> int wrapper(strcasecmp);
 strncasecmp (r:bytes(min(a2,strlen(a0)+1)):null-if-zero(a2), \
@@ -387,7 +399,10 @@ bsearch (none:null-ok, r:bytes(a2*a3):null-if-zero(a2*a3), int, int, fn) -> \
 mblen (r:bytes(min(a1,strlen(a0)+1)):null-ok, int) -> int;
 mbtowc (w:null-ok, r:bytes(min(a2,strlen(a1)+1)):null-ok, int) -> int;
 wctomb (w:null-ok, int) -> int chk(__wctomb_chk:0,1,size);
-mbstowcs (w:bytes(a2*4):null-ok, r:str, int) -> int \
+# mbstowcs stops after a2 wide characters, so its source need not be a
+# string: at least the first min(a2, strlen + 1) bytes are read (CPython
+# converts one unterminated byte; RFC 0038, amendment 16).
+mbstowcs (w:bytes(a2*4):null-ok, r:bytes(min(a2,strlen(a1)+1)), int) -> int \
     chk(__mbstowcs_chk:0,1,2,_);
 wcstombs (w:bytes(a2):null-ok, r:str, int) -> int \
     chk(__wcstombs_chk:0,1,2,size);
@@ -816,7 +831,9 @@ recvfrom (int, w:bytes(a2):null-if-zero(a2), int, int, w:null-ok, rw:null-ok) \
     -> int chk(__recvfrom_chk:0,1,2,size,3,4,5) wrapper(recvfrom);
 recvmsg (int, rw, int) -> int wrapper(recvmsg);
 getsockopt (int, int, int, w:null-ok, rw) -> int wrapper(getsockopt);
-setsockopt (int, int, int, r:bytes(a4):null-if-zero(a4), int) -> int;
+# A null value with a length is Linux's AF_ALG authentication size; the
+# kernel checks the pointer (RFC 0038, amendment 16).
+setsockopt (int, int, int, r:bytes(a4):null-ok, int) -> int;
 getsockname (int, w, rw) -> int wrapper(getsockname);
 getpeername (int, w, rw) -> int wrapper(getpeername);
 
@@ -929,12 +946,12 @@ wcsncasecmp (r:count(min(a2,strlen(a0)+1)):null-if-zero(a2), \
     r:count(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int wide;
 wcscoll (r:str, r:str) -> int wide;
 wcsxfrm (w:count(a2):null-if-zero(a2), r:str, int) -> int wide;
-wcschr (r:str, int) -> ptr wide;
+wcschr (r:str:scan, int) -> ptr wide;
 wcsrchr (r:str, int) -> ptr wide;
-wcsstr (r:str, r:str) -> ptr wide;
-wcspbrk (r:str, r:str) -> ptr wide;
-wcsspn (r:str, r:str) -> int wide;
-wcscspn (r:str, r:str) -> int wide;
+wcsstr (r:scan(strlen(a1)), r:str) -> ptr wide;
+wcspbrk (r:scan, r:str) -> ptr wide;
+wcsspn (r:scan, r:str) -> int wide;
+wcscspn (r:scan, r:str) -> int wide;
 wcstok (rw:str:null-ok, r:str, rw:bytes(8)) -> ptr wide;
 wcswidth (r:count(min(a1,strlen(a0)+1)):null-if-zero(a1), int) -> int wide;
 wmemcpy (w:count(a2):null-if-zero(a2), r:count(a2):null-if-zero(a2), int) -> \
@@ -945,8 +962,7 @@ wmemset (w:count(a2):null-if-zero(a2), int, int) -> ptr \
     chk(__wmemset_chk:0,1,2,size) wide;
 wmemcmp (r:count(a2):null-if-zero(a2), r:count(a2):null-if-zero(a2), int) -> \
     int wide;
-wmemchr (r:count(min(a2,strlen(a0)+1)):null-if-zero(a2), int, int) -> ptr \
-    wide;
+wmemchr (r:scan:count(a2):null-if-zero(a2), int, int) -> ptr wide;
 wmempcpy (w:count(a2):null-if-zero(a2), r:count(a2):null-if-zero(a2), int) -> \
     ptr chk(__wmempcpy_chk:0,1,2,size) wide;
 wcstol (r:str, w:null-ok:bytes(8), int) -> int chk(__isoc23_wcstol:0,1,2) \

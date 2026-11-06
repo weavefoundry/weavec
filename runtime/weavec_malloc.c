@@ -6,19 +6,13 @@
 |*
 |*===----------------------------------------------------------------------===*|
 |*
-|* RFC 0032, section 2.5. The standard allocation functions, defined over
-|* the arena for the image this archive (libweavec_alloc.a) is linked into.
-|* Every call to `malloc` in the image, from WeaveC's units or any other
-|* object, binds here. On ELF an executable's definitions also serve every
-|* shared library; on Darwin other images keep the system allocator and
-|* reach the arena through its malloc zone.
-|*
-|* The archive is separate from libweavec_rt.a so that a program that
-|* defines the allocator itself links without it (section 2.6). The driver
-|* reads what "the allocator" is from this archive: its strong definitions.
-|* The rest are weak, so that a program's own `reallocarray` or
-|* `posix_memalign` (a portability shim, usually over `malloc`) replaces
-|* ours without a duplicate definition and without losing the arena.
+|* RFC 0032 section 2.5, RFC 0038 section 1: the standard allocation
+|* functions over the arena, which the runtime's library exports. On ELF they
+|* precede the C library's in the search order and serve every image; on
+|* Darwin the images weavec-cc linked bind to them, and the rest reach the
+|* arena through the malloc zone. A program's own allocator comes first.
+|* Beyond the four standard functions they are weak, so that a program's
+|* shim (`reallocarray`) links beside a -static program's archive.
 |*
 \*===----------------------------------------------------------------------===*/
 
@@ -28,7 +22,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#define WEAVEC_RT_WEAK WEAVEC_RT_API __attribute__((weak))
+#define WEAVEC_RT_WEAK WEAVEC_RT_REPLACEABLE
 
 /* The functions beyond the standard ones are defined only where the C
  * library exports them too: a definition the platform lacks would make a
@@ -173,9 +167,5 @@ void *pvalloc(size_t size) {
 }
 
 size_t malloc_usable_size(void *p) { return __weavec_rt_size(p); }
-
-/* Tells the runtime that the `malloc_usable_size` first in lookup order may
- * be the one above, which would ask it again. */
-WEAVEC_RT_API const char __weavec_alloc_linked = 1;
 
 #endif

@@ -4,44 +4,63 @@ Rough ordering of the major pieces of work. This page is the one-screen view;
 the design detail and the reasoning live in the [RFCs](rfcs/README.md) each
 milestone links to. Everything here is subject to change as we learn.
 
-The design today is [RFC 0037](rfcs/0037-complete-sweep-and-colors.md),
-over the reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
+The design today is [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
+sweep and colors of [RFC 0037](rfcs/0037-complete-sweep-and-colors.md), the
+reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
 and the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
 milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
-## Now: RFC 0037 — A complete sweep and object colors
+## Now: RFC 0038 — Drop-in everywhere
 
-Design: [RFC 0037 — A complete sweep and object colors](rfcs/0037-complete-sweep-and-colors.md)
-(Accepted; being implemented on `rfc0037-complete-sweep`, and Implemented
-once its _Acceptance gates_ pass on the final tree). A measurement of
-v0.17.0 found RFC 0036's guarantees broken where the sweep did not read a
-pointer (vector registers, a coroutine pool's stacks, a file mapping after
-`msync`, read-only memory, the main thread's thread-specific data), where a
-versioned loop's range wrapped, and in 32 library calls ASan guards; the
-allocator slowed down as threads were added, a full size class swept on
-every allocation, and a sweep over a pointer-dense gigabyte paused the
-program for a third of a second. RFC 0037 completes the sweep's roots, gives
-the allocator thread caches and spare regions, marks in parallel, closes
-the guards' holes, wraps the library calls, reports faults, and catches
-jumps into a neighbor (object colors in the shadow) and uses after
-return (returned frames stay poisoned). Cutting the guards' cost was
-measured and not taken (its _Alternatives_). The stages:
+Design: [RFC 0038 — Drop-in everywhere](rfcs/0038-drop-in-everywhere.md)
+(Accepted; implemented on `rfc0038-drop-in-everywhere`, its _Measured
+gates_ recorded for darwin-arm64 and linux-aarch64, and Implemented once
+linux-x86_64, the release runners and the weekly corpus run pass). A
+measurement of v0.18.0 found the drop-in promise broken on
+Linux for any program with a shared library built by `weavec-cc` (each
+image carried its own runtime: a version script or `-Bsymbolic` crashed
+the program, and zlib, zlib-ng and curl failed their suites), false traps
+on untuned code (git's `strcspn` on a buffer it never reads past, a color
+root the optimizer formed in zstd), a fault handler that spun once a
+program restored it, a weekly corpus run that never measured Linux, and no
+way to install WeaveC without building it. RFC 0038 makes the runtime a
+shared library every image links, checks a scanning call over the bytes it
+read, takes a color check's root from the pointer the program computed
+from, measures every platform weekly with a tier of large untuned
+programs, and ships self-contained toolchains. The stages:
 
 - [x] **S0 The RFC.**
-- [x] **S1 The sweep's roots** and the signal mask.
-- [x] **S2 The allocator**: thread caches, shared state, spare regions, a
-      64 MiB quarantine.
-- [x] **S3 Parallel marking.**
-- [x] **S4 The guards' holes** (loop ranges, tags, atomics, dynamic objects,
-      large frames) and fault reports.
-- [x] **S5 Library calls.**
-- [x] **S6 Colors.**
-- [x] **S7 Returned frames and field limits.**
-- [x] **S8 Site records.**
-- [ ] **S9 Fresh iterations**: the gates (recorded in the RFC's _Measured
-      gates_), Linux through CI, the documentation.
+- [x] **S1 The shared runtime**: `libweavec_rt.so.38`/`.dylib`, the export
+      list, the link line and `-fweavec-rpath`, the owner protocol and the
+      allocator archive deleted; darwin-arm64 and linux-aarch64.
+- [x] **S2 Calls over what they read**: the `scan` clause, the search rows,
+      the `strchr`/`memchr` wrappers deleted, the library cases.
+- [x] **S3 Roots of color checks**: zstd's root (a select of a hoisted
+      `dictBase - delta` and `base`), roots through phis, selects and
+      integer arithmetic.
+- [x] **S4 The fault handler.**
+- [x] **S5 The gates**: platforms, prerequisites, triage verdicts, the
+      programs tier, the workflows.
+- [x] **S6 Toolchains**: static LLVM on Linux, bundled LLVM libraries on
+      Darwin, the relocatable layout, release archives, the image and the
+      formula.
+- [ ] **S7 Fresh iterations**: the gates on all three platforms (darwin-arm64
+      and linux-aarch64 measured; linux-x86_64 and the release runners
+      need CI), the documentation.
+
+## Done: RFC 0037 — A complete sweep and object colors
+
+Design: [RFC 0037 — A complete sweep and object colors](rfcs/0037-complete-sweep-and-colors.md)
+(Implemented; its _Measured gates_ record the tree it shipped in, and RFC
+0038 measured its Linux gates and replaced its per-image dispatch table).
+The sweep reads every pointer v0.17.0's missed (vector registers, coroutine
+stacks, thread-specific data, read-only memory, file pages written back);
+the allocator has thread caches and spare regions and marks in parallel;
+the guards' holes are closed and library calls wrapped; faults are
+reported; and jumps into a neighbor (object colors in the shadow) and uses
+after return (returned frames stay poisoned) trap.
 
 ## Done: RFC 0036 — Deterministic heap reuse
 
@@ -74,20 +93,16 @@ the checks inserted through Sema, deferred CodeGen, the check planner and
 the prelude, unit records and the link step, the require levels, and the
 analysis ledger.
 
-## Next
-
-From RFC 0037's _Future work_:
-
-- Concurrent marking, if parallel marking leaves pauses too long.
-- Pointers checked where they leave a function, and colors carried by a
-  moved pointer.
-- Hardware memory tagging (Arm MTE, Apple MIE) where the processor has it.
-- Adoption: relocatable installs, packages, a vendored `weavec.h`.
-
 ## Later
 
+- C++ and Objective-C, which pass through to Clang unchanged today, on
+  the runtime RFC 0038 makes every image share.
+- Windows; signed and notarized macOS toolchains; Debian and RPM packages.
+- From RFC 0037's _Future work_: concurrent marking, if parallel marking
+  leaves pauses too long; pointers checked where they leave a function,
+  and colors carried by a moved pointer; hardware memory tagging (Arm MTE,
+  Apple MIE) where the processor has it.
 - Concurrency safety beyond assumption A3 (data races between a guard and its access).
-- C++ and Objective-C, which pass through to Clang unchanged today.
 
 ## History
 
