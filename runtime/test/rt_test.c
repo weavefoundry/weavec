@@ -7,8 +7,7 @@
 |*===----------------------------------------------------------------------===*|
 |*
 |* RFC 0035, section 5, and RFC 0036. One program, linked with the runtime's
-|* objects (internal functions included), so `malloc` here is the arena's. Each
-test is a
+|* objects (internal functions included), so `malloc` here is the arena's. Each test is a
 |* function; a test that must stop the program runs in a child process and
 |* the parent checks how it died. Run without arguments for every test, or
 |* with the names of the tests to run.
@@ -19,6 +18,8 @@ test is a
 #define _GNU_SOURCE 1
 #endif
 
+#include "../weavec_rt.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -27,14 +28,12 @@ test is a
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#include <unistd.h>
-
-#include "../weavec_rt.h"
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
 
 #if defined(__APPLE__)
 #include <malloc/malloc.h>
@@ -69,13 +68,9 @@ static const char *current;
 
 /* Keeps the compiler from seeing through a pointer: the tests free and
  * index what no correct program would. */
-static void *identity(void *p) {
-  return p;
-}
+static void *identity(void *p) { return p; }
 static void *(*volatile launder)(void *) = identity;
-static void *opaque(void *p) {
-  return launder(p);
-}
+static void *opaque(void *p) { return launder(p); }
 
 static int inArena(const void *p) {
   return (uintptr_t)p - __weavec_rt_heap.base < __weavec_rt_heap.bytes;
@@ -141,8 +136,7 @@ static void firstLine(void (*body)(void), char *line, size_t size) {
   unlink(path);
 }
 
-/*===-- The shadow
- * ----------------------------------------------------------===*/
+/*===-- The shadow ----------------------------------------------------------===*/
 
 static void testShadowReady(void) {
   void *p = opaque(malloc(1));
@@ -158,8 +152,7 @@ static void testShadowReady(void) {
   free(p);
 }
 
-/*===-- The allocator
- * -------------------------------------------------------===*/
+/*===-- The allocator -------------------------------------------------------===*/
 
 static void testClasses(void) {
   size_t size;
@@ -203,8 +196,8 @@ static void testShadowEncoding(void) {
   /* Neighbors differ. */
   CHECK(weavecRtColorOfHeap((uintptr_t)q) != color);
   for (n = 0; n < 111; ++n)
-    CHECK(weavecRtColor(n) != weavecRtColor(n + 1) && weavecRtColor(n) != 0 &&
-          (weavecRtColor(n) & 7) != 7);
+    CHECK(weavecRtColor(n) != weavecRtColor(n + 1) &&
+          weavecRtColor(n) != 0 && (weavecRtColor(n) & 7) != 7);
   /* The slot of a 20-byte block is 32 bytes: no granule after it. */
   free(p);
   free(q);
@@ -335,7 +328,7 @@ static void testRealloc(void) {
  * slots out in address order, so the target need not be the first. Not
  * inlined: its array would sit, uninitialized, in the frame the sweep scans. */
 static __attribute__((noinline)) unsigned char *reuse(uintptr_t target,
-                                                      size_t n) {
+                                                       size_t n) {
   unsigned char *taken[256];
   unsigned char *found = NULL;
   unsigned count = 0;
@@ -533,8 +526,9 @@ static void testSharedMemoryIsScanned(void) {
    * anonymous mapping (on Linux "/dev/zero (deleted)" in /proc/self/maps)
    * and, on Linux, POSIX shared memory under /dev/shm. (Size classes of
    * their own, as above.) */
-  void *volatile *shared = (void *volatile *)mmap(
-      NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  void *volatile *shared =
+      (void *volatile *)mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                             MAP_SHARED | MAP_ANONYMOUS, -1, 0);
   CHECK((void *)shared != MAP_FAILED);
   if ((void *)shared != MAP_FAILED) {
     CHECK(keptBy(shared, 6100));
@@ -866,9 +860,7 @@ static void stackFree(void) {
 
 static int aGlobal[8];
 
-static void globalFree(void) {
-  free(opaque(aGlobal));
-}
+static void globalFree(void) { free(opaque(aGlobal)); }
 
 static void reallocDead(void) {
   void *p = opaque(malloc(24));
@@ -985,8 +977,7 @@ static void testForeign(void) {
 #endif
 }
 
-/*===-- Guards
- * --------------------------------------------------------------===*/
+/*===-- Guards --------------------------------------------------------------===*/
 
 /* (Set in main: a site's file is relative to the record.) */
 static struct __weavec_rt_site trapSite;
@@ -1010,9 +1001,7 @@ static void reportedOverflow(void) {
   _exit(7);
 }
 
-static void nullBase(void) {
-  __weavec_rt_null(64, &trapSite);
-}
+static void nullBase(void) { __weavec_rt_null(64, &trapSite); }
 
 static void nullRead(void) {
   __weavec_rt_guard((uintptr_t)opaque(NULL) + 8, 4, &trapSite);
@@ -1109,11 +1098,9 @@ static void testCheckedCalls(void) {
   CHECK(__weavec_rt_sprintf(&trapSite, (size_t)-1, p, "%d", 42) == 2);
   CHECK(strcmp(p, "42") == 0);
   /* A size larger than the buffer is no error when the output fits. */
-  CHECK(__weavec_rt_snprintf(&trapSite, (size_t)-1, p, 1000, "%s", "fits") ==
-        4);
+  CHECK(__weavec_rt_snprintf(&trapSite, (size_t)-1, p, 1000, "%s", "fits") == 4);
   CHECK(strcmp(p, "fits") == 0);
-  CHECK(__weavec_rt_snprintf(&trapSite, (size_t)-1, p, 4, "%s", "truncated") ==
-        9);
+  CHECK(__weavec_rt_snprintf(&trapSite, (size_t)-1, p, 4, "%s", "truncated") == 9);
   CHECK(strcmp(p, "tru") == 0);
   /* A comparison checks only what it read. */
   CHECK(__weavec_rt_strcmp("abc", "abd", &trapSite) < 0);
@@ -1143,15 +1130,14 @@ static void testCheckedCalls(void) {
     char out[16];
     char *word = (char *)opaque(malloc(4));
     memcpy(word, "abcd", 4);
-    CHECK(__weavec_rt_snprintf(&trapSite, (size_t)-1, out, sizeof out,
-                               "%.4s|%d|%s", word, 7, (const char *)NULL) > 0);
+    CHECK(__weavec_rt_snprintf(&trapSite, (size_t)-1, out, sizeof out, "%.4s|%d|%s",
+                               word, 7, (const char *)NULL) > 0);
     CHECK(strncmp(out, "abcd|7|", 7) == 0);
     free(word);
   }
 }
 
-/*===-- Frames and globals
- * --------------------------------------------------===*/
+/*===-- Frames and globals --------------------------------------------------===*/
 
 static unsigned char aTrackedGlobal[64] __attribute__((aligned(32)));
 
@@ -1215,8 +1201,7 @@ static void testUnpoisonStack(void) {
   CHECK(addressable((void *)poisoned, 64));
 }
 
-/*===-- ASan's interface (RFC 0036 section 5)
- * ------------------------------===*/
+/*===-- ASan's interface (RFC 0036 section 5) ------------------------------===*/
 
 void __asan_poison_memory_region(const volatile void *address, size_t size);
 void __asan_unpoison_memory_region(const volatile void *address, size_t size);
@@ -1281,8 +1266,7 @@ static void testMappings(void) {
   CHECK(addressable(map, 1 << 16));
 }
 
-/*===-- Array bounds
- * --------------------------------------------------------===*/
+/*===-- Array bounds --------------------------------------------------------===*/
 
 struct OutOfBounds {
   const char *file;
@@ -1307,8 +1291,7 @@ static void testArrayBounds(void) {
         line);
 }
 
-/*===-- Threads and processes
- * -----------------------------------------------===*/
+/*===-- Threads and processes -----------------------------------------------===*/
 
 static void *worker(void *argument) {
   unsigned seed = (unsigned)(uintptr_t)argument;
@@ -1415,8 +1398,7 @@ static void testFork(void) {
   free(p);
 }
 
-/*===-- main
- * ----------------------------------------------------------------===*/
+/*===-- main ----------------------------------------------------------------===*/
 
 static const struct {
   const char *name;

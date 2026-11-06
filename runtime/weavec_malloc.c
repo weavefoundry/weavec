@@ -6,19 +6,13 @@
 |*
 |*===----------------------------------------------------------------------===*|
 |*
-|* RFC 0032, section 2.5, and RFC 0038, section 1. The standard allocation
-|* functions over the arena, exported by the runtime's library. Every image
-|* weavec-cc links depends on the library before the C library, so on ELF
-|* its definitions precede the C library's in the global search order and
-|* serve every image; on Darwin the images weavec-cc linked bind to them
-|* and the others reach the arena through the runtime's malloc zone. A
-|* program that defines the allocator itself keeps it: on ELF its
-|* definitions come first, on Darwin its image binds to them.
-|*
-|* Beyond the four standard functions the definitions are weak, so that a
-|* program's own `reallocarray` or `posix_memalign` (a portability shim,
-|* usually over `malloc`) links beside the static archive of a `-static`
-|* program without a duplicate definition.
+|* RFC 0032 section 2.5, RFC 0038 section 1: the standard allocation
+|* functions over the arena, which the runtime's library exports. On ELF they
+|* precede the C library's in the search order and serve every image; on
+|* Darwin the images weavec-cc linked bind to them, and the rest reach the
+|* arena through the malloc zone. A program's own allocator comes first.
+|* Beyond the four standard functions they are weak, so that a program's
+|* shim (`reallocarray`) links beside a -static program's archive.
 |*
 \*===----------------------------------------------------------------------===*/
 

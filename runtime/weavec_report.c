@@ -131,8 +131,6 @@ __attribute__((constructor)) static void readReportSettings(void) {
 
 static int shouldAbort(void) { return abortSetting; }
 
-
-
 /* Appends a report to the log; returns whether it was written there. */
 static int logReport(const char *text, size_t size) {
   int fd;
@@ -464,11 +462,9 @@ static int findOtherRuntime(struct dl_phdr_info *info, size_t size,
                             void *data) {
   struct OtherRuntime *search = (struct OtherRuntime *)data;
   (void)size;
-  if (info->dlpi_addr != search->own && isRuntime(info->dlpi_name)) {
+  if (info->dlpi_addr != search->own && isRuntime(info->dlpi_name))
     search->found = info->dlpi_name;
-    return 1;
-  }
-  return 0;
+  return search->found != NULL;
 }
 #endif
 

@@ -597,11 +597,9 @@ WEAVEC_RT_API void __weavec_rt_fatal(const char *what, const void *p,
 
 /*===-- One runtime per process (RFC 0038 section 1) -----------------------===*/
 
-/* The runtime is one shared library that every image weavec-cc links
- * depends on, so the dynamic loader gives the process one copy. Its
- * interface version, raised whenever an entry point, the shadow encoding
- * or a site record changes: the library is libweavec_rt.so.<abi> on
- * Linux, and a second runtime of another version stops the program. */
+/* The library's interface version (libweavec_rt.so.<abi>,
+ * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
+ * encoding or a site record changes. */
 #define WEAVEC_RT_ABI 38
 
 /*===-- Internal -----------------------------------------------------------===*/
@@ -624,9 +622,8 @@ void weavecRtSweep(void);
 void weavecRtLastSweep(struct weavecRtSweepCounts *out);
 extern unsigned long long weavecRtSweepNanos;
 extern unsigned long long weavecRtSweepLongest;
-/* RFC 0036 section 3.3: a sweep ended at `ended` (CLOCK_MONOTONIC
- * nanoseconds) after `took`, having `marked` the heap or not; the allocator
- * paces the next one by it. */
+/* RFC 0036 section 3.3: a sweep that ended at `ended` (CLOCK_MONOTONIC
+ * nanoseconds) after `took`, and `marked` the heap or not, paces the next. */
 void weavecRtSwept(uint64_t ended, uint64_t took, int marked);
 /* The most bytes the live heap's slots and the quarantine held, for
  * WEAVEC_RT_STATS=1 (not synchronized). */
