@@ -110,6 +110,10 @@ set_target_properties(
   PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${WEAVEC_RUNTIME_OUTPUT_DIR}"
              LINKER_LANGUAGE C
              LINK_DEPENDS "${_weavec_exports_file}")
+# libweavec_rt.so.<abi> (libweavec_rt.<abi>.dylib), and libweavec_rt.so
+# (.dylib) naming it: an image records the versioned name, so a program
+# never loads a runtime of another ABI (RFC 0038, amendment 19).
+set_target_properties(weavec_rt PROPERTIES SOVERSION "${WEAVEC_RUNTIME_ABI}")
 if(APPLE)
   set_target_properties(
     weavec_rt
@@ -120,8 +124,6 @@ if(APPLE)
   target_link_options(weavec_rt PRIVATE
                       "LINKER:-exported_symbols_list,${_weavec_exports_file}")
 else()
-  # libweavec_rt.so.<abi>, and libweavec_rt.so naming it.
-  set_target_properties(weavec_rt PROPERTIES SOVERSION "${WEAVEC_RUNTIME_ABI}")
   target_link_options(
     weavec_rt PRIVATE "LINKER:--version-script=${_weavec_exports_file}"
     "LINKER:-Bsymbolic-functions" "LINKER:-z,defs")

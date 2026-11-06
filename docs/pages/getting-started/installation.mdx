@@ -70,7 +70,7 @@ The image is Ubuntu 24.04 with the toolchain on `PATH`, `CC=weavec-cc` and `buil
 </TabItem>
 </Tabs>
 
-The tree holds `bin/weavec-cc`, WeaveC's files in `lib/weavec/` (`weavec.h` under `include/`, the runtime's library `libweavec_rt.dylib` or `libweavec_rt.so.<abi>`, and on Linux `libweavec_rt.a` for static programs), and Clang's headers and builtins in `lib/clang/<major>/`; on macOS `lib/weavec/llvm/` holds the LLVM libraries `weavec-cc` loads. `weavec-cc` finds all of them from its own location, so move the tree as a whole.
+The tree holds `bin/weavec-cc`, WeaveC's files in `lib/weavec/` (`weavec.h` under `include/`, the runtime's library `libweavec_rt.<abi>.dylib` or `libweavec_rt.so.<abi>`, and on Linux `libweavec_rt.a` for static programs), and Clang's headers and builtins in `lib/clang/<major>/`; on macOS `lib/weavec/llvm/` holds the LLVM libraries `weavec-cc` loads. `weavec-cc` finds all of them from its own location, so move the tree as a whole.
 
 A program `weavec-cc` builds loads `libweavec_rt` from the toolchain at run time. To run it elsewhere, ship the library with it (see [build integration](/guides/build-integration/)).
 

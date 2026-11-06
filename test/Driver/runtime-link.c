@@ -1,7 +1,8 @@
 // RFC 0038 §1: a guarded link carries the runtime's library before the first
 // library on its line, with an rpath to the toolchain's runtime directory
 // (or the one -fweavec-rpath names, or none). Shared objects get it too; a
-// relocatable link and an unguarded one get nothing. A sanitizer that
+// relocatable link and an unguarded one get nothing. The image records
+// the runtime's versioned name (amendment 19). A sanitizer that
 // replaces the allocator turns the runtime off with a note; a unit that
 // defines the allocator keeps it, with a note.
 //
@@ -16,6 +17,11 @@
 // RUN: %weavec_cc -### -fsanitize=address %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=ASAN %s
 // RUN: %weavec_cc -### -nostdlib %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=NOSTDLIB %s
 // RUN: not %weavec_cc -fweavec-rpath %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=MISSING %s
+//
+// Amendment 20: the archive is never loaded whole, which would put a second
+// runtime in the image.
+// RUN: %if host-linux %{ %weavec_cc -### %t/main.o -Wl,--whole-archive -lm -Wl,--no-whole-archive -o %t/prog 2>&1 | FileCheck --check-prefix=WHOLE %s %}
+// RUN: %if host-darwin %{ %weavec_cc -### %t/main.o -Wl,-all_load -o %t/prog 2>&1 | FileCheck --check-prefix=ALLLOAD %s %}
 //
 // The archive after the library is what a link by another driver finds in a
 // weavec-cc link's implicit libraries (CMake's mixed C and C++ targets): that
@@ -38,6 +44,7 @@
 //
 // The program runs with the runtime's allocator, and says what it did when asked.
 // RUN: %weavec_cc %t/main.o -o %t/prog
+// RUN: llvm-objdump -p %t/prog | FileCheck --check-prefix=NEEDED %s
 // RUN: env WEAVEC_RT_STATS=1 %t/prog 2>&1 | FileCheck --check-prefix=STATS %s
 #include <stdlib.h>
 
@@ -66,6 +73,15 @@ int main(void) {
 // NOSTDLIB-NOT: libweavec_rt
 
 // MISSING: weavec-cc: error: missing value for '-fweavec-rpath'
+
+// WHOLE: "--whole-archive" "{{[^"]*}}libweavec_rt.so" "-rpath" "{{[^"]*}}" "--no-whole-archive" "{{[^"]*}}libweavec_rt.a" "--whole-archive" "-lpthread" "-lm" "--no-whole-archive"
+
+// ALLLOAD-NOT: libweavec_rt.a
+// ALLLOAD: "-all_load"
+// ALLLOAD-NOT: libweavec_rt.a
+
+// Amendment 19: the image names the runtime of its ABI.
+// NEEDED: {{libweavec_rt\.so\.[0-9]+|@rpath/libweavec_rt\.[0-9]+\.dylib}}
 // FOREIGN: weavec: heap-buffer-overflow
 // NOCOPY-NOT: __weavec_rt_shadow
 

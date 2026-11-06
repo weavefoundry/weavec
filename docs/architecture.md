@@ -458,7 +458,7 @@ code reaches the runtime only through the entry points the guard passes
 declare, the shadow descriptor and the standard allocation functions.
 
 The sources build one shared library, `libweavec_rt.so.<abi>` (Linux) or
-`libweavec_rt.dylib` (Darwin), which exports what
+`libweavec_rt.<abi>.dylib` (Darwin), which exports what
 [`weavec_rt.exports`](../runtime/weavec_rt.exports) lists (the entry points
 `weavec_rt.h` marks `WEAVEC_RT_API`, ASan's interface and the allocator) and
 hides the rest, and, on Linux, `libweavec_rt.a` for `-static` programs.

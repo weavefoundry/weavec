@@ -33,10 +33,10 @@ Every link of a guarded program adds the runtime's library (`libweavec_rt.so` on
 
 ```text
 error while loading shared libraries: libweavec_rt.so.38: cannot open shared object file: No such file or directory
-dyld: Library not loaded: @rpath/libweavec_rt.dylib
+dyld: Library not loaded: @rpath/libweavec_rt.38.dylib
 ```
 
-A guarded program loads the runtime's library where it runs, from the rpath its link recorded: the toolchain's `lib/weavec` unless `-fweavec-rpath` named another directory. A program copied to another machine, or a toolchain moved after the link, needs it there: install `libweavec_rt` beside the program and link with `-fweavec-rpath='$ORIGIN'` (`@loader_path` on macOS), or link a static Linux program (`-static`).
+A guarded program loads the runtime's library where it runs, from the rpath its link recorded: the toolchain's `lib/weavec` unless `-fweavec-rpath` named another directory. A program copied to another machine, or a toolchain moved after the link, needs it there: install `libweavec_rt` beside the program and link with `-fweavec-rpath='$ORIGIN'` (`@loader_path` on macOS), or link a static Linux program (`-static`). The name carries the runtime's ABI (38 here): a toolchain whose runtime has another ABI cannot serve the program, so rebuild it with that toolchain.
 
 ## Two WeaveC runtimes in one process
 
@@ -170,7 +170,7 @@ A guarded program reads the runtime's shadow memory (one byte per 16 bytes of th
 
 ## A program that uses SIGPWR on Linux
 
-On Linux the sweep stops the program's other threads with a signal, `SIGPWR` by default. The runtime chooses it the first time the program sets a signal mask or sweeps, whichever comes first: when the program has installed its own `SIGPWR` handler by then, the runtime uses `SIGXCPU` instead; if the program handles both, a process with more than one thread never reuses released memory. A program that installs a handler for the runtime's signal later, or that handles both, names another signal for the runtime:
+On Linux the sweep stops the program's other threads with a signal, `SIGPWR` by default. The runtime chooses it the first time the program sets a signal mask or sweeps, whichever comes first: when the program has installed its own `SIGPWR` handler by then, the runtime uses `SIGXCPU` instead. A program that installs its own handler for the runtime's signal later keeps it: before each sweep the runtime checks that the signal is still its own, and otherwise chooses again, though a thread that blocked every signal before that blocks the new one too (see below). If the program handles both, a process with more than one thread never reuses released memory. Such a program names another signal for the runtime:
 
 ```sh
 WEAVEC_RT_SWEEP_SIGNAL=40 ./program

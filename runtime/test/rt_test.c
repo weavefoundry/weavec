@@ -605,6 +605,51 @@ static void testSweepStopsBlockingThreads(void) {
   threadRelease = 0;
 }
 
+static volatile int programStops;
+
+static void programHandler(int signal) {
+  (void)signal;
+  ++programStops;
+}
+
+static void *waiter(void *argument) {
+  (void)argument;
+  __atomic_store_n(&blockerReady, 2, __ATOMIC_RELEASE);
+  while (!__atomic_load_n(&threadRelease, __ATOMIC_ACQUIRE))
+    sched_yield();
+  return NULL;
+}
+
+static void testSweepLeavesProgramSignals(void) {
+  /* RFC 0038 amendment 21: a program that sets its own handler for the
+   * sweep's signal after the runtime chose it (Boehm GC's SIGPWR) never has
+   * it run by a sweep, which stops threads with another signal. */
+#if defined(__linux__)
+  void *volatile first = opaque(malloc(5900));
+  volatile uintptr_t hidden = releasedBlock(5900);
+  unsigned char *again;
+  pthread_t thread;
+  sigset_t none;
+  sigemptyset(&none);
+  CHECK(pthread_sigmask(SIG_BLOCK, &none, NULL) == 0);
+  CHECK(signal(SIGPWR, programHandler) != SIG_ERR);
+  CHECK(pthread_create(&thread, NULL, waiter, NULL) == 0);
+  while (__atomic_load_n(&blockerReady, __ATOMIC_ACQUIRE) != 2)
+    sched_yield();
+  scrubStack();
+  weavecRtSweep();
+  CHECK(programStops == 0);
+  again = reuse(hidden ^ Hidden, 5900);
+  CHECK(again != NULL);
+  free(again);
+  free(first);
+  __atomic_store_n(&threadRelease, 1, __ATOMIC_RELEASE);
+  CHECK(pthread_join(thread, NULL) == 0);
+  threadRelease = 0;
+  (void)signal(SIGPWR, SIG_DFL);
+#endif
+}
+
 /* RFC 0037 section 1: the roots v0.17.0 missed. (Size classes of their
  * own, as above.) */
 
@@ -1360,6 +1405,7 @@ static const struct {
     {"sweep-follows-the-heap", testSweepFollowsTheHeap},
     {"sweep-stops-threads", testSweepStopsThreads},
     {"sweep-stops-blocking-threads", testSweepStopsBlockingThreads},
+    {"sweep-leaves-program-signals", testSweepLeavesProgramSignals},
     {"pacing", testPacing},
     {"library-data-is-scanned", testLibraryDataIsScanned},
     {"shared-memory-is-scanned", testSharedMemoryIsScanned},

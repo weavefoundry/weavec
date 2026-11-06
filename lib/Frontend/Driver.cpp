@@ -718,22 +718,37 @@ static bool addRuntimeLibraries(clang::driver::Compilation &compilation,
     // A relocatable link (`-r`) makes an object, not an image.
     if (llvm::is_contained(old, llvm::StringRef("-r")))
       continue;
-    llvm::opt::ArgStringList added;
-    added.push_back(owned(runtime));
-    if (!archive && !rpath.empty()) {
-      added.push_back("-rpath");
-      added.push_back(owned(rpath));
-    }
-    if (!fallback.empty())
-      added.push_back(owned(fallback));
-    if (target.isOSLinux() && !target.isAndroid())
-      added.push_back("-lpthread");
     // The first library of the line: `-l<name>`, which Darwin's
     // `-lto_library <path>` is not.
     const auto *const firstLibrary = llvm::find_if(old, [](const char *arg) {
       const llvm::StringRef text(arg);
       return text.starts_with("-l") && text != "-lto_library";
     });
+    // The archive must not be loaded whole, or the image would carry a
+    // second runtime (RFC 0038, amendment 20): outside an ELF line's
+    // --whole-archive, and not at all under ld64's -all_load.
+    bool whole = false;
+    for (const char *arg : llvm::make_range(old.begin(), firstLibrary)) {
+      const llvm::StringRef text = llvm::StringRef(arg).ltrim('-');
+      if (text == "whole-archive" || text == "no-whole-archive")
+        whole = text == "whole-archive";
+    }
+    const bool loadsAll = llvm::is_contained(old, llvm::StringRef("-all_load"));
+    llvm::opt::ArgStringList added;
+    added.push_back(owned(runtime));
+    if (!archive && !rpath.empty()) {
+      added.push_back("-rpath");
+      added.push_back(owned(rpath));
+    }
+    if (!fallback.empty() && !loadsAll) {
+      if (whole)
+        added.push_back("--no-whole-archive");
+      added.push_back(owned(fallback));
+      if (whole)
+        added.push_back("--whole-archive");
+    }
+    if (target.isOSLinux() && !target.isAndroid())
+      added.push_back("-lpthread");
     llvm::opt::ArgStringList args(old.begin(), firstLibrary);
     args.append(added.begin(), added.end());
     args.append(firstLibrary, old.end());

@@ -871,6 +871,36 @@ override the body.
     G2's "no failure outside `referenceFailures`" reads "outside
     `referenceFailures` and `acceptedFailures`".
 
+19. **The runtime's name carries its ABI on Darwin too (§1).** The library
+    is `libweavec_rt.<abi>.dylib`, install name
+    `@rpath/libweavec_rt.<abi>.dylib`, with `libweavec_rt.dylib` naming it
+    for the link. With the unversioned name, a program built for one ABI
+    loaded a runtime of a later one from its rpath (a toolchain updated in
+    place, a rebuilt tree) without error: dyld's compatibility version
+    refuses only older libraries, and the guards then misread the shadow
+    and the site records. It now fails to load, as it does on Linux, where
+    the soname is `libweavec_rt.so.<abi>`.
+
+20. **The fallback archive is never loaded whole (§1, amendment 11).** A
+    link line whose first library lies inside `--whole-archive`
+    (`-Wl,--whole-archive -lfoo -Wl,--no-whole-archive`) would load every
+    member of `libweavec_rt.a` into the image beside the shared library:
+    two runtimes, and the program stops. The driver closes the
+    whole-archive region around the archive and reopens it after. Under
+    ld64's `-all_load`, which loads every archive on the line, the archive
+    is left out; a link by another driver made from such a line does not
+    find it.
+
+21. **The sweep's signal stays the runtime's (amendment 13).** The signal is
+    chosen at the first mask a program sets, so that masks leave it out, and
+    a program may set its own handler for it later (Boehm GC suspends its
+    threads with `SIGPWR`). A sweep then ran the program's handler in every
+    thread, which waited for a resume that never came. Before each stop the
+    sweep checks that its handler is still the signal's, and otherwise
+    chooses again among the signals the program does not handle (the one
+    `WEAVEC_RT_SWEEP_SIGNAL` names too), or stops no thread and recycles
+    nothing.
+
 ## Measured gates
 
 Measured 2026-11-05 on the branch: darwin-arm64 on an Apple M3 (`release`

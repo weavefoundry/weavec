@@ -846,20 +846,23 @@ static void stopHandler(int signal, siginfo_t *info, void *context) {
 }
 
 /* The signal that stops threads: WEAVEC_RT_SWEEP_SIGNAL, SIGPWR, or SIGXCPU
- * when the program handles SIGPWR; 0 when none is free. */
-static void chooseSignal(void) {
+ * when the program handles SIGPWR; 0 when none is free. `again`, after the
+ * program took the chosen one, skips a signal it handles even when asked. */
+static void chooseSignal(int again) {
   static const int Candidates[2] = {SIGPWR, SIGXCPU};
   const char *text = getenv("WEAVEC_RT_SWEEP_SIGNAL");
   const int asked = text != NULL ? atoi(text) : 0;
   int i;
+  __atomic_store_n(&stopSignal, 0, __ATOMIC_RELAXED);
   for (i = asked != 0 ? -1 : 0; i < 2; ++i) {
     const int signal = i < 0 ? asked : Candidates[i];
     struct sigaction old;
     struct sigaction action;
     if (sigaction(signal, NULL, &old) != 0)
       continue;
-    if (i >= 0 && ((old.sa_flags & SA_SIGINFO) != 0 ||
-                   (old.sa_handler != SIG_DFL && old.sa_handler != SIG_IGN)))
+    if ((i >= 0 || again) &&
+        ((old.sa_flags & SA_SIGINFO) != 0 ||
+         (old.sa_handler != SIG_DFL && old.sa_handler != SIG_IGN)))
       continue;
     memset(&action, 0, sizeof action);
     action.sa_sigaction = stopHandler;
@@ -867,17 +870,35 @@ static void chooseSignal(void) {
     sigfillset(&action.sa_mask);
     if (sigaction(signal, &action, NULL) == 0) {
       const uint64_t bit = (uint64_t)1 << (signal - 1);
-      stopSignal = signal;
+      __atomic_store_n(&stopSignal, signal, __ATOMIC_RELAXED);
       (void)syscall(SYS_rt_sigprocmask, SIG_UNBLOCK, &bit, NULL, sizeof bit);
       return;
     }
   }
 }
 
+static void chooseFirst(void) { chooseSignal(0); }
+
 static int installHandler(void) {
   static pthread_once_t once = PTHREAD_ONCE_INIT;
-  (void)pthread_once(&once, chooseSignal);
-  return stopSignal != 0;
+  (void)pthread_once(&once, chooseFirst);
+  return __atomic_load_n(&stopSignal, __ATOMIC_RELAXED) != 0;
+}
+
+/* Before each stop: the program may have set its own handler for the
+ * signal since it was chosen (Boehm GC suspends threads with SIGPWR), and
+ * it must not run for a sweep; another free signal is chosen (RFC 0038,
+ * amendment 21). Under the sweep's lock. */
+static int ownSignal(void) {
+  struct sigaction current;
+  if (!installHandler())
+    return 0;
+  if (sigaction(stopSignal, NULL, &current) == 0 &&
+      (current.sa_flags & SA_SIGINFO) != 0 &&
+      current.sa_sigaction == stopHandler)
+    return 1;
+  chooseSignal(1);
+  return __atomic_load_n(&stopSignal, __ATOMIC_RELAXED) != 0;
 }
 
 /* RFC 0038, amendment 13: masks the program sets leave out the sweep's
@@ -885,8 +906,10 @@ static int installHandler(void) {
  * library's two internal ones as its own functions do. */
 static int setMask(int how, const sigset_t *set, sigset_t *old) {
   uint64_t mask = 0;
-  if (set != NULL && how != SIG_UNBLOCK && installHandler())
-    mask = (uint64_t)1 << (stopSignal - 1);
+  if (set != NULL && how != SIG_UNBLOCK && installHandler()) {
+    const int signal = __atomic_load_n(&stopSignal, __ATOMIC_RELAXED);
+    mask = signal != 0 ? (uint64_t)1 << (signal - 1) : 0;
+  }
   if (set != NULL && how != SIG_UNBLOCK) {
     mask = ~(mask | (uint64_t)3 << 31) & *(const uint64_t *)(const void *)set;
     set = (const sigset_t *)(const void *)&mask;
@@ -949,7 +972,7 @@ static int stopThreads(void) {
     return 0;
   if (taskCount == 1 + workerCount)
     return 1;
-  if (!installHandler())
+  if (!ownSignal())
     return 0;
   stopTargets = 0;
   for (i = 0; i < taskCount; ++i)
