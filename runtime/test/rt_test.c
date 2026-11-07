@@ -595,9 +595,12 @@ static void *blocker(void *argument) {
 }
 
 /* A thread that recycling waits on is created before the block is
- * released: glibc 2.35's pthread_create copies 128 bytes of its frame, the
- * signal mask the kernel filled 8 of, into the new thread's descriptor,
- * which the sweep scans; the rest is whatever the stack held there. */
+ * released, on every C library: a new thread starts with copies of its
+ * creator's state, which the sweep scans with the thread (RFC 0038,
+ * amendment 30). glibc 2.35's pthread_create copies 128 bytes of its frame,
+ * a signal mask the kernel filled 8 of, into the thread's descriptor;
+ * on 2.39, clone copies the creator's callee-saved registers, which the
+ * thread's first frames save. */
 static void testSweepStopsBlockingThreads(void) {
   /* RFC 0038 amendment 13: a thread that blocks every signal is still
    * stopped, so the sweep recycles. */

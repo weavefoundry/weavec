@@ -1025,6 +1025,8 @@ class EndToEndTest(unittest.TestCase):
         status, output = self.run_gate("--inject")
         self.assertEqual(status, 1, output)
         self.assertIn("injection silent stops now: remove its accepted miss", output)
+        self.assertEqual(self.results()["gates"]["injections"]["status"], "fail")
+        self.assertEqual(self.results()["gates"]["injections"]["detail"]["stale"], ["silent"])
         self.write_injections([dict(silent, accepted="it is fine")])
         status, output = self.run_gate("--inject")
         self.assertEqual(status, 2, output)

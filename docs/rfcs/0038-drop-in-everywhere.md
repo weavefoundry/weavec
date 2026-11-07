@@ -982,9 +982,14 @@ override the body.
     `macos-14` jobs (v0.19.0's never started), and the archive bundles
     Homebrew's LLVM libraries, which are built for the runner's macOS.
 30. **A new thread starts with its creator's words (amendment 13's
-    test).** `sweep-stops-blocking-threads` failed on every glibc 2.35
-    build (the release runners'), and on glibc 2.39 when run alone. It was
-    never flaky under load. On 2.35, `pthread_create` blocks every signal
+    test).** `sweep-stops-blocking-threads` failed whenever the
+    released block's address was left where the new thread could inherit
+    it, which depends on the C library and on what ran before. Every
+    linux-x86_64 full-suite run on glibc 2.35 failed (v0.19.0's release job
+    and 10 of 10 in Docker), and so did the test run alone, on glibc 2.35
+    and 2.39, x86-64 and AArch64. The full suite passed on linux-aarch64 on
+    2.35 (the release job) and on both architectures on 2.39 (pull request
+    CI). It was never flaky under load. On 2.35, `pthread_create` blocks every signal
     into a 128-byte `sigset_t` on its stack, of which the kernel writes
     8 bytes, and copies all 128 into the new thread's descriptor, which the
     sweep scans with the thread's stack; on 2.39, `clone` copies the

@@ -2158,12 +2158,14 @@ class Gate:
         print_injection_table(ordered)
         missed = [r.injection.id for r in ordered if not r.stopped]
         accepted = [r.injection.id for r in ordered if not r.stopped and r.injection.accepted]
-        for r in ordered:
-            if r.stopped and r.injection.accepted:
-                self.fail(f"injection {r.injection.id} stops now: remove its accepted miss")
-        self.gate("injections", len(missed) == len(accepted) and not any(r.failures for r in ordered),
+        stale = [r.injection.id for r in ordered if r.stopped and r.injection.accepted]
+        for ident in stale:
+            self.fail(f"injection {ident} stops now: remove its accepted miss")
+        # Stale entries were each recorded above; anything else fails here.
+        rest_ok = len(missed) == len(accepted) and not any(r.failures for r in ordered)
+        self.gate("injections", rest_ok and not stale,
                   {"stopped": len(ordered) - len(missed), "total": len(ordered), "missed": missed,
-                   "accepted": accepted})
+                   "accepted": accepted, "stale": stale}, failed_above=rest_ok)
 
     def describe_injection(self, run: InjectionRun) -> str:
         if run.failures:
