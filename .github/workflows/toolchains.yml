@@ -1,0 +1,235 @@
+name: Toolchains
+
+# RFC 0038, section 6 and gate G8: a self-contained toolchain per platform,
+# built with the release preset (static LLVM on Linux, LLVM's libraries
+# bundled on Darwin), tested, packed as weavec-<version>-<os>-<arch>.tar.xz,
+# then each archive checked on clean runners with no LLVM installed, the
+# Homebrew formula installed from the archives, and the container image
+# built and checked on each Linux platform. release.yml calls it for a tag
+# and publishes what it built; a pull request that changes the packaging
+# runs it with nothing published.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The tag to build.
+        type: string
+        required: true
+  pull_request:
+    paths:
+      - .github/workflows/toolchains.yml
+      - .github/workflows/release.yml
+      - packaging/**
+      - scripts/check-toolchain.py
+      - scripts/render-formula.py
+      - cmake/WeaveCInstall.cmake
+      - cmake/WeaveCBundleLLVM.cmake
+      - cmake/WeaveCLLVM.cmake
+      - CMakePresets.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: toolchains-${{ inputs.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Toolchain (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      # One platform's failure does not hide another's.
+      fail-fast: false
+      matrix:
+        include:
+          # glibc 2.35 and later.
+          - platform: linux-x86_64
+            os: ubuntu-22.04
+          - platform: linux-aarch64
+            os: ubuntu-22.04-arm
+          # macOS 14 and later.
+          - platform: darwin-arm64
+            os: macos-14
+    env:
+      LLVM_VERSION: "23"
+      LIT_VERSION: "23.1.0"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Install LLVM (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.sources
+          wget --tries=5 --waitretry=10 -qO llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh "$LLVM_VERSION" all
+          sudo apt-get install -y ninja-build
+          echo "WEAVEC_LLVM_PREFIX=/usr/lib/llvm-$LLVM_VERSION" >> "$GITHUB_ENV"
+          echo "CC=clang-$LLVM_VERSION" >> "$GITHUB_ENV"
+          echo "CXX=clang++-$LLVM_VERSION" >> "$GITHUB_ENV"
+      - name: Install LLVM (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm ninja
+          prefix="$(brew --prefix llvm)"
+          echo "WEAVEC_LLVM_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "CC=$prefix/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=$prefix/bin/clang++" >> "$GITHUB_ENV"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install "lit==$LIT_VERSION"
+      - name: Build and test
+        env:
+          RELEASE_TAG: ${{ inputs.ref }}
+        run: |
+          ulimit -c 0
+          # A tag's build carries its version alone (weavec-X.Y.Z-...), as
+          # publication expects; a pull request's keeps the -dev suffix.
+          if [ -n "$RELEASE_TAG" ]; then
+            cmake --preset release -DWEAVEC_VERSION_SUFFIX=
+          else
+            cmake --preset release
+          fi
+          cmake --build --preset release
+          ctest --preset release -j "$(getconf _NPROCESSORS_ONLN)"
+      - name: Pack
+        env:
+          RELEASE_TAG: ${{ inputs.ref }}
+        run: |
+          cd build/release
+          cpack
+          ls -l weavec-*.tar.xz
+          if [ -n "$RELEASE_TAG" ]; then
+            test -f "weavec-${RELEASE_TAG#v}-${{ matrix.platform }}.tar.xz"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: toolchain-${{ matrix.platform }}
+          path: build/release/weavec-*.tar.xz
+          if-no-files-found: error
+
+  # G8: each archive on a clean runner with no LLVM installed, moved after
+  # unpacking: the README's examples, a shared library, the corpus gate's
+  # quick check of two projects.
+  smoke:
+    name: Smoke test (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: darwin-arm64
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+          - os: ubuntu-24.04
+            platform: linux-x86_64
+          - os: ubuntu-24.04-arm
+            platform: linux-aarch64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/download-artifact@v7
+        with:
+          name: toolchain-${{ matrix.platform }}
+          path: dist
+      - name: The toolchain, moved after unpacking
+        run: python3 scripts/check-toolchain.py dist/weavec-*.tar.xz
+      - name: Corpus quick check
+        run: |
+          mkdir -p "$RUNNER_TEMP/tc"
+          tar -xJf dist/weavec-*.tar.xz -C "$RUNNER_TEMP/tc"
+          python3 scripts/corpus-gate.py --quick --only cJSON --only sds \
+            --weavec-cc "$(echo "$RUNNER_TEMP"/tc/weavec-*/bin/weavec-cc)"
+
+  # G8: the formula, rendered against the archives on this runner (file://
+  # URLs: a draft release's assets are not public), installed from a local
+  # tap and tested on macos-15.
+  formula:
+    name: Homebrew formula
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: toolchain-*
+          path: dist
+          merge-multiple: true
+      - name: Install and test the formula
+        run: |
+          archive=$(ls dist/weavec-*-darwin-arm64.tar.xz)
+          version=${archive#dist/weavec-}
+          version=${version%-darwin-arm64.tar.xz}
+          python3 scripts/render-formula.py "$version" dist \
+            --base-url "file://$PWD/dist" --output "$RUNNER_TEMP/weavec.rb"
+          brew tap-new --no-git weavefoundry/check
+          mkdir -p "$(brew --repository weavefoundry/check)/Formula"
+          cp "$RUNNER_TEMP/weavec.rb" "$(brew --repository weavefoundry/check)/Formula/"
+          brew install weavefoundry/check/weavec
+          brew test weavefoundry/check/weavec
+          printf '#include <stdio.h>\nint main(void) { puts("ok"); return 0; }\n' > "$RUNNER_TEMP/ok.c"
+          "$(brew --prefix)/bin/weavec-cc" -O2 "$RUNNER_TEMP/ok.c" -o "$RUNNER_TEMP/ok"
+          "$RUNNER_TEMP/ok"
+
+  # G8: the container image of packaging/docker/Dockerfile, built for each
+  # Linux platform on its own runner and checked inside: the toolchain
+  # checks and the corpus gate's quick check. Publication builds it again
+  # for both platforms and pushes it.
+  container:
+    name: Container image (${{ matrix.platform }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            arch: amd64
+            os: ubuntu-24.04
+          - platform: linux-aarch64
+            arch: arm64
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/download-artifact@v7
+        with:
+          name: toolchain-${{ matrix.platform }}
+          path: dist
+      - name: Build the image
+        run: |
+          mkdir -p "dist/linux-${{ matrix.arch }}"
+          tar -xJf dist/weavec-*-${{ matrix.platform }}.tar.xz \
+            -C "dist/linux-${{ matrix.arch }}" --strip-components=1
+          docker buildx build --platform "linux/${{ matrix.arch }}" --load \
+            -f packaging/docker/Dockerfile -t weavec:check .
+      - name: Check the image
+        run: |
+          docker run --rm weavec:check
+          docker run --rm -v "$PWD:/work" -w /work weavec:check bash -c '
+            set -e
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends python3 git cmake >/dev/null
+            # The checkout belongs to the runner user, not root.
+            git config --global --add safe.directory "*"
+            python3 scripts/check-toolchain.py /opt/weavec
+            python3 scripts/corpus-gate.py --quick --only cJSON --only sds \
+              --weavec-cc /opt/weavec/bin/weavec-cc'

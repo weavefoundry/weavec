@@ -105,116 +105,21 @@ jobs:
           fi
         id: draft
 
-  # RFC 0038, section 6: a self-contained toolchain per platform, built with
-  # the release preset (static LLVM on Linux, LLVM's libraries bundled on
-  # Darwin), tested, packed as weavec-<version>-<os>-<arch>.tar.xz.
+  # RFC 0038, section 6 and gate G8: the toolchains, built and tested for the
+  # tag, checked on clean runners, and the formula and the container image
+  # checked from them (toolchains.yml, which pull requests that change the
+  # packaging run too).
   toolchains:
-    name: Toolchain (${{ matrix.platform }})
+    name: Toolchains
     needs: release
     if: needs.release.outputs.tag != '' && needs.release.outputs.published != 'true'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          # glibc 2.35 and later.
-          - platform: linux-x86_64
-            os: ubuntu-22.04
-          - platform: linux-aarch64
-            os: ubuntu-22.04-arm
-          # macOS 14 and later.
-          - platform: darwin-arm64
-            os: macos-14
-    env:
-      LLVM_VERSION: "23"
-      LIT_VERSION: "23.1.0"
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.release.outputs.tag }}
-      - name: Install LLVM (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
-            /etc/apt/sources.list.d/google-chrome.sources
-          wget --tries=5 --waitretry=10 -qO llvm.sh https://apt.llvm.org/llvm.sh
-          sudo bash llvm.sh "$LLVM_VERSION" all
-          sudo apt-get install -y ninja-build
-          echo "WEAVEC_LLVM_PREFIX=/usr/lib/llvm-$LLVM_VERSION" >> "$GITHUB_ENV"
-          echo "CC=clang-$LLVM_VERSION" >> "$GITHUB_ENV"
-          echo "CXX=clang++-$LLVM_VERSION" >> "$GITHUB_ENV"
-      - name: Install LLVM (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install llvm ninja
-          prefix="$(brew --prefix llvm)"
-          echo "WEAVEC_LLVM_PREFIX=$prefix" >> "$GITHUB_ENV"
-          echo "CC=$prefix/bin/clang" >> "$GITHUB_ENV"
-          echo "CXX=$prefix/bin/clang++" >> "$GITHUB_ENV"
-          echo "$prefix/bin" >> "$GITHUB_PATH"
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - run: pip install "lit==$LIT_VERSION"
-      - name: Build and test
-        run: |
-          ulimit -c 0
-          cmake --preset release
-          cmake --build --preset release
-          ctest --preset release -j "$(getconf _NPROCESSORS_ONLN)"
-      - name: Pack
-        run: |
-          cd build/release
-          cpack
-          ls -l weavec-*.tar.xz
-      - uses: actions/upload-artifact@v7
-        with:
-          name: toolchain-${{ matrix.platform }}
-          path: build/release/weavec-*.tar.xz
-          if-no-files-found: error
-
-  # G8: each archive on a clean runner with no LLVM installed, moved after
-  # unpacking: the README's examples, a shared library, the corpus gate's
-  # quick check of two projects.
-  smoke:
-    name: Smoke test (${{ matrix.os }})
-    needs: [release, toolchains]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            platform: darwin-arm64
-          - os: ubuntu-22.04
-            platform: linux-x86_64
-          - os: ubuntu-24.04
-            platform: linux-x86_64
-          - os: ubuntu-24.04-arm
-            platform: linux-aarch64
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.release.outputs.tag }}
-      - uses: actions/download-artifact@v7
-        with:
-          name: toolchain-${{ matrix.platform }}
-          path: dist
-      - name: The toolchain, moved after unpacking
-        run: python3 scripts/check-toolchain.py dist/weavec-*.tar.xz
-      - name: Corpus quick check
-        run: |
-          mkdir -p "$RUNNER_TEMP/tc"
-          tar -xJf dist/weavec-*.tar.xz -C "$RUNNER_TEMP/tc"
-          python3 scripts/corpus-gate.py --quick --only cJSON --only sds \
-            --weavec-cc "$(echo "$RUNNER_TEMP"/tc/weavec-*/bin/weavec-cc)"
+    uses: ./.github/workflows/toolchains.yml
+    with:
+      ref: ${{ needs.release.outputs.tag }}
 
   publish:
     name: Publish
-    needs: [release, toolchains, smoke]
+    needs: [release, toolchains]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -245,6 +150,8 @@ jobs:
           cat "$RUNNER_TEMP/SHA256SUMS" dist/SHA256SUMS.toolchains > dist/SHA256SUMS
           gh release upload "$RELEASE_TAG" dist/weavec-*.tar.xz dist/weavec.rb \
             dist/SHA256SUMS --clobber
+      # The arm64 image's RUN step runs under emulation on this runner.
+      - uses: docker/setup-qemu-action@v4
       - name: The container image
         run: |
           version="${RELEASE_TAG#v}"
@@ -259,3 +166,25 @@ jobs:
             --push .
       - name: Make the release public
         run: gh release edit "$RELEASE_TAG" --draft=false --latest
+      # After publication: the formula's URLs are the release's assets.
+      # GITHUB_TOKEN cannot write another repository; HOMEBREW_TAP_TOKEN is
+      # a token that may push to weavefoundry/homebrew-tap (contents: write).
+      - name: The Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set: copy weavec.rb from the $RELEASE_TAG release to Formula/weavec.rb in weavefoundry/homebrew-tap."
+            exit 0
+          fi
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/weavefoundry/homebrew-tap.git" "$RUNNER_TEMP/tap"
+          mkdir -p "$RUNNER_TEMP/tap/Formula"
+          cp dist/weavec.rb "$RUNNER_TEMP/tap/Formula/weavec.rb"
+          cd "$RUNNER_TEMP/tap"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/weavec.rb
+          if ! git diff --cached --quiet; then
+            git commit -m "weavec ${RELEASE_TAG#v}"
+            git push origin HEAD
+          fi

@@ -594,16 +594,22 @@ static void *blocker(void *argument) {
   return NULL;
 }
 
+/* A thread that recycling waits on is created before the block is
+ * released: glibc 2.35's pthread_create copies 128 bytes of its frame, the
+ * signal mask the kernel filled 8 of, into the new thread's descriptor,
+ * which the sweep scans; the rest is whatever the stack held there. */
 static void testSweepStopsBlockingThreads(void) {
   /* RFC 0038 amendment 13: a thread that blocks every signal is still
    * stopped, so the sweep recycles. */
-  void *volatile first = opaque(malloc(3300));
-  volatile uintptr_t hidden = releasedBlock(3300);
+  void *volatile first;
+  volatile uintptr_t hidden;
   unsigned char *again;
   pthread_t thread;
   CHECK(pthread_create(&thread, NULL, blocker, NULL) == 0);
   while (!__atomic_load_n(&blockerReady, __ATOMIC_ACQUIRE))
     sched_yield();
+  first = opaque(malloc(3300));
+  hidden = releasedBlock(3300);
   scrubStack();
   weavecRtSweep();
   again = reuse(hidden ^ Hidden, 3300);
@@ -635,8 +641,8 @@ static void testSweepLeavesProgramSignals(void) {
    * sweep's signal after the runtime chose it (Boehm GC's SIGPWR) never has
    * it run by a sweep, which stops threads with another signal. */
 #if defined(__linux__)
-  void *volatile first = opaque(malloc(5900));
-  volatile uintptr_t hidden = releasedBlock(5900);
+  void *volatile first;
+  volatile uintptr_t hidden;
   unsigned char *again;
   pthread_t thread;
   sigset_t none;
@@ -646,6 +652,8 @@ static void testSweepLeavesProgramSignals(void) {
   CHECK(pthread_create(&thread, NULL, waiter, NULL) == 0);
   while (__atomic_load_n(&blockerReady, __ATOMIC_ACQUIRE) != 2)
     sched_yield();
+  first = opaque(malloc(5900));
+  hidden = releasedBlock(5900);
   scrubStack();
   weavecRtSweep();
   CHECK(programStops == 0);

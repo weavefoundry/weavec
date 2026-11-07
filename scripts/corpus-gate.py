@@ -1211,7 +1211,7 @@ def run_build(config: Config, mode: str, compiler: str, flags: list[str], checko
 # -- injections ---------------------------------------------------------------------
 
 INJECTION_KEYS = frozenset(("id", "config", "patch", "file", "line", "stop", "kinds", "unlocated", "build", "run",
-                            "fortify", "description"))
+                            "fortify", "description", "accepted"))
 UNLOCATED_STOPS = ("invalid-release", "fault")
 
 
@@ -1231,6 +1231,9 @@ class Injection:
     run: list[str] | None = None
     fortify: bool = False
     description: str = ""
+    # Why a miss is accepted, naming the RFC that accepts it (RFC 0038,
+    # amendment 28): the gate does not count it, and fails once it stops.
+    accepted: str | None = None
 
     def commands(self, config: Config) -> list[str]:
         return list(self.run) if self.run is not None else list(config.test)
@@ -1273,7 +1276,7 @@ def load_injections(path: Path, manifest: Manifest) -> list[Injection]:
                             kinds=tuple(item.get("kinds", ())),
                             unlocated=item.get("unlocated"), build=as_commands(item.get("build")),
                             run=as_commands(item.get("run")), fortify=bool(item.get("fortify", False)),
-                            description=item.get("description", ""))
+                            description=item.get("description", ""), accepted=item.get("accepted"))
         except (KeyError, TypeError, ValueError) as exc:
             problems.append(f"{ident}: {exc}")
             continue
@@ -1290,6 +1293,9 @@ def load_injections(path: Path, manifest: Manifest) -> list[Injection]:
             problems.append(f"{inj.id}: unknown kind(s) {', '.join(bad)}")
         if inj.unlocated is not None and inj.unlocated not in UNLOCATED_STOPS:
             problems.append(f"{inj.id}: unlocated must be one of {', '.join(UNLOCATED_STOPS)}")
+        if inj.accepted is not None and (not isinstance(inj.accepted, str)
+                                         or not re.search(r"\bRFC \d{4}\b", inj.accepted)):
+            problems.append(f"{inj.id}: accepted must name the RFC that accepts the miss")
         if not inj.commands(manifest.config(inj.config)):
             problems.append(f"{inj.id}: no run commands (and its config has no test)")
         injections.append(inj)
@@ -1944,13 +1950,18 @@ class Gate:
         self.notes.append(message)
         log(f"note: {message}")
 
-    def gate(self, name: str, ok: bool | None, detail: Any, failed_above: bool = False) -> None:
+    def gate(self, name: str, ok: bool | None, detail: Any, failed_above: bool = False,
+             enforced: bool = True) -> None:
         """Record a gate. `failed_above`: each of its failures was already
-        recorded on its own, so the gate adds no failure of its own."""
-        status = "skip" if ok is None else "pass" if ok else "fail"
+        recorded on its own, so the gate adds no failure of its own. A gate
+        that is not `enforced` is measured and recorded: over its limits it
+        is `over`, a note, not a failure."""
+        status = "skip" if ok is None else "pass" if ok else "fail" if enforced else "over"
         self.results["gates"][name] = {"status": status, "detail": detail}
-        if ok is False and not failed_above:
+        if status == "fail" and not failed_above:
             self.fail(f"gate {name}: {json.dumps(detail)[:600]}")
+        elif status == "over":
+            self.note(f"gate {name}: over its limits, recorded only: {json.dumps(detail)[:600]}")
         else:
             log(f"gate {name}: {status}")
 
@@ -2146,8 +2157,13 @@ class Gate:
             return
         print_injection_table(ordered)
         missed = [r.injection.id for r in ordered if not r.stopped]
-        self.gate("injections", not missed and not any(r.failures for r in ordered),
-                  {"stopped": len(ordered) - len(missed), "total": len(ordered), "missed": missed})
+        accepted = [r.injection.id for r in ordered if not r.stopped and r.injection.accepted]
+        for r in ordered:
+            if r.stopped and r.injection.accepted:
+                self.fail(f"injection {r.injection.id} stops now: remove its accepted miss")
+        self.gate("injections", len(missed) == len(accepted) and not any(r.failures for r in ordered),
+                  {"stopped": len(ordered) - len(missed), "total": len(ordered), "missed": missed,
+                   "accepted": accepted})
 
     def describe_injection(self, run: InjectionRun) -> str:
         if run.failures:
@@ -2391,10 +2407,12 @@ class Gate:
         self.gate("drop-in", ok, detail, failed_above=True)
 
     def evaluate_build_time(self, spec: dict) -> None:
-        self.gate("build-time", *build_time_gate(self.configs, self.results["configs"], spec))
+        self.gate("build-time", *build_time_gate(self.configs, self.results["configs"], spec),
+                  enforced=spec.get("enforced", True))
 
     def evaluate_run_time(self, spec: dict) -> None:
-        self.gate("run-time", *run_time_gate(self.configs, self.manifest.configs, self.results["configs"], spec))
+        self.gate("run-time", *run_time_gate(self.configs, self.manifest.configs, self.results["configs"], spec),
+                  enforced=spec.get("enforced", True))
 
     def evaluate_verify(self) -> None:
         self.gate("verify", *verify_gate(self.configs, self.results["configs"]))
