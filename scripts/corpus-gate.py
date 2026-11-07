@@ -596,9 +596,14 @@ def load_manifest(path: Path, support_root: Path, target: str | None = None) -> 
             project.configs.append(config)
             configs.append(config)
         projects.append(project)
+    gates = data.get("gates", {})
+    for key in ("buildTime", "runTime"):
+        enforced = (gates.get(key) or {}).get("enforced", True)
+        if not isinstance(enforced, bool):
+            problems.append(f"gates.{key}.enforced must be true or false (got {enforced!r})")
     if problems:
         raise GateError(f"{path}: invalid manifest:\n  " + "\n  ".join(problems))
-    return Manifest(projects=projects, configs=configs, gates=data.get("gates", {}), path=path)
+    return Manifest(projects=projects, configs=configs, gates=gates, path=path)
 
 
 def support_dir(config: Config, support_root: Path) -> Path:

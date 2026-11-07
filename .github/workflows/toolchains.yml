@@ -21,7 +21,12 @@ on:
       - .github/workflows/release.yml
       - packaging/**
       - scripts/check-toolchain.py
+      - scripts/check-container.sh
       - scripts/render-formula.py
+      # What lays out, links and finds the runtime of a moved toolchain.
+      - CMakeLists.txt
+      - runtime/CMakeLists.txt
+      - lib/Frontend/Driver.cpp
       - cmake/WeaveCInstall.cmake
       - cmake/WeaveCBundleLLVM.cmake
       - cmake/WeaveCLLVM.cmake
@@ -225,12 +230,4 @@ jobs:
       - name: Check the image
         run: |
           docker run --rm weavec:check
-          docker run --rm -v "$PWD:/work" -w /work weavec:check bash -c '
-            set -e
-            apt-get update -qq
-            apt-get install -y -qq --no-install-recommends python3 git cmake >/dev/null
-            # The checkout belongs to the runner user, not root.
-            git config --global --add safe.directory "*"
-            python3 scripts/check-toolchain.py /opt/weavec
-            python3 scripts/corpus-gate.py --quick --only cJSON --only sds \
-              --weavec-cc /opt/weavec/bin/weavec-cc'
+          docker run --rm -v "$PWD:/work" -w /work weavec:check sh scripts/check-container.sh

@@ -354,7 +354,7 @@ The `smoke` jobs unpack each on clean `macos-15`, `ubuntu-22.04`,
 archives (`file://` URLs), installs it from a local tap on `macos-15` and
 runs `brew test`. The `container` jobs build the image from
 `packaging/docker/Dockerfile` on each Linux platform's own runner and run
-the same checks inside it. A pull request that changes the packaging runs
+the same checks inside it (`scripts/check-container.sh`). A pull request that changes the packaging runs
 `toolchains.yml` too, with the `dev` suffix and nothing published. Then the
 `publish` job uploads the archives, their checksums and the rendered
 formula (`scripts/render-formula.py` from `packaging/homebrew/weavec.rb.in`)

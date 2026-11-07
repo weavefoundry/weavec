@@ -1046,6 +1046,12 @@ class EndToEndTest(unittest.TestCase):
         status, output = self.run_gate("--full", "--only", "units", "--no-asan")
         self.assertEqual(status, 1, output)
         self.assertEqual(self.results()["gates"]["build-time"]["status"], "fail")
+        # A flag that is not a boolean is a manifest error, not a silent default.
+        self.manifest_data["gates"]["buildTime"]["enforced"] = "false"
+        self.manifest.write_text(json.dumps(self.manifest_data))
+        status, output = self.run_gate("--full", "--only", "units", "--no-asan")
+        self.assertEqual(status, 2, output)
+        self.assertIn("gates.buildTime.enforced must be true or false (got 'false')", output)
 
     def test_reference_only(self):
         status, output = self.run_gate("--full", "--reference-only", "--only", "units")
@@ -1061,27 +1067,26 @@ class RepositoryFilesTest(unittest.TestCase):
     """The workflows run the gate with flags it has."""
 
     def test_workflow_invocations_parse(self):
-        # Every run of the gate in the workflows, each tier of corpus.yml's
-        # matrix substituted.
+        # Every run of the gate in the workflows and the container check;
+        # a command that names corpus.yml's matrix tier is parsed for each.
         seen = 0
-        for workflow in ("ci.yml", "corpus.yml", "toolchains.yml"):
-            text = (ROOT / ".github" / "workflows" / workflow).read_text()
-            for tier in ("full", "programs"):
-                start = text.find("python3 scripts/corpus-gate.py")
-                while start >= 0:
-                    lines = []
-                    for line in text[start:].splitlines():
-                        lines.append(line.rstrip(" \\"))
-                        if not line.endswith("\\"):
-                            break
-                    # The container's check ends a `bash -c '...'` script.
-                    command = " ".join(lines).rstrip("'").replace("${{ matrix.preset }}", "preset")
+        for path in (".github/workflows/ci.yml", ".github/workflows/corpus.yml",
+                     ".github/workflows/toolchains.yml", "scripts/check-container.sh"):
+            lines = iter((ROOT / path).read_text().splitlines())
+            for line in lines:
+                if "python3 scripts/corpus-gate.py" not in line:
+                    continue
+                parts = [line]
+                while parts[-1].endswith("\\"):
+                    parts.append(next(lines))
+                command = " ".join(p.rstrip(" \\") for p in parts).replace("${{ matrix.preset }}", "preset")
+                tiers = ("full", "programs") if "${{ matrix.tier }}" in command else ("",)
+                for tier in tiers:
                     words = shlex.split(command.replace("${{ matrix.tier }}", tier))
-                    args = gate.parse_args(words[2:])
-                    self.assertTrue(args.quick or args.full or args.programs, workflow)
+                    args = gate.parse_args(words[words.index("scripts/corpus-gate.py") + 1:])
+                    self.assertTrue(args.quick or args.full or args.programs, path)
                     seen += 1
-                    start = text.find("python3 scripts/corpus-gate.py", start + 1)
-        self.assertGreaterEqual(seen, 4)
+        self.assertGreaterEqual(seen, 5)
 
 
 if __name__ == "__main__":
