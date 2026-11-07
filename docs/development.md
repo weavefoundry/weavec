@@ -346,7 +346,7 @@ body limit.
 RFC 0038 §6: `release.yml` then calls `.github/workflows/toolchains.yml`
 for the tag. Its `build` jobs build the tag with the `release` preset and
 `-DWEAVEC_VERSION_SUFFIX=` on `ubuntu-22.04` (x86-64), `ubuntu-22.04-arm`
-and `macos-14`, run `ctest`, and pack `weavec-<version>-<os>-<arch>.tar.xz`.
+and `macos-15`, run `ctest`, and pack `weavec-<version>-<os>-<arch>.tar.xz`.
 The `smoke` jobs unpack each on clean `macos-15`, `ubuntu-22.04`,
 `ubuntu-24.04` and `ubuntu-24.04-arm` runners, move it, and run
 `scripts/check-toolchain.py` and `corpus-gate.py --quick --only cJSON

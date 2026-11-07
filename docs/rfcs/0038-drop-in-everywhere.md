@@ -977,7 +977,10 @@ override the body.
     release is public, `HOMEBREW_TAP_TOKEN` (a token that may push to
     `weavefoundry/homebrew-tap`) commits `Formula/weavec.rb` there;
     without it the job warns. One platform's failure no longer cancels
-    the others.
+    the others. The Darwin archive is built on `macos-15` for macOS 15 and
+    later (amendment 10 said `macos-14`, macOS 14): GitHub no longer runs
+    `macos-14` jobs (v0.19.0's never started), and the archive bundles
+    Homebrew's LLVM libraries, which are built for the runner's macOS.
 30. **A new thread starts with its creator's words (amendment 13's
     test).** `sweep-stops-blocking-threads` failed on every glibc 2.35
     build (the release runners'), and on glibc 2.39 when run alone. It was

@@ -49,13 +49,14 @@ jobs:
             os: ubuntu-22.04
           - platform: linux-aarch64
             os: ubuntu-22.04-arm
-          # macOS 14 and later.
+          # macOS 15 and later: GitHub retired macos-14, and the archive
+          # bundles Homebrew's LLVM libraries, built for the runner's macOS.
           - platform: darwin-arm64
-            os: macos-14
+            os: macos-15
     env:
       LLVM_VERSION: "23"
       LIT_VERSION: "23.1.0"
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
     steps:
       - uses: actions/checkout@v7
         with:
