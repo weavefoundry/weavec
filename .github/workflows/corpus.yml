@@ -10,7 +10,8 @@ name: Corpus
 # compiler), the injected bugs and the benchmarks (against the reference
 # compiler and ASan). --programs builds the large programs of
 # test/corpus/programs.json from their release archives and runs their test
-# suites. A platform's failure opens an issue, or comments on the open one.
+# suites. Each tier is its own job per platform (each may take the six hours
+# a job is allowed). A failing job opens an issue, or comments on the open one.
 # Pull requests run --quick in CI.
 on:
   schedule:
@@ -25,16 +26,18 @@ env:
 
 jobs:
   corpus:
-    name: Corpus (${{ matrix.platform }})
+    name: Corpus ${{ matrix.tier }} (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
     # --full builds every project three times (trap, report, reference), runs
     # its tests twice, builds each injection and runs every benchmark three
-    # ways; --programs builds five large programs twice: the longest job
-    # GitHub allows.
+    # ways; --programs builds five large programs twice and runs their
+    # suites: each the longest job GitHub allows.
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
+        tier: [full, programs]
+        platform: [linux-x86_64, linux-aarch64, darwin-arm64]
         include:
           - platform: linux-x86_64
             os: ubuntu-24.04
@@ -65,7 +68,7 @@ jobs:
       - name: Install LLVM and the test suites' programs (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install llvm ninja ccache redis tcl-tk@8 expect
+          brew install llvm ninja ccache redis tcl-tk@8 expect openssl@3
           prefix="$(brew --prefix llvm)"
           echo "WEAVEC_LLVM_PREFIX=$prefix" >> "$GITHUB_ENV"
           echo "CC=$prefix/bin/clang" >> "$GITHUB_ENV"
@@ -88,29 +91,19 @@ jobs:
           cmake --preset ci-release -DWEAVEC_BUILD_TESTS=OFF
           cmake --build --preset ci-release
 
-      - name: Run corpus gate
+      - name: Run corpus gate (--${{ matrix.tier }})
         run: |
           ulimit -c 0
-          python3 scripts/corpus-gate.py --full \
+          python3 scripts/corpus-gate.py "--${{ matrix.tier }}" \
             --weavec-cc build/ci-release/bin/weavec-cc \
-            --json corpus-gate-full.json
-
-      - name: Run programs tier
-        if: always()
-        run: |
-          ulimit -c 0
-          python3 scripts/corpus-gate.py --programs \
-            --weavec-cc build/ci-release/bin/weavec-cc \
-            --json corpus-gate-programs.json
+            --json "corpus-gate-${{ matrix.tier }}.json"
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: corpus-gate-${{ matrix.platform }}
-          path: |
-            corpus-gate-full.json
-            corpus-gate-programs.json
+          name: corpus-gate-${{ matrix.tier }}-${{ matrix.platform }}
+          path: corpus-gate-${{ matrix.tier }}.json
           if-no-files-found: ignore
 
   report:

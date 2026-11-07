@@ -343,19 +343,34 @@ archive and `SHA256SUMS` before it is made public. Release notes link to the
 versioned generated changelog and include its entry inline when it fits GitHub's
 body limit.
 
-RFC 0038 §6: the `toolchains` jobs then build the tag with the `release`
-preset on `ubuntu-22.04` (x86-64), `ubuntu-22.04-arm` and `macos-14`, run
-`ctest`, and pack `weavec-<version>-<os>-<arch>.tar.xz`; the `smoke` jobs
-unpack each on clean `macos-15`, `ubuntu-22.04`, `ubuntu-24.04` and
-`ubuntu-24.04-arm` runners, move it, and run `scripts/check-toolchain.py`
-and `corpus-gate.py --quick --only cJSON --only sds` with it; the
+RFC 0038 §6: `release.yml` then calls `.github/workflows/toolchains.yml`
+for the tag. Its `build` jobs build the tag with the `release` preset and
+`-DWEAVEC_VERSION_SUFFIX=` on `ubuntu-22.04` (x86-64), `ubuntu-22.04-arm`
+and `macos-15`, run `ctest`, and pack `weavec-<version>-<os>-<arch>.tar.xz`.
+The `smoke` jobs unpack each on clean `macos-15`, `ubuntu-22.04`,
+`ubuntu-24.04` and `ubuntu-24.04-arm` runners, move it, and run
+`scripts/check-toolchain.py` and `corpus-gate.py --quick --only cJSON
+--only sds` with it. The `formula` job renders the formula against the
+archives (`file://` URLs), installs it from a local tap on `macos-15` and
+runs `brew test`. The `container` jobs build the image from
+`packaging/docker/Dockerfile` on each Linux platform's own runner and run
+the same checks inside it (`scripts/check-container.sh`). A pull request that changes the packaging runs
+`toolchains.yml` too, with the `dev` suffix and nothing published. Then the
 `publish` job uploads the archives, their checksums and the rendered
-formula (`scripts/render-formula.py` from `packaging/homebrew/weavec.rb.in`;
-copy it into the `weavefoundry/homebrew-tap` repository) to the draft,
-builds and pushes the multi-platform image from `packaging/docker/Dockerfile`,
-and makes the release public. The image needs the repository's
-`packages: write` permission. The macOS archive is not yet signed or
-notarized.
+formula (`scripts/render-formula.py` from `packaging/homebrew/weavec.rb.in`)
+to the draft, builds and pushes the multi-platform image to
+`ghcr.io/weavefoundry/weavec`, makes the release public, and commits the
+formula to `Formula/weavec.rb` in `weavefoundry/homebrew-tap`. The macOS
+archive is not yet signed or notarized.
+
+Publication needs, besides the repository's `packages: write` permission,
+two things only an administrator can set up: the
+`weavefoundry/homebrew-tap` repository and a `HOMEBREW_TAP_TOKEN` secret
+holding a token that may push to it (without it the job warns, and the
+formula must be copied from the release by hand); and, after the first
+push, the `weavec` package on GitHub's registry made public (a new package
+is private). A failed publication is retried by re-running the failed jobs
+of the release's CI run.
 
 Repository setup: Actions needs permission to write repository contents,
 and the release identity needs to be allowed to push its release commit to

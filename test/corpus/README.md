@@ -223,13 +223,17 @@ measured, every report included.
 | --- | --- | --- | --- |
 | ratchet | (section 11) | `--quick` | no measurement is worse than `expected.json` records (below) |
 | `drop-in` | G1, G2, G3 | `--full` | every build passes, and every test suite in trap (or verify) mode and in report mode, with no trap but at `guardFailures` |
-| `injections` | (G4, G5 on the corpus) | `--inject`, `--full` | every selected injection stops at its line |
+| `injections` | (G4, G5 on the corpus) | `--inject`, `--full` | every selected injection stops at its line, but those whose miss is `accepted` (below) |
 | `verify` | G6 | `--checks verify` | no `weavec.proven` report in any test suite or benchmark |
 | `run-time` | G7 | `--bench`, `--full` | `gates.runTime`: each workload of `sets` (fresh34, fresh35) at most the larger of `maxOverhead` (2.0) and its ASan ratio, their geometric mean at most `maxGeometricMean` (1.8) once every one of them ran, and `maxOverheadPerConfig`'s workloads at their own limits (Lua 2.0, zlib 1.4, cJSON 1.4) |
 | `build-time` | G9 | `--full` | `gates.buildTime`: each config's `weavec-cc` build CPU time at most `maxBuildRatio` (1.5) times the reference compiler's, and no per-file compile above `maxUnitRatio` (3.0) times the reference compiler's, among the files the reference compiler takes at least `minUnitCpuSeconds` (0.25) for |
 
 `--json` holds each gate's status (`pass`, `fail`, or `skip` when nothing
-was measured) and detail. G4 and G5 proper (the historic bugs and the blind
+was measured) and detail. A cost gate whose manifest entry says
+`"enforced": false` is measured and recorded but never fails: over its
+limits its status is `over`, with a note. Both `runTime` and `buildTime`
+say so (RFC 0038, amendment 28): RFC 0036 and RFC 0037 accepted costs over
+these limits, and RFC 0038 measures cost against v0.18.0 instead. G4 and G5 proper (the historic bugs and the blind
 sets) and G8 (start-up) are measured by their own scripts, not here.
 
 ## The ratchet (`expected.json`)
@@ -316,6 +320,11 @@ must stop:
   release (`weavec: invalid release of …`, which names no line): the double
   frees; with `"unlocated": "fault"`, by a fault on the null page (a call
   through a null function pointer, `logc-null-lock`).
+
+An entry's `accepted` says why its miss is accepted and names the RFC that
+accepts it (RFC 0038, amendment 28): the gate does not count the miss, and
+fails once the injection stops, so the list cannot go stale. The six
+injections v0.16.0 already missed carry it.
 
 A run that never reaches the bug is a missed injection like any other: give
 the entry a `run` that reaches it (a driver under `injections/<project>/`,
