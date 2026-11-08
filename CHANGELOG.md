@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.20.0 (2026-11-08)
+
+### Features
+
+- Guard C++ with checked new, delete, and containers
+  ([#57](https://github.com/weavefoundry/weavec/pull/57),
+  [`d65bfc5`](https://github.com/weavefoundry/weavec/commit/d65bfc592a74fbb712703fb09536a4c9f4664e92))
+
+
 ## v0.19.1 (2026-11-08)
 
 ### Bug Fixes
