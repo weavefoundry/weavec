@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.19.1 (2026-11-08)
+
+### Bug Fixes
+
+- Publish releases and relax the weekly corpus gate
+  ([#56](https://github.com/weavefoundry/weavec/pull/56),
+  [`841d9f7`](https://github.com/weavefoundry/weavec/commit/841d9f738e64c4425aa0f9d83ca1a934dab4e699))
+
+
 ## v0.19.0 (2026-11-06)
 
 ### Chores
