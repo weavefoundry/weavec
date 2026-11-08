@@ -751,5 +751,19 @@ class MainTest(Workspace):
         self.assertIn("does not exist; build it first", stderr.getvalue())
 
 
+class CxxOfTest(unittest.TestCase):
+    """The ASan reference's C++ driver, as the corpus gate names it."""
+
+    def test_matches_the_corpus_gate(self):
+        spec = importlib.util.spec_from_file_location("corpus_gate_for_cxx_of",
+                                                      Path(__file__).with_name("corpus-gate.py"))
+        gate = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = gate
+        spec.loader.exec_module(gate)
+        for compiler in ("clang", "clang-23", "/usr/bin/clang-23", "gcc", "cc", "build/bin/weavec-cc"):
+            self.assertEqual(rc.cxx_of(compiler), gate.cxx_of(compiler), compiler)
+        self.assertEqual(rc.cxx_of("clang-23"), "clang++-23")
+
+
 if __name__ == "__main__":
     unittest.main()

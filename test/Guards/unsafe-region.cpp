@@ -6,6 +6,9 @@
 // RUN: rm -rf %t.dir && mkdir -p %t.dir
 // RUN: %weavec_cxx -O2 -c %s -o %t.dir/unsafe.o -fweavec-ledger=%t.dir/ -fweavec-summary 2>&1 | FileCheck %s --check-prefix=SUMMARY
 // RUN: FileCheck %s --check-prefix=LEDGER < %t.dir/unsafe.o.ledger.json
+// A template parsed late (-fdelayed-template-parsing) has no body yet when
+// the collector sees it, and is no crash.
+// RUN: %weavec_cxx -O2 -fdelayed-template-parsing -c %s -o %t.dir/late.o
 #include <weavec.h>
 
 namespace shapes {

@@ -210,6 +210,10 @@ public:
   [[nodiscard]] static bool isRuntimeName(llvm::StringRef name);
 
 private:
+  /// Past the frames inlined from artificial functions and the unit's
+  /// system headers; `systemFiles` remembers which files are those.
+  const llvm::DILocation *reportedAt(const llvm::DILocation *at) const;
+  mutable llvm::DenseMap<const llvm::DIFile *, bool> systemFiles;
   llvm::StringMap<llvm::Constant *> files;
   std::map<std::tuple<llvm::Constant *, unsigned, unsigned, unsigned>,
            llvm::Constant *>

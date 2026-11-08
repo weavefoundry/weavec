@@ -420,14 +420,17 @@ llvm::GlobalVariable *ModuleContext::shadowDescriptor() {
 /// functions (`__attribute__((artificial))`, as the C library's fortified
 /// wrappers are) and, RFC 0039, from the unit's system headers (the C++
 /// library's), at their call site.
-static const llvm::DILocation *reportedAt(const llvm::DILocation *at,
-                                          const UnsafeRegions *unit) {
+const llvm::DILocation *
+ModuleContext::reportedAt(const llvm::DILocation *at) const {
+  const UnsafeRegions *unit = options.unsafe.get();
   while (at->getInlinedAt() != nullptr) {
     const llvm::DISubprogram *function = at->getScope()->getSubprogram();
-    const bool system =
-        unit != nullptr && unit->isSystemFile(UnsafeRegions::normalize(
-                               at->getFilename(), at->getDirectory()));
-    if (function == nullptr || (!function->isArtificial() && !system))
+    const auto [known, added] =
+        systemFiles.try_emplace(at->getScope()->getFile(), false);
+    if (added && unit != nullptr)
+      known->second = unit->isSystemFile(
+          UnsafeRegions::normalize(at->getFilename(), at->getDirectory()));
+    if (function == nullptr || (!function->isArtificial() && !known->second))
       break;
     at = at->getInlinedAt();
   }
@@ -439,7 +442,7 @@ ModuleContext::positionOf(const llvm::DebugLoc &location) const {
   Position position;
   if (!location)
     return position;
-  const llvm::DILocation *at = reportedAt(location.get(), options.unsafe.get());
+  const llvm::DILocation *at = reportedAt(location.get());
   position.file =
       UnsafeRegions::normalize(at->getFilename(), at->getDirectory());
   position.line = at->getLine();
@@ -463,8 +466,7 @@ llvm::Constant *ModuleContext::site(const llvm::DebugLoc &location,
   unsigned line = 0;
   unsigned column = 0;
   if (location) {
-    const llvm::DILocation *at =
-        reportedAt(location.get(), options.unsafe.get());
+    const llvm::DILocation *at = reportedAt(location.get());
     line = at->getLine();
     column = at->getColumn();
     llvm::StringRef name = at->getFilename();

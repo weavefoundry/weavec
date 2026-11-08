@@ -851,8 +851,13 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
   dropScopes(function, /*orphansOnly=*/false);
   resiteInlinedCalls(module, function);
   reportLibraryTraps(module, function);
-  // The read-only library calls the optimizer left (section 2.5).
+  // The read-only library calls the optimizer left (section 2.5). A check
+  // after an `invoke` may split an edge (RFC 0039 §2): the analyses earlier
+  // passes cached no longer describe the function.
+  const std::size_t blocks = function.size();
   guardLibraryCalls(module, function, /*late=*/true);
+  if (function.size() != blocks)
+    analyses.invalidate(function, llvm::PreservedAnalyses::none());
   std::vector<Access> accesses;
   std::vector<llvm::CallInst *> disjoint;
   for (llvm::BasicBlock &block : function)

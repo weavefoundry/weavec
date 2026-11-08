@@ -724,6 +724,21 @@ def first_line(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def cxx_of(compiler: str) -> str:
+    """The C++ driver beside a C driver: clang-23's clang++-23, gcc's g++, cc's
+    c++ (the same as corpus-gate.py's, which test_run_cases.py checks)."""
+    head, _, name = compiler.rpartition("/")
+    if name.endswith("gcc"):
+        name = name[:-3] + "g++"
+    elif name.endswith("cc"):
+        name = name[:-2] + "c++"
+    elif re.fullmatch(r"clang(-\d+)?", name):
+        name = "clang++" + name[5:]
+    else:
+        name += "++"
+    return f"{head}/{name}" if head else name
+
+
 def is_cxx(case: Case) -> bool:
     """RFC 0039: a case with a C++ unit is built and linked by weavec-c++."""
     return any(unit.suffix == ".cpp" for unit in case.units)
@@ -787,7 +802,7 @@ def run_asan(case: Case, cfg: Config, ev: Evidence, directory: Path) -> None:
     """The reference: Clang with AddressSanitizer and weavec.h on the path."""
     directory.mkdir(parents=True, exist_ok=True)
     exe = directory / "a.asan"
-    command = [cfg.clang + "++" if is_cxx(case) else cfg.clang, "-fsanitize=address,array-bounds",
+    command = [cxx_of(cfg.clang) if is_cxx(case) else cfg.clang, "-fsanitize=address,array-bounds",
                "-fno-sanitize-recover=array-bounds", "-fno-omit-frame-pointer", "-g", "-O0",
                f"-I{RESOURCE_INCLUDE}", *plain_flags(case.flags)]
     for unit in case.units:

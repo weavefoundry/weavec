@@ -190,6 +190,7 @@ private:
   void considerDecl(clang::Decl *declaration) {
     if (const auto *function = llvm::dyn_cast<clang::FunctionDecl>(declaration);
         function != nullptr && function->doesThisDeclarationHaveABody() &&
+        function->getBody() != nullptr && // (a late-parsed template: none)
         (keptFromSanitizer(*function) || annotatedUnsafe(*function))) {
       UnsafeVisitor visitor(function->getASTContext().getSourceManager(),
                             directory, *out);
