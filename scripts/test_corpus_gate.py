@@ -1007,6 +1007,52 @@ class EndToEndTest(unittest.TestCase):
         status, output = self.run_gate("--inject", "--injection", "nope")
         self.assertEqual(status, 2, output)
 
+    def test_accepted_injection_misses(self):
+        # RFC 0038, amendment 28: a miss listed with the RFC that accepts it
+        # passes the gate, and fails it once the injection stops.
+        self.write_patch("stops.patch", "a.c", "    return i;\n",
+                         "    return i;\n    /* REPORT! heap-buffer-overflow INJECTED */\n")
+        self.write_patch("elsewhere.patch", "a.c", "    return i;\n", "    return i;\n    /* INJECTED */\n")
+        silent = {"id": "silent", "config": "units", "patch": "elsewhere.patch", "file": "a.c", "line": 3,
+                  "run": "./prog && echo ran", "accepted": "missed since RFC 0036 (G5 of RFC 0038)"}
+        self.write_injections([{"id": "stops", "config": "units", "patch": "stops.patch", "file": "a.c",
+                                "line": 3}, silent])
+        status, output = self.run_gate("--inject")
+        self.assertEqual(status, 0, output)
+        detail = self.results()["gates"]["injections"]["detail"]
+        self.assertEqual((detail["missed"], detail["accepted"]), (["silent"], ["silent"]))
+        self.write_injections([dict(silent, patch="stops.patch", run=None)])
+        status, output = self.run_gate("--inject")
+        self.assertEqual(status, 1, output)
+        self.assertIn("injection silent stops now: remove its accepted miss", output)
+        self.assertEqual(self.results()["gates"]["injections"]["status"], "fail")
+        self.assertEqual(self.results()["gates"]["injections"]["detail"]["stale"], ["silent"])
+        self.write_injections([dict(silent, accepted="it is fine")])
+        status, output = self.run_gate("--inject")
+        self.assertEqual(status, 2, output)
+        self.assertIn("silent: accepted must name the RFC that accepts the miss", output)
+
+    def test_cost_limits_recorded_only(self):
+        # A cost gate the manifest does not enforce is recorded: over its
+        # limits it is `over`, with a note, and the run passes.
+        self.manifest_data["gates"] = {"buildTime": {"maxBuildRatio": 0.0001, "enforced": False}}
+        self.manifest.write_text(json.dumps(self.manifest_data))
+        status, output = self.run_gate("--full", "--only", "units", "--no-asan")
+        self.assertEqual(status, 0, output)
+        self.assertEqual(self.results()["gates"]["build-time"]["status"], "over")
+        self.assertIn("gate build-time: over its limits, recorded only", output)
+        self.manifest_data["gates"]["buildTime"]["enforced"] = True
+        self.manifest.write_text(json.dumps(self.manifest_data))
+        status, output = self.run_gate("--full", "--only", "units", "--no-asan")
+        self.assertEqual(status, 1, output)
+        self.assertEqual(self.results()["gates"]["build-time"]["status"], "fail")
+        # A flag that is not a boolean is a manifest error, not a silent default.
+        self.manifest_data["gates"]["buildTime"]["enforced"] = "false"
+        self.manifest.write_text(json.dumps(self.manifest_data))
+        status, output = self.run_gate("--full", "--only", "units", "--no-asan")
+        self.assertEqual(status, 2, output)
+        self.assertIn("gates.buildTime.enforced must be true or false (got 'false')", output)
+
     def test_reference_only(self):
         status, output = self.run_gate("--full", "--reference-only", "--only", "units")
         self.assertEqual(status, 0, output)
@@ -1021,17 +1067,26 @@ class RepositoryFilesTest(unittest.TestCase):
     """The workflows run the gate with flags it has."""
 
     def test_workflow_invocations_parse(self):
-        for workflow in ("ci.yml", "corpus.yml"):
-            text = (ROOT / ".github" / "workflows" / workflow).read_text()
-            start = text.index("python3 scripts/corpus-gate.py")
-            lines = []
-            for line in text[start:].splitlines():
-                lines.append(line.rstrip(" \\"))
-                if not line.endswith("\\"):
-                    break
-            words = shlex.split(" ".join(lines).replace("${{ matrix.preset }}", "preset"))
-            args = gate.parse_args(words[2:])
-            self.assertTrue(args.quick or args.full, workflow)
+        # Every run of the gate in the workflows and the container check;
+        # a command that names corpus.yml's matrix tier is parsed for each.
+        seen = 0
+        for path in (".github/workflows/ci.yml", ".github/workflows/corpus.yml",
+                     ".github/workflows/toolchains.yml", "scripts/check-container.sh"):
+            lines = iter((ROOT / path).read_text().splitlines())
+            for line in lines:
+                if "python3 scripts/corpus-gate.py" not in line:
+                    continue
+                parts = [line]
+                while parts[-1].endswith("\\"):
+                    parts.append(next(lines))
+                command = " ".join(p.rstrip(" \\") for p in parts).replace("${{ matrix.preset }}", "preset")
+                tiers = ("full", "programs") if "${{ matrix.tier }}" in command else ("",)
+                for tier in tiers:
+                    words = shlex.split(command.replace("${{ matrix.tier }}", tier))
+                    args = gate.parse_args(words[words.index("scripts/corpus-gate.py") + 1:])
+                    self.assertTrue(args.quick or args.full or args.programs, path)
+                    seen += 1
+        self.assertGreaterEqual(seen, 5)
 
 
 if __name__ == "__main__":
