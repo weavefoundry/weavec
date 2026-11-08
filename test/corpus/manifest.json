@@ -18,6 +18,8 @@
     "referenceMachine": "darwin-arm64 Apple M3 x8",
     "buildTime": {
       "_comment": "RFC 0035 G9 (--full): each config's weavec-cc build within maxBuildRatio of the reference compiler's CPU time, and no per-file compile of --quick above maxUnitRatio of the reference compiler's (among the files the reference compiler takes at least minUnitCpuSeconds for).",
+      "_enforced": "RFC 0038, amendment 28: recorded, not enforced. RFC 0036 and RFC 0037 accepted build costs over these limits; RFC 0038's G7 measures builds against v0.18.0's instead.",
+      "enforced": false,
       "maxBuildRatio": 1.5,
       "maxUnitRatio": 3.0,
       "minUnitCpuSeconds": 0.25,
@@ -25,6 +27,8 @@
     },
     "runTime": {
       "_comment": "RFC 0035 G7 (--bench, --full): the best-of-N user CPU of each workload built by weavec-cc over the reference compiler's. Each workload of a set in `sets` at most the larger of maxOverhead and its ASan ratio, and their geometric mean at most maxGeometricMean once all of them ran; the workloads of maxOverheadPerConfig at their own limits.",
+      "_enforced": "RFC 0038, amendment 28: recorded, not enforced. RFC 0036 and RFC 0037 accepted run costs over these limits (Lua, cJSON, zlib); RFC 0038's G6 measures runs against v0.18.0's on a quiet machine, and records shared runners' without a limit.",
+      "enforced": false,
       "sets": ["fresh34", "fresh35"],
       "maxOverhead": 2.0,
       "maxGeometricMean": 1.8,

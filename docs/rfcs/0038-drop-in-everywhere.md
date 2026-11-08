@@ -944,6 +944,62 @@ override the body.
     checks, and the AST and token dumps of `clangFrontend`. Only the
     static analyzer, the rewriters and plug-ins are left out.
 
+28. **What the weekly gate judges (§5, G3, G5, H2).** `corpus-gate.py
+    --full` failed on every platform on the final tree for two reasons
+    this RFC already accepts. RFC 0035's absolute cost limits (its G7 and
+    G9) failed, as on v0.18.0: RFC 0036 and RFC 0037 accepted costs over
+    them, and this RFC's cost gates are G6 and G7, relative to v0.18.0.
+    And the injection gate required all 39 to stop, where G5 allows the
+    six known misses. The manifest's `buildTime` and `runTime` now carry
+    `enforced: false`: the gate measures and records them, `over` with a
+    note when over a limit, and does not fail. An injection's `accepted`
+    names the RFC that accepts its miss (a reason naming none is an error).
+    The gate does not count an accepted miss, and fails once that
+    injection stops, so the list cannot go stale. The six misses of
+    amendment 14 are listed. G3's "`--full` passes" and H2's weekly run
+    read with these. `corpus.yml` runs `--full` and `--programs` as
+    separate jobs per platform, each within GitHub's six-hour limit.
+29. **Releases (§6, G8).** The v0.19.0 release job failed `rt_test`
+    (amendment 30), and three more faults would have stopped publication
+    after it. The `release` preset kept the version suffix `dev`, so the
+    archives were `weavec-X.Y.Z-dev-<os>-<arch>.tar.xz`, not the names the
+    formula and the image are made from. The arm64 image was built on an
+    x86-64 runner without emulation for its `RUN` step. And the formula
+    went nowhere: `GITHUB_TOKEN` cannot write another repository. Now the
+    build, smoke, formula and image checks live in
+    `.github/workflows/toolchains.yml`. `release.yml` calls it for the tag
+    (built with `-DWEAVEC_VERSION_SUFFIX=`), and a pull request that
+    changes the packaging runs it with nothing published. The formula is
+    rendered with `file://` URLs, installed from a local tap and tested on
+    `macos-15`. The image is built on each Linux platform's own runner and
+    runs `check-toolchain.py` and the quick corpus check inside. Only then
+    are the archives, the image and the formula published. After the
+    release is public, `HOMEBREW_TAP_TOKEN` (a token that may push to
+    `weavefoundry/homebrew-tap`) commits `Formula/weavec.rb` there;
+    without it the job warns. One platform's failure no longer cancels
+    the others. The Darwin archive is built on `macos-15` for macOS 15 and
+    later (amendment 10 said `macos-14`, macOS 14): GitHub no longer runs
+    `macos-14` jobs (v0.19.0's never started), and the archive bundles
+    Homebrew's LLVM libraries, which are built for the runner's macOS.
+30. **A new thread starts with its creator's words (amendment 13's
+    test).** `sweep-stops-blocking-threads` failed whenever the
+    released block's address was left where the new thread could inherit
+    it, which depends on the C library and on what ran before. Every
+    linux-x86_64 full-suite run on glibc 2.35 failed (v0.19.0's release job
+    and 10 of 10 in Docker), and so did the test run alone, on glibc 2.35
+    and 2.39, x86-64 and AArch64. The full suite passed on linux-aarch64 on
+    2.35 (the release job) and on both architectures on 2.39 (pull request
+    CI). It was never flaky under load. On 2.35, `pthread_create` blocks every signal
+    into a 128-byte `sigset_t` on its stack, of which the kernel writes
+    8 bytes, and copies all 128 into the new thread's descriptor, which the
+    sweep scans with the thread's stack; on 2.39, `clone` copies the
+    creator's callee-saved registers, and the thread's first frames save
+    them. Either way the address of the block the test had just released
+    was a root while the thread lived. That is right for a conservative
+    scan, and it is bounded (a few words per thread, for its lifetime).
+    The test, and `sweep-leaves-program-signals`, now create their thread
+    before they release the block.
+
 ## Measured gates
 
 Measured 2026-11-05 on the branch: darwin-arm64 on an Apple M3 (`release`

@@ -5,7 +5,7 @@ description: Install WeaveC from a release toolchain, Homebrew or the container 
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-Each release publishes a self-contained toolchain for **macOS on Apple silicon** (macOS 14 or later) and for **Linux on x86-64 and AArch64** (glibc 2.35 or later: Ubuntu 22.04, Debian 12, Fedora 36 and later). A toolchain is one directory: `weavec-cc` and its C++ driver `weavec-c++`, WeaveC's runtime, and Clang's headers and builtins. It needs no LLVM installation, only the platform's linker, C library headers and start-up files, and it may be moved anywhere. The runtime that `weavec-cc` links into the programs it builds supports 64-bit macOS and Linux targets; for any other target `weavec-cc` builds without it.
+Each release publishes a self-contained toolchain for **macOS on Apple silicon** (macOS 15 or later) and for **Linux on x86-64 and AArch64** (glibc 2.35 or later: Ubuntu 22.04, Debian 12, Fedora 36 and later). A toolchain is one directory: `weavec-cc` and its C++ driver `weavec-c++`, WeaveC's runtime, and Clang's headers and builtins. It needs no LLVM installation, only the platform's linker, C library headers and start-up files, and it may be moved anywhere. The runtime that `weavec-cc` links into the programs it builds supports 64-bit macOS and Linux targets; for any other target `weavec-cc` builds without it.
 
 ## 1. Install the platform's C toolchain
 

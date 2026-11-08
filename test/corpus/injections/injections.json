@@ -12,7 +12,8 @@
     "`invalid-release`, the allocator refusing a release (a double free), or `fault`, a fault on",
     "the null page (a call through a null function pointer). --inject --reference-only builds each",
     "with ASan and UBSan (with _FORTIFY_SOURCE for `fortify` entries: short writes ASan cannot",
-    "see) and checks that `run` reaches the same place."
+    "see) and checks that `run` reaches the same place.",
+    "`accepted` names the RFC that accepts a miss (RFC 0038, amendment 28): the gate does not count it, and fails once the injection stops."
   ],
   "injections": [
     {
@@ -83,7 +84,8 @@
       "file": "cJSON_Utils.c",
       "line": 802,
       "unlocated": "invalid-release",
-      "description": "overwrite_item deletes the child tree twice (cJSON_Delete is defined in cJSON.c)"
+      "description": "overwrite_item deletes the child tree twice (cJSON_Delete is defined in cJSON.c)",
+      "accepted": "missed since v0.16.0 (RFC 0036, G5); RFC 0038's G5 and amendment 14 let it stay missed"
     },
     {
       "id": "jsmn-uaf-jsondump",
@@ -142,7 +144,8 @@
       "patch": "linenoise/uaf-freehistory.patch",
       "file": "linenoise.c",
       "line": 2250,
-      "description": "freeHistory clears the first entry of the history array after freeing the array"
+      "description": "freeHistory clears the first entry of the history array after freeing the array",
+      "accepted": "missed since v0.16.0 (RFC 0036, G5); RFC 0038's G5 and amendment 14 let it stay missed"
     },
     {
       "id": "linenoise-uaf-setmaxlen",
@@ -150,7 +153,8 @@
       "patch": "linenoise/uaf-setmaxlen.patch",
       "file": "linenoise.c",
       "line": 2318,
-      "description": "linenoiseHistorySetMaxLen frees the old history array before copying the entries out of it"
+      "description": "linenoiseHistorySetMaxLen frees the old history array before copying the entries out of it",
+      "accepted": "missed since v0.16.0 (RFC 0036, G5); RFC 0038's G5 and amendment 14 let it stay missed"
     },
     {
       "id": "lnprog-uaf-example",
@@ -235,7 +239,8 @@
       "patch": "lua/uaf-lua-c.patch",
       "file": "lua.c",
       "line": 593,
-      "description": "a helper in lua.c reads a malloc'd copy of the prompt after freeing it (plain malloc/free)"
+      "description": "a helper in lua.c reads a malloc'd copy of the prompt after freeing it (plain malloc/free)",
+      "accepted": "missed since v0.16.0 (RFC 0036, G5); RFC 0038's G5 and amendment 14 let it stay missed"
     },
     {
       "id": "lua-uaf-close-state",
@@ -261,7 +266,8 @@
       "file": "src/value.c",
       "line": 597,
       "unlocated": "invalid-release",
-      "description": "json_array_remove releases the removed element's reference twice"
+      "description": "json_array_remove releases the removed element's reference twice",
+      "accepted": "missed since v0.16.0 (RFC 0036, G5); RFC 0038's G5 and amendment 14 let it stay missed"
     },
     {
       "id": "jansson-uaf-delete-string",
@@ -287,7 +293,8 @@
       "line": 241,
       "run": "ctest --test-dir out --output-on-failure -R '^test_'",
       "fortify": true,
-      "description": "do_dump passes snprintf a size one larger than its integer buffer"
+      "description": "do_dump passes snprintf a size one larger than its integer buffer",
+      "accepted": "missed since v0.16.0 (RFC 0036, G5); RFC 0038's G5 and amendment 14 let it stay missed"
     },
     {
       "id": "sds-oob-range",
