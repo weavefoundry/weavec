@@ -5,7 +5,7 @@ description: Install WeaveC from a release toolchain, Homebrew or the container 
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-Each release publishes a self-contained toolchain for **macOS on Apple silicon** (macOS 15 or later) and for **Linux on x86-64 and AArch64** (glibc 2.35 or later: Ubuntu 22.04, Debian 12, Fedora 36 and later). A toolchain is one directory: `weavec-cc`, WeaveC's runtime, and Clang's headers and builtins. It needs no LLVM installation, only the platform's linker, C library headers and start-up files, and it may be moved anywhere. The runtime that `weavec-cc` links into the programs it builds supports 64-bit macOS and Linux targets; for any other target `weavec-cc` builds without it.
+Each release publishes a self-contained toolchain for **macOS on Apple silicon** (macOS 15 or later) and for **Linux on x86-64 and AArch64** (glibc 2.35 or later: Ubuntu 22.04, Debian 12, Fedora 36 and later). A toolchain is one directory: `weavec-cc` and its C++ driver `weavec-c++`, WeaveC's runtime, and Clang's headers and builtins. It needs no LLVM installation, only the platform's linker, C library headers and start-up files, and it may be moved anywhere. The runtime that `weavec-cc` links into the programs it builds supports 64-bit macOS and Linux targets; for any other target `weavec-cc` builds without it.
 
 ## 1. Install the platform's C toolchain
 
@@ -16,7 +16,7 @@ Each release publishes a self-contained toolchain for **macOS on Apple silicon**
 xcode-select --install
 ```
 
-The Command Line Tools provide the linker, the SDK's headers and the system assembler.
+The Command Line Tools provide the linker, the SDK's headers (libc++'s for C++) and the system assembler.
 
 </TabItem>
 <TabItem label="Ubuntu / Debian">
@@ -25,7 +25,7 @@ The Command Line Tools provide the linker, the SDK's headers and the system asse
 sudo apt-get install -y build-essential
 ```
 
-`build-essential` provides the linker (`ld`), the assembler, and the C library's headers and start-up files.
+`build-essential` provides the linker (`ld`), the assembler, the C library's headers and start-up files, and, through `g++`, libstdc++ and its headers for C++ programs.
 
 </TabItem>
 </Tabs>
@@ -70,7 +70,7 @@ The image is Ubuntu 24.04 with the toolchain on `PATH`, `CC=weavec-cc` and `buil
 </TabItem>
 </Tabs>
 
-The tree holds `bin/weavec-cc`, WeaveC's files in `lib/weavec/` (`weavec.h` under `include/`, the runtime's library `libweavec_rt.<abi>.dylib` or `libweavec_rt.so.<abi>`, and on Linux `libweavec_rt.a` for static programs), and Clang's headers and builtins in `lib/clang/<major>/`; on macOS `lib/weavec/llvm/` holds the LLVM libraries `weavec-cc` loads. `weavec-cc` finds all of them from its own location, so move the tree as a whole.
+The tree holds `bin/weavec-cc` and `bin/weavec-c++` (a link to it), WeaveC's files in `lib/weavec/` (`weavec.h` under `include/`, the runtime's library `libweavec_rt.<abi>.dylib` or `libweavec_rt.so.<abi>`, and on Linux `libweavec_rt.a` for static programs), and Clang's headers and builtins in `lib/clang/<major>/`; on macOS `lib/weavec/llvm/` holds the LLVM libraries `weavec-cc` loads. `weavec-cc` finds all of them from its own location, so move the tree as a whole.
 
 A program `weavec-cc` builds loads `libweavec_rt` from the toolchain at run time. To run it elsewhere, ship the library with it (see [build integration](/guides/build-integration/)).
 

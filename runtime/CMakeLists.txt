@@ -26,38 +26,49 @@ add_library(
   weavec_report.c
   weavec_sweep.c
   weavec_rt.h)
-# C, so none of weavec::options' C++ flags. Position-independent, never LTO
-# bitcode (the per-configuration properties too: the top level sets
-# CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE, which outranks the plain one),
-# and everything but the entry points hidden.
-set_target_properties(
-  weavec_rt_objects
-  PROPERTIES POSITION_INDEPENDENT_CODE ON
-             INTERPROCEDURAL_OPTIMIZATION OFF
-             INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
-             INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF
-             C_STANDARD 11
-             C_VISIBILITY_PRESET hidden)
-# The allocator and the guards run in every enforcing program: always
-# optimized, whatever the build type, and never treated as calls to the
-# functions they implement.
-target_compile_options(
-  weavec_rt_objects
-  PRIVATE -Wall
-          -Wextra
-          -O2
-          -fno-builtin-malloc
-          -fno-builtin-calloc
-          -fno-builtin-realloc
-          -fno-builtin-free)
-if(WEAVEC_WARNINGS_AS_ERRORS)
-  target_compile_options(weavec_rt_objects PRIVATE -Werror)
-endif()
-if(NOT APPLE)
-  # Its thread-local variables are in the C library's static TLS, which a
-  # library loaded by dlopen can still use (weavec_guard.c).
-  target_compile_options(weavec_rt_objects PRIVATE -ftls-model=initial-exec)
-endif()
+# RFC 0039: what the library and the archive (WEAVEC_RT_ARCHIVE) define
+# differently: the unwinding interposers, and Darwin's weak allocation
+# functions, which ld64 would take from the archive (amendment 2).
+add_library(weavec_rt_shared_objects OBJECT weavec_cxx.c weavec_unwind.c)
+add_library(weavec_rt_archive_objects OBJECT weavec_cxx.c weavec_unwind.c)
+target_compile_definitions(weavec_rt_archive_objects
+                           PRIVATE WEAVEC_RT_ARCHIVE=1)
+foreach(_weavec_objects IN ITEMS weavec_rt_objects weavec_rt_shared_objects
+                                 weavec_rt_archive_objects)
+  # C, so none of weavec::options' C++ flags. Position-independent, never
+  # LTO bitcode (the per-configuration properties too: the top level sets
+  # CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE, which outranks the plain
+  # one), and everything but the entry points hidden.
+  set_target_properties(
+    ${_weavec_objects}
+    PROPERTIES POSITION_INDEPENDENT_CODE ON
+               INTERPROCEDURAL_OPTIMIZATION OFF
+               INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
+               INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF
+               C_STANDARD 11
+               C_VISIBILITY_PRESET hidden)
+  # The allocator and the guards run in every enforcing program: always
+  # optimized, whatever the build type, and never treated as calls to the
+  # functions they implement. Exceptions unwind through the interposers.
+  target_compile_options(
+    ${_weavec_objects}
+    PRIVATE -Wall
+            -Wextra
+            -O2
+            -funwind-tables
+            -fno-builtin-malloc
+            -fno-builtin-calloc
+            -fno-builtin-realloc
+            -fno-builtin-free)
+  if(WEAVEC_WARNINGS_AS_ERRORS)
+    target_compile_options(${_weavec_objects} PRIVATE -Werror)
+  endif()
+  if(NOT APPLE)
+    # Its thread-local variables are in the C library's static TLS, which a
+    # library loaded by dlopen can still use (weavec_guard.c).
+    target_compile_options(${_weavec_objects} PRIVATE -ftls-model=initial-exec)
+  endif()
+endforeach()
 
 # The export list, in each linker's form: Darwin's names, and a version
 # script whose entries for symbols defined only with some C libraries are
@@ -103,8 +114,13 @@ set_property(
   APPEND
   PROPERTY CMAKE_CONFIGURE_DEPENDS weavec_rt.exports weavec_rt.h)
 
-add_library(weavec_rt SHARED $<TARGET_OBJECTS:weavec_rt_objects>)
+add_library(weavec_rt SHARED $<TARGET_OBJECTS:weavec_rt_objects>
+                             $<TARGET_OBJECTS:weavec_rt_shared_objects>)
 target_link_libraries(weavec_rt PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+if(APPLE)
+  # __cxa_begin_catch's interposer names libc++abi's (every process has it).
+  target_link_libraries(weavec_rt PRIVATE c++abi)
+endif()
 set_target_properties(
   weavec_rt
   PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${WEAVEC_RUNTIME_OUTPUT_DIR}"
@@ -133,7 +149,8 @@ endif()
 # link made by another driver from a weavec-cc link's implicit libraries
 # (CMake's mixed-language targets) takes it; and rt_test calls the runtime's
 # internal functions.
-add_library(weavec_rt_static STATIC $<TARGET_OBJECTS:weavec_rt_objects>)
+add_library(weavec_rt_static STATIC $<TARGET_OBJECTS:weavec_rt_objects>
+                                    $<TARGET_OBJECTS:weavec_rt_archive_objects>)
 set_target_properties(
   weavec_rt_static
   PROPERTIES OUTPUT_NAME weavec_rt ARCHIVE_OUTPUT_DIRECTORY

@@ -1,7 +1,9 @@
 # Test cases
 
-`test/cases` is the tree of executable C test cases (RFC 0035 §11, RFC 0036
-§9). Each case is a C file whose expectations are line-comment *markers*.
+`test/cases` is the tree of executable C and C++ test cases (RFC 0035 §11,
+RFC 0036 §9, RFC 0039 §9). Each case is a C or C++ file whose expectations
+are line-comment *markers*; a case with a `.cpp` unit is built with
+`weavec-c++` (and its ASan oracle with `clang++`).
 `scripts/run-cases.py` builds the case as a default `weavec-cc` build does,
 checks its enforcement ledger, runs it and attributes every stop to a line
 and a report kind, and optionally runs it under ASan.
@@ -20,6 +22,7 @@ messages; these cases pin what must be reported and what must stop.
 | `semantics/<feature>/` | cases per feature: `runtime/` the runtime's guards and releases, `dropin/` untuned code, `confirm/` false stops and silent misses, `detect-probes/` detection probes, ... |
 | `detection/` | RFC 0034's detection set: one program per directory, each with a fixed twin ([Detection cases](#detection-cases)) |
 | `detection-blind/` | 48 blind single-file bug programs with `-DFIX` twins (its `README.md`) |
+| `detection/cxx/` | RFC 0039's C++ detection probes, one class per file, each with a `-DFIX` twin |
 
 A file under an `Inputs/` directory is never a case: it holds units,
 headers and input files that cases share.
@@ -98,6 +101,7 @@ markers separated by `//`:
 | `ASAN` | file | also run the ASan oracle, and require it to report the bug |
 | `DETECT: <flags>` | file | a detection case ([below](#detection-cases)): `<flags>` (e.g. `-DFIX`) select the fixed twin |
 | `XFAIL: <reason>` | file | the case is expected to fail today: a failure is `XFAIL`, a pass is `XPASS` (remove the marker); neither fails the run |
+| `REQUIRES: <platform>` | file | the case runs only on `darwin` or `linux`; elsewhere it is `UNSUPPORTED`, which fails nothing |
 
 Report kinds are those of the runtime (`runtime/weavec_report.c`, RFC 0035
 §5.3, RFC 0036): `heap-buffer-overflow`, `heap-use-after-free`,
@@ -105,8 +109,9 @@ Report kinds are those of the runtime (`runtime/weavec_report.c`, RFC 0035
 `stack-use-after-scope`, `global-buffer-overflow`, `intra-object-overflow`,
 `use-after-poison`, `null-dereference`, `unterminated-string`,
 `index-out-of-bounds`, `invalid-release`, `invalid-access`,
-`overlapping-copy`, and RFC 0037's `stack-use-after-return` and
-`memory-fault`.
+`overlapping-copy`, RFC 0037's `stack-use-after-return` and
+`memory-fault`, and RFC 0039's `container-overflow` and
+`library-assertion`.
 
 Rules the grammar leaves implicit, as the runner enforces them:
 
@@ -135,7 +140,7 @@ Rules the grammar leaves implicit, as the runner enforces them:
    reads the ledger, then a link with the case's `FLAGS` when a unit defines
    `main`. A failed compile or link fails the case.
 2. **Ledger.** The main unit's `<object>.ledger.json` must be a
-   `weavec-ledger` of version 3. `GUARDED`, `PROVEN` and `UNGUARDED` each
+   `weavec-ledger` of version 4. `GUARDED`, `PROVEN` and `UNGUARDED` each
    need a row at their file and line with that outcome (and that reason, if
    given); `EXPECT-LEDGER` compares the value its pointer names.
 3. **Runs**, when the build produced an executable (not with `--no-run`):

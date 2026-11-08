@@ -12,6 +12,37 @@ milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
+## Now: RFC 0039 — C++
+
+Design: [RFC 0039 — C++](rfcs/0039-cxx.md) (Accepted, in progress). WeaveC compiles C++
+as Clang does, without guards, so any program with a C++ unit is outside
+the guarantee. A prototype that only lifted that exclusion ran the C++
+standard library's containers, strings, streams, exceptions and threads
+unchanged in 0.7 times ASan's CPU time, but left library calls under RAII
+unguarded, cleared the whole stack's shadow at every exception, and could
+not tell `new[]` from `new` or `malloc`. RFC 0039 adds `weavec-c++`,
+guards calls that can unwind, marks only the frames an exception unwinds,
+checks `new` and `delete` forms and sizes, implements ASan's container
+annotations, reports the C++ library's hardening checks, and guards the
+C++ library's buffer members through the library table. The stages:
+
+- [x] **S0 The RFC**, the C++ corpus, programs and `sealed39` pins, the C++
+      detection baseline.
+- [x] **S1 The driver**: `weavec-c++`, C++ units guarded, hardening macros.
+- [x] **S2 Calls that unwind**: `invoke` in every pass.
+- [x] **S3 Exceptions**: the `exits` and `unwinds` clauses, the unwinder's
+      interposers, landing pads, per-thread color loss.
+- [x] **S4 `new` and `delete`, containers, hardening reports, the C++
+      library's rows.**
+- [x] **S5 The ledger, reports and unsafe regions.**
+- [x] **S6 The gates and toolchains**: eight C++ projects (`fresh39`), the
+      STL program, ninja, CMake, Cppcheck and DuckDB in the programs tier,
+      `CXX` for every build.
+- [ ] **S7 Fresh iterations** on all three platforms, `sealed39`, the
+      documentation (darwin-arm64 and linux-aarch64 measured, `sealed39` on
+      darwin-arm64; linux-x86_64, the release runners and the weekly corpus
+      run need CI).
+
 ## Now: RFC 0038 — Drop-in everywhere
 
 Design: [RFC 0038 — Drop-in everywhere](rfcs/0038-drop-in-everywhere.md)
@@ -95,8 +126,9 @@ analysis ledger.
 
 ## Later
 
-- C++ and Objective-C, which pass through to Clang unchanged today, on
-  the runtime RFC 0038 makes every image share.
+- Objective-C and Objective-C++, which pass through to Clang unchanged.
+- Programs' own allocators (pymalloc, pools): their objects share the
+  shadow of the blocks they are carved from.
 - Windows; signed and notarized macOS toolchains; Debian and RPM packages.
 - From RFC 0037's _Future work_: concurrent marking, if parallel marking
   leaves pauses too long; pointers checked where they leave a function,

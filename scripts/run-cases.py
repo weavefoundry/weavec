@@ -60,14 +60,14 @@ RESOURCE_INCLUDE = ROOT / "resources" / "include"
 # ---------------------------------------------------------------------------
 
 # The `version` of the enforcement ledger this runner reads.
-LEDGER_VERSION = 3
+LEDGER_VERSION = 4
 # Run-time report kinds (runtime/weavec_report.c).
 KINDS = (
     "heap-buffer-overflow", "heap-use-after-free", "stack-buffer-overflow",
     "stack-use-after-scope", "dynamic-stack-buffer-overflow", "global-buffer-overflow",
     "intra-object-overflow", "use-after-poison", "null-dereference", "unterminated-string",
     "index-out-of-bounds", "invalid-release", "invalid-access", "overlapping-copy",
-    "memory-fault", "stack-use-after-return",
+    "memory-fault", "stack-use-after-return", "container-overflow", "library-assertion",
 )
 LEDGER_REASONS = {
     "GUARDED": ("access", "range", "string", "checked-call", "loop-range"),
@@ -76,7 +76,10 @@ LEDGER_REASONS = {
 }
 
 FILE_MARKERS = frozenset(("CLEAN", "RUN-INPUT", "EXPECT-LEDGER", "FLAGS", "UNITS", "ASAN",
-                          "DETECT", "XFAIL", "TRAP-AT"))
+                          "DETECT", "XFAIL", "TRAP-AT", "REQUIRES"))
+# REQUIRES: the platforms a case can run on (RFC 0039: libstdc++ annotates no
+# deque, so a deque's container probe is Darwin's, whose libc++ does).
+PLATFORMS = ("darwin", "linux")
 LINE_MARKERS = frozenset(("TRAP", "GUARDED", "PROVEN", "UNGUARDED", "MISS", "STOP"))
 MARKERS = FILE_MARKERS | LINE_MARKERS
 NO_ARGUMENT_MARKERS = frozenset(("CLEAN", "ASAN", "STOP"))
@@ -284,6 +287,10 @@ def parse_argument(kind: str, argument: str, directory: Path) -> Any:
         if not unit or not line.isdigit():
             raise ValueError("TRAP-AT takes '<unit>:<line>'")
         return (unit, int(line))
+    if kind == "REQUIRES":
+        if argument not in PLATFORMS:
+            raise ValueError(f"REQUIRES takes a platform ({', '.join(PLATFORMS)})")
+        return argument
     if kind == "DETECT":
         try:
             flags = tuple(shlex.split(argument))
@@ -366,6 +373,7 @@ class Case:
     # a case is expected to fail today (XFAIL).
     detect: tuple[str, ...] | None = None
     xfail: str | None = None
+    requires: str | None = None
 
     def line_markers(self, kind: str) -> list[Marker]:
         return [m for m in self.markers if m.kind == kind]
@@ -449,7 +457,8 @@ def load_case(path: Path, cases_root: Path, parsed: dict[Path, SourceMarkers] | 
         expectations=[marker.value for marker in file_markers["EXPECT-LEDGER"]],
         markers=markers, has_main=any(defines_main(t) for t in texts.values()), errors=errors,
         detect=file_markers["DETECT"][0].value if file_markers["DETECT"] else None,
-        xfail="; ".join(m.value for m in file_markers["XFAIL"]) or None)
+        xfail="; ".join(m.value for m in file_markers["XFAIL"]) or None,
+        requires=file_markers["REQUIRES"][0].value if file_markers["REQUIRES"] else None)
     kinds = {m.kind for m in main.file_markers} | {m.kind for m in markers}
     if len(file_markers["DETECT"]) > 1:
         errors.append(f"{path.name}: DETECT is given more than once")
@@ -487,9 +496,10 @@ def load_case(path: Path, cases_root: Path, parsed: dict[Path, SourceMarkers] | 
 
 
 def discover(cases_root: Path) -> tuple[list[Case], dict[Path, SourceMarkers]]:
-    """Every .c file that is neither under an Inputs directory nor another case's unit."""
+    """Every .c and .cpp file that is neither under an Inputs directory nor
+    another case's unit."""
     cases_root = cases_root.resolve()
-    sources = sorted(p.resolve() for p in cases_root.rglob("*.c")
+    sources = sorted(p.resolve() for pattern in ("*.c", "*.cpp") for p in cases_root.rglob(pattern)
                      if "Inputs" not in p.relative_to(cases_root).parts[:-1])
     parsed: dict[Path, SourceMarkers] = {}
     units: set[Path] = set()
@@ -714,16 +724,40 @@ def first_line(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def cxx_of(compiler: str) -> str:
+    """The C++ driver beside a C driver: clang-23's clang++-23, gcc's g++, cc's
+    c++ (the same as corpus-gate.py's, which test_run_cases.py checks)."""
+    head, _, name = compiler.rpartition("/")
+    if name.endswith("gcc"):
+        name = name[:-3] + "g++"
+    elif name.endswith("cc"):
+        name = name[:-2] + "c++"
+    elif re.fullmatch(r"clang(-\d+)?", name):
+        name = "clang++" + name[5:]
+    else:
+        name += "++"
+    return f"{head}/{name}" if head else name
+
+
+def is_cxx(case: Case) -> bool:
+    """RFC 0039: a case with a C++ unit is built and linked by weavec-c++."""
+    return any(unit.suffix == ".cpp" for unit in case.units)
+
+
+def driver(case: Case, cfg: Config) -> str:
+    return str(cfg.weavec_cc.with_name("weavec-c++") if is_cxx(case) else cfg.weavec_cc)
+
+
 def build(case: Case, cfg: Config, ev: Evidence, directory: Path, extra: list[str],
           ledger: bool) -> Path | None:
-    """`weavec-cc` per unit, then the link."""
+    """`weavec-cc` (`weavec-c++`) per unit, then the link."""
     directory.mkdir(parents=True, exist_ok=True)
     objects: list[Path] = []
     checks = [f"-fweavec-checks={cfg.checks}"] if cfg.checks != "trap" else []
     for index, unit in enumerate(case.units):
         obj = directory / f"u{index}-{unit.stem}.o"
         flags = [*case.flags, *case.unit_flags.get(unit, ())]
-        command = [str(cfg.weavec_cc), *checks, f"-I{RESOURCE_INCLUDE}", *flags, *extra]
+        command = [driver(case, cfg), *checks, f"-I{RESOURCE_INCLUDE}", *flags, *extra]
         if ledger and "-fno-weavec" not in flags:
             command.append(f"-fweavec-ledger={directory}/")
         command.extend(["-c", str(unit), "-o", str(obj)])
@@ -745,7 +779,7 @@ def build(case: Case, cfg: Config, ev: Evidence, directory: Path, extra: list[st
         ev.built = True
         return None
     exe = directory / "a.out"
-    command = [str(cfg.weavec_cc), *checks, *case.flags, *extra, *(str(o) for o in objects),
+    command = [driver(case, cfg), *checks, *case.flags, *extra, *(str(o) for o in objects),
                "-o", str(exe)]
     ev.commands.append(shlex.join(command))
     code, _, err, timed_out = run_process(command, directory, cfg.compile_timeout)
@@ -768,7 +802,7 @@ def run_asan(case: Case, cfg: Config, ev: Evidence, directory: Path) -> None:
     """The reference: Clang with AddressSanitizer and weavec.h on the path."""
     directory.mkdir(parents=True, exist_ok=True)
     exe = directory / "a.asan"
-    command = [cfg.clang, "-fsanitize=address,array-bounds",
+    command = [cxx_of(cfg.clang) if is_cxx(case) else cfg.clang, "-fsanitize=address,array-bounds",
                "-fno-sanitize-recover=array-bounds", "-fno-omit-frame-pointer", "-g", "-O0",
                f"-I{RESOURCE_INCLUDE}", *plain_flags(case.flags)]
     for unit in case.units:
@@ -871,6 +905,9 @@ def apply_xfail(case: Case, result: dict) -> dict:
 
 
 def run_case(case: Case, cfg: Config) -> dict:
+    if case.requires is not None and not sys.platform.startswith(case.requires) and not case.errors:
+        return {"case": case.rel, "suite": case.suite, "status": "unsupported", "failures": [],
+                "notes": [f"requires {case.requires}"], "kind": "markers", "seconds": 0}
     started = time.monotonic()
     result = run_detection(case, cfg) if case.detect is not None else run_markers(case, cfg)
     result["seconds"] = round(time.monotonic() - started, 3)

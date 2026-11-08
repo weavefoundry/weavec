@@ -129,6 +129,26 @@ define i32 @get(ptr %p, i64 %i) {
   EXPECT_EQ(run.ledger->rows[1].operation, "store");
 }
 
+TEST(GuardInsertTest, CxxMarkersCostTheInlinerOneInstruction) {
+  // RFC 0039, amendment 13: the inliner prices a C++ unit's markers as one
+  // instruction and a C unit's as calls.
+  const char *body = R"(
+define i32 @get(ptr %p) {
+  %v = load i32, ptr %p, align 4
+  ret i32 %v
+}
+)";
+  for (const bool cxx : {false, true}) {
+    PassRun run(body);
+    run.options.cheapMarkers = cxx;
+    run.insert();
+    const llvm::Function *marker = run.module->getFunction("__weavec.guard");
+    ASSERT_NE(marker, nullptr);
+    EXPECT_EQ(marker->getFnAttribute("call-inline-cost").getValueAsString(),
+              cxx ? "5" : "");
+  }
+}
+
 TEST(GuardInsertTest, LeavesNamedObjectsAtConstantOffsets) {
   PassRun run(R"(
 @g = global [4 x i32] zeroinitializer
@@ -159,6 +179,74 @@ define void @copy(ptr %d, ptr %s, i64 %n) {
   run.insert();
   EXPECT_EQ(run.calls("__weavec.range"), 2U);
   EXPECT_EQ(run.calls("__weavec.guard"), 2U);
+}
+
+// RFC 0039 §2: an invoke of a library function is guarded before it, and a
+// search's check after it goes on its normal path, whose edge is split when
+// the destination has another predecessor; never on the unwind path.
+TEST(GuardInsertTest, GuardsInvokesOnTheirNormalPath) {
+  PassRun run(R"(
+declare i64 @read(i32, ptr, i64)
+declare ptr @memchr(ptr, i32, i64)
+declare i32 @__gxx_personality_v0(...)
+define i64 @f(i32 %fd, ptr %b, i64 %n, i1 %c) personality ptr @__gxx_personality_v0 {
+entry:
+  br i1 %c, label %search, label %join
+search:
+  %got = invoke i64 @read(i32 %fd, ptr %b, i64 %n) to label %found unwind label %pad
+found:
+  %at = invoke ptr @memchr(ptr %b, i32 120, i64 %n) to label %join unwind label %pad
+join:
+  %r = phi i64 [ 0, %entry ], [ %got, %found ]
+  ret i64 %r
+pad:
+  %lp = landingpad { ptr, i32 } cleanup
+  resume { ptr, i32 } %lp
+}
+)");
+  run.insert();
+  EXPECT_TRUE(run.valid());
+  // read's buffer before the call; memchr's first byte before it, and after
+  // it what it read, when it found the byte and when it did not.
+  EXPECT_EQ(run.calls("__weavec.range"), 4U);
+  const llvm::Function *f = run.module->getFunction("f");
+  for (const llvm::BasicBlock &block : *f)
+    if (block.isLandingPad())
+      for (const llvm::Instruction &instruction : block)
+        if (const auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction))
+          EXPECT_FALSE(
+              call->getCalledFunction() != nullptr &&
+              call->getCalledFunction()->getName().starts_with("__weavec."));
+  run.expand();
+  EXPECT_TRUE(run.valid());
+  EXPECT_EQ(run.calls("__weavec_rt_landed"), 1U);
+}
+
+// RFC 0039 §3: no clearing of the stack before a throw (`unwinds`) or the
+// end of the process (`exits`); before any other call that does not
+// return, as before.
+TEST(GuardExpandTest, ThrowsKeepTheStacksShadow) {
+  PassRun run(R"(
+declare void @__cxa_throw(ptr, ptr, ptr) noreturn
+declare void @exit(i32) noreturn
+declare void @longjmp(ptr, i32) noreturn
+define void @f(i32 %k, ptr %e, ptr %j) {
+  switch i32 %k, label %a [ i32 1, label %b
+                            i32 2, label %c ]
+a:
+  call void @__cxa_throw(ptr %e, ptr null, ptr null)
+  unreachable
+b:
+  call void @exit(i32 1)
+  unreachable
+c:
+  call void @longjmp(ptr %j, i32 1)
+  unreachable
+}
+)");
+  run.expand();
+  EXPECT_TRUE(run.valid());
+  EXPECT_EQ(run.calls("__weavec_rt_unpoison_stack"), 1U);
 }
 
 TEST(GuardPruneTest, RemovesGuardsInliningMadeNamed) {

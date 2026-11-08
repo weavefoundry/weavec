@@ -410,6 +410,21 @@ class RuntimeExportTest(TreeTest):
              "unlisted is exported but not listed in runtime/weavec_rt.exports"),
         ])
 
+    def test_the_allocation_function_macros_export_their_first_argument(self):
+        # RFC 0039 §4: weavec_cxx.c defines operator new and delete through
+        # macros whose definition itself exports nothing.
+        self.write("runtime/weavec_cxx.c", """
+            #include "weavec_rt.h"
+            #define WEAVEC_NEW(name, form)                 \\
+              WEAVEC_RT_API void *name(size_t size);      \\
+              void *name(size_t size) { return 0; }
+            WEAVEC_NEW(_Znwm, 1)
+            WEAVEC_NEW(_Znam, 2)
+            """)
+        self.write("runtime/weavec_rt.exports", "_Znwm\n")
+        self.assertEqual(self.found("runtime-export"), [
+            ("runtime/weavec_cxx.c", 6, "_Znam is exported but not listed in runtime/weavec_rt.exports")])
+
     def test_a_missing_list_is_a_violation_when_something_is_exported(self):
         self.assertEqual(self.found("runtime-export"), [])
         self.write("runtime/weavec_guard.c", '#include "weavec_rt.h"\nWEAVEC_RT_API void f(void) {}\n')
@@ -424,7 +439,7 @@ class LineLimitTest(TreeTest):
 
     def test_the_real_limits(self):
         """RFC 0037 gate H1 and RFC 0032 gate H1 (the module docstring)."""
-        self.assertEqual((hygiene.LIBRARY_LINE_LIMIT, hygiene.RUNTIME_LINE_LIMIT), (9_000, 7_050))
+        self.assertEqual((hygiene.LIBRARY_LINE_LIMIT, hygiene.RUNTIME_LINE_LIMIT), (9_000, 7_700))
 
     def test_runtime_total_leaves_out_its_tests(self):
         """RFC 0032 gate H1: the runtime is counted apart, without runtime/test/."""
@@ -491,7 +506,7 @@ class MainTest(TreeTest):
         self.assertRegex(output, r"\n  entry points: +4 of 4 declared in runtime/weavec_rt\.h\n")
         self.assertRegex(output, r"\n  library lines: +\d+ / 10 \(8 code files under lib/, include/ and "
                                  r"tools/, lib/Core/LibrarySpec\.txt excluded\)\n")
-        self.assertRegex(output, r"\n  runtime lines: +\d+ / 7,050 \(2 files under runtime/, runtime/test/ "
+        self.assertRegex(output, r"\n  runtime lines: +\d+ / 7,700 \(2 files under runtime/, runtime/test/ "
                                  r"and runtime/weavec_rt\.exports excluded\)\n")
         for check, count in (("library-name-test", 0), ("corpus-word", 1), ("core-include", 0),
                              ("runtime-include", 0), ("runtime-entry", 0), ("runtime-export", 0),

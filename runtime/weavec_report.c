@@ -21,7 +21,9 @@
 |*
 |*   weavec: <what> of <pointer>: <why>
 |*
-|* and traps. It uses no allocation and no stdio.
+|* and traps. It uses no allocation and no stdio. RFC 0039: a failed check
+|* of the C++ library ends its first line in the library's message, and a
+|* backtrace names C++ functions demangled.
 |*
 |* __weavec_rt_trapping (RFC 0033, section 6.1) runs before every trap of a
 |* failure: a trap the program has blocked or catches would otherwise repeat
@@ -247,6 +249,26 @@ static int describeHeap(uintptr_t address, char *text, size_t room) {
   struct Line line = {text, text + room - 1};
   if (!object.found)
     return 0;
+  /* RFC 0039 section 5: past the elements, which end at the first container
+   * granule (or inside the partial one before it). */
+  if (object.live && address < object.base + object.size &&
+      (*weavecRtShadowOf(address) == WeavecRtShadowContainer ||
+       *weavecRtShadowOf((address | 15) + 1) == WeavecRtShadowContainer)) {
+    uintptr_t end = object.base;
+    while (*weavecRtShadowOf(end) != WeavecRtShadowContainer)
+      end += 16;
+    if (end > object.base && !weavecRtShadowFull(*weavecRtShadowOf(end - 16)))
+      end -= 16 - weavecRtShadowBytes(*weavecRtShadowOf(end - 16));
+    put(&line, "weavec: ");
+    putHex(&line, address);
+    put(&line, " is ");
+    putUnsigned(&line, address >= end ? address - end : 0, 10);
+    put(&line, " bytes past the elements of a container in the ");
+    putUnsigned(&line, object.size, 10);
+    put(&line, "-byte heap object at ");
+    putHex(&line, object.base);
+    return finish(&line, text);
+  }
   if (!object.live) {
     put(&line, "weavec: ");
     putHex(&line, address);
@@ -263,18 +285,59 @@ static int describeHeap(uintptr_t address, char *text, size_t room) {
 /* The first line of a report; false when report mode already reported the
  * site. */
 static int reportLine(const char *kind, uintptr_t address, uint64_t width,
-                      const struct __weavec_rt_site *site);
+                      const char *message, const struct __weavec_rt_site *site);
+
+/* WEAVEC_RT_BACKTRACE=1: one line per frame, a C++ function's name
+ * demangled by the C++ library's own __cxa_demangle when the process has
+ * one (RFC 0039 section 8). */
+static void printBacktrace(void) {
+  typedef char *Demangle(const char *, char *, size_t *, int *);
+  Demangle *demangle = (Demangle *)dlsym(RTLD_DEFAULT, "__cxa_demangle");
+  void *frames[64];
+  const int count = backtrace(frames, 64);
+  int i;
+  for (i = 0; i < count; ++i) {
+    Dl_info info;
+    char text[1024];
+    struct Line line = {text, text + sizeof text - 1};
+    char *plain = NULL;
+    int status = -1;
+    put(&line, "  #");
+    putUnsigned(&line, (unsigned)i, 10);
+    put(&line, " ");
+    putHex(&line, (uintptr_t)frames[i]);
+    if (dladdr(frames[i], &info) != 0 && info.dli_sname != NULL) {
+      if (demangle != NULL && strncmp(info.dli_sname, "_Z", 2) == 0)
+        plain = demangle(info.dli_sname, NULL, NULL, &status);
+      put(&line, " in ");
+      put(&line, plain != NULL && status == 0 ? plain : info.dli_sname);
+      put(&line, " + ");
+      putUnsigned(&line, (uintptr_t)frames[i] - (uintptr_t)info.dli_saddr, 10);
+      free(plain);
+    }
+    emit(text, finish(&line, text));
+  }
+}
+
+static __attribute__((noreturn)) void trapNow(void) {
+  __weavec_rt_trapping();
+  if (backtraceSetting)
+    printBacktrace();
+  __builtin_trap();
+}
 
 static void stop(const struct __weavec_rt_site *site) {
   const unsigned flags = site != NULL ? site->flags : 0;
-  if ((flags & WeavecRtSiteReport) != 0 && !shouldAbort())
-    return;
-  __weavec_rt_trapping();
-  if (backtraceSetting) {
-    void *frames[64];
-    backtrace_symbols_fd(frames, backtrace(frames, 64), 2);
-  }
-  __builtin_trap();
+  if ((flags & WeavecRtSiteReport) == 0 || shouldAbort())
+    trapNow();
+}
+
+/* RFC 0039 section 6: the C++ library's code after a failed check is
+ * unreachable, so the report stops the program in every mode. */
+void weavecRtFailMessage(const char *kind, const char *message,
+                         const struct __weavec_rt_site *site) {
+  (void)reportLine(kind, 0, 0, message, site);
+  trapNow();
 }
 
 void weavecRtFailObject(const char *kind, uintptr_t address, uint64_t width,
@@ -282,7 +345,7 @@ void weavecRtFailObject(const char *kind, uintptr_t address, uint64_t width,
                         const struct __weavec_rt_site *site) {
   char text[256];
   int size;
-  if (!reportLine(kind, address, width, site))
+  if (!reportLine(kind, address, width, NULL, site))
     return;
   size = describeRange(address, lo, hi, "destination", text, sizeof text);
   if (size > 0)
@@ -294,9 +357,10 @@ void weavecRtFail(const char *kind, uintptr_t address, uint64_t width,
                   const struct __weavec_rt_site *site) {
   char text[256];
   int size;
-  if (!reportLine(kind, address, width, site))
+  if (!reportLine(kind, address, width, NULL, site))
     return;
-  if (strncmp(kind, "heap-", 5) == 0) {
+  if (strncmp(kind, "heap-", 5) == 0 ||
+      strcmp(kind, "container-overflow") == 0) {
     size = describeHeap(address, text, sizeof text);
     if (size > 0)
       emit(text, size);
@@ -314,7 +378,7 @@ void weavecRtFailJump(const char *kind, uintptr_t address, uint64_t width,
                       uintptr_t root, const struct __weavec_rt_site *site) {
   char text[256];
   struct Line line = {text, text + sizeof text - 1};
-  if (!reportLine(kind, address, width, site))
+  if (!reportLine(kind, address, width, NULL, site))
     return;
   /* RFC 0037: the second line of a color mismatch. */
   put(&line, "weavec: ");
@@ -329,7 +393,7 @@ void weavecRtFailJump(const char *kind, uintptr_t address, uint64_t width,
 }
 
 static int reportLine(const char *kind, uintptr_t address, uint64_t width,
-                      const struct __weavec_rt_site *site) {
+                      const char *message, const struct __weavec_rt_site *site) {
   const unsigned flags = site != NULL ? site->flags : 0;
   const char *file = weavecRtSiteFile(site);
   const unsigned line = site != NULL ? site->line : 0;
@@ -354,7 +418,9 @@ static int reportLine(const char *kind, uintptr_t address, uint64_t width,
     put(&out, "<unknown>");
   }
   put(&out, ": ");
-  if (strcmp(kind, "index-out-of-bounds") == 0) {
+  if (message != NULL) {
+    put(&out, message);
+  } else if (strcmp(kind, "index-out-of-bounds") == 0) {
     put(&out, "index ");
     if ((long long)address < 0) {
       put(&out, "-");
@@ -638,6 +704,38 @@ __attribute__((constructor)) static void watchFaults(void) {
   }
 }
 
+const char *weavecRtReleaseName(unsigned form) {
+  return form == WeavecRtFormNew        ? "operator delete"
+         : form == WeavecRtFormNewArray ? "operator delete[]"
+                                        : "free";
+}
+
+/* RFC 0039, Diagnostics: a release by another form, or of another size. */
+void weavecRtFatalRelease(const void *p, unsigned allocatedBy,
+                          const char *releasedBy, size_t size,
+                          size_t objectSize) {
+  char why[160];
+  struct Line line = {why, why + sizeof why - 1};
+  if (size == SIZE_MAX) {
+    put(&line, "allocated by ");
+    put(&line, allocatedBy == WeavecRtFormNew        ? "operator new"
+               : allocatedBy == WeavecRtFormNewArray ? "operator new[]"
+                                                     : "malloc");
+    put(&line, " and released by ");
+    put(&line, releasedBy);
+  } else {
+    put(&line, "released by ");
+    put(&line, releasedBy);
+    put(&line, " with size ");
+    putUnsigned(&line, size, 10);
+    put(&line, " for a ");
+    putUnsigned(&line, objectSize, 10);
+    put(&line, "-byte object");
+  }
+  *line.at = 0;
+  __weavec_rt_fatal("invalid release", p, why);
+}
+
 void __weavec_rt_fatal(const char *what, const void *p, const char *why) {
   char text[256];
   struct Line line = {text, text + sizeof text - 1};
@@ -651,6 +749,5 @@ void __weavec_rt_fatal(const char *what, const void *p, const char *why) {
     const long written = (long)write(2, text, (size_t)finish(&line, text));
     (void)written;
   }
-  __weavec_rt_trapping();
-  __builtin_trap();
+  trapNow();
 }

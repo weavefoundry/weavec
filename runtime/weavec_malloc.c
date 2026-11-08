@@ -81,7 +81,10 @@ void *reallocarray(void *p, size_t count, size_t size) {
 }
 #endif
 
-void free(void *p) { __weavec_rt_free(p); }
+void free(void *p) {
+  weavecRtReleaseForm(p, WeavecRtFormMalloc, SIZE_MAX,
+                      __builtin_return_address(0));
+}
 
 #if WEAVEC_RT_FREE_SIZED
 void free_sized(void *p, size_t size) {

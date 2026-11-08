@@ -194,7 +194,7 @@ public:
     unsigned line = 0;
     unsigned column = 0;
   };
-  [[nodiscard]] static Position positionOf(const llvm::DebugLoc &location);
+  [[nodiscard]] Position positionOf(const llvm::DebugLoc &location) const;
 
   /// Whether `location` lies in a `WEAVEC_UNSAFE` region.
   [[nodiscard]] bool isUnsafe(const llvm::DebugLoc &location) const;
@@ -210,6 +210,10 @@ public:
   [[nodiscard]] static bool isRuntimeName(llvm::StringRef name);
 
 private:
+  /// Past the frames inlined from artificial functions and the unit's
+  /// system headers; `systemFiles` remembers which files are those.
+  const llvm::DILocation *reportedAt(const llvm::DILocation *at) const;
+  mutable llvm::DenseMap<const llvm::DIFile *, bool> systemFiles;
   llvm::StringMap<llvm::Constant *> files;
   std::map<std::tuple<llvm::Constant *, unsigned, unsigned, unsigned>,
            llvm::Constant *>
@@ -371,8 +375,18 @@ layoutFrame(FunctionContext &context,
             llvm::ArrayRef<llvm::AllocaInst *> tracked);
 
 /// Section 3.5: clears the stack's shadow before each call that does not
-/// return.
+/// return, but those the library table says end the process or unwind
+/// (RFC 0039 §3); and calls the runtime at each landing pad, which marks the
+/// frames the exception unwound returned.
 void unpoisonBeforeNoReturn(FunctionContext &context);
+
+/// The C name of a callee: Darwin's `\01_name$VARIANT` asm labels and the
+/// variant suffixes dropped.
+inline llvm::StringRef libraryName(llvm::StringRef name) {
+  if (name.consume_front("\1"))
+    name.consume_front("_");
+  return name.split('$').first;
+}
 
 /// Section 4: gives the module's globals redzones and registers them.
 void instrumentGlobals(ModuleContext &module);

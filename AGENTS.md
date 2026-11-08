@@ -5,8 +5,9 @@ most and where to find the rest.
 
 ## Project in one paragraph
 
-WeaveC is a Clang/LLVM-based drop-in C compiler that enforces memory safety
-at run time. `weavec-cc` guards every memory access of the C it compiles:
+WeaveC is a Clang/LLVM-based drop-in C and C++ compiler that enforces memory
+safety at run time. `weavec-cc` (and `weavec-c++`, a link to it in Clang's
+g++ mode) guards every memory access of the C and C++ it compiles:
 LLVM passes (`lib/Frontend/Guard*.cpp`) put a guard before every load,
 store, atomic operation, memory intrinsic and library-call memory argument,
 remove a guard only where a local rule proves it redundant, lay out stack
@@ -29,7 +30,11 @@ table, `LibrarySpec`; **no Clang/LLVM includes allowed**) and
 ledger, the compiler driver). `tools/weavec-cc` is Clang's driver with
 WeaveC inside; there is no other tool and no static analysis. Full
 picture: `docs/architecture.md`. Design and the reasoning behind it:
-`docs/rfcs/`. Read `0038-drop-in-everywhere.md`, the current design (the
+`docs/rfcs/`. Read `0039-cxx.md` first, the current design (C++ guarded as
+C: `weavec-c++`, invokes, exceptions marking only the frames they unwind,
+`new`/`delete` forms, container annotations, the C++ library's checks as
+`library-assertion`, mangled rows of the library table), then
+`0038-drop-in-everywhere.md` (the
 runtime as one shared library, searches checked over what they read, color
 roots through the optimizer's arithmetic, the fault handler's re-raise, the
 gates on every platform and the programs tier, self-contained toolchains),
@@ -126,7 +131,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
    `name == "…"` tests; nothing under `lib/` names a corpus project; the
    library code (`lib/`, `include/`, `tools/`) stays within its line budget
    (9,000), and so does the runtime (`runtime/` without `runtime/test/`
-   and its export list, counted apart: 7,050). The runtime is C and
+   and its export list, counted apart: 7,700). The runtime is C and
    includes no WeaveC header but its own `weavec_rt.h`, and every runtime
    entry point the passes declare (and every `wrapper(NAME)` of the table)
    must be declared there with the same signature. What the runtime's
@@ -148,6 +153,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Change what weavec-cc adds to a compile (zero-init, array bounds, locations, the passes) | `configureEnforcement` in `lib/Frontend/Driver.cpp`; `registerGuardPasses` in `lib/Frontend/GuardPass.cpp` (RFC 0035 §1, amendment 1; RFC 0036 §1) |
 | Change fortification or ASan's contract (`_FORTIFY_SOURCE=3`, `__SANITIZE_ADDRESS__`, `-fno-weavec-asan-compat`) | `wantsFortification`, `applyAsanCompat` and `AsanOptionsReset` in `lib/Frontend/Driver.cpp` (RFC 0036 §1, §5); tests `test/Driver/fortify.c`, `asan-compat.c`, `asan-compat-fortify.c` |
 | Change which accesses get a guard    | `lib/Frontend/GuardInsert.cpp` (`GuardInsert`, at `PipelineStartEP`: the markers `__weavec.guard`, `.range`, `.strlen`, `.disjoint`, `.scope`; RFC 0035 §2.1, amendments 1–2) |
+| Change C++ support (the driver mode, hardening macros, `new`/`delete`, exceptions, containers, `library-assertion`) | `cxxDriverMode`, `wantsLibraryChecks` in `lib/Frontend/Driver.cpp`; `unpoisonBeforeNoReturn` (landing pads, `exits`/`unwinds` rows) in `GuardFrames.cpp`; `reportLibraryTraps` in `GuardExpand.cpp`; `runtime/weavec_cxx.c`, `weavec_unwind.c`, the container annotations in `weavec_asan.c` (RFC 0039); tests `test/Guards/cxx-*.cpp`, `container-overflow.cpp`, `library-assertion.cpp`, `test/Driver/cxx-driver.cpp`, cases `test/cases/detection/cxx/` |
 | Change how a library call is guarded, fortified limits included | `lib/Frontend/GuardLibrary.cpp` (row-driven guards, `wrapper(…)` redirection, `chk` object sizes, field limits and `limit` arguments, `wide` rows scanned by `__weavec_rt_wcslen`, `%s`/`%n` arguments, thunks of library functions whose address is taken, `scan` arguments guarded after the call; RFC 0037 §5, §10; RFC 0038 §2); the rows and their clauses in `lib/Core/LibrarySpec.txt` (one unit test per row in `unittests/Core/LibrarySpecTest.cpp`); the wrappers, their limits and the number parsers in `runtime/weavec_libc.c` (RFC 0035 §2.5, amendment 7; RFC 0036 §6); tests `test/Guards/checked-calls.c`, `intra-object.c`, `library-scan.c`, cases `test/cases/semantics/library/scan-*.c` |
 | Change the rules that remove guards  | `GuardPrune` (`PeepholeEP`; `pruneGuards` in `lib/Frontend/GuardInsert.cpp`: rule 6.1 after inlining) and `GuardExpand` (`OptimizerLastEP`; `lib/Frontend/GuardExpand.cpp`: rules 6.1–6.3); the passes' entry points are in `GuardPass.cpp`; `lib/Frontend/GuardLoops.cpp` (`GuardLoop`, `VectorizerStartEP`: loop versioning, rule 6.4); each removal must stay monitored by `verify` mode |
 | Change the inline checks (fast paths, null bases) | `lib/Frontend/GuardPass.cpp`, `GuardPassImpl.h`; the shadow encoding in `runtime/weavec_rt.h` (RFC 0035 §2.2–§2.4, amendments 3–4; RFC 0037 §7); tests `test/Guards/ir-inline-check.c`, `null-base.c` |

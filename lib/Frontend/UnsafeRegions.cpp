@@ -149,24 +149,26 @@ public:
   /// ("address")`, `no_sanitize_address`, `disable_sanitizer_
   /// instrumentation`) reads memory no guard should check (a conservative
   /// garbage collector's stack scan): its body is an unsafe region, as is a
-  /// function annotated unsafe by hand.
+  /// function annotated unsafe by hand. RFC 0039 §8: in C++ also inside a
+  /// namespace, a class or a linkage specification.
   bool HandleTopLevelDecl(clang::DeclGroupRef group) override {
-    for (clang::Decl *declaration : group) {
-      const auto *function = llvm::dyn_cast<clang::FunctionDecl>(declaration);
-      if (function == nullptr || !function->doesThisDeclarationHaveABody() ||
-          !(keptFromSanitizer(*function) || annotatedUnsafe(*function)))
-        continue;
-      UnsafeVisitor visitor(function->getASTContext().getSourceManager(),
-                            directory, *out);
-      visitor.add(function->getBody()->getSourceRange());
-    }
+    for (clang::Decl *declaration : group)
+      considerDecl(declaration);
     return true;
   }
 
   void HandleTranslationUnit(clang::ASTContext &context) override {
+    const clang::SourceManager &sources = context.getSourceManager();
+    for (unsigned i = 0; i < sources.local_sloc_entry_size(); ++i) {
+      const clang::SrcMgr::SLocEntry &entry = sources.getLocalSLocEntry(i);
+      if (entry.isFile() &&
+          clang::SrcMgr::isSystem(entry.getFile().getFileCharacteristic()))
+        out->addSystemFile(
+            UnsafeRegions::normalize(entry.getFile().getName(), directory));
+    }
     if (!*seen)
       return;
-    UnsafeVisitor visitor(context.getSourceManager(), directory, *out);
+    UnsafeVisitor visitor(sources, directory, *out);
     visitor.TraverseDecl(context.getTranslationUnitDecl());
   }
 
@@ -183,6 +185,28 @@ private:
                                  return attribute->getAnnotation() ==
                                         UnsafeAnnotation;
                                });
+  }
+
+  void considerDecl(clang::Decl *declaration) {
+    if (const auto *function = llvm::dyn_cast<clang::FunctionDecl>(declaration);
+        function != nullptr && function->doesThisDeclarationHaveABody() &&
+        function->getBody() != nullptr && // (a late-parsed template: none)
+        (keptFromSanitizer(*function) || annotatedUnsafe(*function))) {
+      UnsafeVisitor visitor(function->getASTContext().getSourceManager(),
+                            directory, *out);
+      visitor.add(function->getBody()->getSourceRange());
+    }
+    if (const auto *pattern =
+            llvm::dyn_cast<clang::FunctionTemplateDecl>(declaration))
+      considerDecl(pattern->getTemplatedDecl());
+    if (const auto *pattern =
+            llvm::dyn_cast<clang::ClassTemplateDecl>(declaration))
+      considerDecl(pattern->getTemplatedDecl());
+    if (llvm::isa<clang::NamespaceDecl, clang::LinkageSpecDecl,
+                  clang::CXXRecordDecl, clang::ExportDecl>(declaration))
+      for (clang::Decl *inner :
+           llvm::cast<clang::DeclContext>(declaration)->decls())
+        considerDecl(inner);
   }
 
   static bool keptFromSanitizer(const clang::FunctionDecl &function) {

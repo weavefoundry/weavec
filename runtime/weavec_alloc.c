@@ -158,6 +158,7 @@ typedef struct ThreadCache {
   unsigned locks;
   unsigned deferredCount;
   void *deferred[16];
+  unsigned char deferredForm[16];
 } ThreadCache;
 
 /* A thread whose cache has gone (its key's destructor ran) uses none. */
@@ -222,6 +223,8 @@ typedef struct {
   unsigned long long dead;
   /* A pointer to the released block was found by the running sweep. */
   int marked;
+  /* RFC 0039 section 4: what allocated it. */
+  unsigned form;
 } HugeBlock;
 
 static WeavecRtLock initLock;
@@ -845,12 +848,17 @@ static size_t liveNow(void) {
 
 /* Makes the slot `taken` (slotEntry) live with an object of `size`
  * bytes. */
-static void *makeLive(uint64_t taken, size_t size, size_t slotBytes) {
+static inline uint32_t liveWord(size_t size, unsigned form) {
+  return ((uint32_t)size << WeavecRtLiveShift) | (form << WeavecRtWordShift) |
+         WeavecRtLive;
+}
+
+static void *makeLive(uint64_t taken, size_t size, size_t slotBytes,
+                      unsigned form) {
   const unsigned region = entryRegion(taken);
   const uint32_t slot = entrySlot(taken);
   const uintptr_t base = regionStart(region) + (uintptr_t)slot * slotBytes;
-  storeWord(&slotWords(region)[slot],
-            ((uint32_t)size << WeavecRtWordShift) | WeavecRtLive);
+  storeWord(&slotWords(region)[slot], liveWord(size, form));
   if ((taken & 1) != 0 && size != 0)
     zeroFill(base, size);
   shadowLive(base, size, slotBytes);
@@ -859,13 +867,13 @@ static void *makeLive(uint64_t taken, size_t size, size_t slotBytes) {
 
 /* A slot of class `c` for an object of `size` bytes, live, without a
  * thread cache; null when memory is exhausted. */
-static void *takeSlot(unsigned c, size_t size) {
+static void *takeSlot(unsigned c, size_t size, unsigned form) {
   const size_t slotBytes = __weavec_rt_heap.table[c].size;
   uint64_t taken;
   if (popClass(c, &taken, 1) == 0)
     return NULL;
   addLive((intptr_t)slotBytes);
-  return makeLive(taken, size, slotBytes);
+  return makeLive(taken, size, slotBytes, form);
 }
 
 /*===-- Thread caches (RFC 0037 section 2.1) --------------------------------===*/
@@ -1032,7 +1040,8 @@ void weavecRtFlushThread(void) {
 static int overBudget(void);
 
 /* An allocation of class `c` from the cache, refilled when empty. */
-static void *cachedAlloc(ThreadCache *cache, unsigned c, size_t size) {
+static void *cachedAlloc(ThreadCache *cache, unsigned c, size_t size,
+                         unsigned form) {
   SlotCache *available = &cache->alloc[c];
   const size_t slotBytes = __weavec_rt_heap.table[c].size;
   if (available->count == 0) {
@@ -1051,7 +1060,8 @@ static void *cachedAlloc(ThreadCache *cache, unsigned c, size_t size) {
   cache->liveDelta += (intptr_t)slotBytes;
   if (cache->liveDelta >= FoldBytes)
     foldLive(cache);
-  return makeLive(available->slots[--available->count], size, slotBytes);
+  return makeLive(available->slots[--available->count], size, slotBytes,
+                  form);
 }
 
 /*===-- The quarantine (section 2.4) ----------------------------------------===*/
@@ -1214,7 +1224,7 @@ static long hugeIndex(uintptr_t address) {
   return (long)low - 1;
 }
 
-static void *hugeAlloc(size_t size, size_t alignment) {
+static void *hugeAlloc(size_t size, size_t alignment, unsigned form) {
   const size_t page = pageBytes;
   size_t bytes;
   size_t mapBytes;
@@ -1279,6 +1289,7 @@ static void *hugeAlloc(size_t size, size_t alignment) {
   hugeBlocks[at].mapBytes = mapBytes;
   hugeBlocks[at].dead = 0;
   hugeBlocks[at].marked = 0;
+  hugeBlocks[at].form = form;
   ++hugeCount;
   shadowLive(base, size, bytes);
   if (map < __atomic_load_n(&hugeLow, __ATOMIC_RELAXED))
@@ -1310,9 +1321,9 @@ static int hugeFind(uintptr_t address, HugeBlock *out) {
   return found;
 }
 
-/* Releases the live huge block that starts at `address`; false when there
- * is none. */
-static int hugeFree(uintptr_t address) {
+/* Releases the live huge block at `address`, by `form` with `bytes`
+ * (SIZE_MAX: unsized); false when there is none. */
+static int hugeFree(uintptr_t address, unsigned form, size_t bytes) {
   long index;
   int ok = 0;
   if (!maybeHuge(address))
@@ -1322,6 +1333,13 @@ static int hugeFree(uintptr_t address) {
   if (index >= 0 && hugeBlocks[index].base == address &&
       hugeBlocks[index].dead == 0) {
     HugeBlock *block = &hugeBlocks[index];
+    if (form != WeavecRtFormAny &&
+        (block->form != form || (bytes != SIZE_MAX && bytes != block->size))) {
+      const HugeBlock copy = *block;
+      give(&hugeLock);
+      weavecRtFatalRelease((void *)address, copy.form, weavecRtReleaseName(form),
+                           copy.form != form ? SIZE_MAX : bytes, copy.size);
+    }
     block->dead = ++hugeReleases;
     /* A large block's ends are poisoned, its middle cleared rather than
      * written: the middle is mapped without access below, so a use there
@@ -1450,7 +1468,7 @@ static ThreadCache *cacheFor(unsigned c) {
   return cache != NULL && cache->depth <= 1 ? cache : NULL;
 }
 
-static void *allocate(size_t size, size_t alignment) {
+static void *allocate(size_t size, size_t alignment, unsigned form) {
   unsigned region;
   void *block;
   if (!weavecRtInitialize()) {
@@ -1478,13 +1496,13 @@ static void *allocate(size_t size, size_t alignment) {
   weavecRtCount(WeavecRtStatAllocations);
   if (region < __weavec_rt_heap.classes) {
     ThreadCache *cache = cacheFor(region);
-    block = cache != NULL ? cachedAlloc(cache, region, size)
-                          : takeSlot(region, size);
+    block = cache != NULL ? cachedAlloc(cache, region, size, form)
+                          : takeSlot(region, size, form);
     if (block != NULL)
       return block;
   }
   weavecRtCount(WeavecRtStatHuge);
-  return hugeAlloc(size, alignment);
+  return hugeAlloc(size, alignment, form);
 }
 
 /* The requested size of the live block that starts at `p`, when the arena
@@ -1496,7 +1514,7 @@ static int ownedSize(const void *p, size_t *size) {
     const uint32_t word = wordOf(ref);
     if (ref.base != address || (word & WeavecRtWordState) != WeavecRtLive)
       return 0;
-    *size = weavecRtWordValue(word);
+    *size = weavecRtLiveSize(word);
     return 1;
   }
   {
@@ -1519,7 +1537,9 @@ static const char *whyNotReleasable(uintptr_t address) {
   return "not the start of its block";
 }
 
-static void release(void *p) {
+/* RFC 0039 section 4: `form` allocated what the release takes (or any). */
+
+static void release(void *p, unsigned form, size_t bytes, const void *caller) {
   const uintptr_t address = (uintptr_t)p;
   if (inArena(address)) {
     const SlotRef ref = slotOf(address);
@@ -1528,6 +1548,14 @@ static void release(void *p) {
     ThreadCache *cache;
     if (ref.base != address || (word & WeavecRtWordState) != WeavecRtLive)
       __weavec_rt_fatal("invalid release", p, whyNotReleasable(address));
+    if (form != WeavecRtFormAny &&
+        (weavecRtLiveForm(word) != form ||
+         (bytes != SIZE_MAX && bytes != weavecRtLiveSize(word))) &&
+        weavecRtCallerForm(form, caller) != WeavecRtFormAny)
+      weavecRtFatalRelease(p, weavecRtLiveForm(word),
+                           weavecRtReleaseName(form),
+                           weavecRtLiveForm(word) != form ? SIZE_MAX : bytes,
+                           weavecRtLiveSize(word));
     weavecRtCount(WeavecRtStatReleases);
     claim(ref, word, p);
     cache = cacheFor(c);
@@ -1537,7 +1565,7 @@ static void release(void *p) {
       retire(ref);
     return;
   }
-  if (hugeFree(address)) {
+  if (hugeFree(address, weavecRtCallerForm(form, caller), bytes)) {
     if (overBudget())
       weavecRtSweep();
     return;
@@ -1556,7 +1584,18 @@ static void release(void *p) {
  * the allocator (by a signal handler, which C does not allow but programs
  * do) uses no cache and starts no sweep; while the thread holds an
  * allocator lock it allocates nothing and defers its release. */
-void *__weavec_rt_alloc(size_t size, size_t alignment) {
+/* A deferred release, by its form (its pointer as given: an invalid one is
+ * reported as such). */
+static void releaseDeferred(ThreadCache *self) {
+  while (self->deferredCount != 0) {
+    --self->deferredCount;
+    weavecRtReleaseForm(self->deferred[self->deferredCount],
+                        self->deferredForm[self->deferredCount], SIZE_MAX, NULL);
+  }
+}
+
+static inline __attribute__((always_inline)) void *
+allocForm(size_t size, size_t alignment, unsigned form) {
   ThreadCache *self;
   void *block;
   self = ownCache();
@@ -1567,33 +1606,83 @@ void *__weavec_rt_alloc(size_t size, size_t alignment) {
   if (self != NULL)
     ++self->depth;
   __atomic_signal_fence(__ATOMIC_SEQ_CST);
-  block = allocate(size, alignment);
+  block = allocate(size, alignment, form);
   __atomic_signal_fence(__ATOMIC_SEQ_CST);
   if (self != NULL && --self->depth == 0)
-    while (self->deferredCount != 0)
-      __weavec_rt_free(self->deferred[--self->deferredCount]);
+    releaseDeferred(self);
   return block;
 }
 
-void __weavec_rt_free(void *p) {
+void *weavecRtAllocForm(size_t size, size_t alignment, unsigned form) {
+  return allocForm(size, alignment, form);
+}
+
+void *__weavec_rt_alloc(size_t size, size_t alignment) {
+  return allocForm(size, alignment, WeavecRtFormMalloc);
+}
+
+void weavecRtReleaseForm(void *p, unsigned form, size_t size,
+                         const void *caller) {
   ThreadCache *self;
   if (p == NULL)
     return;
   self = ownCache();
   if (self != NULL && self->depth != 0 && self->locks != 0) {
     /* (A release that does not fit waits for no one: the block stays.) */
-    if (self->deferredCount < sizeof self->deferred / sizeof self->deferred[0])
+    if (self->deferredCount < sizeof self->deferred / sizeof self->deferred[0]) {
+      self->deferredForm[self->deferredCount] =
+          (unsigned char)weavecRtCallerForm(form, caller);
       self->deferred[self->deferredCount++] = p;
+    }
     return;
   }
   if (self != NULL)
     ++self->depth;
   __atomic_signal_fence(__ATOMIC_SEQ_CST);
-  release(p);
+  release(p, form, size, caller);
   __atomic_signal_fence(__ATOMIC_SEQ_CST);
   if (self != NULL && --self->depth == 0)
-    while (self->deferredCount != 0)
-      __weavec_rt_free(self->deferred[--self->deferredCount]);
+    releaseDeferred(self);
+}
+
+#if defined(__APPLE__)
+extern const void *_dyld_get_shared_cache_range(size_t *length);
+#endif
+
+unsigned weavecRtCallerForm(unsigned form, const void *caller) {
+#if defined(__APPLE__)
+  static uintptr_t cacheLow, cacheEnd; /* (cacheEnd is the end + 1) */
+  if (__atomic_load_n(&cacheEnd, __ATOMIC_ACQUIRE) == 0) {
+    size_t length = 0;
+    cacheLow = (uintptr_t)_dyld_get_shared_cache_range(&length);
+    __atomic_store_n(&cacheEnd, cacheLow + length + 1, __ATOMIC_RELEASE);
+  }
+  if ((uintptr_t)caller - cacheLow < cacheEnd - 1 - cacheLow)
+    return WeavecRtFormAny;
+#endif
+  (void)caller;
+  return form;
+}
+
+void __weavec_rt_free(void *p) {
+  weavecRtReleaseForm(p, WeavecRtFormMalloc, SIZE_MAX, NULL);
+}
+
+void weavecRtSetForm(void *p, unsigned form) {
+  const uintptr_t address = (uintptr_t)p;
+  if (inArena(address)) {
+    const SlotRef ref = slotOf(address);
+    const uint32_t word = wordOf(ref);
+    if (ref.base == address && (word & WeavecRtWordState) == WeavecRtLive)
+      storeWord(&slotWords(ref.region)[ref.slot],
+                liveWord(weavecRtLiveSize(word), form));
+    return;
+  }
+  take(&hugeLock);
+  if (maybeHuge(address) && hugeIndex(address) >= 0 &&
+      hugeBlocks[hugeIndex(address)].base == address)
+    hugeBlocks[hugeIndex(address)].form = form;
+  give(&hugeLock);
 }
 
 int weavecRtAllocatorNested(void) {
@@ -1613,13 +1702,16 @@ void *__weavec_rt_realloc(void *p, size_t size) {
     const uint32_t value = wordOf(ref);
     if (ref.base != address || (value & WeavecRtWordState) != WeavecRtLive)
       __weavec_rt_fatal("invalid release", p, whyNotReleasable(address));
-    old = weavecRtWordValue(value);
+    if (weavecRtLiveForm(value) != WeavecRtFormMalloc)
+      weavecRtFatalRelease(p, weavecRtLiveForm(value), "realloc", SIZE_MAX,
+                           weavecRtLiveSize(value));
+    old = weavecRtLiveSize(value);
     if (classFor(size) == regionClass[ref.region]) {
       /* The block stays; bytes it gains are zero (section 2.3). */
       if (size > old)
         memset((char *)p + old, 0, size - old);
       shadowLive(address, size, __weavec_rt_heap.table[ref.region].size);
-      storeWord(word, ((uint32_t)size << WeavecRtWordShift) | WeavecRtLive);
+      storeWord(word, liveWord(size, WeavecRtFormMalloc));
       return p;
     }
   } else if (!ownedSize(p, &old)) {
@@ -1663,7 +1755,7 @@ struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address) {
     object.live = (word & WeavecRtWordState) == WeavecRtLive;
     object.base = ref.base;
     /* A released slot: its whole extent. */
-    object.size = object.live ? weavecRtWordValue(word)
+    object.size = object.live ? weavecRtLiveSize(word)
                               : __weavec_rt_heap.table[ref.region].size;
     return object;
   }
@@ -1807,7 +1899,7 @@ void weavecRtMarkSlots(unsigned region, uint32_t first, uint32_t last) {
     const uint32_t word = loadWord(&words[slot]);
     if ((word & WeavecRtWordState) == WeavecRtLive) {
       const uintptr_t base = regionStart(region) + (uintptr_t)slot * entry->size;
-      weavecRtMarkWords(base, base + weavecRtWordValue(word));
+      weavecRtMarkWords(base, base + weavecRtLiveSize(word));
     }
   }
 }
@@ -1949,15 +2041,16 @@ static void *zoneMemalign(malloc_zone_t *zone, size_t alignment, size_t size) {
   return __weavec_rt_alloc(size, alignment);
 }
 
+/* (The zone's callers are the system's.) */
 static void zoneFree(malloc_zone_t *zone, void *p) {
   (void)zone;
-  __weavec_rt_free(p);
+  weavecRtReleaseForm(p, WeavecRtFormAny, SIZE_MAX, NULL);
 }
 
 static void zoneFreeDefinite(malloc_zone_t *zone, void *p, size_t size) {
   (void)zone;
   (void)size;
-  __weavec_rt_free(p);
+  weavecRtReleaseForm(p, WeavecRtFormAny, SIZE_MAX, NULL);
 }
 
 static void *zoneRealloc(malloc_zone_t *zone, void *p, size_t size) {

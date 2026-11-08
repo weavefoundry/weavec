@@ -67,6 +67,8 @@ static const char *kindOf(unsigned char value, uintptr_t granule) {
     return "use-after-poison";
   case WeavecRtShadowGlobal:
     return "global-buffer-overflow";
+  case WeavecRtShadowContainer:
+    return "container-overflow";
   case WeavecRtShadowNull:
     return "null-dereference";
   default:
@@ -156,9 +158,15 @@ static int firstUnaddressable(uintptr_t address, uint64_t n, uintptr_t *bad,
 
 static void failAt(uintptr_t bad, unsigned char value, uintptr_t address,
                    uint64_t width, const struct __weavec_rt_site *site) {
-  /* A partial granule of the arena or a huge block is a heap object's. */
-  if (!isPoison(value) && weavecRtHeapObjectAt(bad).found)
-    value = WeavecRtShadowHeapTail;
+  /* A partial granule of the arena or a huge block is a heap object's: its
+   * end, or its container's elements' (RFC 0039 section 5). */
+  const struct weavecRtHeapObject object = weavecRtHeapObjectAt(bad);
+  const uintptr_t next = (bad | 15) + 1;
+  if (!isPoison(value) && object.found)
+    value = next < object.base + object.size &&
+                    *weavecRtShadowOf(next) == WeavecRtShadowContainer
+                ? WeavecRtShadowContainer
+                : WeavecRtShadowHeapTail;
   weavecRtFail(kindOf(value, bad & ~(uintptr_t)15), address, width, site);
 }
 
@@ -179,9 +187,9 @@ WEAVEC_RT_SLOW void __weavec_rt_guard(uintptr_t address, uint64_t width,
 
 /*===-- Colors (RFC 0037 section 8.3) -------------------------------------===*/
 
-/* Set once a non-local exit cleared the stack's shadow (and with it the
- * colors of frames that live on). */
-static int stackLostColors;
+/* Set once a non-local exit cleared the thread's stack's shadow (and the
+ * colors of frames that live on); per thread (RFC 0039 section 3). */
+static __thread int stackLostColors;
 
 /* Whether `address` lies on the calling thread's stack, above `here`. */
 static int onStack(uintptr_t address, uintptr_t here) {
@@ -208,8 +216,8 @@ static const char *jumpKind(uintptr_t address, uintptr_t root,
     return NULL;
   /* A root in uncolored memory (untracked memory, a huge block, dead
    * stack, a frame a non-local exit cleared) has no object to hold the
-   * access to. */
-  if (rootShadow == 0)
+   * access to; nor one whose shadow is uncolored now (RFC 0039 am. 16). */
+  if (rootShadow == 0 || *weavecRtShadowOf(root) == 0)
     return NULL;
   /* A frame that lives on after a non-local exit cleared the stack's shadow
    * has lost its locals' colors. */

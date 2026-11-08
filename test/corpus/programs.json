@@ -113,6 +113,71 @@
           "tests/printf/printf-surprise": "RFC 0038, amendment 18: under ulimit -v the shadow cannot be reserved, and the runtime's warning that accesses are not checked is on the stderr the test compares (the test skips under ASan, which refuses to run)"
         }
       }
+    },
+    {
+      "name": "ninja",
+      "url": "https://github.com/ninja-build/ninja/archive/refs/tags/v1.13.2.tar.gz",
+      "sha256": "974d6b2f4eeefa25625d34da3cb36bdcebe7fbce40f4c16ac0835fd1c0cbae17",
+      "notes": "ninja 1.13.2 (RFC 0039, section 9), a build system in C++: a manifest lexer and parser, a graph of nodes and edges in hash maps, the build log and deps log (mmap'd, compacted), a subprocess pool, the state of a build. Built with its CMake build and its googletest tests (ninja_test, about 400 tests) against the corpus's googletest checkout ($CORPUS/googletest as FetchContent's source: nothing is downloaded).",
+      "uses": ["googletest"],
+      "build": [
+        "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=\"$CORPUS/googletest\" -DFETCHCONTENT_FULLY_DISCONNECTED=ON > configure.log",
+        "cmake --build out -j \"$JOBS\" > build.log"
+      ],
+      "test": "cd out && ./ninja_test > tests.log 2>&1; s=$?; grep -E '^\\[  FAILED  \\] ' tests.log | sort -u; tail -3 tests.log; [ $s -eq 0 ] || echo \"[  FAILED  ] ninja_test.exit_status_$s\"",
+      "failures": "^\\[  FAILED  \\] ([A-Za-z_]\\w*\\.[\\w/]+)",
+      "timeout": 3600,
+      "referenceFailures": {}
+    },
+    {
+      "name": "cppcheck",
+      "url": "https://github.com/danmar/cppcheck/archive/refs/tags/2.22.0.tar.gz",
+      "sha256": "d74945deb2d50393430e07596b766f8a779512c7f60dac2a30ea64e059ece57b",
+      "notes": "Cppcheck 2.22.0 (RFC 0039, section 9), a static analyzer in C++: a tokenizer over linked lists of tokens, a simplecpp preprocessor, symbol databases of scopes, variables and functions, value flow over std::list and std::unordered_map of values, the checkers, TinyXML-2 and picojson bundled. Built with its makefile; its test is testrunner (about 5,300 tests), whose failures name TestClass::test.",
+      "build": ["make -j\"$JOBS\" CXX=\"$CXX\" testrunner > build.log 2>&1"],
+      "test": "./testrunner > tests.log 2>&1; s=$?; grep -E '^(\\S+:[0-9]+\\()?Test[A-Za-z0-9_]+::[A-Za-z0-9_]+(\\): Assertion| - )' tests.log | sort -u; tail -6 tests.log; [ $s -eq 0 ] || echo \"TestRunner::exit_status_$s - Exception\"",
+      "failures": "^(?:\\S+:\\d+\\()?(Test\\w+::\\w+)(?:\\): Assertion| - )",
+      "timeout": 3600,
+      "referenceFailures": {}
+    },
+    {
+      "name": "cmake",
+      "url": "https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5.tar.gz",
+      "sha256": "a0c54c88abb8078dd8eccadb717fc6bb194bf18e7d44c86309910288886e04e2",
+      "notes": "CMake 4.4.5 (RFC 0039, section 9), a build system generator in C++: a language interpreter over lists of strings, generator expressions, the Makefile and Ninja generators, CTest and CPack, libuv for processes, and bundled C libraries (curl without OpenSSL, libarchive, zlib, zstd, liblzma, expat, jsoncpp, libuv, kwsys). Built by its bootstrap, which builds a first cmake with the compilers and then the rest with it. The test is 140 of its 699 CTest tests that need no network and no other toolchain: the CMakeLib unit tests, kwsys, CMakeOnly, CMakeCommands and the RunCMake suites of the language's commands, the generators, install, presets and ctest (which configure and build small projects with the same compilers, so their programs are guarded too).",
+      "build": [
+        "./bootstrap --parallel=\"$JOBS\" -- -DCMAKE_BUILD_TYPE=Release -DCMAKE_USE_OPENSSL=OFF -DBUILD_TESTING=ON > configure.log 2>&1",
+        "make -j\"$JOBS\" > build.log 2>&1"
+      ],
+      "test": "bin/ctest -j\"$JOBS\" --timeout 1200 -R '^(CMakeLib|kwsys|CMakeOnly|CMakeCommands)\\.|^RunCMake\\.(string|list|math|file|file-GET_RUNTIME_DEPENDENCIES|if|while|foreach|function|macro|cmake_language|block|return|message|configure_file|set|unset|cmake_parse_arguments|separate_arguments|get_filename_component|cmake_path|include|option|variable_watch|project|add_library|add_executable|target_sources|target_link_libraries|target_compile_definitions|add_custom_command|add_custom_target|install|CMakePresets|ctest_test|CTestCommandLine|CommandLine|Configure|GeneratorExpression|Make|Ninja)$' > ctest.log 2>&1; grep -E '^\\s*[0-9]+ - \\S+ \\(' ctest.log; tail -12 ctest.log",
+      "failures": "^\\s*\\d+ - (\\S+) \\(",
+      "timeout": 7200,
+      "referenceFailures": {}
+    },
+    {
+      "name": "duckdb",
+      "url": "https://github.com/duckdb/duckdb/archive/refs/tags/v1.5.6.tar.gz",
+      "sha256": "1fadcbe9e69e1470f9093b6bcde08daf477d729c449e59a807f45c346622099b",
+      "notes": "DuckDB 1.5.6 (RFC 0039, section 9), an analytical database in C++: vectors of values in buffers from its own buffer manager, an arena allocator per query, a catalog of shared pointers, a parser (the bundled libpg_query), a planner and optimizer, a vectorized and parallel executor, storage with a write-ahead log, and the core_functions and parquet extensions linked in. Built with its CMake Release build (unity sources) and the unittest runner, which runs the fast tests (the sqllogictest files but those named .test_slow, and the C++ tests). The build first fixes a true bug of DuckDB's inequality join (RFC 0039, amendment 17): IEJoinGlobalSourceState reads completed[size_t(stage)] once the stage is DONE, one element past a std::array of DONE elements (physical_iejoin.cpp:279), which the C++ library's check stops on Linux, the whole suite with it, when the join's threads finish in that order; the array gains the element, which starts at zero as the others do. On Darwin the build first undefines the macOS 27 SDK's ERA macro (<xlocale.h>, which libc++ includes, now pulls in <_langinfo.h>) before DuckDB's DatePartSpecifier::ERA, which it otherwise breaks with either compiler.",
+      "build": [
+        "perl -0pi -e 's/(array<atomic<idx_t>, static_cast<size_t>\\(IEJoinSourceStage::DONE\\))> completed;/$1 + 1> completed;/ or die qq(IEJoin patch did not apply\\n)' src/execution/operator/join/physical_iejoin.cpp",
+        "cmake -S . -B out -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DBUILD_UNITTESTS=ON -DOVERRIDE_GIT_DESCRIBE=v1.5.6-0-g0000000000 > configure.log 2>&1",
+        "cmake --build out -j \"$JOBS\" > build.log 2>&1"
+      ],
+      "platforms": {
+        "darwin": {
+          "build": [
+            "perl -0pi -e 's/(array<atomic<idx_t>, static_cast<size_t>\\(IEJoinSourceStage::DONE\\))> completed;/$1 + 1> completed;/ or die qq(IEJoin patch did not apply\\n)' src/execution/operator/join/physical_iejoin.cpp",
+            "perl -0pi -e 's/(enum class DatePartSpecifier)/#ifdef ERA\\n#undef ERA\\n#endif\\n$1/' src/include/duckdb/common/enums/date_part_specifier.hpp",
+            "cmake -S . -B out -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DBUILD_UNITTESTS=ON -DOVERRIDE_GIT_DESCRIBE=v1.5.6-0-g0000000000 > configure.log 2>&1",
+            "cmake --build out -j \"$JOBS\" > build.log 2>&1"
+          ]
+        }
+      },
+      "test": "out/test/unittest > tests.log 2>&1; s=$?; grep -E ': FAILED:' tests.log | sort -u; tail -25 tests.log; [ $s -eq 0 ] || echo \"FAILED-TEST: unittest.exit_status_$s\"",
+      "failures": "^(?:FAILED-TEST: |\\S*?\\b)((?:test|extension|unittest)[/.](?:(?!\\.\\./)\\S)+?)(?::\\d+: FAILED:|$)",
+      "timeout": 10800,
+      "referenceFailures": {}
     }
   ]
 }

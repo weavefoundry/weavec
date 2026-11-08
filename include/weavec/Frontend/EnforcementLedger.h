@@ -9,7 +9,8 @@
 // RFC 0035 §9. The guard pass records each access it collected, before it
 // removes any guard: where it is, what it does, and whether it is guarded,
 // proven (its guard removed by a rule of §6) or unguarded. `weavec-cc`
-// writes the rows of a unit as JSON (`weavec-ledger` version 3) under
+// writes the rows of a unit as JSON (`weavec-ledger` version 4: RFC 0039
+// §8 adds each row's `display`, its function's demangled name) under
 // `-fweavec-ledger` and prints the summary line under `-fweavec-summary`.
 //
 //===----------------------------------------------------------------------===//
@@ -26,11 +27,12 @@
 namespace weavec::frontend {
 
 /// The version of the `weavec-ledger` JSON this writes.
-inline constexpr unsigned EnforcementLedgerVersion = 3;
+inline constexpr unsigned EnforcementLedgerVersion = 4;
 
 /// What the pass decided for one access.
 struct LedgerRow {
   enum class Outcome : std::uint8_t { Guarded, Proven, Unguarded };
+  /// The function's symbol (a C++ function's mangled name).
   std::string function;
   std::string file;
   unsigned line = 0;

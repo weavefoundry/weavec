@@ -1,9 +1,11 @@
 # -*- Python -*-
 """lit configuration for WeaveC's integration tests.
 
-Test files are C sources with `// RUN:` lines. Available substitutions:
+Test files are C and C++ sources with `// RUN:` lines. Available
+substitutions:
 
   %weavec_cc      the weavec-cc compiler driver
+  %weavec_cxx     weavec-c++, its C++ driver (RFC 0039)
   %resource_dir   directory containing weavec.h
   FileCheck, not, count   LLVM test utilities
 """
@@ -15,7 +17,7 @@ import lit.formats
 
 config.name = "WeaveC"
 config.test_format = lit.formats.ShTest(execute_external=False)
-config.suffixes = [".c"]
+config.suffixes = [".c", ".cpp"]
 # `cases/` and `corpus/` are run by scripts/run-cases.py and
 # scripts/corpus-gate.py (RFC 0030 sections 15 and 17), not lit.
 config.excludes = ["Inputs", "cases", "corpus", "CMakeLists.txt", "README.md"]
@@ -29,6 +31,7 @@ weavec_cc = os.path.join(config.weavec_tools_dir, "weavec-cc")
 if not os.path.exists(weavec_cc):
     lit_config.fatal(f"weavec-cc binary not found at {weavec_cc}; build it first")
 
+config.substitutions.append(("%weavec_cxx", os.path.join(config.weavec_tools_dir, "weavec-c++")))
 config.substitutions.append(("%weavec_cc", weavec_cc))
 # RFC 0038: the runtime's library, the extension of shared libraries, and
 # the reference compiler's flags for one.

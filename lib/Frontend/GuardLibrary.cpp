@@ -24,7 +24,9 @@
 // RFC 0037 §10: a string or formatting call into an array field of a
 // struct is limited to the field. RFC 0038 §2: a search (`strchr`,
 // `strcspn`, `memchr`) is guarded after the call, over what it read up to
-// where its result says it stopped.
+// where its result says it stopped. RFC 0039 §2: a call that can unwind
+// (an `invoke`) is guarded as a call, and a check after it goes on its
+// normal path.
 //
 //===----------------------------------------------------------------------===//
 
@@ -42,21 +44,13 @@
 
 namespace weavec::frontend::guard {
 
-/// The C name of a callee: Darwin's `\01_name$VARIANT` asm labels and the
-/// variant suffixes dropped.
-static llvm::StringRef cName(llvm::StringRef name) {
-  if (name.consume_front("\1"))
-    name.consume_front("_");
-  return name.split('$').first;
-}
-
 namespace {
 
 /// One call being guarded.
 struct LibraryCall {
   ModuleContext &context;
   llvm::Function &function;
-  llvm::CallInst &call;
+  llvm::CallBase &call;
   const core::LibraryMatch &match;
   llvm::StringRef name;
 
@@ -366,11 +360,24 @@ void LibraryCall::guardScanStart(unsigned index) const {
   guardBytes(pointer, bytes, false);
 }
 
+/// RFC 0039 §2: where a check after `call` goes: the next instruction, or
+/// for an `invoke` the start of its normal destination, whose edge is split
+/// first when the destination has other predecessors. Never the unwind path.
+static llvm::Instruction *afterCall(llvm::CallBase &call) {
+  auto *invoke = llvm::dyn_cast<llvm::InvokeInst>(&call);
+  if (invoke == nullptr)
+    return call.getNextNode();
+  llvm::BasicBlock *normal = invoke->getNormalDest();
+  if (normal->getSinglePredecessor() == nullptr)
+    normal = llvm::SplitEdge(invoke->getParent(), normal);
+  return &*normal->getFirstInsertionPt();
+}
+
 void LibraryCall::guardScan(unsigned index) const {
   const core::LibraryEntry &entry = *match.entry;
   const core::LibraryParam &param = entry.params[index];
   llvm::Value *pointer = argument(index);
-  llvm::Instruction *after = call.getNextNode();
+  llvm::Instruction *after = afterCall(call);
   if (after == nullptr)
     return;
   const std::uint64_t element = entry.wide ? wcharSize() : 1;
@@ -712,7 +719,13 @@ static bool redirect(LibraryCall &call, bool late) {
       entry.wrapper->name,
       llvm::FunctionType::get(call.call.getType(), types, entry.variadic));
   llvm::IRBuilder<> builder(&call.call);
-  llvm::CallInst *replacement = builder.CreateCall(callee, arguments);
+  // RFC 0039 §2: an `invoke` stays one (the wrappers do not throw).
+  llvm::CallBase *replacement = nullptr;
+  if (const auto *invoke = llvm::dyn_cast<llvm::InvokeInst>(&call.call))
+    replacement = builder.CreateInvoke(callee, invoke->getNormalDest(),
+                                       invoke->getUnwindDest(), arguments);
+  else
+    replacement = builder.CreateCall(callee, arguments);
   replacement->setDebugLoc(call.call.getDebugLoc());
   call.call.replaceAllUsesWith(replacement);
   const unsigned row = call.record("checked-call");
@@ -751,22 +764,33 @@ static bool onlyReads(const core::LibraryEntry &entry) {
          });
 }
 
+/// Whether a call of `callee` is a call of the library: a declaration, or
+/// (RFC 0039 §7) a C++ library function the headers define in the unit,
+/// `available_externally` (an extern template's inline body) or
+/// `linkonce_odr` (libstdc++'s members in C++20), whose row then guards the
+/// call as well as its body's accesses.
+static bool callsLibrary(const llvm::Function &callee) {
+  return callee.isDeclarationForLinker() ||
+         (callee.getName().starts_with("_Z") && callee.hasLinkOnceODRLinkage());
+}
+
 void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
                        bool late) {
   const core::LibrarySpec &spec = core::LibrarySpec::shipped();
-  std::vector<llvm::CallInst *> calls;
+  std::vector<llvm::CallBase *> calls;
   for (llvm::BasicBlock &block : function)
     for (llvm::Instruction &instruction : block)
-      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction))
+      if (auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
+          call != nullptr && !llvm::isa<llvm::CallBrInst>(call))
         if (const llvm::Function *callee = call->getCalledFunction();
-            callee && ((callee->isDeclaration() ||
+            callee && ((callsLibrary(*callee) ||
                         (!late && callee->hasFnAttribute(
                                       llvm::Attribute::AlwaysInline))) &&
                        !callee->isIntrinsic() &&
                        !ModuleContext::isRuntimeName(callee->getName())))
           calls.push_back(call);
-  for (llvm::CallInst *call : calls) {
-    llvm::StringRef name = cName(call->getCalledFunction()->getName());
+  for (llvm::CallBase *call : calls) {
+    llvm::StringRef name = libraryName(call->getCalledFunction()->getName());
     // Clang names a builtin's inline definition so (glibc's fortified
     // forms).
     name.consume_back(".inline");
@@ -783,7 +807,7 @@ void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
                         .name = match->entry->name};
     // RFC 0037 §10: a fortified inline definition is checked against the
     // field at its call; its body's calls are guarded as any others.
-    if (!call->getCalledFunction()->isDeclaration()) {
+    if (!callsLibrary(*call->getCalledFunction())) {
       library.checkField();
       continue;
     }
@@ -817,7 +841,7 @@ void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
     // A call that computes its value from strings (`strlen`): the string
     // guards compute it, and the string is scanned once.
     if (match->alias == nullptr && computesItsValue(*match->entry) &&
-        call->getType()->isIntegerTy(64)) {
+        llvm::isa<llvm::CallInst>(call) && call->getType()->isIntegerTy(64)) {
       llvm::IRBuilder<> builder(call);
       if (llvm::Value *value = library.evaluate(*match->entry->value, builder);
           value != nullptr && value->getType() == call->getType()) {
@@ -847,7 +871,7 @@ void thunkLibraryAddresses(ModuleContext &module, llvm::Module &ir) {
     if (!function.isDeclaration() || function.isIntrinsic() ||
         function.isVarArg() || ModuleContext::isRuntimeName(function.getName()))
       continue;
-    const llvm::StringRef name = cName(function.getName());
+    const llvm::StringRef name = libraryName(function.getName());
     const std::optional<core::LibraryMatch> match =
         spec.lookup(name, function.arg_size());
     if (!match || match->entry == nullptr || !guardsAnArgument(*match->entry))

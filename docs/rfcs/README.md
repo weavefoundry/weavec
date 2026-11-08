@@ -88,5 +88,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0036](0036-deterministic-heap-reuse.md) | Deterministic heap reuse: reuse after a sweep, the analysis deleted | Implemented (amended by [0037](0037-complete-sweep-and-colors.md)) |
 | [0037](0037-complete-sweep-and-colors.md) | A complete sweep and object colors | Implemented (amended by [0038](0038-drop-in-everywhere.md)) |
 | [0038](0038-drop-in-everywhere.md) | Drop-in everywhere | Accepted |
+| [0039](0039-cxx.md) | C++ | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

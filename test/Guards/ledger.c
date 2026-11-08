@@ -6,7 +6,7 @@
 
 // SUMMARY: weavec: {{.*}}ledger.c: 2 accesses: 1 proven, 1 guarded, 0 unguarded
 // CHECK-DAG: "schema": "weavec-ledger"
-// CHECK-DAG: "version": 3
+// CHECK-DAG: "version": 4
 // CHECK-DAG: "checks": "trap"
 // CHECK-DAG: "accesses": 2
 // CHECK-DAG: "outcome": "guarded"
@@ -17,3 +17,6 @@ int get(const int *p, int i) { return p[i]; }
 int table[8];
 int first(void) { return table[2]; }
 int nth(unsigned i) { return table[i & 7]; }
+// RFC 0039 §8: version 4 names each row's function demangled too (a C
+// function's name is its own).
+// CHECK-DAG: "display": "get"

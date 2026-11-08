@@ -2,7 +2,7 @@
 
 # WeaveC
 
-**Memory safety for existing C code: every access checked at run time, freed memory never handed back while a pointer to it remains.**
+**Memory safety for existing C and C++ code: every access checked at run time, freed memory never handed back while a pointer to it remains.**
 
 [![CI](https://github.com/weavefoundry/weavec/actions/workflows/ci.yml/badge.svg)](https://github.com/weavefoundry/weavec/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/weavefoundry/weavec?include_prereleases&sort=semver)](https://github.com/weavefoundry/weavec/releases)
@@ -12,20 +12,21 @@
 
 </div>
 
-WeaveC is a drop-in C compiler, `weavec-cc`, that makes the C code you already have stop at its first bad memory access. Before a load, a store or a C library call touches memory, a few inline instructions ask a small runtime linked into the program whether those bytes belong to a live object. The first access that touches a byte that does not stops the program with a report that names the access.
+WeaveC is a drop-in C and C++ compiler, `weavec-cc` and `weavec-c++`, that makes the code you already have stop at its first bad memory access. Before a load, a store or a C library call touches memory, a few inline instructions ask a small runtime linked into the program whether those bytes belong to a live object. The first access that touches a byte that does not stops the program with a report that names the access.
 
 - **Every access is guarded.** An access past a heap block, a local or a global, a use of a local after its scope, an index past an array's declared bound and a bad `free` stop the program. A guard is removed only where a simple local rule proves it redundant.
 - **Freed memory is reused only after a sweep.** A released heap block waits until a sweep of the program's stacks, registers, writable data and live heap finds no pointer to it. A use after free or a double free traps, however much the program allocated since.
 - **Fortified sizes are kept.** A fortified library call never writes more than the size it was given: with Darwin's headers, a `strcpy` that would run from an 8-byte field into the next one traps.
+- **C++ too.** `new` and `delete` are checked against each other, a `std::vector`'s storage past its elements is not addressable, the C++ library's own bounds checks report through WeaveC, and an exception leaves the live frames' redzones in place.
 
 WeaveC is built on Clang and LLVM, which provide parsing, code generation and platform support. WeaveC adds LLVM passes that guard the code, and a runtime in C.
 
 > [!NOTE]
-> WeaveC is early, v0.x software: flags, report formats and the ledger can change between minor versions. The design is [RFC 0038, *Drop-in everywhere*](docs/rfcs/0038-drop-in-everywhere.md), which makes one shared runtime serve every image on every platform and ships self-contained toolchains, over the sweep and colors of [RFC 0037](docs/rfcs/0037-complete-sweep-and-colors.md), the reuse after a sweep of [RFC 0036](docs/rfcs/0036-deterministic-heap-reuse.md) and the guards of [RFC 0035](docs/rfcs/0035-guard-by-default.md). The [roadmap](docs/roadmap.md) tracks progress.
+> WeaveC is early, v0.x software: flags, report formats and the ledger can change between minor versions. The design is [RFC 0039, *C++*](docs/rfcs/0039-cxx.md), which guards C++ as C, over [RFC 0038, *Drop-in everywhere*](docs/rfcs/0038-drop-in-everywhere.md), which makes one shared runtime serve every image on every platform and ships self-contained toolchains, the sweep and colors of [RFC 0037](docs/rfcs/0037-complete-sweep-and-colors.md), the reuse after a sweep of [RFC 0036](docs/rfcs/0036-deterministic-heap-reuse.md) and the guards of [RFC 0035](docs/rfcs/0035-guard-by-default.md). The [roadmap](docs/roadmap.md) tracks progress.
 
 ## Highlights
 
-- **A drop-in compiler.** `weavec-cc` is Clang's driver with WeaveC inside: point a build at it with `CC=weavec-cc` and it compiles as `clang` would. A correct program built with the default flags compiles, links and runs as it does with Clang, apart from run time; a false trap is a WeaveC bug.
+- **A drop-in compiler.** `weavec-cc` is Clang's driver with WeaveC inside: point a build at it with `CC=weavec-cc CXX=weavec-c++` and it compiles as `clang` and `clang++` would. A correct program built with the default flags compiles, links and runs as it does with Clang, apart from run time; a false trap is a WeaveC bug.
 - **Nothing to annotate.** Existing code builds unchanged. The only annotation, `WEAVEC_UNSAFE` from `weavec.h`, leaves a function or a block unguarded, for code that reads past an object on purpose.
 - **Precise reports.** A failed guard prints the kind of failure, the source location and the address, and, for the heap, where the address lies relative to its block.
 - **No ABI changes.** Pointers keep their representation and calling conventions are unchanged; objects from other compilers link in.
@@ -78,14 +79,14 @@ Four LLVM passes then guard the code. The first puts a guard before every load, 
 
 ## Using it as the compiler
 
-Point a build at `weavec-cc`:
+Point a build at `weavec-cc` and `weavec-c++`:
 
 ```sh
-make CC=weavec-cc
-cmake -S . -B build -DCMAKE_C_COMPILER=weavec-cc
+make CC=weavec-cc CXX=weavec-c++
+cmake -S . -B build -DCMAKE_C_COMPILER=weavec-cc -DCMAKE_CXX_COMPILER=weavec-c++
 ```
 
-Every link, of a program or a shared library, adds the runtime, one shared library (`libweavec_rt.so.<abi>`, `libweavec_rt.dylib`) that every image `weavec-cc` links depends on, so one runtime serves the whole process whatever its libraries' version scripts or link order, and its allocator also serves the C library's own allocations (`strdup`, `getline`, `asprintf`). A program loads it from the toolchain, or from where `-fweavec-rpath` says; a `-static` Linux program carries it. `weavec-cc` builds without the runtime, and without guards, under a sanitizer that replaces the allocator, with `-ffreestanding` or `-nostdlib`, and on targets other than 64-bit Darwin and Linux, and prints a note at the link. A program that defines `malloc` itself keeps its allocator, and its heap is untracked. On optimizing glibc builds `weavec-cc` adds `-D_FORTIFY_SOURCE=3` unless the command line chooses a level.
+Every link, of a program or a shared library, adds the runtime, one shared library (`libweavec_rt.so.<abi>`, `libweavec_rt.dylib`) that every image `weavec-cc` links depends on, so one runtime serves the whole process whatever its libraries' version scripts or link order, and its allocator also serves the C library's own allocations (`strdup`, `getline`, `asprintf`). A program loads it from the toolchain, or from where `-fweavec-rpath` says; a `-static` Linux program carries it. `weavec-cc` builds without the runtime, and without guards, under a sanitizer that replaces the allocator, with `-ffreestanding` or `-nostdlib`, and on targets other than 64-bit Darwin and Linux, and prints a note at the link. A program that defines `malloc` itself keeps its allocator, and its heap is untracked. On optimizing glibc builds `weavec-cc` adds `-D_FORTIFY_SOURCE=3` unless the command line chooses a level, and C++ compiles get the C++ library's bounds checks (libc++'s fast hardening mode, libstdc++'s assertions).
 
 `-fweavec-checks=` selects what a failed guard does:
 
@@ -114,14 +115,16 @@ Other useful flags and variables:
 
 ## What WeaveC guarantees
 
-For a program whose every unit is compiled by `weavec-cc` in an enforcing mode (`trap` or `verify`), with the runtime linked, every memory access outside a `WEAVEC_UNSAFE` region satisfies:
+For a program whose every unit is compiled by `weavec-cc` (or `weavec-c++`) in an enforcing mode (`trap` or `verify`), with the runtime linked, every memory access outside a `WEAVEC_UNSAFE` region satisfies:
 
 - **(A) Accesses.** A load, store, atomic operation or memory intrinsic executes only if every byte it touches is *addressable* when it runs, and so does each memory argument of a call to a function in the library table; otherwise the program traps first.
 - **(B) Bounds.** An index into an array whose bound its type declares (other than a trailing array of a struct) is within that bound, or the program traps.
-- **(R) Releases.** A release through the runtime's allocator releases null or the start of a live heap object, or the program stops.
+- **(R) Releases.** A release through the runtime's allocator releases null or the start of a live heap object allocated by the matching form (`malloc` for `free`, `new` for `delete`, `new[]` for `delete[]`), and a sized `delete` names the object's size, or the program stops.
+- **(K) Containers.** A byte of a `std::vector`'s or `std::deque`'s storage outside its elements is not addressable while the C++ library's code keeps its annotations.
 - **(T) Temporal.** A byte of a released heap block is not addressable until a sweep has found no pointer to the block. An access through a pointer the program held at the release traps, and so does a second release.
 - **(F) Fortified sizes.** A fortified library call writes no more than the object size it was given, or the program traps.
 - **(P) Poisoning.** A byte the program poisoned through ASan's interface is not addressable until it unpoisons it.
+- **(U) Use after return.** A local of a frame that returned, or that an exception unwound, is not addressable until another frame reuses its bytes.
 
 A byte is not addressable when it lies after a heap object in its slot, in a released block, in a redzone of a tracked local or global, in a local outside its scope or of a function that returned, or in the lowest 64 KiB. Each tracked object also carries one of 111 colors, and an access computed from a pointer traps when it lands in an object of another color, so an index that jumps over a redzone into a live neighbor stops; for objects that are not neighbors a collision is 1 in 111. So, deliberately, these pass: a jump into an object of the same color, from a pointer into the middle of a heap block, or through a pointer one function moved into another object and another function used; a use after return through a frame a later call reused; a pointer jump from one field of a struct into the next by arithmetic (a string or formatting call into a field is checked against it); an access through a pointer the program hid from the sweep (stored as a transformed integer, XOR-linked, held only by the kernel); accesses to memory the runtime does not track (other allocators that do not poison for ASan, `mmap`, string literals); and code that `weavec-cc` did not compile. The guarantee assumes that untracked memory is accessed correctly, that library functions access only what the library table says, that there are no data races between a guard and its access, and that the program does not write the runtime's shadow.
 
@@ -191,7 +194,7 @@ include/weavec/   Public C++ headers
 lib/              Implementations, mirroring include/ (lib/Core/LibrarySpec.txt is the library table)
 runtime/          The C runtime: the shadow memory, the arena allocator and its sweep, the guards'
                   slow paths, frames and globals, checked library calls, ASan's interface, reports
-tools/weavec-cc/  The drop-in compiler driver (Clang's driver with WeaveC inside)
+tools/weavec-cc/  The drop-in compiler driver (Clang's driver with WeaveC inside; weavec-c++ links to it)
 resources/        weavec.h, the C-facing header with WEAVEC_UNSAFE (installed to lib/weavec/include)
 unittests/        GoogleTest unit tests
 test/             lit + FileCheck integration tests (test/Guards pins the passes and the runtime)

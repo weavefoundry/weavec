@@ -41,16 +41,16 @@ def proc(returncode=0, stdout="", stderr="", timed_out=False, error=""):
     return gate.ProcResult("cmd", returncode, stdout, stderr, 0.1, timed_out=timed_out, error=error)
 
 
-def ledger_document(*summaries, version=3, rows=()):
+def ledger_document(*summaries, version=4, rows=()):
     return {"schema": "weavec-ledger", "version": version, "producer": {"name": "weavec-cc"},
             "units": [{"source": "a.c", "object": "a.o", "summary": s, "rows": list(rows)} for s in summaries]}
 
 
-def config(name="c", corpus_set="original", build=("make",), bench=False):
+def config(name="c", corpus_set="original", build=("make",), bench=False, language="c"):
     project = gate.Project(name="p", url="u", sha="0" * 40, support=[])
     return gate.Config(name=name, project=project, files=["a.c"], args=[], build=list(build), test=["./t"],
                        bench=gate.Bench(name=name, build=["b"], command="c", repeat=1) if bench else None,
-                       held_out=corpus_set != "original", set=corpus_set)
+                       held_out=corpus_set != "original", set=corpus_set, language=language)
 
 
 def report(kind="heap-use-after-free", file="a.c", line=3, col=5, proven=False):
@@ -94,6 +94,18 @@ class ParsingTest(unittest.TestCase):
         self.assertTrue(gate.fault_evidence(proc(139)))
         self.assertTrue(gate.fault_evidence(proc(1, stderr="sh: line 1: 7 Segmentation fault ./x")))
         self.assertFalse(gate.fault_evidence(proc(-5)))
+
+    def test_cxx_drivers(self):
+        # RFC 0039, section 9: every build gets CXX beside CC.
+        for cc, cxx in (("weavec-cc", "weavec-c++"), ("/x/bin/weavec-cc", "/x/bin/weavec-c++"),
+                        ("/opt/llvm/bin/clang", "/opt/llvm/bin/clang++"), ("clang-21", "clang++-21"),
+                        ("cc", "c++"), ("/usr/bin/gcc", "/usr/bin/g++"), ("/w/bin/asan", "/w/bin/asan++")):
+            self.assertEqual(gate.cxx_of(cc), cxx)
+        with tempfile.TemporaryDirectory() as directory:
+            wrapper = gate.write_wrapper(Path(directory) / "bin" / "cc", "/x/weavec-cc", ["-fweavec-checks=report"])
+            twin = Path(directory) / "bin" / "c++"
+            self.assertIn("/x/weavec-c++ -fweavec-checks=report", twin.read_text())
+            self.assertEqual(gate.cxx_of(wrapper), str(twin))
 
     def test_paths(self):
         self.assertEqual(gate.normalize_path("../../src/./x.c"), "src/x.c")
@@ -151,7 +163,7 @@ class LedgerTest(unittest.TestCase):
             for data, message in ((ledger_document({"accesses": 1}, version=2), "version 2"),
                                   ({"schema": "other"}, "not a weavec-ledger"),
                                   (ledger_document(), "no units"),
-                                  ({"schema": "weavec-ledger", "version": 3, "units": [{}]}, "no summary")):
+                                  ({"schema": "weavec-ledger", "version": 4, "units": [{}]}, "no summary")):
                 with self.assertRaisesRegex(ValueError, message):
                     gate.read_ledger(self.write(directory, data))
             with self.assertRaisesRegex(ValueError, "x.ledger.json"):
@@ -238,6 +250,7 @@ class ManifestTest(unittest.TestCase):
             ({"name": "a", "compile": {"files": ["a.c"]}, "build": ["b"], "testTimeout": 0}, "testTimeout"),
             ({"name": "a", "compile": {"files": ["a.c"]}, "bench": {"name": "x", "build": ["b"]}},
              "bench needs build and command"),
+            ({"name": "a", "compile": {"files": ["a.c"]}, "language": "rust"}, "language must be one of"),
         ]
         for c, message in cases:
             with self.assertRaisesRegex(gate.GateError, message):
@@ -248,6 +261,22 @@ class ManifestTest(unittest.TestCase):
         bad_sha["projects"][0]["sha"] = "HEAD"
         with self.assertRaisesRegex(gate.GateError, "40 lowercase hex"):
             self.load(bad_sha)
+        uses = manifest_data({"name": "a", "compile": {"files": ["a.c"]}})
+        uses["projects"][0]["uses"] = ["nothing"]
+        with self.assertRaisesRegex(gate.GateError, "uses 'nothing', which is not another project"):
+            self.load(uses)
+
+    def test_languages_and_uses(self):
+        data = manifest_data({"name": "a", "compile": {"files": ["a.cc"]}, "language": "c++"},
+                             {"name": "b", "compile": {"files": ["b.c"]}})
+        data["projects"].append({"name": "data", "url": "u", "sha": "b" * 40, "support": [], "configs": []})
+        data["projects"][0].update(uses=["data"], submodules=True)
+        manifest = self.load(data)
+        self.assertEqual([c.language for c in manifest.configs], ["c++", "c"])
+        self.assertEqual(manifest.projects[0].uses, ["data"])
+        self.assertTrue(manifest.projects[0].submodules)
+        self.assertEqual(gate.driver_for("/x/weavec-cc", manifest.config("a")), "/x/weavec-c++")
+        self.assertEqual(gate.driver_for("/x/weavec-cc", manifest.config("b")), "/x/weavec-cc")
 
     def test_arguments(self):
         for argv, message in ((["--weavec-cc", "x"], "choose a mode"),
@@ -400,7 +429,8 @@ class PrerequisitesTest(unittest.TestCase):
 class ProgramsTest(unittest.TestCase):
     def test_repository_programs(self):
         programs = gate.load_programs(CORPUS / "programs.json")
-        self.assertEqual([p.name for p in programs], ["sqlite", "cpython", "postgresql", "git", "coreutils"])
+        self.assertEqual([p.name for p in programs], ["sqlite", "cpython", "postgresql", "git", "coreutils", "ninja", "cppcheck",
+                                                     "cmake", "duckdb"])
         self.assertEqual(programs[4].listed_failures("darwin"),
                          {"tests/sort/sort-debug-keys", "tests/sort/sort-h-thousands-sep",
                           "tests/touch/not-owner"})
@@ -685,6 +715,18 @@ class GateFunctionTest(unittest.TestCase):
         units["a.c"]["cpuSeconds"] = 2.0
         self.assertFalse(gate.build_time_gate([config("a")], entries, spec)[0])
         self.assertIsNone(gate.build_time_gate([config("a")], {}, spec)[0])
+        # RFC 0039 G8: C++ configs at cxx's limits, and their geometric mean.
+        spec["cxx"] = {"maxBuildRatio": 3.0, "maxGeometricMean": 2.0}
+        cxx = [config("x", "fresh39", language="c++"), config("y", "fresh39", language="c++")]
+        entries = {"x": {"buildCpuRatio": 2.5}, "y": {"buildCpuRatio": 1.5}}
+        ok, detail = gate.build_time_gate(cxx, entries, spec)
+        self.assertTrue(ok, detail)
+        self.assertEqual(detail["x"]["buildCpuRatio"]["limit"], 3.0)
+        self.assertAlmostEqual(detail["cxxGeometricMean"]["value"], 1.9365, places=3)
+        entries["y"]["buildCpuRatio"] = 1.7
+        self.assertFalse(gate.build_time_gate(cxx, entries, spec)[0])  # the mean is 2.06
+        entries = {"x": {"buildCpuRatio": 3.1}, "y": {"buildCpuRatio": 1.0}}
+        self.assertFalse(gate.build_time_gate(cxx, entries, spec)[0])
 
     def test_run_time(self):
         spec = {"sets": ["fresh35"], "maxOverhead": 2.0, "maxGeometricMean": 1.8,
@@ -716,6 +758,17 @@ class GateFunctionTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertFalse(detail["geometricMean"]["complete"])
         self.assertIsNone(gate.run_time_gate([lua], all_configs, {}, spec)[0])
+        # RFC 0039 G7: the C++ workloads' geometric mean, at most cxx's and below ASan's.
+        spec = {"cxx": {"maxGeometricMean": 2.5}}
+        cxx = [config("x", "fresh39", bench=True, language="c++"), config("y", "fresh39", bench=True, language="c++")]
+        entries = {"x": bench(2.0, 3.0), "y": bench(2.4, 3.0)}
+        ok, detail = gate.run_time_gate(cxx, cxx, entries, spec)
+        self.assertTrue(ok, detail)
+        self.assertAlmostEqual(detail["cxxGeometricMean"]["asan"], 3.0)
+        entries["y"] = bench(3.2, 3.0)
+        self.assertFalse(gate.run_time_gate(cxx, cxx, entries, spec)[0])  # 2.53 is over 2.5
+        entries = {"x": bench(2.0, 1.8), "y": bench(2.0, 2.0)}
+        self.assertFalse(gate.run_time_gate(cxx, cxx, entries, spec)[0])  # not below ASan's 1.9
 
     def test_verify(self):
         entries = {"a": {"builds": {"verify": {"reports": [report()]}}},
@@ -733,7 +786,7 @@ FAKE_CC = r'''#!PYTHON
 """A stand-in for weavec-cc (and, named fake-clang, for the reference compiler).
 
 -c writes an "object" that lists its source and, for weavec-cc with
--fweavec-ledger=, a version 3 ledger: one access per line, FAKE_PROVEN of
+-fweavec-ledger=, a version 4 ledger: one access per line, FAKE_PROVEN of
 them proven. Linking writes a shell script: the program. A source that
 contains FAKE_FAIL fails to compile with weavec-cc. A source line
 `REPORT kind` makes it report that guard at that line when FAKE_TRAP is set
@@ -744,13 +797,16 @@ only print the result.
 """
 import json, os, shlex, sys
 args = sys.argv[1:]
-reference = os.path.basename(sys.argv[0]) == "fake-clang"
+reference = os.path.basename(sys.argv[0]) in ("fake-clang", "fake-clang++")
+if os.environ.get("FAKE_DRIVER_LOG"):
+    with open(os.environ["FAKE_DRIVER_LOG"], "a") as log:
+        log.write(os.path.basename(sys.argv[0]) + " " + " ".join(a for a in sys.argv[1:] if a.endswith((".c", ".cc"))) + "\n")
 if args == ["--version"]:
     print("clang version fake" if reference else "weavec-cc version fake"); sys.exit(0)
 out = args[args.index("-o") + 1] if "-o" in args else "a.out"
 checks = next((a.split("=", 1)[1] for a in args if a.startswith("-fweavec-checks=")), "trap")
 ledger = next((a.split("=", 1)[1] for a in args if a.startswith("-fweavec-ledger=")), None)
-sources = [a for a in args if a.endswith(".c")]
+sources = [a for a in args if a.endswith((".c", ".cc"))]
 for obj in (a for a in args if a.endswith(".o") and a != out):
     sources += open(obj).read().split()
 sources = [os.path.abspath(s) if os.path.exists(s) else s for s in sources]
@@ -768,7 +824,7 @@ if "-c" in args:
         summary = {"accesses": lines, "proven": proven, "guarded": lines - proven, "unguarded": 0}
         rows = [{"file": sources[0], "line": 1, "column": 1, "function": "f", "operation": "load", "bytes": 4,
                  "outcome": "proven", "reason": "in-bounds"}] * proven
-        json.dump({"schema": "weavec-ledger", "version": 3, "units": [
+        json.dump({"schema": "weavec-ledger", "version": 4, "units": [
             {"source": sources[0], "object": out, "config": {"checks": checks}, "summary": summary,
              "rows": rows}]}, open(ledger, "w"))
     sys.exit(0)
@@ -813,6 +869,7 @@ class EndToEndTest(unittest.TestCase):
         (self.upstream / "a.c").write_text("int helper(int i) {\n    return i;\n}\n")
         (self.upstream / "b.c").write_text("int other(void) { return 1; }\nint another(void) { return 2; }\n")
         (self.upstream / "prog.c").write_text(PROGRAM)
+        (self.upstream / "d.cc").write_text("int d() { return 4; }\n")
         self.sha = self.commit()
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
@@ -822,12 +879,18 @@ class EndToEndTest(unittest.TestCase):
         self.clang.write_text(FAKE_CC.replace("#!PYTHON", f"#!{sys.executable}"))
         for tool in (self.weavec_cc, self.clang):
             tool.chmod(0o755)
+            # The C++ drivers beside them (RFC 0039, section 9).
+            twin = Path(gate.cxx_of(str(tool)))
+            twin.write_text(tool.read_text())
+            twin.chmod(0o755)
         self.manifest_data = manifest_data(
             {"name": "units", "compile": {"files": ["a.c", "b.c"], "args": ["-I."]},
              "build": ['"$CC" -c a.c -o a.o', '"$CC" prog.c a.o -o prog'], "test": ["./prog"],
              "bench": {"name": "b", "build": ['"$CC" b.c -o benchprog'], "command": "./benchprog", "repeat": 2}},
             {"name": "glob", "compile": {"files": ["*.c"]}},
             {"name": "held", "heldOut": True, "set": "fresh35", "compile": {"files": ["b.c"]}},
+            {"name": "cxx", "heldOut": True, "set": "fresh39", "language": "c++", "compile": {"files": ["d.cc"]},
+             "build": ['"$CXX" -c d.cc -o d.o', '"$CC" -c a.c -o a.o', '"$CXX" prog.c a.o -o prog'], "test": ["./prog"]},
             gates={"buildTime": {"maxBuildRatio": 1000}})
         self.manifest_data["projects"][0].update(url=str(self.upstream), sha=self.sha)
         self.manifest = self.root / "manifest.json"
@@ -919,13 +982,14 @@ class EndToEndTest(unittest.TestCase):
         status, output = self.run_gate("--quick", "--held-out", env={"FAKE_PROVEN": "0"})
         self.assertEqual(status, 0, output)
         self.assertIn("held: not recorded", output)
-        self.assertEqual(self.results()["sets"], {"original": ["glob", "units"], "fresh35": ["held"]})
+        self.assertEqual(self.results()["sets"], {"original": ["glob", "units"], "fresh35": ["held"],
+                                                   "fresh39": ["cxx"]})
 
     def test_a_tool_failure_is_not_recorded(self):
         (self.root / "bin" / "fake-weavec-cc").write_text(f"#!{sys.executable}\nimport sys; sys.exit(3)\n")
         status, output = self.run_gate("--quick", "--update")
         self.assertEqual(status, 2, output)  # the probe sees it first
-        self.assertIn("does not write a weavec-ledger version 3 ledger", output)
+        self.assertIn("does not write a weavec-ledger version 4 ledger", output)
         self.assertFalse(self.expected.exists())
 
     def test_a_failed_compile_is_not_recorded(self):
@@ -970,6 +1034,22 @@ class EndToEndTest(unittest.TestCase):
         status, output = self.run_gate("--full", "--only", "units", "--no-asan", env={"FAKE_TRAP": "1"})
         self.assertEqual(status, 0, output)
         self.assertIn("trapped only at guard failures triaged as true bugs", output)
+
+    def test_cxx(self):
+        log = self.root / "drivers.log"
+        status, output = self.run_gate("--full", "--only", "cxx", "--no-asan", env={"FAKE_DRIVER_LOG": str(log)})
+        self.assertEqual(status, 0, output)
+        drivers = log.read_text().splitlines()
+        # --quick compiles the C++ config's file with weavec-c++, and the reference clang++ times it.
+        checkout = (self.root / "work" / "proj").resolve()
+        self.assertIn(f"fake-weavec-c++ {checkout / 'd.cc'}", drivers)
+        self.assertIn(f"fake-clang++ {checkout / 'd.cc'}", drivers)
+        # The builds: CXX and CC, through the wrappers, in trap and report mode and with the reference compilers.
+        self.assertEqual(sum(d == "fake-weavec-c++ d.cc" for d in drivers), 2)
+        self.assertEqual(sum(d == "fake-weavec-cc a.c" for d in drivers), 2)
+        self.assertIn("fake-clang++ d.cc", drivers)
+        self.assertIn("fake-clang a.c", drivers)
+        self.assertTrue(self.results()["configs"]["cxx"]["builds"]["trap"]["testsPassed"])
 
     def test_verify(self):
         status, output = self.run_gate("--full", "--only", "units", "--checks", "verify", "--no-asan")

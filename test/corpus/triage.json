@@ -50,6 +50,22 @@
       "kind": "global-buffer-overflow",
       "verdict": "project-bug",
       "note": "RFC 0038: the TLS test helper (tests/src/test_helpers/ssl_helpers.c at c765c831) passes the EC client certificate's DER buffer with mbedtls_test_cli_crt_ec_len, the length of its PEM form, so mbedtls_x509_crt_parse reads buf[buflen - 1] 722 bytes past the DER array, in the next global. ASan, which leaves no redzone between those globals, passes all 886 tests of the suite."
+    },
+    {
+      "config": "cmake",
+      "file": "testProcess.c",
+      "line": 142,
+      "kind": "null-dereference",
+      "verdict": "project-bug",
+      "note": "RFC 0039, the programs tier: kwsys's testProcess test 3 writes through a null pointer on purpose (*invalidAddress = 0, 'Provoke deliberate crash'), for kwsys.testProcess-3, which checks that the parent sees its child die of it."
+    },
+    {
+      "config": "fmt",
+      "file": "include/fmt/ostream.h",
+      "line": 62,
+      "kind": "null-dereference",
+      "verdict": "project-bug",
+      "note": "RFC 0039, section 7: test/ostream-test.cc's write_to_ostream_max_size hands fmt::detail::write_buffer a buffer whose data is a null pointer and whose size is SIZE_MAX, so write_buffer calls std::ostream::write(nullptr, PTRDIFF_MAX). write obtains its characters from the array s points to ([ostream.unformatted]), which here is none; the test passes with the reference compiler and ASan only because its mock streambuf overrides xsputn and reads nothing."
     }
   ]
 }

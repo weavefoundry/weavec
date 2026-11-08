@@ -16,6 +16,12 @@ WeaveC installed.
 | ---- | --------- | ------- |
 | `WEAVEC_UNSAFE void f(…) { … }` | before a function definition | The function's body is an *unsafe region*. |
 | `WEAVEC_UNSAFE { … }` | before a compound statement | The block is an unsafe region. |
+| `struct S { WEAVEC_UNSAFE int f(…) { … } };` | before a member function (C++) | The member's body is an unsafe region. |
+
+In C++ ([RFC 0039](rfcs/0039-cxx.md) §8) a function in a namespace or a
+class takes the annotation as a function does; a template defined inside an
+unsafe region is unsafe in every instantiation, and a lambda's body inside
+an unsafe block is in the block.
 
 In an unsafe region `weavec-cc` does not guard memory accesses and does not
 check array indexes ([RFC 0035](rfcs/0035-guard-by-default.md) §2.6,

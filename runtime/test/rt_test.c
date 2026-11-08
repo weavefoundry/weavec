@@ -1212,12 +1212,172 @@ static void testUnpoisonStack(void) {
   CHECK(addressable((void *)poisoned, 64));
 }
 
+/*===-- C++ (RFC 0039) -----------------------------------------------------===*/
+
+/* Section 4 through the runtime's own entry points (on Darwin the archive
+ * this test links has no operator new: the shared library's is the one). */
+static void *formBlock(unsigned form, size_t size) {
+  return opaque(weavecRtAllocForm(size, 0, form));
+}
+static void newByFree(void) { free(formBlock(WeavecRtFormNew, 32)); }
+static void arrayByDelete(void) {
+  weavecRtReleaseForm(formBlock(WeavecRtFormNewArray, 32), WeavecRtFormNew, SIZE_MAX, NULL);
+}
+static void mallocByDelete(void) {
+  weavecRtReleaseForm(opaque(malloc(32)), WeavecRtFormNew, SIZE_MAX, NULL);
+}
+static void newByRealloc(void) {
+  (void)opaque(realloc(formBlock(WeavecRtFormNewArray, 32), 64));
+}
+static void hugeArrayByDelete(void) {
+  weavecRtReleaseForm(formBlock(WeavecRtFormNewArray, (size_t)300 << 20),
+                      WeavecRtFormNew, SIZE_MAX, NULL);
+}
+static void sizedWrongly(void) {
+  weavecRtReleaseForm(formBlock(WeavecRtFormNew, 48), WeavecRtFormNew, 16, NULL);
+}
+
+static void testNewDeleteForms(void) {
+  char line[256];
+  void *p = formBlock(WeavecRtFormNew, 24);
+  CHECK(inArena(p) && __weavec_rt_size(p) == 24);
+  weavecRtReleaseForm(p, WeavecRtFormNew, SIZE_MAX, NULL);
+  weavecRtReleaseForm(formBlock(WeavecRtFormNewArray, 40),
+                      WeavecRtFormNewArray, SIZE_MAX, NULL);
+  weavecRtReleaseForm(formBlock(WeavecRtFormNew, 40), WeavecRtFormAny, SIZE_MAX, NULL);
+  p = formBlock(WeavecRtFormMalloc, 8);
+  weavecRtSetForm(p, WeavecRtFormNew);
+  weavecRtReleaseForm(p, WeavecRtFormNew, SIZE_MAX, NULL);
+  p = formBlock(WeavecRtFormNewArray, (size_t)300 << 20);
+  CHECK(p != NULL && !inArena(p));
+  weavecRtReleaseForm(p, WeavecRtFormNewArray, (size_t)300 << 20, NULL);
+  CHECK(trapsIn(newByFree));
+  CHECK(trapsIn(arrayByDelete));
+  CHECK(trapsIn(mallocByDelete));
+  CHECK(trapsIn(newByRealloc));
+  CHECK(trapsIn(hugeArrayByDelete));
+  firstLine(arrayByDelete, line, sizeof line);
+  CHECK(strstr(line, ": allocated by operator new[] and released by "
+                     "operator delete\n") != NULL);
+}
+
+static void testSizedDelete(void) {
+  char line[256];
+  weavecRtReleaseForm(formBlock(WeavecRtFormNew, 48), WeavecRtFormNew, 48, NULL);
+  CHECK(trapsIn(sizedWrongly));
+  firstLine(sizedWrongly, line, sizeof line);
+  CHECK(strstr(line, ": released by operator delete with size 16 for a "
+                     "48-byte object\n") != NULL);
+}
+
+void __sanitizer_annotate_contiguous_container(const void *begin,
+                                               const void *end,
+                                               const void *oldEnd,
+                                               const void *newEnd);
+void __sanitizer_annotate_double_ended_contiguous_container(
+    const void *begin, const void *end, const void *oldBegin,
+    const void *oldEnd, const void *newBegin, const void *newEnd);
+int __sanitizer_verify_contiguous_container(const void *begin,
+                                            const void *mid, const void *end);
+int __sanitizer_verify_double_ended_contiguous_container(
+    const void *begin, const void *liveBegin, const void *liveEnd,
+    const void *end);
+
+static void testContainerAnnotations(void) {
+  char *p = (char *)opaque(malloc(64));
+  char *odd = (char *)opaque(malloc(60));
+  char stack[64];
+  __sanitizer_annotate_contiguous_container(p, p + 64, p + 64, p + 4);
+  CHECK(addressable(p, 4) && !addressable(p + 4, 1));
+  CHECK(shadowAt(p + 16) == WeavecRtShadowContainer);
+  CHECK(__sanitizer_verify_contiguous_container(p, p + 4, p + 64));
+  CHECK(!__sanitizer_verify_contiguous_container(p, p + 20, p + 64));
+  __sanitizer_annotate_contiguous_container(p, p + 64, p + 4, p + 40);
+  CHECK(addressable(p, 40) && !addressable(p + 40, 1));
+  __sanitizer_annotate_contiguous_container(p, p + 64, p + 40, p + 64);
+  CHECK(addressable(p, 64));
+  free(p);
+  CHECK(shadowAt(p) == WeavecRtShadowHeapFreed);
+  /* Storage that ends inside a granule the block ends in too. */
+  __sanitizer_annotate_contiguous_container(odd, odd + 60, odd + 60, odd);
+  CHECK(!addressable(odd + 48, 1));
+  __sanitizer_annotate_contiguous_container(odd, odd + 60, odd, odd + 60);
+  CHECK(addressable(odd, 60) && !addressable(odd + 60, 1));
+  free(odd);
+  /* Outside the heap, nothing. */
+  __sanitizer_annotate_contiguous_container(stack, stack + 64, stack + 64,
+                                            stack);
+  CHECK(addressable(stack, 64));
+}
+
+static void testDoubleEndedAnnotations(void) {
+  char *p = (char *)opaque(malloc(128));
+  __sanitizer_annotate_double_ended_contiguous_container(
+      p, p + 128, p, p + 128, p + 32, p + 80);
+  CHECK(!addressable(p, 1) && !addressable(p + 16, 16));
+  CHECK(addressable(p + 32, 48) && !addressable(p + 80, 1));
+  CHECK(__sanitizer_verify_double_ended_contiguous_container(p, p + 32, p + 80,
+                                                             p + 128));
+  /* A front that splits a granule leaves it addressable. */
+  __sanitizer_annotate_double_ended_contiguous_container(
+      p, p + 128, p + 32, p + 80, p + 40, p + 80);
+  CHECK(addressable(p + 32, 48));
+  __sanitizer_annotate_double_ended_contiguous_container(
+      p, p + 128, p + 40, p + 80, p, p + 128);
+  CHECK(addressable(p, 128));
+  free(p);
+}
+
+static uintptr_t unwoundAt;
+
+static __attribute__((noinline)) void raiseHere(void) {
+  unsigned char frame[64] __attribute__((aligned(16)));
+  unwoundAt = (uintptr_t)opaque(frame);
+  weavecRtShadowSet(unwoundAt, 64, WeavecRtShadowStackMid);
+  weavecRtRaising((uintptr_t)__builtin_frame_address(0) - 256);
+}
+
+static __attribute__((noinline)) void throwThrough(void) {
+  unsigned char padding[256];
+  (void)opaque(padding);
+  raiseHere();
+}
+
+static void testLandedMarksUnwound(void) {
+  throwThrough();
+  /* A landing pad in this frame: what the throw left below it returned. */
+  __weavec_rt_landed();
+  CHECK(shadowAt((void *)unwoundAt) == WeavecRtShadowReturned);
+  CHECK(shadowAt((void *)(unwoundAt + 48)) == WeavecRtShadowReturned);
+  /* Caught: nothing more is marked until the next throw. */
+  weavecRtCaught((uintptr_t)__builtin_frame_address(0));
+  weavecRtShadowClear(unwoundAt, unwoundAt + 64);
+  __weavec_rt_landed();
+  CHECK(shadowAt((void *)unwoundAt) == WeavecRtShadowAddressable);
+}
+
 /*===-- ASan's interface (RFC 0036 section 5) ------------------------------===*/
 
 void __asan_poison_memory_region(const volatile void *address, size_t size);
 void __asan_unpoison_memory_region(const volatile void *address, size_t size);
 int __asan_address_is_poisoned(const volatile void *address);
 void *__asan_region_is_poisoned(void *address, size_t size);
+
+/* RFC 0039, amendment 16: an access at a root in memory the runtime does
+ * not own (another allocator's mapping), whose shadow held a color when the
+ * root's was read and holds none now, has no object to be held to. */
+static void testStaleRootColor(void) {
+  char *page = (char *)mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANON, -1, 0);
+  CHECK(page != MAP_FAILED);
+  CHECK(!inArena(page));
+  CHECK(shadowAt(page) == 0);
+  __weavec_rt_jump((uintptr_t)page, 8, (uintptr_t)page, weavecRtColor(24),
+                   &trapSite);
+  __weavec_rt_jump((uintptr_t)page + 64, 8, (uintptr_t)page,
+                   weavecRtColor(24), &trapSite);
+  munmap(page, 4096);
+}
 
 static void testAsanInterface(void) {
   char *pool = (char *)opaque(malloc(256));
@@ -1342,8 +1502,11 @@ static void testThreads(void) {
 
 static void *releaseAndExit(void *argument) {
   /* The block waits in this thread's cache (RFC 0037 section 2.1) until
-   * the thread exits. */
+   * the thread exits. The thread clears its own stack too: glibc keeps a
+   * joined thread's stack mapped for the next thread, and the sweep scans
+   * it, so a copy the release left there would keep the block. */
   *(volatile uintptr_t *)argument = releasedBlock(7700);
+  scrubStack();
   return NULL;
 }
 
@@ -1447,6 +1610,12 @@ static const struct {
     {"allocas", testAllocas},
     {"unpoison-stack", testUnpoisonStack},
     {"asan-interface", testAsanInterface},
+    {"stale-root-color", testStaleRootColor},
+    {"new-delete-forms", testNewDeleteForms},
+    {"sized-delete", testSizedDelete},
+    {"container-annotations", testContainerAnnotations},
+    {"double-ended-annotations", testDoubleEndedAnnotations},
+    {"landed-marks-unwound", testLandedMarksUnwound},
     {"parsers-and-limits", testParsersAndLimits},
     {"mappings", testMappings},
     {"array-bounds", testArrayBounds},

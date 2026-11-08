@@ -409,7 +409,8 @@ configureEnforcement(clang::CompilerInstance &compiler,
   registerGuardPasses(codegen, GuardOptions{.mode = guardMode(weavec.checks),
                                             .unsafe = std::move(unsafe),
                                             .ledger = ledger,
-                                            .colors = weavec.colors});
+                                            .colors = weavec.colors,
+                                            .cheapMarkers = lang.CPlusPlus});
   return ledger;
 }
 
@@ -522,13 +523,12 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
                                       args.data());
   }
 
-  // WeaveC guards C. Anything else is Clang's alone.
+  // WeaveC guards C and C++ (RFC 0039 §1). Anything else is Clang's alone.
   const clang::LangOptions &lang = compiler->getLangOpts();
   std::unique_ptr<clang::FrontendAction> inner = createAction(*compiler);
   if (!inner)
     return 1;
-  if (!weavec.enabled || lang.CPlusPlus || lang.ObjC || lang.OpenCL ||
-      lang.CUDA)
+  if (!weavec.enabled || lang.ObjC || lang.OpenCL || lang.CUDA)
     return compiler->ExecuteAction(*inner) ? 0 : 1;
   if (inner->usesPreprocessorOnly()) {
     // The same macros as the compile that follows (ccache's preprocessor
@@ -592,7 +592,30 @@ static void printVersion(llvm::raw_ostream &os) {
      << llvm::sys::getProcessTriple() << "\n";
 }
 
-/// The ledgers one invocation writes: one per compile job of a C source.
+/// Whether a source of `type` is guarded: C and C++ (RFC 0039 §1), not
+/// Objective-C, OpenCL or CUDA.
+static bool isGuardedType(clang::driver::types::ID type) {
+  using namespace clang::driver::types;
+  return type == TY_C || type == TY_PP_C || type == TY_CXX ||
+         type == TY_PP_CXX || type == TY_CXXModule || type == TY_PP_CXXModule;
+}
+
+/// Whether `arg` is a C++ source by its extension.
+static bool looksLikeCxxSource(llvm::StringRef arg) {
+  if (arg.starts_with("-"))
+    return false;
+  const llvm::StringRef ext = llvm::sys::path::extension(arg);
+  if (ext.empty())
+    return false;
+  const clang::driver::types::ID type =
+      clang::driver::types::lookupTypeForExtension(ext.drop_front());
+  return type != clang::driver::types::TY_INVALID &&
+         clang::driver::types::isCXX(type) &&
+         !clang::driver::types::isObjC(type);
+}
+
+/// The ledgers one invocation writes: one per compile job of a C or C++
+/// source.
 static std::size_t countLedgers(const clang::driver::Compilation &compilation) {
   std::size_t count = 0;
   for (const clang::driver::Command &job : compilation.getJobs()) {
@@ -604,8 +627,7 @@ static std::size_t countLedgers(const clang::driver::Compilation &compilation) {
       continue;
     if (llvm::any_of(job.getInputInfos(),
                      [](const clang::driver::InputInfo &input) {
-                       return input.getType() == clang::driver::types::TY_C ||
-                              input.getType() == clang::driver::types::TY_PP_C;
+                       return isGuardedType(input.getType());
                      }))
       ++count;
   }
@@ -666,19 +688,43 @@ static std::string runtimeObstacle(llvm::ArrayRef<const char *> args) {
   return {};
 }
 
-/// RFC 0036 §1: whether the build should define `_FORTIFY_SOURCE=3`: a glibc
-/// target, an optimizing compile (glibc fortifies only then, and warns
-/// otherwise), and a command line that does not define or undefine it.
-static bool wantsFortification(llvm::ArrayRef<const char *> args) {
+/// Whether the command line defines or undefines one of `macros` (`-DM`,
+/// `-DM=v`, `-UM`, `-D M`).
+static bool choosesMacro(llvm::ArrayRef<const char *> args,
+                         llvm::ArrayRef<llvm::StringRef> macros) {
+  const auto names = [&](llvm::StringRef definition) {
+    const llvm::StringRef name = definition.split('=').first;
+    return llvm::is_contained(macros, name);
+  };
+  for (std::size_t i = 1; i < args.size(); ++i) {
+    const llvm::StringRef arg = args[i];
+    if ((arg == "-D" || arg == "-U") && i + 1 < args.size()) {
+      if (names(args[++i]))
+        return true;
+    } else if ((arg.starts_with("-D") || arg.starts_with("-U")) &&
+               names(arg.drop_front(2))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// RFC 0036 §1 and RFC 0039 §1: the macros that turn on the libraries' own
+/// checks, unless the command line chooses them itself.
+///
+///   _FORTIFY_SOURCE=3   a glibc target and an optimizing compile (glibc
+///                       fortifies only then, and warns otherwise), so that
+///                       the fortified forms pass object sizes
+///   _LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST, _GLIBCXX_ASSERTIONS
+///                       a compile of C++: the C++ libraries' bounds checks
+///   _GLIBCXX_SANITIZE_VECTOR=1
+///                       a compile of C++: libstdc++'s vector annotations
+static std::vector<std::string>
+wantsLibraryChecks(llvm::ArrayRef<const char *> args, bool cxx) {
   std::string triple = llvm::sys::getDefaultTargetTriple();
   bool optimizes = false;
   for (std::size_t i = 1; i < args.size(); ++i) {
     llvm::StringRef arg = args[i];
-    if (arg.starts_with("-D_FORTIFY_SOURCE") ||
-        arg.starts_with("-U_FORTIFY_SOURCE") ||
-        ((arg == "-D" || arg == "-U") && i + 1 < args.size() &&
-         llvm::StringRef(args[i + 1]).starts_with("_FORTIFY_SOURCE")))
-      return false;
     if (arg.starts_with("-O"))
       optimizes = arg != "-O0";
     if (arg.consume_front("--target="))
@@ -686,8 +732,57 @@ static bool wantsFortification(llvm::ArrayRef<const char *> args) {
     else if ((arg == "-target" || arg == "--target") && i + 1 < args.size())
       triple = args[++i];
   }
+  std::vector<std::string> macros;
   const llvm::Triple target(llvm::Triple::normalize(triple));
-  return optimizes && target.isOSLinux() && target.isGNUEnvironment();
+  if (optimizes && target.isOSLinux() && target.isGNUEnvironment() &&
+      !choosesMacro(args, {"_FORTIFY_SOURCE"}))
+    macros.emplace_back("_FORTIFY_SOURCE=3");
+  if (cxx && !choosesMacro(args, {"_LIBCPP_HARDENING_MODE",
+                                  "_GLIBCXX_ASSERTIONS", "_GLIBCXX_DEBUG"})) {
+    macros.emplace_back("_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST");
+    macros.emplace_back("_GLIBCXX_ASSERTIONS");
+  }
+  // RFC 0039 §5: libstdc++ annotates a vector's storage only when asked
+  // (libc++ does under __has_feature(address_sanitizer) alone).
+  if (cxx && !choosesMacro(args, {"_GLIBCXX_SANITIZE_VECTOR"}))
+    macros.emplace_back("_GLIBCXX_SANITIZE_VECTOR=1");
+  return macros;
+}
+
+/// RFC 0039 §1: whether the driver runs as `weavec-c++` (Clang's `g++`
+/// mode), by the name it was invoked by or `--driver-mode=`.
+static bool cxxDriverMode(llvm::ArrayRef<const char *> argv) {
+  bool cxx = llvm::sys::path::stem(argv[0]).ends_with("++");
+  for (const char *arg : argv.drop_front()) {
+    llvm::StringRef mode = arg;
+    if (mode.consume_front("--driver-mode="))
+      cxx = mode == "g++";
+  }
+  return cxx;
+}
+
+/// Whether the command line compiles C++: in C++ mode, or a source that is
+/// C++ by `-x` or, without one, by its extension.
+static bool compilesCxx(llvm::ArrayRef<const char *> args, bool cxxMode) {
+  if (cxxMode)
+    return true;
+  llvm::StringRef language;
+  for (std::size_t i = 1; i < args.size(); ++i) {
+    llvm::StringRef arg = args[i];
+    if (arg == "-x" && i + 1 < args.size()) {
+      language = args[++i];
+      continue;
+    }
+    if (arg.consume_front("-x")) {
+      language = arg;
+      continue;
+    }
+    if (language.empty() || language == "none"
+            ? looksLikeCxxSource(arg)
+            : language.starts_with("c++") && !arg.starts_with("-"))
+      return true;
+  }
+  return false;
 }
 
 /// RFC 0038 amendment 23: the rpath a link records by default, the runtime's
@@ -721,7 +816,8 @@ static bool linksStatically(llvm::ArrayRef<const char *> args) {
 ///   Darwin  <rt>/libweavec_rt.dylib, -rpath <rt>, <rt>/libweavec_rt.a
 ///   Linux   <rt>/libweavec_rt.so (soname libweavec_rt.so.<abi>), -rpath
 ///           <rt>, <rt>/libweavec_rt.a and -lpthread; a static program
-///           takes libweavec_rt.a alone
+///           takes libweavec_rt.a alone, and a static C++ program the
+///           --wrap options of the unwinding interposers (RFC 0039 §3)
 ///
 /// `<rt>` is the toolchain's runtime directory, and the rpath what
 /// -fweavec-rpath says. The library is host code, so it is added only when
@@ -797,6 +893,20 @@ static bool addRuntimeLibraries(clang::driver::Compilation &compilation,
     }
     if (target.isOSLinux() && !target.isAndroid())
       added.push_back("-lpthread");
+    // RFC 0039 §3: a static C++ program reaches the runtime's unwinding
+    // interposers through the linker's --wrap; amendment 18: and links the
+    // C++ library's functions that a failed `new` calls, which the runtime
+    // references weakly (a weak reference takes no member of an archive).
+    const bool libstdcxx = llvm::is_contained(old, llvm::StringRef("-lstdc++"));
+    if (archive &&
+        (libstdcxx || llvm::is_contained(old, llvm::StringRef("-lc++"))))
+      for (const char *wrapped :
+           {"--wrap=_Unwind_RaiseException", "--wrap=_Unwind_Resume_or_Rethrow",
+            "--wrap=__cxa_begin_catch", "-u", "__wrap__Unwind_RaiseException",
+            "-u", "_ZSt15get_new_handlerv", "-u",
+            libstdcxx ? "_ZSt17__throw_bad_allocv"
+                      : "_ZNSt3__117__throw_bad_allocEv"})
+        added.push_back(wrapped);
     llvm::opt::ArgStringList args(old.begin(), firstLibrary);
     args.append(added.begin(), added.end());
     args.append(firstLibrary, old.end());
@@ -963,6 +1073,13 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
   // libraries).
   bool assembles = false;
   clangArgs.push_back(argv[0]);
+  // RFC 0039 §1: `weavec-c++` is Clang's `g++` mode, chosen here because the
+  // executable Clang's driver sees is `weavec-cc` (a link's target).
+  const bool cxxMode = cxxDriverMode(argv);
+  if (cxxMode && llvm::none_of(argv, [](const char *arg) {
+        return llvm::StringRef(arg).starts_with("--driver-mode=");
+      }))
+    clangArgs.push_back("--driver-mode=g++");
   for (const char *arg : argv.drop_front()) {
     std::string error;
     if (weavec.consume(arg, error)) {
@@ -1028,8 +1145,10 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
         add(include);
       }
       add("-D__WEAVEC__=1");
-      if (weavec.enforces() && wantsFortification(clangArgs))
-        add("-D_FORTIFY_SOURCE=3");
+      if (weavec.enforces())
+        for (const std::string &macro :
+             wantsLibraryChecks(clangArgs, compilesCxx(clangArgs, cxxMode)))
+          add("-D" + macro);
     }
   }
   if (!hasSysroot) {
@@ -1054,9 +1173,10 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
                                /*ReportDiags=*/false);
 
   clang::driver::Driver driver(executable, llvm::sys::getDefaultTargetTriple(),
-                               diags, "weavec-cc: WeaveC C compiler");
+                               diags, "weavec-cc: WeaveC C and C++ compiler");
   driver.setTargetAndMode(
-      clang::driver::ToolChain::getTargetAndModeFromProgramName("clang"));
+      clang::driver::ToolChain::getTargetAndModeFromProgramName(
+          cxxMode ? "clang++" : "clang"));
   const auto cc1 = [](llvm::SmallVectorImpl<const char *> &args) {
     // A job of a tool Clang does not ship as a library (`-cc1as`).
     if (args.size() < 2 || llvm::StringRef(args[1]) != "-cc1") {

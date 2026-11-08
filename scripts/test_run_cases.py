@@ -148,6 +148,22 @@ class ArgumentTest(unittest.TestCase):
     def test_miss(self):
         self.assertEqual(self.parse("MISS", "free text, any words"), "free text, any words")
 
+    def test_requires(self):
+        self.assertEqual(self.parse("REQUIRES", "darwin"), "darwin")
+        self.assertEqual(self.parse("REQUIRES", "linux"), "linux")
+        with self.assertRaisesRegex(ValueError, "REQUIRES takes a platform"):
+            self.parse("REQUIRES", "windows")
+
+    def test_cxx_cases_use_the_cxx_driver(self):
+        # RFC 0039 §9: a case with a .cpp unit is built by weavec-c++.
+        cfg = rc.Config.__new__(rc.Config)
+        object.__setattr__(cfg, "weavec_cc", Path("/t/bin/weavec-cc"))
+        case = rc.Case.__new__(rc.Case)
+        object.__setattr__(case, "units", [Path("a.cpp")])
+        self.assertEqual(rc.driver(case, cfg), "/t/bin/weavec-c++")
+        object.__setattr__(case, "units", [Path("a.c")])
+        self.assertEqual(rc.driver(case, cfg), "/t/bin/weavec-cc")
+
     def test_run_input(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
@@ -516,7 +532,7 @@ class JudgeRunsTest(Workspace):
 
 
 class JudgeLedgerTest(Workspace):
-    def ledger(self, path, rows, version=3, summary=None):
+    def ledger(self, path, rows, version=4, summary=None):
         return {"schema": "weavec-ledger", "version": version, "units": [{
             "source": str(path), "config": {"checks": "trap", "zeroInit": True},
             "summary": summary or {"accesses": len(rows), "proven": 0, "guarded": len(rows), "unguarded": 0},
@@ -547,7 +563,7 @@ class JudgeLedgerTest(Workspace):
         case = self.case("s/l.c", "int main(void) { return 0; } // GUARDED\n")
         self.assertEqual(self.judge(case, None), ["no enforcement ledger was written"])
         self.assertEqual(self.judge(case, self.ledger(case.path, [], version=2)),
-                         ["ledger version 2, expected 3"])
+                         ["ledger version 2, expected 4"])
         plain = self.case("s/p.c", "int main(void) { return 0; } // TRAP\n")
         self.assertEqual(self.judge(plain, None), [])  # no ledger marker, no ledger needed
 
@@ -628,7 +644,7 @@ class RunMarkersTest(Fakes):
 
     def test_ledger_is_requested_only_when_read(self):
         case = self.case("s/l.c", "int main(void) { return 0; } // GUARDED\n")
-        self.ledger = {"version": 3, "units": [{"rows": [{"file": str(case.path), "line": 1,
+        self.ledger = {"version": 4, "units": [{"rows": [{"file": str(case.path), "line": 1,
                                                           "outcome": "guarded", "reason": "access"}]}]}
         self.assertEqual(rc.run_case(case, self.config())["status"], "pass")
         self.assertEqual(self.builds, [("build", (), True)])
@@ -733,6 +749,20 @@ class MainTest(Workspace):
             code = rc.main(["--build-dir", str(Path(self.directory.name) / "nowhere")])
         self.assertEqual(code, 2)
         self.assertIn("does not exist; build it first", stderr.getvalue())
+
+
+class CxxOfTest(unittest.TestCase):
+    """The ASan reference's C++ driver, as the corpus gate names it."""
+
+    def test_matches_the_corpus_gate(self):
+        spec = importlib.util.spec_from_file_location("corpus_gate_for_cxx_of",
+                                                      Path(__file__).with_name("corpus-gate.py"))
+        gate = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = gate
+        spec.loader.exec_module(gate)
+        for compiler in ("clang", "clang-23", "/usr/bin/clang-23", "gcc", "cc", "build/bin/weavec-cc"):
+            self.assertEqual(rc.cxx_of(compiler), gate.cxx_of(compiler), compiler)
+        self.assertEqual(rc.cxx_of("clang-23"), "clang++-23")
 
 
 if __name__ == "__main__":
