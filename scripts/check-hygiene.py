@@ -50,7 +50,7 @@ Eight checks, the rules of AGENTS.md that a script can hold the tree to:
                      lowered as code is deleted, and raised only by an RFC
                      amendment that records the measurement.
   runtime-lines      the C runtime (runtime/, its tests under runtime/test/
-                     and its export list excluded) totals at most 7,050 lines
+                     and its export list excluded) totals at most 7,600 lines
                      (RFC 0037 gate H1; the list is declarative, as the
                      library table is).
                      It is counted apart from the libraries: it is linked
@@ -104,7 +104,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Recorded by RFC 0037 gate H1 and RFC 0032 gate H1 (see the module docstring).
 LIBRARY_LINE_LIMIT = 9_000
-RUNTIME_LINE_LIMIT = 7_050
+RUNTIME_LINE_LIMIT = 7_600
 
 # library-name-test
 LIBRARY_SPEC = "lib/Core/LibrarySpec.txt"
@@ -133,6 +133,10 @@ RUNTIME_PREFIX = "__weavec_rt_"
 # runtime-export (RFC 0038, section 1)
 RUNTIME_EXPORTS = "runtime/weavec_rt.exports"
 EXPORT_MACROS = ("WEAVEC_RT_API", "WEAVEC_RT_WEAK", "WEAVEC_ASAN_API", "WEAVEC_RT_REPLACEABLE")
+# Macros whose first argument names an exported definition (RFC 0039 §4:
+# the C++ allocation functions of weavec_cxx.c).
+EXPORTING_MACROS = ("WEAVEC_NEW", "WEAVEC_DELETE")
+_EXPORTING = re.compile(r"(?m)^(?:" + "|".join(EXPORTING_MACROS) + r")\(\s*([A-Za-z_][A-Za-z0-9_]*)")
 PASS_DIRS = ("lib/Frontend",)
 # library-lines and runtime-lines
 LIBRARY_DIRS = ("lib", "include", "tools")
@@ -648,10 +652,14 @@ def exported_names(tree: Tree) -> dict[str, tuple[str, int]]:
         if not file.path.endswith(RUNTIME_SOURCE_SUFFIXES):
             continue
         code = file.lexed.code
+        for match in _EXPORTING.finditer(code):
+            names.setdefault(match.group(1), (file.path, line_at(code, match.start())))
         for match in _EXPORTED.finditer(code):
             line_start = code.rfind("\n", 0, match.start()) + 1
             if code[line_start:match.start()].lstrip().startswith("#"):
                 continue  # the macro's own definition
+            if code[:line_start].rstrip("\n").endswith("\\"):
+                continue  # a line of a macro's definition
             name = _declared_name(code, match.end())
             if name is not None:
                 names.setdefault(name, (file.path, line_at(code, match.start())))

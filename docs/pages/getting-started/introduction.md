@@ -1,12 +1,12 @@
 ---
 title: Meet WeaveC
-description: What WeaveC does, where it fits in a C toolchain, and how its compiler checks every memory access at run time and never hands back freed memory a pointer still reaches.
+description: What WeaveC does, where it fits in a C or C++ toolchain, and how its compiler checks every memory access at run time and never hands back freed memory a pointer still reaches.
 ---
 
-WeaveC makes existing C code memory-safe at run time. It is `weavec-cc`, a drop-in C compiler built on Clang and LLVM, and a small runtime that every program it links carries. It compiles C as Clang does and _guards_ every memory access: before a load, a store or a library call touches memory, a few inline instructions check that the bytes it touches belong to a live object. The first one that does not stops the program with a report that names the access.
+WeaveC makes existing C and C++ code memory-safe at run time. It is `weavec-cc` (and `weavec-c++`), a drop-in C and C++ compiler built on Clang and LLVM, and a small runtime that every program it links carries. It compiles C and C++ as Clang does and _guards_ every memory access: before a load, a store or a library call touches memory, a few inline instructions check that the bytes it touches belong to a live object. The first one that does not stops the program with a report that names the access.
 
 ```sh
-make CC=weavec-cc
+make CC=weavec-cc CXX=weavec-c++
 ```
 
 There is nothing to annotate and no separate tool to run. Existing code builds unchanged, objects from other compilers link in, and pointers keep their representation.
@@ -25,9 +25,10 @@ The runtime replaces the program's allocator and keeps one _shadow_ byte for eve
 - a read or write of a freed heap block, and a double or invalid `free`;
 - a use of a local after its scope has ended;
 - an index outside an array's declared bound, including one inside a struct;
-- a null dereference, and a library call (`memcpy`, `strcpy`, `printf("%s")`) that would read or write outside its arguments' objects.
+- a null dereference, and a library call (`memcpy`, `strcpy`, `printf("%s")`) that would read or write outside its arguments' objects;
+- in C++, a `delete` of what `new[]` allocated (or `free` of what `new` did), a read past a `std::vector`'s elements within its capacity, an index the C++ library's own checks reject, and a use of a frame an exception unwound.
 
-Some things are deliberately out of reach: an index that jumps over a redzone into another live object, a use of a local after its function returned, a pointer walked by arithmetic from one field of a struct into the next, a pointer the program hides from the sweep (stored as a transformed integer, for example), memory the runtime does not track (another allocator, `mmap`), and code that WeaveC did not compile. The [safety guarantees](/reference/guarantees/) page states exactly what holds and under which assumptions. The [enforcement ledger](/reference/cli/#ledger-and-summary-line) lists every access and whether it kept its guard.
+Some things are deliberately out of reach: an index that jumps over a redzone into an object of the same color, a use of a local after a later call reused its frame, a pointer walked by arithmetic from one field of a struct into the next, a pointer the program hides from the sweep (stored as a transformed integer, for example), memory the runtime does not track (another allocator, `mmap`), and code that WeaveC did not compile. The [safety guarantees](/reference/guarantees/) page states exactly what holds and under which assumptions. The [enforcement ledger](/reference/cli/#ledger-and-summary-line) lists every access and whether it kept its guard.
 
 ## Built to drop in
 
@@ -43,4 +44,4 @@ Code that reads past an object on purpose and is not written for ASan can be mar
 
 ## Project status
 
-WeaveC is early software. Source releases are available; portable prebuilt binaries and package-manager distribution are future work. Flags, report formats and the ledger can change between minor versions. The current design is [RFC 0036, _Deterministic heap reuse_](/rfcs/0036-deterministic-heap-reuse/), which builds on the guards of [RFC 0035, _Guard by default_](/rfcs/0035-guard-by-default/). The [roadmap](/project/roadmap/) tracks progress.
+WeaveC is early software. Source releases are available; portable prebuilt binaries and package-manager distribution are future work. Flags, report formats and the ledger can change between minor versions. The current design is [RFC 0039, _C++_](/rfcs/0039-cxx/), over [RFC 0038, _Drop-in everywhere_](/rfcs/0038-drop-in-everywhere/), [RFC 0037](/rfcs/0037-complete-sweep-and-colors/), [RFC 0036](/rfcs/0036-deterministic-heap-reuse/) and the guards of [RFC 0035, _Guard by default_](/rfcs/0035-guard-by-default/). The [roadmap](/project/roadmap/) tracks progress.

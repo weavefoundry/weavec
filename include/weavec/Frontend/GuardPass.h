@@ -71,6 +71,9 @@ struct GuardOptions {
   /// RFC 0037 §8: whether arithmetic from a pointer is checked against its
   /// object's color (`-fno-weavec-colors` turns it off).
   bool colors = true;
+  /// RFC 0039, amendment 13: a C++ unit, whose markers the inliner prices
+  /// as one instruction.
+  bool cheapMarkers = false;
 };
 
 /// RFC 0035 §2.1, §2.5: guards before the optimizer.

@@ -1,20 +1,21 @@
 # The corpus gate
 
-WeaveC on real C projects at pinned revisions: RFC 0035, section 11 and the
+WeaveC on real C and C++ projects at pinned revisions: RFC 0035, section 11 and the
 *Acceptance gates*, run by
 [`scripts/corpus-gate.py`](../../scripts/corpus-gate.py) (tests, which need
 no compiler: [`scripts/test_corpus_gate.py`](../../scripts/test_corpus_gate.py)).
 
 Every memory access of a `weavec-cc` build is guarded unless a local rule
 proves the guard redundant (RFC 0035). The gate builds each project with
-`CC=weavec-cc` and runs its own test suite, which must pass with no guard
+`CC=weavec-cc` and `CXX=weavec-c++` (RFC 0039, section 9) and runs its own
+test suite, which must pass with no guard
 failing; it measures how many accesses the build leaves guarded (the
 enforcement ledger), whether each injected bug stops at its line, and what
 the guards cost at build and run time.
 
 | File | What it holds |
 | --- | --- |
-| `manifest.json` | The 51 projects (url, 40-hex `sha`, `support` files) and their 52 configs: `compile` (files and arguments), `build`, `test`, `testTimeout`, `bench`, `heldOut`, `set` and `platforms` (below); and `gates`, the limits of the gates below |
+| `manifest.json` | The 68 projects (url, 40-hex `sha`, `support` files, `submodules`, `uses`; below) and their 68 configs: `compile` (files and arguments), `language`, `build`, `test`, `testTimeout`, `bench`, `heldOut`, `set` and `platforms` (below); and `gates`, the limits of the gates below |
 | `expected.json` | The ratchet, per platform and config, written by `--update` |
 | `triage.json` | `guardFailures`: the reports of test suites that are true bugs of the project, or false traps an RFC accepts |
 | `prerequisites.json` | Per config, the programs its test suite runs (`redis-server`, `tclsh`, `perl`) and whether it refuses root (RFC 0038, section 5) |
@@ -38,6 +39,21 @@ the guards cost at build and run time.
 | zlib | 15 library files | `./configure && make -j8` | `make test` | minigzip on 64 MiB |
 | lua | `l*.c` | the developer makefile | 27 `testes` files (below) | `lua-bench.lua` |
 | jansson | 12 `src/` files | CMake | CTest (215 tests) | |
+
+**C++** (RFC 0039, section 9). A config with `"language": "c++"` compiles
+its files with `weavec-c++` (and the reference `clang++`); every build,
+C or C++, gets `CXX` beside `CC`, so the C++ parts of C projects are
+guarded too. A project with `"submodules": true` is checked out with its
+submodules at the commits its pinned commit records (LevelDB's and Snappy's
+googletest and benchmark); `uses` names other projects whose checkouts its
+build reads, as `$CORPUS/<name>`, checked out first: googletest for
+Abseil's tests and ninja's (a program, below), Catch2 for spdlog's and
+CLI11's, and two projects with no config that only hold test data,
+`json-test-data` (nlohmann/json's) and `simdjson-data`. Nothing a build
+or test runs is downloaded. The C++ configs are fmt, nlohmann/json,
+googletest, LevelDB, Snappy, yaml-cpp, TinyXML-2 and Abseil (`fresh39`),
+`stl`, which carries the motivation's STL program as a benchmark
+(`bench/stl.cpp`), and the sealed set below.
 
 The projects without a build (log.c, printf) or a C test suite (printf's is
 C++, which includes `printf.c` into a C++ unit) are compile-only: their
@@ -85,13 +101,15 @@ on. The others are projects nobody tuned WeaveC on, marked
 | `sealed34` | libjpeg-turbo, opus, flac, giflib, wren | RFC 0034, section 9 |
 | `fresh35`, `sealed35` | (none yet: RFC 0035's stage S0 adds them) | RFC 0035, section 11 |
 | `sealed38` | jq, tmux, nginx, libarchive, libssh2 | RFC 0038, section 5 |
+| `fresh39` | fmt, nlohmann-json, googletest, stl, leveldb, snappy, yaml-cpp, tinyxml2, abseil (C++) | RFC 0039, section 9 |
+| `sealed39` | pugixml, catch2, spdlog, simdjson, cli11 (C++) | RFC 0039, section 9 |
 
 Each config's `notes` say why its build and test are what they are.
 
 - **Selection.** `--quick` runs the original configs; `--full` adds the
-  held-out ones (`heldOut`, `fresh`, `fresh34`, `fresh35`); `--held-out`
+  held-out ones (`heldOut`, `fresh`, `fresh34`, `fresh35`, `fresh39`); `--held-out`
   and `--no-held-out` say so explicitly. The sealed sets (`sealed`,
-  `sealed34`, `sealed35`, `sealed38`) run only when `--set` or `--only` names them: an
+  `sealed34`, `sealed35`, `sealed38`, `sealed39`) run only when `--set` or `--only` names them: an
   RFC builds its sealed set once, at its end, and records what it measured
   (RFC 0035 G2); before that they may be built with `--reference-only`, to
   write their commands. `--set SET` runs one set alone; `--only` names
@@ -136,10 +154,13 @@ scripts/corpus-gate.py --programs [--program git] --json programs.json
 
 **The programs tier** (`--programs`, RFC 0038, section 5) builds each program
 of `programs.json` (CPython 3.13.7, SQLite 3.50.4's source release with its
-Tcl test harness, PostgreSQL 17.6, git 2.51.0, coreutils 9.5) from its
+Tcl test harness, PostgreSQL 17.6, git 2.51.0, coreutils 9.5, and the C++
+programs of RFC 0039: ninja 1.13.2, CMake 4.4.5, Cppcheck 2.22.0 and DuckDB
+1.5.6) from its
 release archive, downloaded once into `<workdir>/.programs/` and checked
-against its `sha256`, with its own build system: once with `CC` set to
-`weavec-cc -fweavec-checks=report` and once with the reference compiler, in
+against its `sha256`, with its own build system: once with `CC` and `CXX` set to
+`weavec-cc -fweavec-checks=report` and `weavec-c++ -fweavec-checks=report`
+and once with the reference compiler, in
 fresh trees under `<workdir>/.gate/`. It runs each one's test suite with
 `WEAVEC_RT_REPORT_LOG` collecting the reports and reads the failing tests
 from its output with the program's `failures` expression. Report mode lets
@@ -171,7 +192,7 @@ measured, every report included.
 - **`--quick`**, per config, the enforcement ledgers (RFC 0035, section
   9): `weavec-cc -c -O2 -fweavec-checks=trap -fweavec-ledger=<file> <args>
   <file>` for each file, in the checkout (a config's own `-O` comes later
-  and wins). A ledger must be a `weavec-ledger` document of version 3; its
+  and wins). A ledger must be a `weavec-ledger` document of version 4; its
   units' summaries (accesses, proven, guarded, unguarded) are summed per
   config and go to the ratchet. Before the first compile, a probe checks
   that `weavec-cc` writes such a ledger at all.
@@ -225,8 +246,8 @@ measured, every report included.
 | `drop-in` | G1, G2, G3 | `--full` | every build passes, and every test suite in trap (or verify) mode and in report mode, with no trap but at `guardFailures` |
 | `injections` | (G4, G5 on the corpus) | `--inject`, `--full` | every selected injection stops at its line |
 | `verify` | G6 | `--checks verify` | no `weavec.proven` report in any test suite or benchmark |
-| `run-time` | G7 | `--bench`, `--full` | `gates.runTime`: each workload of `sets` (fresh34, fresh35) at most the larger of `maxOverhead` (2.0) and its ASan ratio, their geometric mean at most `maxGeometricMean` (1.8) once every one of them ran, and `maxOverheadPerConfig`'s workloads at their own limits (Lua 2.0, zlib 1.4, cJSON 1.4) |
-| `build-time` | G9 | `--full` | `gates.buildTime`: each config's `weavec-cc` build CPU time at most `maxBuildRatio` (1.5) times the reference compiler's, and no per-file compile above `maxUnitRatio` (3.0) times the reference compiler's, among the files the reference compiler takes at least `minUnitCpuSeconds` (0.25) for |
+| `run-time` | G7 | `--bench`, `--full` | `gates.runTime`: each workload of `sets` (fresh34, fresh35) at most the larger of `maxOverhead` (2.0) and its ASan ratio, their geometric mean at most `maxGeometricMean` (1.8) once every one of them ran, and `maxOverheadPerConfig`'s workloads at their own limits (Lua 2.0, zlib 1.4, cJSON 1.4); the C++ workloads (RFC 0039 G7): their geometric mean at most `cxx.maxGeometricMean` (2.5) and below ASan's |
+| `build-time` | G9 | `--full` | `gates.buildTime`: each config's `weavec-cc` build CPU time at most `maxBuildRatio` (1.5) times the reference compiler's, and no per-file compile above `maxUnitRatio` (3.0) times the reference compiler's, among the files the reference compiler takes at least `minUnitCpuSeconds` (0.25) for; a C++ config (RFC 0039 G8) at most `cxx.maxBuildRatio` (3.0), the C++ configs' geometric mean at most `cxx.maxGeometricMean` (2.0), and no per-file limit (`cxx.maxUnitRatio` is null: G8 limits configs) |
 
 `--json` holds each gate's status (`pass`, `fail`, or `skip` when nothing
 was measured) and detail. G4 and G5 proper (the historic bugs and the blind
@@ -284,11 +305,11 @@ compiles as ASan would since RFC 0036, which selects the byte-wise tail
 
 `build`, `test`, `bench.build`, `bench.command`, `bench.check`,
 `bench.input` and an injection's `build` and `run` are `/bin/sh -c`
-commands run in the copy's root, with `CC`, `JOBS` (from `--jobs`), `SRC`
+commands run in the copy's root, with `CC`, `CXX`, `JOBS` (from `--jobs`), `SRC`
 (the copy), `SUPPORT` (`support/<project>`), `BENCH` (`bench/`), `INPUT` (the
 generated benchmark input), `INJECTION_DIR` (the injection's directory) and
 `CACHE` (`<workdir>/.cache/<project>`, kept between runs, for downloaded
-test data); `CFLAGS`, `CPPFLAGS`, `LDFLAGS`, `MAKEFLAGS`, `WEAVEC_RT_ABORT`
+test data) and `CORPUS` (the workdir, whose checkouts `uses` names); `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `MAKEFLAGS`, `WEAVEC_RT_ABORT`
 and `WEAVEC_RT_STATS` are cleared, and `WEAVEC_RT_REPORT_LOG` is set to a
 file of the gate's.
 

@@ -85,6 +85,8 @@ enum {
   WeavecRtShadowStackScope = 0xF8,
   WeavecRtShadowGlobal = 0xF9,
   WeavecRtShadowHeapTail = 0xFA,
+  /* RFC 0039 section 5: a container's storage past its elements. */
+  WeavecRtShadowContainer = 0xFC,
   WeavecRtShadowHeapFreed = 0xFD,
   /* The lowest WeavecRtNullPage bytes: an access there is through null. */
   WeavecRtShadowNull = 0xFE
@@ -182,7 +184,8 @@ enum {
    * (RFC 0037 section 2.3). */
   WeavecRtRegionCount = 160,
   WeavecRtSmallClasses = 8,
-  WeavecRtMaxClassShift = 30,
+  /* (RFC 0039 section 4: a live slot word holds a size below 2^28.) */
+  WeavecRtMaxClassShift = 28,
   /* A dead slot at least this large gives its pages back. */
   WeavecRtDecommitBytes = 64 * 1024
 };
@@ -215,20 +218,29 @@ struct __weavec_rt_heap_t {
 
 WEAVEC_RT_API extern struct __weavec_rt_heap_t __weavec_rt_heap;
 
-/* A slot word is `value << 2 | state`: a live slot's value is its object's
- * size, a free or dead slot's the index + 1 of the next slot on its list (0
- * for none). */
+/* A free or dead slot's word is `next << 2 | state`, the index + 1 of the
+ * next slot on its list (0 for none); a live slot's is `size << 4 | form <<
+ * 2 | state` (RFC 0039 section 4: what allocated it). */
 enum {
   WeavecRtNever = 0,
   WeavecRtLive = 1,
   WeavecRtFree = 2,
   WeavecRtDead = 3,
   WeavecRtWordState = 3,
-  WeavecRtWordShift = 2
+  WeavecRtWordShift = 2,
+  WeavecRtLiveShift = 4
 };
+/* (WeavecRtFormAny: a release that takes a block of any form.) */
+enum { WeavecRtFormMalloc, WeavecRtFormNew, WeavecRtFormNewArray, WeavecRtFormAny };
 
 static inline uint32_t weavecRtWordValue(uint32_t word) {
   return word >> WeavecRtWordShift;
+}
+static inline uint32_t weavecRtLiveSize(uint32_t word) {
+  return word >> WeavecRtLiveShift;
+}
+static inline unsigned weavecRtLiveForm(uint32_t word) {
+  return (word >> WeavecRtWordShift) & 3U;
 }
 
 WEAVEC_RT_API void *__weavec_rt_alloc(size_t size, size_t alignment);
@@ -237,6 +249,21 @@ WEAVEC_RT_API void *__weavec_rt_realloc(void *p, size_t size);
 /* The requested size of a live block; of any other pointer, what the next
  * allocator says, or 0. */
 WEAVEC_RT_API size_t __weavec_rt_size(const void *p);
+/* RFC 0039 section 4: an allocation by `form`; a release by its release
+ * (free, operator delete, operator delete[]: weavecRtReleaseName) of `size`
+ * bytes, SIZE_MAX when not sized, called from `caller` (or null); the form a
+ * release called from `caller` checks (any, from Darwin's shared cache:
+ * amendment 1); a block another allocator's call returned recorded as
+ * `form`; an invalid release by another form (`size` SIZE_MAX) or size. */
+void *weavecRtAllocForm(size_t size, size_t alignment, unsigned form);
+void weavecRtReleaseForm(void *p, unsigned form, size_t size,
+                         const void *caller);
+const char *weavecRtReleaseName(unsigned form);
+unsigned weavecRtCallerForm(unsigned form, const void *caller);
+void weavecRtSetForm(void *p, unsigned form);
+void weavecRtFatalRelease(const void *p, unsigned allocatedBy,
+                          const char *releasedBy, size_t size,
+                          size_t objectSize) __attribute__((noreturn));
 
 /* What the allocator knows of an address, for reports: whether it is in a
  * heap slot or huge block, and that object's start, size and state. */
@@ -540,6 +567,11 @@ WEAVEC_RT_API uint64_t __weavec_rt_wcslen(const wchar_t *s, uint64_t max,
 
 /* Frames (RFC 0035 section 3). */
 WEAVEC_RT_API void __weavec_rt_unpoison_stack(void);
+/* RFC 0039 section 3: at a landing pad, marks the frames the exception
+ * unwound returned; the interposers say where it was raised and caught. */
+WEAVEC_RT_API void __weavec_rt_landed(void);
+void weavecRtRaising(uintptr_t frame);
+void weavecRtCaught(uintptr_t frame);
 /* A dynamic stack object of `size` bytes at `address` (32-aligned), followed
  * by its redzone up to the next 32-byte boundary and 32 bytes more. */
 WEAVEC_RT_API void __weavec_rt_alloca_poison(uintptr_t address, uint64_t size);
@@ -556,6 +588,21 @@ WEAVEC_RT_API void __weavec_rt_frame_shadow(uintptr_t address, uint64_t bytes,
 WEAVEC_RT_API WEAVEC_RT_SLOW void
 __weavec_rt_limit_fail(uintptr_t address, uint64_t width, uint64_t limit,
                        const struct __weavec_rt_site *site);
+
+/* RFC 0039 section 6: a failed check of the C++ library (libc++'s trap,
+ * libstdc++'s assertion function, libc++'s verbose abort), reported as
+ * `library-assertion`. */
+WEAVEC_RT_API void
+__weavec_rt_library_assertion(const char *message,
+                              const struct __weavec_rt_site *site)
+    __attribute__((noreturn));
+WEAVEC_RT_API void __weavec_rt_glibcxx_assert_fail(
+    const char *file, int line, const char *function, const char *condition,
+    const struct __weavec_rt_site *site) __attribute__((noreturn));
+WEAVEC_RT_API void
+__weavec_rt_libcpp_verbose_abort(const struct __weavec_rt_site *site,
+                                 const char *format, ...)
+    __attribute__((noreturn));
 
 /* Globals (section 4): `n` records {address, size, size with redzone}. On
  * Darwin a copy that forwards registers them with the owner (RFC 0036
@@ -587,6 +634,10 @@ void weavecRtFailJump(const char *kind, uintptr_t address, uint64_t width,
 void weavecRtFailObject(const char *kind, uintptr_t address, uint64_t width,
                         uintptr_t lo, uintptr_t hi,
                         const struct __weavec_rt_site *site);
+/* A report whose first line ends in `message` (library-assertion). */
+void weavecRtFailMessage(const char *kind, const char *message,
+                         const struct __weavec_rt_site *site)
+    __attribute__((noreturn));
 /* Called by a failure right before it traps, so that the trap ends the
  * program even where the program blocked or caught SIGTRAP and SIGILL. */
 WEAVEC_RT_API void __weavec_rt_trapping(void);
@@ -600,7 +651,7 @@ WEAVEC_RT_API void __weavec_rt_fatal(const char *what, const void *p,
 /* The library's interface version (libweavec_rt.so.<abi>,
  * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
  * encoding or a site record changes. */
-#define WEAVEC_RT_ABI 38
+#define WEAVEC_RT_ABI 39
 
 /*===-- Internal -----------------------------------------------------------===*/
 

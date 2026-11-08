@@ -1,6 +1,6 @@
 # RFC 0038, section 6: ghcr.io/weavefoundry/weavec:<version>, Ubuntu 24.04
 # with the Linux toolchain on PATH and build-essential (the system linker, the
-# C library's headers and start-up files). The release workflow builds it for
+# C library's headers and start-up files, g++'s libstdc++ for weavec-c++). The release workflow builds it for
 # linux/amd64 and linux/arm64 from the release archives, unpacked into
 # dist/linux-amd64 and dist/linux-arm64.
 FROM ubuntu:24.04
@@ -10,6 +10,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY dist/linux-${TARGETARCH}/ /opt/weavec/
 ENV PATH=/opt/weavec/bin:$PATH \
-    CC=weavec-cc
+    CC=weavec-cc \
+    CXX=weavec-c++
 WORKDIR /src
 CMD ["weavec-cc", "--version"]

@@ -118,7 +118,7 @@ MANIFEST_VERSION = 2
 INJECTIONS_VERSION = 2
 # The enforcement ledger (RFC 0035, section 9).
 LEDGER_SCHEMA = "weavec-ledger"
-LEDGER_VERSION = 3
+LEDGER_VERSION = 4
 LEDGER_COUNTS = ("accesses", "proven", "guarded", "unguarded")
 # The per-file compiles: the optimization real builds use (a config's own
 # -O in compile.args comes later and wins).
@@ -138,7 +138,7 @@ KINDS = (
     "intra-object-overflow", "use-after-poison",
     "null-dereference", "unterminated-string", "index-out-of-bounds",
     "invalid-release", "double-free", "invalid-access", "overlapping-copy",
-    "stack-use-after-return", "memory-fault",
+    "stack-use-after-return", "memory-fault", "container-overflow", "library-assertion",
 )
 # How shells, make and CTest describe a process that died by SIGTRAP or
 # SIGILL (a guard's trap), plus the 128+signal exit statuses. CTest 3.29
@@ -437,6 +437,11 @@ class Project:
     sha: str
     support: list[str]
     configs: list["Config"] = dataclasses.field(default_factory=list)
+    # The checkout's submodules, at the commits its pinned commit records.
+    submodules: bool = False
+    # Other projects whose checkouts the build reads, as $CORPUS/<name>
+    # (googletest for Abseil's tests, test data, Catch2).
+    uses: list[str] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -462,6 +467,9 @@ class Config:
     notes: str = ""
     held_out: bool = False
     set: str = "original"
+    # RFC 0039, section 9: a C++ config's files compile with weavec-c++
+    # (and the reference clang++); every build gets CXX beside CC.
+    language: str = "c"
 
     @property
     def sealed(self) -> bool:
@@ -487,12 +495,14 @@ class Manifest:
 # during its work) and sealed ones (built once, at its end). A manifest names
 # a set in a config's `set`, which needs `heldOut: true`; without `set` a
 # config is original, or heldOut when it is marked heldOut.
-SETS = ("original", "heldOut", "fresh", "sealed", "fresh34", "sealed34", "fresh35", "sealed35", "sealed38")
+SETS = ("original", "heldOut", "fresh", "sealed", "fresh34", "sealed34", "fresh35", "sealed35", "sealed38",
+        "fresh39", "sealed39")
 NAMED_SETS = SETS[2:]
 # The sets that run only when asked for (--set, --only).
-SEALED_SETS = ("sealed", "sealed34", "sealed35", "sealed38")
+SEALED_SETS = ("sealed", "sealed34", "sealed35", "sealed38", "sealed39")
 CONFIG_KEYS = frozenset(("name", "notes", "compile", "build", "test", "testTimeout", "bench", "heldOut", "set",
-                         "platforms"))
+                         "platforms", "language"))
+LANGUAGES = ("c", "c++")
 # RFC 0038, section 5: a config's `platforms` replaces its fields on a platform, the most specific
 # key last.
 PLATFORMS = ("darwin", "linux", "linux-x86_64", "linux-aarch64")
@@ -533,7 +543,8 @@ def load_manifest(path: Path, support_root: Path, target: str | None = None) -> 
             problems.append(f"project {name}: sha must be 40 lowercase hex digits (got {sha!r})")
         if not p.get("url"):
             problems.append(f"project {name}: url is missing")
-        project = Project(name=name, url=p.get("url", ""), sha=sha, support=list(p.get("support", [])))
+        project = Project(name=name, url=p.get("url", ""), sha=sha, support=list(p.get("support", [])),
+                          submodules=p.get("submodules", False) is True, uses=list(p.get("uses", [])))
         for rel in project.support:
             if not (support_root / rel).is_file():
                 problems.append(f"project {name}: support file {rel} is missing from {support_root}")
@@ -584,6 +595,9 @@ def load_manifest(path: Path, support_root: Path, target: str | None = None) -> 
                     problems.append(f"config {cname}: set {c['set']!r} needs heldOut true")
                 else:
                     corpus_set = c["set"]
+            language = c.get("language", "c")
+            if language not in LANGUAGES:
+                problems.append(f"config {cname}: language must be one of {', '.join(LANGUAGES)} (got {language!r})")
             if c.get("test") and not c.get("build"):
                 problems.append(f"config {cname}: test needs build")
             timeout = c.get("testTimeout")
@@ -592,10 +606,16 @@ def load_manifest(path: Path, support_root: Path, target: str | None = None) -> 
             config = Config(
                 name=cname, project=project, files=list(compile_.get("files", [])),
                 args=list(compile_.get("args", [])), build=list(c.get("build", [])), test=list(c.get("test", [])), test_timeout=timeout,
-                bench=bench, notes=c.get("notes", ""), held_out=held_out is True, set=corpus_set)
+                bench=bench, notes=c.get("notes", ""), held_out=held_out is True, set=corpus_set,
+                language=language)
             project.configs.append(config)
             configs.append(config)
         projects.append(project)
+    known = {project.name for project in projects}
+    for project in projects:
+        for used in project.uses:
+            if used not in known or used == project.name:
+                problems.append(f"project {project.name}: uses {used!r}, which is not another project")
     if problems:
         raise GateError(f"{path}: invalid manifest:\n  " + "\n  ".join(problems))
     return Manifest(projects=projects, configs=configs, gates=data.get("gates", {}), path=path)
@@ -660,6 +680,7 @@ def ensure_checkout(project: Project, workdir: Path, fetch: bool, offline: bool)
             log(f"[{project.name}] fetching {project.sha[:12]}")
             git(["fetch", "--depth", "1", "origin", project.sha], dest)
             git(["checkout", "--quiet", "--detach", project.sha], dest)
+            update_submodules(project, dest)
         modified = git(["status", "--porcelain", "--untracked-files=no"], dest).strip()
         if modified:
             raise GateError(f"{dest}: tracked files are modified; the gate works on pristine checkouts:\n"
@@ -674,6 +695,7 @@ def ensure_checkout(project: Project, workdir: Path, fetch: bool, offline: bool)
         git(["remote", "add", "origin", project.url], dest)
         git(["fetch", "--quiet", "--depth", "1", "origin", project.sha], dest)
         git(["checkout", "--quiet", "--detach", "FETCH_HEAD"], dest)
+        update_submodules(project, dest)
     except GateError:
         remove_tree(dest)
         raise
@@ -681,6 +703,12 @@ def ensure_checkout(project: Project, workdir: Path, fetch: bool, offline: bool)
     if head != project.sha:
         raise GateError(f"{dest}: fetched {head}, expected {project.sha}")
     return dest
+
+
+def update_submodules(project: Project, dest: Path) -> None:
+    """A project's submodules (LevelDB's and Snappy's googletest), at the commits its pin records."""
+    if project.submodules:
+        git(["submodule", "update", "--quiet", "--init", "--recursive", "--depth", "1"], dest)
 
 
 def tracked_files(root: Path) -> set[str]:
@@ -741,9 +769,14 @@ class CompileRun:
     failure: str = ""
 
 
+def driver_for(compiler: str, config: Config) -> str:
+    """The driver that compiles a config's files: `compiler`, or its C++ sibling for a C++ config."""
+    return cxx_of(compiler) if config.language == "c++" else compiler
+
+
 def compile_command(weavec_cc: str, config: Config, file: Path, support_root: Path, ledger: Path,
                     obj: Path) -> list[str]:
-    return [weavec_cc, "-c", *QUICK_FLAGS, "-fweavec-checks=trap", f"-fweavec-ledger={ledger}",
+    return [driver_for(weavec_cc, config), "-c", *QUICK_FLAGS, "-fweavec-checks=trap", f"-fweavec-ledger={ledger}",
             *expand_args(config, support_root), str(file), "-o", str(obj)]
 
 
@@ -767,7 +800,7 @@ def run_compile(weavec_cc: str, reference_cc: str | None, config: Config, root: 
         run.failure = f"no valid ledger ({exc})"
         return run
     if reference_cc:
-        argv = [reference_cc, "-c", *QUICK_FLAGS, *expand_args(config, support_root), str(file),
+        argv = [driver_for(reference_cc, config), "-c", *QUICK_FLAGS, *expand_args(config, support_root), str(file),
                 "-o", str(work / f"{stem}.reference.o")]
         reference = run_process(argv, cwd=root, timeout=timeout)
         if reference.returncode == 0 and not reference.timed_out:
@@ -1066,11 +1099,29 @@ def sanitizer_symbolizer(cc: str) -> dict:
     return {}
 
 
+def cxx_of(compiler: str) -> str:
+    """The C++ driver beside a C driver (RFC 0039, section 9): weavec-cc's
+    weavec-c++, clang's clang++ (clang-21's clang++-21), cc's c++; a wrapper
+    this script wrote has its C++ twin beside it."""
+    head, _, name = compiler.rpartition("/")
+    if name.endswith("gcc"):
+        name = name[:-3] + "g++"
+    elif name.endswith("cc"):
+        name = name[:-2] + "c++"
+    elif re.fullmatch(r"clang(-\d+)?", name):
+        name = "clang++" + name[5:]
+    else:
+        name += "++"
+    return f"{head}/{name}" if head else name
+
+
 def write_wrapper(path: Path, compiler: str, flags: list[str]) -> str:
+    """`path` running `compiler` with `flags`, and its C++ twin (`cxx_of`) running the compiler's."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    words = " ".join(shlex.quote(w) for w in [compiler, *flags])
-    path.write_text(f"#!/bin/sh\n# written by scripts/corpus-gate.py\nexec {words} \"$@\"\n")
-    path.chmod(0o755)
+    for wrapper, driver in ((path, compiler), (Path(cxx_of(str(path))), cxx_of(compiler))):
+        words = " ".join(shlex.quote(w) for w in [driver, *flags])
+        wrapper.write_text(f"#!/bin/sh\n# written by scripts/corpus-gate.py\nexec {words} \"$@\"\n")
+        wrapper.chmod(0o755)
     return str(path)
 
 
@@ -1079,13 +1130,14 @@ def base_env(config: Config, cc: str, src: Path, support_root: Path, bench_dir: 
     env = dict(os.environ)
     env.update({
         "CC": cc,
+        "CXX": cxx_of(cc),
         "JOBS": str(jobs),
         "SRC": str(src),
         "SUPPORT": str(support_dir(config, support_root)),
         "BENCH": str(bench_dir),
     })
     # A build must not pick up the caller's flags, nor the caller's runtime settings.
-    for key in ("CFLAGS", "CPPFLAGS", "LDFLAGS", "MAKEFLAGS", "MFLAGS", "WEAVEC_RT_ABORT",
+    for key in ("CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "MAKEFLAGS", "MFLAGS", "WEAVEC_RT_ABORT",
                 "WEAVEC_RT_REPORT_LOG", "WEAVEC_RT_STATS"):
         env.pop(key, None)
     if extra:
@@ -1477,6 +1529,9 @@ class Program:
     accepted_failures: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
     timeout: float = 7200
     notes: str = ""
+    # Corpus projects whose checkouts the build reads, as $CORPUS/<name>
+    # (googletest for ninja_test).
+    uses: list[str] = dataclasses.field(default_factory=list)
 
     def listed_failures(self, target: str) -> set[str]:
         """The tests that fail with the reference compiler on `target`."""
@@ -1496,7 +1551,7 @@ class Program:
 
 
 PROGRAM_KEYS = frozenset(("name", "url", "sha256", "build", "test", "failures", "referenceFailures",
-                          "acceptedFailures", "programs", "timeout", "notes", "platforms"))
+                          "acceptedFailures", "programs", "timeout", "notes", "platforms", "uses"))
 
 
 def load_programs(path: Path, target: str | None = None) -> list[Program]:
@@ -1546,7 +1601,7 @@ def load_programs(path: Path, target: str | None = None) -> list[Program]:
                                 accepted_failures={k: dict(v) for k, v in accepted.items()
                                                    if isinstance(v, dict)},
                                 programs=list(p.get("programs", [])), timeout=float(p.get("timeout", 7200)),
-                                notes=p.get("notes", "")))
+                                notes=p.get("notes", ""), uses=list(p.get("uses", []))))
     if problems:
         raise GateError(f"{path}: invalid programs:\n  " + "\n  ".join(problems))
     return programs
@@ -1640,7 +1695,7 @@ class ProgramRun:
 
 
 def run_program(program: Program, mode: str, compiler: str, flags: list[str], archive: Path, run_dir: Path,
-                jobs: int, keep: bool) -> ProgramRun:
+                jobs: int, keep: bool, corpus: Path | None = None) -> ProgramRun:
     """Builds and tests one program with `compiler`; reports collected through WEAVEC_RT_REPORT_LOG."""
     run = ProgramRun(mode=mode)
     start = time.perf_counter()
@@ -1652,9 +1707,12 @@ def run_program(program: Program, mode: str, compiler: str, flags: list[str], ar
     build_log = work / "build-reports.log"
     report_log = work / "reports.log"
     env = dict(os.environ)
-    for key in ("CFLAGS", "CPPFLAGS", "LDFLAGS", "MAKEFLAGS", "MFLAGS", "WEAVEC_RT_ABORT", "WEAVEC_RT_STATS"):
+    for key in ("CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "MAKEFLAGS", "MFLAGS", "WEAVEC_RT_ABORT",
+                "WEAVEC_RT_STATS"):
         env.pop(key, None)
-    env.update({"CC": cc, "JOBS": str(jobs), "PREFIX": str(work / "inst"), "TCL_CONFIG_DIR": tcl_config_dir()})
+    if corpus is not None:
+        env["CORPUS"] = str(corpus.resolve())
+    env.update({"CC": cc, "CXX": cxx_of(cc), "JOBS": str(jobs), "PREFIX": str(work / "inst"), "TCL_CONFIG_DIR": tcl_config_dir()})
     build_env = {**env, "WEAVEC_RT_REPORT_LOG": str(build_log)}
     env["WEAVEC_RT_REPORT_LOG"] = str(report_log)
     output = ""
@@ -1749,17 +1807,24 @@ def build_time_gate(configs: list[Config], entries: dict, spec: dict) -> tuple[b
     """G9: each config's weavec-cc build CPU time within maxBuildRatio of the
     reference compiler's, and no per-file compile above maxUnitRatio (among
     those the reference compiler takes at least minUnitCpuSeconds for: below
-    that, the ratio is start-up noise)."""
-    max_build, max_unit = spec.get("maxBuildRatio"), spec.get("maxUnitRatio")
+    that, the ratio is start-up noise). C++ configs (RFC 0039 G8) take
+    `cxx`'s maxBuildRatio, and their builds' geometric mean at most its
+    maxGeometricMean."""
     min_cpu = spec.get("minUnitCpuSeconds", 0.25)
+    cxx = spec.get("cxx") or {}
     detail: dict = {}
     ok = True
+    cxx_ratios = []
     for config in configs:
+        limits = {**spec, **cxx} if config.language == "c++" else spec
+        max_build, max_unit = limits.get("maxBuildRatio"), limits.get("maxUnitRatio")
         entry = entries.get(config.name) or {}
         row: dict = {}
         ratio = entry.get("buildCpuRatio")
         if ratio is not None:
             row["buildCpuRatio"] = {"value": ratio, "limit": max_build}
+            if config.language == "c++":
+                cxx_ratios.append(ratio)
             if max_build is not None:
                 ok &= ratio <= max_build
         worst = None
@@ -1776,6 +1841,11 @@ def build_time_gate(configs: list[Config], entries: dict, spec: dict) -> tuple[b
                 ok &= worst[1] <= max_unit
         if row:
             detail[config.name] = row
+    mean = geometric_mean(cxx_ratios)
+    if mean is not None:
+        detail["cxxGeometricMean"] = {"value": mean, "limit": cxx.get("maxGeometricMean"), "configs": len(cxx_ratios)}
+        if cxx.get("maxGeometricMean") is not None:
+            ok &= mean <= cxx["maxGeometricMean"]
     return (ok if detail else None), detail
 
 
@@ -1784,8 +1854,12 @@ def run_time_gate(configs: list[Config], all_configs: list[Config], entries: dic
     """G7: each workload of the sets in `sets` at most the larger of
     maxOverhead and its ASan ratio, their geometric mean at most
     maxGeometricMean (once every such workload of the manifest ran), and the
-    workloads of maxOverheadPerConfig at their own limits."""
+    workloads of maxOverheadPerConfig at their own limits. The C++ workloads
+    (RFC 0039 G7): their geometric mean at most `cxx`'s maxGeometricMean
+    and below ASan's."""
     limit = spec.get("maxOverhead")
+    cxx = spec.get("cxx") or {}
+    cxx_ratios, cxx_asan = [], []
     sets = set(spec.get("sets", ()))
     per_config = spec.get("maxOverheadPerConfig") or {}
     detail: dict = {}
@@ -1803,6 +1877,10 @@ def run_time_gate(configs: list[Config], all_configs: list[Config], entries: dic
             bound = max(limit, asan or 0)
         if config.set in sets:
             ratios[config.name] = ratio
+        if config.language == "c++":
+            cxx_ratios.append(ratio)
+            if asan is not None:
+                cxx_asan.append(asan)
         detail[config.name] = {"ratio": ratio, "asanRatio": asan, "limit": bound}
         if bound is not None:
             ok &= ratio <= bound
@@ -1813,6 +1891,15 @@ def run_time_gate(configs: list[Config], all_configs: list[Config], entries: dic
                                    "configs": len(ratios)}
         if complete and spec.get("maxGeometricMean") is not None:
             ok &= mean <= spec["maxGeometricMean"]
+    mean = geometric_mean(cxx_ratios)
+    if mean is not None:
+        asan_mean = geometric_mean(cxx_asan) if len(cxx_asan) == len(cxx_ratios) else None
+        detail["cxxGeometricMean"] = {"value": mean, "limit": cxx.get("maxGeometricMean"), "asan": asan_mean,
+                                      "configs": len(cxx_ratios)}
+        if cxx.get("maxGeometricMean") is not None:
+            ok &= mean <= cxx["maxGeometricMean"]
+        if asan_mean is not None:
+            ok &= mean < asan_mean
     return (ok if detail else None), detail
 
 
@@ -1920,6 +2007,17 @@ class Gate:
 
     def checkout(self, config: Config) -> Path:
         project = config.project
+        for used in project.uses:
+            self.checkout_project(next(p for p in self.manifest.projects if p.name == used))
+        return self.checkout_project(project)
+
+    def build_env(self, config: Config) -> dict:
+        """What every build of a config sees beside CC and CXX: its cache and the corpus."""
+        cache = self.args.workdir / ".cache" / config.project.name
+        cache.mkdir(parents=True, exist_ok=True)
+        return {"CACHE": str(cache), "CORPUS": str(self.args.workdir.resolve())}
+
+    def checkout_project(self, project: Project) -> Path:
         with self.checkout_lock:
             if project.name not in self.checkouts:
                 path = ensure_checkout(project, self.args.workdir, self.args.fetch, self.args.offline)
@@ -2027,8 +2125,6 @@ class Gate:
                 continue
             checkout = self.checkout(config)
             entry = self.entry(config)
-            cache = self.args.workdir / ".cache" / config.project.name
-            cache.mkdir(parents=True, exist_ok=True)
             runs: dict[str, BuildRun] = {}
             for mode in modes:
                 compiler, flags = self.compiler_for(mode)
@@ -2037,7 +2133,7 @@ class Gate:
                 build = run_build(config, mode, compiler, flags, checkout, self.run_dir / "builds" / config.name,
                                   self.support_root, self.bench_dir, self.jobs, self.args.build_timeout,
                                   self.args.keep, tests=[] if timed_only else None,
-                                  extra_env={"CACHE": str(cache)})
+                                  extra_env=self.build_env(config))
                 runs[mode] = build
                 for failure in build.failures:
                     self.fail(f"{config.name} ({mode}): {failure}", config=config.name)
@@ -2174,7 +2270,7 @@ class Gate:
         def prepare(src: Path) -> str:
             return apply_patch(patch, src) or check_injected_line(src, inj)
 
-        extra = {"INJECTION_DIR": str(patch.parent), "CACHE": str(self.args.workdir / ".cache" / config.project.name)}
+        extra = {"INJECTION_DIR": str(patch.parent), **self.build_env(config)}
         try:
             if self.args.reference_only:
                 run.asan = self.asan_injection(inj, config, checkout, prepare, work, extra)
@@ -2244,14 +2340,20 @@ class Gate:
         target = gate_platform()
         results: dict[str, Any] = {}
         failed = False
+        projects = {project.name: project for project in self.manifest.projects}
         for program in programs:
+            unknown = [name for name in program.uses if name not in projects]
+            if unknown:
+                raise GateError(f"program {program.name}: uses {', '.join(unknown)}, not projects of the manifest")
+            for name in program.uses:
+                self.checkout_project(projects[name])
             archive = fetch_archive(program, self.args.workdir / ".programs")
             runs: dict[str, ProgramRun] = {}
             for mode in ("reference",) if self.args.reference_only else ("reference", "report"):
                 compiler, flags = self.compiler_for(mode)
                 log(f"[{program.name}] {mode} build and test suite with {compiler}")
                 runs[mode] = run_program(program, mode, compiler, flags, archive, self.run_dir, self.jobs,
-                                         self.args.keep)
+                                         self.args.keep, self.args.workdir)
                 log(f"[{program.name}] {mode}: built={runs[mode].built} "
                     f"failures={len(runs[mode].failures)} reports={len(runs[mode].reports)} "
                     f"({runs[mode].seconds:.0f} s)")
@@ -2303,7 +2405,8 @@ class Gate:
             for label, cc, extra in compilers:
                 src = work / label
                 copy_tree(checkout, src)
-                env = base_env(config, cc, src, self.support_root, self.bench_dir, self.jobs, {**env_extra, **extra})
+                env = base_env(config, cc, src, self.support_root, self.bench_dir, self.jobs,
+                               {**self.build_env(config), **env_extra, **extra})
                 if label == "weavec-cc":
                     env["WEAVEC_RT_REPORT_LOG"] = str(report_log)
                 for command in bench.build:

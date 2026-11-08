@@ -5,7 +5,7 @@ Unpacks a release archive (weavec-<version>-<os>-<arch>.tar.xz) or takes an
 installed prefix, moves the tree to a new directory, and with nothing but that
 tree and the platform's C toolchain:
 
-  - checks the layout (bin/weavec-cc, lib/weavec/ with the runtime and
+  - checks the layout (bin/weavec-cc and bin/weavec-c++, lib/weavec/ with the runtime and
     weavec.h, lib/clang/<major>/include) and that weavec-cc loads no LLVM
     library from outside the tree;
   - compiles and runs the README's two examples (a heap overflow, a use after
@@ -73,11 +73,33 @@ int main(int argc, char **argv) {
 """
 
 
+# RFC 0039 §10: a C++ program: a vector read past its elements, a release by
+# the wrong form, and an exception that leaves the caller's redzones.
+CXX = r"""
+#include <cstdlib>
+#include <stdexcept>
+#include <vector>
+static int *volatile kept;
+static void risky(int n) { if (n > 0) throw std::runtime_error("no"); }
+int main(int argc, char **argv) {
+  const int how = argc > 1 ? std::atoi(argv[1]) : 0;
+  std::vector<int> v;
+  v.reserve(8);
+  v.push_back(1);
+  try { risky(how); } catch (const std::exception &) {}
+  if (how == 1) return v.data()[5];
+  if (how == 2) { kept = new int[4]; delete kept; }
+  return v[0] == 1 ? 0 : 1;
+}
+"""
+
+
 class Checker:
     def __init__(self, prefix: Path, work: Path):
         self.prefix = prefix
         self.work = work
         self.cc = prefix / "bin" / "weavec-cc"
+        self.cxx = prefix / "bin" / "weavec-c++"
         self.failures: list[str] = []
         # Nothing of a developer's environment: no LLVM on PATH, no WeaveC
         # variables.
@@ -103,6 +125,7 @@ class Checker:
 
     def layout(self) -> None:
         self.check(self.cc.is_file(), "bin/weavec-cc is there")
+        self.check(self.cxx.is_file(), "bin/weavec-c++ is there")
         runtime = self.prefix / "lib" / "weavec"
         shared = "libweavec_rt.dylib" if sys.platform == "darwin" else "libweavec_rt.so"
         self.check((runtime / shared).exists(), f"lib/weavec/{shared} is there")
@@ -133,6 +156,22 @@ class Checker:
             stopped = self.run(stale)
             self.check(stopped.returncode != 0 and "weavec: heap-use-after-free at stale.c:" in stopped.stderr,
                        "stale stops with heap-use-after-free")
+
+    def cxx_program(self) -> None:
+        (self.work / "cxx.cpp").write_text(CXX)
+        built = self.run(self.cxx, "-O1", "cxx.cpp", "-o", "cxx")
+        self.check(built.returncode == 0, "weavec-c++ builds cxx" + (
+            "" if built.returncode == 0 else f": {built.stderr.strip()[:400]}"))
+        if built.returncode != 0:
+            return
+        program = self.work / "cxx"
+        self.check(self.run(program, "0").returncode == 0, "cxx 0 runs")
+        stopped = self.run(program, "1")
+        self.check(stopped.returncode != 0 and "weavec: container-overflow at cxx.cpp:" in stopped.stderr,
+                   "cxx 1 stops with container-overflow")
+        stopped = self.run(program, "2")
+        self.check(stopped.returncode != 0 and "allocated by operator new[] and released by operator delete"
+                   in stopped.stderr, "cxx 2 stops a release by the wrong form")
 
     def shared_library(self) -> None:
         (self.work / "lib.c").write_text(LIBRARY)
@@ -195,6 +234,7 @@ def main(argv: list[str]) -> int:
         print(f"toolchain: {prefix} ({platform.system()} {platform.machine()})")
         checker.layout()
         checker.examples()
+        checker.cxx_program()
         checker.shared_library()
         checker.static_program()
         checker.lto_program()

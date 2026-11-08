@@ -3,7 +3,7 @@
 
 Every example in docs/examples must compile. `weavec-cc` must compile
 lookup.c, record the guarded load of `table[i]` in the enforcement ledger
-(`weavec-ledger` version 3, RFC 0035 section 9), link it, run it, and stop
+(`weavec-ledger` version 4, RFC 0035 section 9, RFC 0039 section 8), link it, run it, and stop
 a negative index with an `index-out-of-bounds` report; and it must build
 vec.c and stop a read past its heap block with a `heap-buffer-overflow`
 report (RFC 0035 section 5.3; the default `-fweavec-checks=trap`).
@@ -60,7 +60,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert enforcement_summary(compiled.stderr, "lookup.c"), "no summary line:\n" + compiled.stderr
 
     ledger = json.loads((ledgers / "lookup.o.ledger.json").read_text())
-    assert ledger["schema"] == "weavec-ledger" and ledger["version"] == 3, ledger
+    assert ledger["schema"] == "weavec-ledger" and ledger["version"] == 4, ledger
     rows = [row for unit in ledger["units"] for row in unit["rows"]
             if row["function"] == "lookup" and row["line"] == 8 and row["operation"] == "load"]
     assert rows, "no ledger row for the load of table[i]"

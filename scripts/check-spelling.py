@@ -44,6 +44,8 @@ SKIPPED = frozenset((
     "docs/package-lock.json",
     "scripts/check-spelling.py",
     "scripts/test_check_spelling.py",
+    # Catch2's generated configuration header (its macros spell COLOUR).
+    "test/corpus/support/catch2/catch2/catch_user_config.hpp",
 ))
 
 # Text that keeps its British spelling.

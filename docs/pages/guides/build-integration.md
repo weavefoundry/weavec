@@ -3,16 +3,16 @@ title: Integrate your build
 description: Use weavec-cc as the C compiler with Make, CMake or a configure script, understand what changes in the compiled program and its link, and add the guarded build to CI.
 ---
 
-`weavec-cc` replaces the C compiler in an existing build. Nothing else in the build changes.
+`weavec-cc` replaces the C compiler and `weavec-c++` the C++ compiler in an existing build. Nothing else in the build changes.
 
 ## Use the compiler driver with Make
 
 ```sh
 make clean
-make CC=weavec-cc
+make CC=weavec-cc CXX=weavec-c++
 ```
 
-The Makefile must use `CC` for compilation and linking. If it invokes `ld` directly to link, route linking through `weavec-cc` so that it can add the runtime. To collect enforcement ledgers from a parallel build, name a directory:
+The Makefile must use `CC` (and `CXX`) for compilation and linking. If it invokes `ld` directly to link, route linking through `weavec-cc` so that it can add the runtime. To collect enforcement ledgers from a parallel build, name a directory:
 
 ```sh
 make -j8 CC=weavec-cc CFLAGS="-O2 -fweavec-ledger=build/ledger/"
@@ -25,7 +25,7 @@ Each compile writes `<object>.ledger.json` into the directory.
 Use a fresh build directory so CMake detects the new compiler:
 
 ```sh
-cmake -S . -B build-weavec -G Ninja -DCMAKE_C_COMPILER=weavec-cc
+cmake -S . -B build-weavec -G Ninja -DCMAKE_C_COMPILER=weavec-cc -DCMAKE_CXX_COMPILER=weavec-c++
 cmake --build build-weavec
 ```
 
@@ -35,18 +35,19 @@ Configure scripts see Clang: `weavec-cc --version` prints Clang's version block 
 
 ## What changes in the compiled program
 
-By default `weavec-cc` compiles with `-fweavec-checks=trap`. Each C file is compiled as Clang compiles it, with these additions:
+By default `weavec-cc` compiles with `-fweavec-checks=trap`. Each C and C++ file is compiled as Clang compiles it, with these additions:
 
 - every load, store, atomic operation and memory intrinsic, and every memory argument of a C library call in the library table, gets a _guard_: a few inline instructions that read the runtime's shadow memory and call the runtime only when a byte they read is not zero. A guard is removed only where a local rule proves it redundant;
 - the locals a guard can reach, or whose address escapes, are laid out in one frame with redzones between them, and locals whose lifetimes never overlap share space as Clang's own frames do. The file's globals get redzones, which a constructor registers with the runtime;
 - array indexes are checked against the bound the array's type declares (`-fsanitize=array-bounds`, reported through the runtime), and a fortified library call (`__strcpy_chk` and the like) is checked against the object size it carries. On glibc targets an optimizing compile that does not set `_FORTIFY_SOURCE` gets `-D_FORTIFY_SOURCE=3`;
 - the file is parsed as AddressSanitizer would parse it: `__SANITIZE_ADDRESS__` is defined and `__has_feature(address_sanitizer)` is true, so code written to be ASan-clean takes the same paths. `-fno-weavec-asan-compat` turns this off;
 - locals are zero-initialized (`-ftrivial-auto-var-init=zero`; `-fno-weavec-zero-init` turns it off), and `__WEAVEC__` is defined;
-- source locations are kept for the reports, without emitting debug information when you asked for none.
+- source locations are kept for the reports, without emitting debug information when you asked for none;
+- in C++, the C++ library's bounds checks are on (libc++'s fast hardening mode, libstdc++'s assertions) unless you set them, the standard containers' storage past their elements is poisoned through the C++ library's container annotations, and a call that may throw is guarded as any call is.
 
-There is no change to pointer representation or the ABI. `-fweavec-checks=report` prints failed guards instead of trapping; `-fweavec-checks=none` (or `-fno-weavec`) compiles the same code as Clang would and links nothing. C++ and Objective-C sources are compiled as Clang compiles them.
+There is no change to pointer representation or the ABI. `-fweavec-checks=report` prints failed guards instead of trapping; `-fweavec-checks=none` (or `-fno-weavec`) compiles the same code as Clang would and links nothing. Objective-C sources are compiled as Clang compiles them.
 
-Every link in the `trap`, `report` and `verify` modes, of a program, a shared library or a plug-in, adds the runtime's shared library before the system libraries, with an rpath to the toolchain's `lib/weavec`: `libweavec_rt.so.<abi>` on Linux, `libweavec_rt.<abi>.dylib` on Darwin. It holds the shadow memory, the arena allocator with `malloc`, `calloc`, `realloc`, `free` and the other standard allocation functions, the quarantine of released blocks and the sweep that recycles them, the guards' slow paths, the checked library wrappers, AddressSanitizer's poisoning interface and the reports. A `-static` Linux program takes `libweavec_rt.a` instead.
+Every link in the `trap`, `report` and `verify` modes, of a program, a shared library or a plug-in, adds the runtime's shared library before the system libraries, with an rpath to the toolchain's `lib/weavec`: `libweavec_rt.so.<abi>` on Linux, `libweavec_rt.<abi>.dylib` on Darwin. It holds the shadow memory, the arena allocator with `malloc`, `calloc`, `realloc`, `free`, the other standard allocation functions and C++'s `operator new` and `operator delete`, the quarantine of released blocks and the sweep that recycles them, the guards' slow paths, the checked library wrappers, AddressSanitizer's poisoning interface and the reports. A `-static` Linux program takes `libweavec_rt.a` instead.
 
 Every image `weavec-cc` linked depends on the library, so the loader loads it once and one runtime serves the process, whatever the images' version scripts, `-Bsymbolic`, export lists or link order: a block one image allocates another may release, and every image's globals have their redzones in the process's one shadow. On Linux its `malloc` precedes the C library's in the search order and serves every image; on Darwin its malloc zone becomes the process's default zone. Either way the C library's own allocations (`strdup`, `getline`, `asprintf` and the like) are tracked heap blocks too.
 

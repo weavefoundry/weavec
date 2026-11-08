@@ -16,11 +16,15 @@
 // scope of their object. A tracked dynamic alloca gets a redzone after it,
 // which the runtime clears at the stack restore or return that frees it.
 // Before a call that does not return, the runtime clears the stack's shadow
-// below the caller, so that a `longjmp` leaves no poison behind.
+// below the caller, so that a `longjmp` leaves no poison behind; RFC 0039
+// §3: not before one that ends the process or unwinds (the library table
+// says which), whose unwound frames the runtime marks returned when a
+// landing pad calls it.
 //
 //===----------------------------------------------------------------------===//
 
 #include "GuardPassImpl.h"
+#include "weavec/Core/LibrarySpec.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/StackLifetime.h"
@@ -407,37 +411,46 @@ layoutFrame(FunctionContext &context,
   return moved;
 }
 
-/// Functions that end the process, after which no stack is used again.
-static bool endsProcess(llvm::StringRef name) {
-  return llvm::is_contained({"abort", "exit", "_exit", "_Exit", "quick_exit",
-                             "__assert_fail", "__assert_rtn", "__assert",
-                             "__stack_chk_fail", "__chk_fail", "err", "errx",
-                             "verr", "verrx", "__fortify_fail"},
-                            name);
-}
-
 void unpoisonBeforeNoReturn(FunctionContext &context) {
   ModuleContext &module = context.module;
+  const core::LibrarySpec &spec = core::LibrarySpec::shipped();
   llvm::SmallVector<llvm::CallBase *, 4> calls;
+  llvm::SmallVector<llvm::LandingPadInst *, 4> pads;
   for (llvm::BasicBlock &block : context.function)
     for (llvm::Instruction &instruction : block) {
+      if (auto *pad = llvm::dyn_cast<llvm::LandingPadInst>(&instruction))
+        pads.push_back(pad);
       auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
       if (call == nullptr || !call->doesNotReturn() ||
           llvm::isa<llvm::IntrinsicInst>(call))
         continue;
-      if (const llvm::Function *callee = call->getCalledFunction();
-          callee && (ModuleContext::isRuntimeName(callee->getName()) ||
-                     endsProcess(callee->getName())))
-        continue;
+      // RFC 0039 §3: after the end of the process no stack is used again,
+      // and the frames an exception unwinds are marked at its landing pad.
+      if (const llvm::Function *callee = call->getCalledFunction()) {
+        if (ModuleContext::isRuntimeName(callee->getName()))
+          continue;
+        const std::optional<core::LibraryMatch> match =
+            spec.lookup(libraryName(callee->getName()), call->arg_size());
+        if (match && match->entry != nullptr &&
+            (match->entry->exits || match->entry->unwinds))
+          continue;
+      }
       calls.push_back(call);
     }
-  if (calls.empty())
+  if (!calls.empty()) {
+    llvm::FunctionCallee unpoison = module.runtime(
+        "unpoison_stack",
+        llvm::FunctionType::get(llvm::Type::getVoidTy(module.context), false));
+    for (llvm::CallBase *call : calls)
+      llvm::IRBuilder<>(call).CreateCall(unpoison);
+  }
+  if (pads.empty())
     return;
-  llvm::FunctionCallee unpoison = module.runtime(
-      "unpoison_stack",
+  llvm::FunctionCallee landed = module.runtime(
+      "landed",
       llvm::FunctionType::get(llvm::Type::getVoidTy(module.context), false));
-  for (llvm::CallBase *call : calls)
-    llvm::IRBuilder<>(call).CreateCall(unpoison);
+  for (llvm::LandingPadInst *pad : pads)
+    llvm::IRBuilder<>(pad->getNextNode()).CreateCall(landed);
 }
 
 } // namespace weavec::frontend::guard

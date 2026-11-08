@@ -11,7 +11,9 @@
 // accesses whose instructions' locations lie in one unguarded and removes
 // their `array-bounds` checks. The collector runs over the AST before code
 // generation, and only when the unit expanded the macro or spelled the
-// annotation.
+// annotation. RFC 0039: it also records the unit's system headers, so that
+// a report names the first location outside them (a check inlined from the
+// C++ library's headers is reported at its caller).
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,6 +22,7 @@
 
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 
 #include <memory>
 #include <string>
@@ -54,12 +57,19 @@ public:
                               unsigned column) const;
   [[nodiscard]] bool empty() const { return ranges.empty(); }
 
+  /// `file` (normalized) is a system header of the unit.
+  void addSystemFile(llvm::StringRef file) { systemFiles.insert(file); }
+  [[nodiscard]] bool isSystemFile(llvm::StringRef file) const {
+    return systemFiles.contains(file);
+  }
+
   /// The normalized absolute form of `file`, relative to `directory`.
   [[nodiscard]] static std::string normalize(llvm::StringRef file,
                                              llvm::StringRef directory);
 
 private:
   llvm::StringMap<std::vector<Range>> ranges;
+  llvm::StringSet<> systemFiles;
 };
 
 /// The collector: a consumer to run before code generation, which fills

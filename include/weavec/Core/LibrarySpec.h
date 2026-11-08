@@ -109,7 +109,8 @@ struct LibDisjoint {
 /// `wrapper(name)`: the runtime's checked `__weavec_rt_<name>` replaces the
 /// call. It takes the call's arguments and the site (first when the call is
 /// variadic, last otherwise) and checks what the call reads and writes as
-/// it runs.
+/// it runs. A C row's wrapper is named after it; a C++ row's (a mangled
+/// name) by the name given.
 struct LibWrapper {
   std::string name;
 
@@ -200,6 +201,11 @@ struct LibraryEntry {
   bool wide = false;
   std::optional<LibFormat> format;
   std::optional<LibWrapper> wrapper;
+  /// RFC 0039 §3: `exits`, the call ends the process; `unwinds`, it unwinds
+  /// the stack (a throw). Nothing is cleared of the stack's shadow before
+  /// either.
+  bool exits = false;
+  bool unwinds = false;
   /// The line of `LibrarySpec.txt` the row starts on.
   unsigned line = 0;
 

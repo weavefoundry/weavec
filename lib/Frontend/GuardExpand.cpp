@@ -12,7 +12,9 @@
 // guards can reach (GuardFrames.cpp); each remaining guard becomes an
 // inline check of the shadow with a call of the runtime's slow path, and
 // each string marker a call of the runtime's checked `strlen`. In verify
-// mode a removed guard is emitted too, as a monitor of the rule.
+// mode a removed guard is emitted too, as a monitor of the rule. RFC 0039
+// §6: a trap of the C++ library's checks becomes a library-assertion
+// report.
 //
 //===----------------------------------------------------------------------===//
 
@@ -799,11 +801,56 @@ static void resiteInlinedCalls(ModuleContext &module,
     }
 }
 
+/// RFC 0039 §6: a failed check of the C++ library (libc++'s hardening) is
+/// `__builtin_verbose_trap`, a trap whose debug location is inlined at an
+/// artificial function named `__clang_trap_msg$<category>$<message>`: the
+/// runtime reports the message, at the trap's site, before the trap.
+static void reportLibraryTraps(ModuleContext &module,
+                               llvm::Function &function) {
+  llvm::SmallVector<std::pair<llvm::IntrinsicInst *, llvm::StringRef>, 2> traps;
+  for (llvm::BasicBlock &block : function)
+    for (llvm::Instruction &instruction : block) {
+      auto *trap = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction);
+      if (trap == nullptr || trap->getIntrinsicID() != llvm::Intrinsic::trap ||
+          !trap->getDebugLoc())
+        continue;
+      const llvm::DISubprogram *scope =
+          trap->getDebugLoc()->getScope()->getSubprogram();
+      llvm::StringRef name = scope != nullptr ? scope->getName() : "";
+      if (!name.consume_front("__clang_trap_msg$"))
+        continue;
+      // libc++'s message starts with the header's `<file>:<line>: ` (the
+      // report names the caller) and ends in a newline.
+      llvm::StringRef message = name.split('$').second.rtrim();
+      if (const auto [place, rest] = message.split(": ");
+          !rest.empty() && !place.contains(' ') &&
+          llvm::all_of(place.rsplit(':').second, llvm::isDigit) &&
+          !place.rsplit(':').second.empty())
+        message = rest;
+      traps.emplace_back(trap, message);
+    }
+  if (traps.empty())
+    return;
+  llvm::FunctionCallee report = module.runtime(
+      "library_assertion",
+      llvm::FunctionType::get(llvm::Type::getVoidTy(module.context),
+                              {module.ptr, module.ptr}, false));
+  for (const auto &[trap, message] : traps) {
+    llvm::IRBuilder<> builder(trap);
+    llvm::CallInst *call = builder.CreateCall(
+        report, {builder.CreateGlobalString(message, "__weavec.message"),
+                 module.site(trap->getDebugLoc(), 0)});
+    call->setDebugLoc(trap->getDebugLoc());
+    call->setDoesNotReturn();
+  }
+}
+
 void expandGuards(ModuleContext &module, llvm::Function &function,
                   llvm::FunctionAnalysisManager &analyses) {
   const llvm::DataLayout &layout = module.layout;
   dropScopes(function, /*orphansOnly=*/false);
   resiteInlinedCalls(module, function);
+  reportLibraryTraps(module, function);
   // The read-only library calls the optimizer left (section 2.5).
   guardLibraryCalls(module, function, /*late=*/true);
   std::vector<Access> accesses;

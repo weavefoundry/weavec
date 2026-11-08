@@ -20,14 +20,16 @@
       "_comment": "RFC 0035 G9 (--full): each config's weavec-cc build within maxBuildRatio of the reference compiler's CPU time, and no per-file compile of --quick above maxUnitRatio of the reference compiler's (among the files the reference compiler takes at least minUnitCpuSeconds for).",
       "maxBuildRatio": 1.5,
       "maxUnitRatio": 3.0,
-      "minUnitCpuSeconds": 0.25
+      "minUnitCpuSeconds": 0.25,
+      "cxx": {"_comment": "RFC 0039 G8: each C++ config's build at most maxBuildRatio, their geometric mean at most maxGeometricMean; G8 limits configs, not units (maxUnitRatio is RFC 0035 G9's, for C).", "maxBuildRatio": 3.0, "maxGeometricMean": 2.0, "maxUnitRatio": null}
     },
     "runTime": {
       "_comment": "RFC 0035 G7 (--bench, --full): the best-of-N user CPU of each workload built by weavec-cc over the reference compiler's. Each workload of a set in `sets` at most the larger of maxOverhead and its ASan ratio, and their geometric mean at most maxGeometricMean once all of them ran; the workloads of maxOverheadPerConfig at their own limits.",
       "sets": ["fresh34", "fresh35"],
       "maxOverhead": 2.0,
       "maxGeometricMean": 1.8,
-      "maxOverheadPerConfig": {"lua": 2.0, "zlib": 1.4, "cJSON": 1.4}
+      "maxOverheadPerConfig": {"lua": 2.0, "zlib": 1.4, "cJSON": 1.4},
+      "cxx": {"_comment": "RFC 0039 G7: the C++ workloads' geometric mean at most maxGeometricMean and below ASan's.", "maxGeometricMean": 2.5}
     }
   },
   "projects": [
@@ -1501,6 +1503,517 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "fmt",
+      "url": "https://github.com/fmtlib/fmt.git",
+      "sha": "208219daff58f2a7438f6931cc2ddc358acf33ef",
+      "support": [],
+      "configs": [
+        {
+          "name": "fmt",
+          "heldOut": true,
+          "set": "fresh39",
+          "language": "c++",
+          "notes": "fmt 12.2.1, a formatting library: format strings parsed at compile time and at run time, a type-erased argument store, buffers that grow from an inline array to the heap (basic_memory_buffer), Dragonbox floating-point formatting, the chrono, ranges, color and os extensions. The build is the project's CMake Release build with its tests (the bundled googletest); the test is CTest (about 20 test programs). The bench (test/corpus/bench/fmt-bench.cc) formats integers, floating-point numbers and strings with widths, precisions and named arguments into memory buffers. The per-file compiles are the library's two sources.",
+          "compile": {"files": ["src/format.cc", "src/os.cc"], "args": ["-std=c++17", "-Iinclude"]},
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DFMT_DOC=OFF -DFMT_INSTALL=OFF",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\""],
+          "bench": {
+            "name": "fmt-format",
+            "build": ["\"$CXX\" -O2 -std=c++17 -Iinclude \"$BENCH/fmt-bench.cc\" src/format.cc -o fmt-bench"],
+            "command": "./fmt-bench 400 > bench.out && cat bench.out",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "json-test-data",
+      "url": "https://github.com/nlohmann/json_test_data.git",
+      "sha": "a1375cea09d27cc1c4cadb8d00470375b421ac37",
+      "support": [],
+      "configs": []
+    },
+    {
+      "name": "nlohmann-json",
+      "url": "https://github.com/nlohmann/json.git",
+      "sha": "55f93686c01528224f448c19128836e7df245f72",
+      "support": [],
+      "uses": ["json-test-data"],
+      "configs": [
+        {
+          "name": "nlohmann-json",
+          "heldOut": true,
+          "set": "fresh39",
+          "language": "c++",
+          "notes": "nlohmann/json 3.12.0, a header-only JSON library: a tagged union of values whose objects, arrays, strings and binaries live on the heap, a recursive-descent parser over input adapters, a SAX interface, CBOR, MessagePack, UBJSON, BJData and BSON readers and writers, JSON Pointer and Patch, an ordered map. The build is the project's CMake Release build with its doctest unit tests in C++17 alone (JSON_TestStandards=17) and its test data from the pinned json_test_data checkout ($CORPUS/json-test-data, JSON_TestDataDirectory: nothing is downloaded); the test is CTest. The bench (test/corpus/bench/json-bench.cpp) parses json_test_data's 55 MB jeopardy.json, walks it, serializes it and parses the result, twice. The per-file compiles are 15 unit-test files that need no test data.",
+          "compile": {
+            "files": [
+              "tests/src/unit-algorithms.cpp",
+              "tests/src/unit-class_lexer.cpp",
+              "tests/src/unit-class_parser.cpp",
+              "tests/src/unit-conversions.cpp",
+              "tests/src/unit-deserialization.cpp",
+              "tests/src/unit-element_access1.cpp",
+              "tests/src/unit-iterators1.cpp",
+              "tests/src/unit-items.cpp",
+              "tests/src/unit-json_pointer.cpp",
+              "tests/src/unit-merge_patch.cpp",
+              "tests/src/unit-modifiers.cpp",
+              "tests/src/unit-ordered_map.cpp",
+              "tests/src/unit-serialization.cpp",
+              "tests/src/unit-to_chars.cpp",
+              "tests/src/unit-udt.cpp"
+            ],
+            "args": ["-std=c++17", "-Isingle_include", "-Itests/thirdparty/doctest", "-Itests/src"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DJSON_BuildTests=ON -DJSON_TestStandards=17 -DJSON_Install=OFF -DJSON_TestDataDirectory=\"$CORPUS/json-test-data\"",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\""],
+          "bench": {
+            "name": "json-parse-dump",
+            "build": ["\"$CXX\" -O2 -std=c++17 -Isingle_include \"$BENCH/json-bench.cpp\" -o json-bench"],
+            "command": "./json-bench \"$CORPUS/json-test-data/jeopardy/jeopardy.json\" 2 > bench.out && cat bench.out",
+            "repeat": 5
+          },
+          "testTimeout": 3600
+        }
+      ]
+    },
+    {
+      "name": "googletest",
+      "url": "https://github.com/google/googletest.git",
+      "sha": "063de7e9578f82b369302001269680b4b1553359",
+      "support": [],
+      "configs": [
+        {
+          "name": "googletest",
+          "heldOut": true,
+          "set": "fresh39",
+          "language": "c++",
+          "notes": "GoogleTest 1.18.0 and GoogleMock: test registration through static initializers, death tests that fork, assertion results built from streams, matchers and mock expectations, the event listener chain, flags. The build is the project's CMake Release build with gtest's and gmock's own tests; the test is CTest (some tests run python3). The per-file compiles are gtest-all.cc and gmock-all.cc.",
+          "compile": {
+            "files": ["googletest/src/gtest-all.cc", "googlemock/src/gmock-all.cc"],
+            "args": ["-std=c++17", "-Igoogletest/include", "-Igoogletest", "-Igooglemock/include", "-Igooglemock"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -Dgtest_build_tests=ON -Dgmock_build_tests=ON -DINSTALL_GTEST=OFF",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\""]
+        },
+        {
+          "name": "stl",
+          "heldOut": true,
+          "set": "fresh39",
+          "language": "c++",
+          "notes": "The motivation's STL program (RFC 0039, test/corpus/bench/stl.cpp), which has no project of its own and is carried by this one: its bench builds that one file. The per-file compiles are GoogleTest's samples (its own code, not the program's), so that the config has a ledger.",
+          "compile": {"files": ["googletest/samples/sample*.cc"], "args": ["-std=c++17", "-Igoogletest/include"]},
+          "bench": {
+            "name": "stl-program",
+            "build": ["\"$CXX\" -O2 -std=c++20 \"$BENCH/stl.cpp\" -o stl-bench -pthread"],
+            "command": "./stl-bench > bench.out && cat bench.out",
+            "check": "grep -qx 22214224 bench.out",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "leveldb",
+      "url": "https://github.com/google/leveldb.git",
+      "sha": "99b3c03b3284f5886f9ef9a4ef703d57373e61be",
+      "submodules": true,
+      "support": ["leveldb/port/port_config.h"],
+      "configs": [
+        {
+          "name": "leveldb",
+          "heldOut": true,
+          "set": "fresh39",
+          "language": "c++",
+          "notes": "LevelDB 1.23, a key-value store: a skip-list memtable allocated from an arena, a write-ahead log, sorted tables with block caches (an LRU of reference-counted handles), compactions on a background thread, iterators merging levels, the C API. Its googletest and benchmark come from the checkout's submodules at the commits it records; those submodules add -Werror to every Release build, and Clang 23 warns about their code (thread-safety analysis of benchmark's mutex.h, deprecated implicit copies in googlemock, an unused variable in benchmark and, on Linux, an uninitialized const pointer in googletest), with the reference compiler too, so the builds keep those four warnings warnings. The build is the project's CMake Release build with its tests and benchmarks; the test is CTest (leveldb_tests, c_test, env_posix_test). The bench is db_bench (built with the tests on, since it includes util/testutil.h and so gmock: fillseq, fillrandom, overwrite, readrandom, readseq, readreverse, compact) over 300,000 entries. The per-file compiles are the library's 38 sources with support/leveldb/port/port_config.h, which CMake generates.",
+          "compile": {
+            "files": [
+              "db/builder.cc",
+              "db/c.cc",
+              "db/db_impl.cc",
+              "db/db_iter.cc",
+              "db/dbformat.cc",
+              "db/dumpfile.cc",
+              "db/filename.cc",
+              "db/log_reader.cc",
+              "db/log_writer.cc",
+              "db/memtable.cc",
+              "db/repair.cc",
+              "db/table_cache.cc",
+              "db/version_edit.cc",
+              "db/version_set.cc",
+              "db/write_batch.cc",
+              "table/block.cc",
+              "table/block_builder.cc",
+              "table/filter_block.cc",
+              "table/format.cc",
+              "table/iterator.cc",
+              "table/merger.cc",
+              "table/table.cc",
+              "table/table_builder.cc",
+              "table/two_level_iterator.cc",
+              "util/arena.cc",
+              "util/bloom.cc",
+              "util/cache.cc",
+              "util/coding.cc",
+              "util/comparator.cc",
+              "util/crc32c.cc",
+              "util/env.cc",
+              "util/env_posix.cc",
+              "util/filter_policy.cc",
+              "util/hash.cc",
+              "util/histogram.cc",
+              "util/logging.cc",
+              "util/options.cc",
+              "util/status.cc"
+            ],
+            "args": ["-std=c++17", "-I.", "-Iinclude", "-I{support}", "-DLEVELDB_PLATFORM_POSIX=1"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DLEVELDB_BUILD_TESTS=ON -DLEVELDB_BUILD_BENCHMARKS=ON -DLEVELDB_INSTALL=OFF \"-DCMAKE_CXX_FLAGS=-Wno-error=thread-safety-analysis -Wno-error=deprecated-copy -Wno-error=unused-but-set-variable -Wno-error=uninitialized-const-pointer\"",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\""],
+          "bench": {
+            "name": "leveldb-db-bench",
+            "build": [
+              "cmake -S . -B bench-out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DLEVELDB_BUILD_TESTS=ON -DLEVELDB_INSTALL=OFF \"-DCMAKE_CXX_FLAGS=-Wno-error=thread-safety-analysis -Wno-error=deprecated-copy -Wno-error=unused-but-set-variable -Wno-error=uninitialized-const-pointer\"",
+              "cmake --build bench-out -j \"$JOBS\" --target db_bench"
+            ],
+            "command": "rm -rf bench-db && bench-out/db_bench --db=\"$PWD/bench-db\" --num=300000 --benchmarks=fillseq,fillrandom,overwrite,readrandom,readseq,readreverse,compact > /dev/null",
+            "repeat": 5
+          }
+        }
+      ]
+    },
+    {
+      "name": "snappy",
+      "url": "https://github.com/google/snappy.git",
+      "sha": "9c28114a38866f6deeaa826db918293bc28ae410",
+      "submodules": true,
+      "support": ["snappy/config.h", "snappy/snappy-stubs-public.h"],
+      "configs": [
+        {
+          "name": "snappy",
+          "heldOut": true,
+          "set": "fresh39",
+          "language": "c++",
+          "notes": "Snappy 1.3.1, a compressor: a hash table of positions on the stack or the heap, literal and copy emission with unaligned 64-bit loads and stores (NEON on arm64), the Source and Sink interfaces, an iovec writer, the C API. Its googletest and benchmark come from the checkout's submodules. The build is the project's CMake Release build with its tests (not its benchmarks); the test is CTest (snappy_unittest over testdata/). The bench (test/corpus/bench/snappy-bench.cc) compresses and uncompresses each testdata file through the string and the source/sink APIs. The per-file compiles are the library's four sources with support/snappy/config.h and snappy-stubs-public.h, which CMake generates.",
+          "compile": {
+            "files": ["snappy.cc", "snappy-c.cc", "snappy-sinksource.cc", "snappy-stubs-internal.cc"],
+            "args": ["-std=c++17", "-I.", "-I{support}", "-DHAVE_CONFIG_H"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DSNAPPY_BUILD_TESTS=ON -DSNAPPY_BUILD_BENCHMARKS=OFF -DSNAPPY_INSTALL=OFF",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\""],
+          "bench": {
+            "name": "snappy-round-trip",
+            "build": [
+              "cmake -S . -B bench-out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DSNAPPY_BUILD_TESTS=OFF -DSNAPPY_BUILD_BENCHMARKS=OFF -DSNAPPY_INSTALL=OFF",
+              "cmake --build bench-out -j \"$JOBS\" --target snappy",
+              "\"$CXX\" -O2 -std=c++17 -I. -Ibench-out \"$BENCH/snappy-bench.cc\" bench-out/libsnappy.a -o snappy-bench"
+            ],
+            "command": "./snappy-bench testdata 40 > bench.out && cat bench.out",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "yaml-cpp",
+      "url": "https://github.com/jbeder/yaml-cpp.git",
+      "sha": "56e3bb550c91fd7005566f19c079cb7a503223cf",
+      "support": [],
+      "configs": [
+        {
+          "name": "yaml-cpp",
+          "heldOut": true,
+          "set": "fresh39",
+          "language": "c++",
+          "notes": "yaml-cpp 0.9.0, a YAML parser and emitter: a scanner over a stream of tokens in a deque, a node graph of shared memory holders and reference-counted nodes, an emitter state machine, conversions through templates. The build is the project's CMake Release build with its tests (its bundled googletest 1.13); the test is CTest (yaml-cpp-tests). On linux-aarch64, where char is unsigned, test/binary_test.cpp's braced initialization of chars with negative constants is a narrowing error with any compiler, so the build turns it into a warning there. The per-file compiles are src/ and src/contrib/.",
+          "compile": {"files": ["src/*.cpp", "src/contrib/*.cpp"], "args": ["-std=c++17", "-Iinclude", "-Isrc"]},
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DYAML_CPP_BUILD_TESTS=ON -DYAML_CPP_BUILD_TOOLS=OFF -DYAML_CPP_FORMAT_SOURCE=OFF -DYAML_CPP_INSTALL=OFF",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "platforms": {"linux-aarch64": {"build": ["cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DYAML_CPP_BUILD_TESTS=ON -DYAML_CPP_BUILD_TOOLS=OFF -DYAML_CPP_FORMAT_SOURCE=OFF -DYAML_CPP_INSTALL=OFF -DCMAKE_CXX_FLAGS=-Wno-c++11-narrowing", "cmake --build out -j \"$JOBS\""]}},
+          "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\""]
+        }
+      ]
+    },
+    {
+      "name": "tinyxml2",
+      "url": "https://github.com/leethomason/tinyxml2.git",
+      "sha": "9148bdf719e997d1f474be6bcc7943881046dba1",
+      "support": [],
+      "configs": [
+        {
+          "name": "tinyxml2",
+          "heldOut": true,
+          "set": "fresh39",
+          "language": "c++",
+          "notes": "TinyXML-2 11.0.0, an XML DOM: nodes allocated from fixed-size memory pools, an in-place parser that edits the input buffer, string pairs pointing into it, a printer with its own dynamic arrays. The build is the project's CMake Release build with its test (xmltest over resources/); the test is CTest. The per-file compiles are tinyxml2.cpp and xmltest.cpp.",
+          "compile": {"files": ["tinyxml2.cpp", "xmltest.cpp"], "args": ["-std=c++17", "-I."]},
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -Dtinyxml2_BUILD_TESTING=ON",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\""]
+        }
+      ]
+    },
+    {
+      "name": "abseil",
+      "url": "https://github.com/abseil/abseil-cpp.git",
+      "sha": "2065f4ded0558c6f89fee67c8e5228feb4eb960e",
+      "support": [],
+      "uses": ["googletest"],
+      "configs": [
+        {
+          "name": "abseil",
+          "heldOut": true,
+          "set": "fresh39",
+          "language": "c++",
+          "notes": "Abseil 20260817.0, Google's C++ foundation library: Swiss tables (flat and node hash maps and sets with control bytes and SIMD group probes, sanitizer-style poisoning hooks), inlined vectors, B-tree containers, Cord (a reference-counted rope of flat, external and substring nodes), string formatting and conversion (str_format, numbers, charconv), Mutex and its waiters, time zones, Status, low-level allocators and the base internals. Its tests use the pinned googletest checkout ($CORPUS/googletest, ABSL_LOCAL_GOOGLETEST_DIR: nothing is downloaded). The build is the project's CMake Release build with its tests (ABSL_BUILD_TESTING, C++17); the test is CTest. WeaveC defines __SANITIZE_ADDRESS__ (RFC 0036, section 5), so Abseil builds its tests of AddressSanitizer itself; the test leaves out, by GTEST_FILTER, those that test what WeaveC does not do as ASan does (RFC 0039, Measured gates): death tests whose expected message is ASan's (Abseil's CrashIfIteratorIsInvalid and invalidated-iterator text, which ASan's symbolized stack carries and WeaveC's report line does not; Btree's, Iterator's, Table's and SooTest's), and which report mode, where a report does not kill, cannot pass; __asan_address_is_poisoned of single 8-byte slots and padding bytes, where WeaveC poisons whole 16-byte granules (RFC 0036, section 5: SanitizerTest, Sanitizer.PoisoningOnErase, Layout's PoisonPadding, CordSanitizerTest, PoisonTest); and container annotations of FixedArray's inline storage in a stack frame, which RFC 0039 section 5 leaves alone (FixedArrayTest.AddressSanitizerAnnotations1-4). The per-file compiles are 94 sources of strings, containers, hash, base, synchronization, time, numeric and status.",
+          "compile": {
+            "files": [
+              "absl/base/internal/cpu_detect.cc",
+              "absl/base/internal/cycleclock.cc",
+              "absl/base/internal/hardening.cc",
+              "absl/base/internal/low_level_alloc.cc",
+              "absl/base/internal/poison.cc",
+              "absl/base/internal/raw_logging.cc",
+              "absl/base/internal/scoped_set_env.cc",
+              "absl/base/internal/spinlock.cc",
+              "absl/base/internal/spinlock_wait.cc",
+              "absl/base/internal/strerror.cc",
+              "absl/base/internal/sysinfo.cc",
+              "absl/base/internal/thread_identity.cc",
+              "absl/base/internal/tracing.cc",
+              "absl/base/internal/unscaledcycleclock.cc",
+              "absl/container/internal/hashtablez_sampler.cc",
+              "absl/container/internal/hashtablez_sampler_force_weak_definition.cc",
+              "absl/container/internal/raw_hash_set.cc",
+              "absl/hash/internal/city.cc",
+              "absl/hash/internal/hash.cc",
+              "absl/hash/internal/print_hash_of.cc",
+              "absl/numeric/int128.cc",
+              "absl/status/internal/status_internal.cc",
+              "absl/status/status.cc",
+              "absl/status/status_builder.cc",
+              "absl/status/status_payload_printer.cc",
+              "absl/status/statusor.cc",
+              "absl/strings/ascii.cc",
+              "absl/strings/charconv.cc",
+              "absl/strings/cord.cc",
+              "absl/strings/cord_analysis.cc",
+              "absl/strings/escaping.cc",
+              "absl/strings/internal/charconv_bigint.cc",
+              "absl/strings/internal/charconv_parse.cc",
+              "absl/strings/internal/cord_internal.cc",
+              "absl/strings/internal/cord_rep_btree.cc",
+              "absl/strings/internal/cord_rep_btree_navigator.cc",
+              "absl/strings/internal/cord_rep_btree_reader.cc",
+              "absl/strings/internal/cord_rep_consume.cc",
+              "absl/strings/internal/cord_rep_crc.cc",
+              "absl/strings/internal/cordz_functions.cc",
+              "absl/strings/internal/cordz_handle.cc",
+              "absl/strings/internal/cordz_info.cc",
+              "absl/strings/internal/cordz_sample_token.cc",
+              "absl/strings/internal/damerau_levenshtein_distance.cc",
+              "absl/strings/internal/escaping.cc",
+              "absl/strings/internal/generic_printer.cc",
+              "absl/strings/internal/memutil.cc",
+              "absl/strings/internal/ostringstream.cc",
+              "absl/strings/internal/pow10_helper.cc",
+              "absl/strings/internal/str_format/arg.cc",
+              "absl/strings/internal/str_format/bind.cc",
+              "absl/strings/internal/str_format/extension.cc",
+              "absl/strings/internal/str_format/float_conversion.cc",
+              "absl/strings/internal/str_format/output.cc",
+              "absl/strings/internal/str_format/parser.cc",
+              "absl/strings/internal/stringify_sink.cc",
+              "absl/strings/internal/utf8.cc",
+              "absl/strings/match.cc",
+              "absl/strings/numbers.cc",
+              "absl/strings/str_cat.cc",
+              "absl/strings/str_replace.cc",
+              "absl/strings/str_split.cc",
+              "absl/strings/substitute.cc",
+              "absl/synchronization/barrier.cc",
+              "absl/synchronization/blocking_counter.cc",
+              "absl/synchronization/internal/create_thread_identity.cc",
+              "absl/synchronization/internal/futex_waiter.cc",
+              "absl/synchronization/internal/graphcycles.cc",
+              "absl/synchronization/internal/kernel_timeout.cc",
+              "absl/synchronization/internal/per_thread_sem.cc",
+              "absl/synchronization/internal/pthread_waiter.cc",
+              "absl/synchronization/internal/sem_waiter.cc",
+              "absl/synchronization/internal/stdcpp_waiter.cc",
+              "absl/synchronization/internal/waiter_base.cc",
+              "absl/synchronization/internal/win32_waiter.cc",
+              "absl/synchronization/mutex.cc",
+              "absl/synchronization/notification.cc",
+              "absl/time/civil_time.cc",
+              "absl/time/clock.cc",
+              "absl/time/clock_interface.cc",
+              "absl/time/duration.cc",
+              "absl/time/format.cc",
+              "absl/time/internal/cctz/src/civil_time_detail.cc",
+              "absl/time/internal/cctz/src/time_zone_fixed.cc",
+              "absl/time/internal/cctz/src/time_zone_format.cc",
+              "absl/time/internal/cctz/src/time_zone_if.cc",
+              "absl/time/internal/cctz/src/time_zone_impl.cc",
+              "absl/time/internal/cctz/src/time_zone_info.cc",
+              "absl/time/internal/cctz/src/time_zone_libc.cc",
+              "absl/time/internal/cctz/src/time_zone_lookup.cc",
+              "absl/time/internal/cctz/src/time_zone_posix.cc",
+              "absl/time/internal/cctz/src/zone_info_source.cc",
+              "absl/time/simulated_clock.cc",
+              "absl/time/time.cc"
+            ],
+            "args": ["-std=c++17", "-I."]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -DABSL_BUILD_TESTING=ON -DABSL_USE_GOOGLETEST_HEAD=OFF -DABSL_LOCAL_GOOGLETEST_DIR=\"$CORPUS/googletest\" -DABSL_ENABLE_INSTALL=OFF",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["GTEST_FILTER='-*Sanitizer*:Btree.InvalidIteratorUse:Btree.InvalidPointerUse:Layout.*PoisonPadding:*IteratorInvalidAsserts*:Table.DestroyedCallsFail:Table.GenerationInfoResetsOnClear:PoisonTest.CrashesOnDereference' ctest --test-dir out --output-on-failure -j \"$JOBS\""],
+          "testTimeout": 3600
+        }
+      ]
+    },
+    {
+      "name": "pugixml",
+      "url": "https://github.com/zeux/pugixml.git",
+      "sha": "c8033ce9d039e7f9d134877c363397b3cfe20816",
+      "support": [],
+      "configs": [
+        {
+          "name": "pugixml",
+          "heldOut": true,
+          "set": "sealed39",
+          "language": "c++",
+          "notes": "SEALED (RFC 0039, section 9): built with the reference compiler only until gate G2. pugixml 1.16, an XML DOM with XPath: nodes and attributes carved from pages of its own allocator, an in-situ parser over a mutable buffer, string storage shared with the buffer, an XPath engine with its own stack allocator. The build is the project's CMake Release build with its tests; the test is CTest. The per-file compile is src/pugixml.cpp.",
+          "compile": {"files": ["src/pugixml.cpp"], "args": ["-std=c++17", "-Isrc"]},
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DPUGIXML_BUILD_TESTS=ON",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\""]
+        }
+      ]
+    },
+    {
+      "name": "catch2",
+      "url": "https://github.com/catchorg/Catch2.git",
+      "sha": "08092139210881f01a34e60c5f2fd6afa0ea4024",
+      "support": ["catch2/catch2/catch_user_config.hpp"],
+      "configs": [
+        {
+          "name": "catch2",
+          "heldOut": true,
+          "set": "sealed39",
+          "language": "c++",
+          "notes": "SEALED (RFC 0039, section 9): built with the reference compiler only until gate G2. Catch2 3.16.1, a test framework: test registration through static objects, sections re-run by a tracker tree, expression decomposition, matchers, generators, reporters writing through stream buffers, benchmarking, signal and exception translation. The build is the project's CMake Release build in development mode with its self tests; the test is CTest (some tests run python3). The per-file compiles are the 108 sources of src/catch2 with support/catch2/catch2/catch_user_config.hpp, which CMake generates.",
+          "compile": {"files": ["src/catch2/**/*.cpp"], "args": ["-std=c++17", "-Isrc", "-I{support}"]},
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DCATCH_DEVELOPMENT_BUILD=ON -DCATCH_BUILD_TESTING=ON -DCATCH_BUILD_EXAMPLES=OFF -DCATCH_BUILD_EXTRA_TESTS=OFF -DCATCH_ENABLE_WERROR=OFF",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\""]
+        }
+      ]
+    },
+    {
+      "name": "spdlog",
+      "url": "https://github.com/gabime/spdlog.git",
+      "sha": "79524ddd08a4ec981b7fea76afd08ee05f83755d",
+      "support": [],
+      "uses": ["catch2"],
+      "configs": [
+        {
+          "name": "spdlog",
+          "heldOut": true,
+          "set": "sealed39",
+          "language": "c++",
+          "notes": "SEALED (RFC 0039, section 9): built with the reference compiler only until gate G2. spdlog 1.17.0, a logging library: loggers in a registry of shared pointers, a pattern formatter of flag objects, sinks guarded by mutexes, an asynchronous logger over a bounded queue of messages and a thread pool, ring-buffer and rotating-file sinks, the bundled fmt. Its tests use the pinned Catch2 checkout ($CORPUS/catch2 as FetchContent's source: nothing is downloaded). The build is the project's CMake Release build of the compiled library with its tests; the test is CTest. The per-file compiles are src/*.cpp.",
+          "compile": {"files": ["src/*.cpp"], "args": ["-std=c++17", "-Iinclude", "-DSPDLOG_COMPILED_LIB"]},
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DSPDLOG_BUILD_TESTS=ON -DSPDLOG_BUILD_EXAMPLE=OFF -DCMAKE_DISABLE_FIND_PACKAGE_Catch2=ON -DFETCHCONTENT_SOURCE_DIR_CATCH2=\"$CORPUS/catch2\" -DFETCHCONTENT_FULLY_DISCONNECTED=ON",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\""]
+        }
+      ]
+    },
+    {
+      "name": "simdjson-data",
+      "url": "https://github.com/simdjson/simdjson-data.git",
+      "sha": "351949906abde446f0314bf79606fb5d884f5be7",
+      "support": [],
+      "configs": []
+    },
+    {
+      "name": "simdjson",
+      "url": "https://github.com/simdjson/simdjson.git",
+      "sha": "40a686ab89dc5ee58ec10d0514dd5c99abbc472b",
+      "support": [],
+      "uses": ["simdjson-data"],
+      "configs": [
+        {
+          "name": "simdjson",
+          "heldOut": true,
+          "set": "sealed39",
+          "language": "c++",
+          "notes": "SEALED (RFC 0039, section 9): built with the reference compiler only until gate G2. simdjson 5.1.1, a JSON parser: SIMD structural indexing (NEON on arm64, SSE/AVX2/AVX-512 kernels chosen at run time on x86-64), a tape of 64-bit words, padded input strings, the On-Demand front end with iterators over the input, a string buffer per document, a builder. Its test data is the pinned simdjson-data checkout ($CORPUS/simdjson-data, with SIMDJSON_ALLOW_DOWNLOADS off: nothing is downloaded). The build is the project's CMake Release build in developer mode without the benchmarks (developer mode builds with -Werror, and Clang 23 warns of the single header's unused templates, with the reference compiler too: -Wno-error=unused-template); the test is CTest without the explicit-only tests. The per-file compile is src/simdjson.cpp.",
+          "compile": {"files": ["src/simdjson.cpp"], "args": ["-std=c++17", "-Iinclude", "-Isrc"]},
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DSIMDJSON_DEVELOPER_MODE=ON -DSIMDJSON_ALLOW_DOWNLOADS=OFF -DCPM_simdjson-data_SOURCE=\"$CORPUS/simdjson-data\" -DSIMDJSON_COMPETITION=OFF -DSIMDJSON_GOOGLE_BENCHMARKS=OFF -DCMAKE_CXX_FLAGS=-Wno-error=unused-template",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\" -LE explicitonly"],
+          "testTimeout": 3600
+        }
+      ]
+    },
+    {
+      "name": "cli11",
+      "url": "https://github.com/CLIUtils/CLI11.git",
+      "sha": "cbd58a3696887b34c70949aef21a71735a0c2ad5",
+      "support": [],
+      "uses": ["catch2"],
+      "configs": [
+        {
+          "name": "cli11",
+          "heldOut": true,
+          "set": "sealed39",
+          "language": "c++",
+          "notes": "SEALED (RFC 0039, section 9): built with the reference compiler only until gate G2. CLI11 2.7.2, a command-line parser: an App tree of shared and unique pointers to options and subcommands, callbacks in std::function, validators, configuration files, string splitting and conversion through templates. Its tests use Catch2 built from the pinned checkout ($CORPUS/catch2) with the same compilers and installed into the build; nothing is downloaded. The build is the project's CMake Release build of the precompiled library with its tests and examples; the test is CTest. The per-file compile is src/Precompile.cpp.",
+          "compile": {"files": ["src/Precompile.cpp"], "args": ["-std=c++17", "-Iinclude"]},
+          "build": [
+            "cmake -S \"$CORPUS/catch2\" -B catch2-out -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"$PWD/catch2-inst\" -DCATCH_INSTALL_DOCS=OFF",
+            "cmake --build catch2-out -j \"$JOBS\" && cmake --install catch2-out > /dev/null",
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DCLI11_PRECOMPILED=ON -DCLI11_BUILD_TESTS=ON -DCLI11_BUILD_EXAMPLES=ON -DCLI11_BUILD_DOCS=OFF -DCMAKE_PREFIX_PATH=\"$PWD/catch2-inst\"",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\""]
         }
       ]
     }

@@ -184,7 +184,8 @@ ModuleContext::ModuleContext(llvm::Module &module, const GuardOptions &options)
 
 /// The attributes that keep a marker: no unwinding, no memory but what the
 /// runtime owns (and the string a string marker scans), not `willreturn`.
-static void keep(llvm::FunctionCallee callee, llvm::MemoryEffects effects) {
+static void keep(llvm::FunctionCallee callee, llvm::MemoryEffects effects,
+                 const GuardOptions &options) {
   auto *function = llvm::dyn_cast<llvm::Function>(callee.getCallee());
   if (function == nullptr)
     return;
@@ -192,6 +193,12 @@ static void keep(llvm::FunctionCallee callee, llvm::MemoryEffects effects) {
   function->setMemoryEffects(effects);
   // Two guards of different accesses stay two, each with its location.
   function->addFnAttr(llvm::Attribute::NoMerge);
+  // In C++ the inliner prices a marker as one instruction, not as a call
+  // (RFC 0039, amendment 13): priced as a call, markers keep small members
+  // (an iterator's operator*, vector::push_back) out of line. C keeps the
+  // call's price, and so v0.19.0's inlining and build time.
+  if (options.cheapMarkers)
+    function->addFnAttr("call-inline-cost", "5");
   for (llvm::Argument &argument : function->args())
     if (argument.getType()->isPointerTy())
       argument.addAttr(llvm::Attribute::getWithCaptureInfo(
@@ -202,7 +209,8 @@ llvm::FunctionCallee ModuleContext::markerGuard() {
   llvm::FunctionCallee callee = module.getOrInsertFunction(
       MarkerGuard, llvm::FunctionType::get(llvm::Type::getVoidTy(context),
                                            {ptr, i64, i32, ptr, i32}, false));
-  keep(callee, llvm::MemoryEffects::inaccessibleMemOnly(llvm::ModRefInfo::Ref));
+  keep(callee, llvm::MemoryEffects::inaccessibleMemOnly(llvm::ModRefInfo::Ref),
+       options);
   return callee;
 }
 
@@ -210,7 +218,8 @@ llvm::FunctionCallee ModuleContext::markerRange() {
   llvm::FunctionCallee callee = module.getOrInsertFunction(
       MarkerRange, llvm::FunctionType::get(llvm::Type::getVoidTy(context),
                                            {ptr, i64, i32, i32}, false));
-  keep(callee, llvm::MemoryEffects::inaccessibleMemOnly(llvm::ModRefInfo::Ref));
+  keep(callee, llvm::MemoryEffects::inaccessibleMemOnly(llvm::ModRefInfo::Ref),
+       options);
   return callee;
 }
 
@@ -218,7 +227,8 @@ llvm::FunctionCallee ModuleContext::markerString() {
   llvm::FunctionCallee callee = module.getOrInsertFunction(
       MarkerString, llvm::FunctionType::get(i64, {ptr, i64, i32, i32}, false));
   keep(callee,
-       llvm::MemoryEffects::inaccessibleOrArgMemOnly(llvm::ModRefInfo::Ref));
+       llvm::MemoryEffects::inaccessibleOrArgMemOnly(llvm::ModRefInfo::Ref),
+       options);
   return callee;
 }
 
@@ -226,7 +236,8 @@ llvm::FunctionCallee ModuleContext::markerDisjoint() {
   llvm::FunctionCallee callee = module.getOrInsertFunction(
       MarkerDisjoint, llvm::FunctionType::get(llvm::Type::getVoidTy(context),
                                               {ptr, ptr, i64}, false));
-  keep(callee, llvm::MemoryEffects::inaccessibleMemOnly(llvm::ModRefInfo::Ref));
+  keep(callee, llvm::MemoryEffects::inaccessibleMemOnly(llvm::ModRefInfo::Ref),
+       options);
   return callee;
 }
 
@@ -234,7 +245,8 @@ llvm::FunctionCallee ModuleContext::markerScope() {
   llvm::FunctionCallee callee = module.getOrInsertFunction(
       MarkerScope,
       llvm::FunctionType::get(llvm::Type::getVoidTy(context), false));
-  keep(callee, llvm::MemoryEffects::inaccessibleMemOnly(llvm::ModRefInfo::Mod));
+  keep(callee, llvm::MemoryEffects::inaccessibleMemOnly(llvm::ModRefInfo::Mod),
+       options);
   return callee;
 }
 
@@ -406,11 +418,16 @@ llvm::GlobalVariable *ModuleContext::shadowDescriptor() {
 
 /// Where a report names `location`: past the frames inlined from artificial
 /// functions (`__attribute__((artificial))`, as the C library's fortified
-/// wrappers are), at their call site.
-static const llvm::DILocation *reportedAt(const llvm::DILocation *at) {
+/// wrappers are) and, RFC 0039, from the unit's system headers (the C++
+/// library's), at their call site.
+static const llvm::DILocation *reportedAt(const llvm::DILocation *at,
+                                          const UnsafeRegions *unit) {
   while (at->getInlinedAt() != nullptr) {
     const llvm::DISubprogram *function = at->getScope()->getSubprogram();
-    if (function == nullptr || !function->isArtificial())
+    const bool system =
+        unit != nullptr && unit->isSystemFile(UnsafeRegions::normalize(
+                               at->getFilename(), at->getDirectory()));
+    if (function == nullptr || (!function->isArtificial() && !system))
       break;
     at = at->getInlinedAt();
   }
@@ -418,11 +435,11 @@ static const llvm::DILocation *reportedAt(const llvm::DILocation *at) {
 }
 
 ModuleContext::Position
-ModuleContext::positionOf(const llvm::DebugLoc &location) {
+ModuleContext::positionOf(const llvm::DebugLoc &location) const {
   Position position;
   if (!location)
     return position;
-  const llvm::DILocation *at = reportedAt(location.get());
+  const llvm::DILocation *at = reportedAt(location.get(), options.unsafe.get());
   position.file =
       UnsafeRegions::normalize(at->getFilename(), at->getDirectory());
   position.line = at->getLine();
@@ -446,7 +463,8 @@ llvm::Constant *ModuleContext::site(const llvm::DebugLoc &location,
   unsigned line = 0;
   unsigned column = 0;
   if (location) {
-    const llvm::DILocation *at = reportedAt(location.get());
+    const llvm::DILocation *at =
+        reportedAt(location.get(), options.unsafe.get());
     line = at->getLine();
     column = at->getColumn();
     llvm::StringRef name = at->getFilename();

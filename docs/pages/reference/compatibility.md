@@ -3,9 +3,15 @@ title: Compatibility
 description: Supported toolchains and platforms, what weavec-cc changes in compiled code (the allocator and its sweep, frames and redzones, fortification, AddressSanitizer's macros, zero-initialized locals, the shadow reservation, traps on deliberate over-reads), sanitizers, external code, and version changes.
 ---
 
-## C and Clang
+## C, C++ and Clang
 
-WeaveC uses Clang for C parsing, semantic analysis, target layout, optimization and code generation. Pass the language standard and target flags used by your project. `weavec-cc` guards the C units it compiles; C++, Objective-C, OpenCL and CUDA sources are compiled as Clang compiles them, without guards, and link with the guarded C code as usual.
+WeaveC uses Clang for parsing, semantic analysis, target layout, optimization and code generation. Pass the language standard and target flags used by your project. `weavec-cc` guards the C and C++ units it compiles, and `weavec-c++` is its C++ driver; Objective-C, Objective-C++, OpenCL and CUDA sources are compiled as Clang compiles them, without guards, and link with the guarded code as usual.
+
+The C++ standard library is the platform's: libc++ from the SDK on macOS, the distribution's libstdc++ on Linux (or libc++ with `-stdlib=libc++`). A guarded C++ program runs the runtime's `operator new` and `operator delete`, which record which form allocated each block; exceptions, RTTI, threads, `thread_local`, coroutines and modules work as with Clang. What changes for C++ (RFC 0039):
+
+- the C++ library's bounds checks are on (libc++'s fast hardening mode, libstdc++'s assertions), unless the command line chooses its own; a program that reads `v[v.size()]` without using the value stops;
+- releasing a block by the wrong form (`delete` of `new[]`, `free` of `new`) stops, even for trivial types where the C++ library would not notice;
+- a `std::vector`'s or `std::deque`'s storage past its elements is not addressable. A container grown by code built without the annotations (not by `weavec-c++` or ASan) can then report `container-overflow` falsely, as under ASan; `WEAVEC_RT_CONTAINERS=0` turns the check off.
 
 ## weavec.h
 
@@ -13,7 +19,7 @@ WeaveC uses Clang for C parsing, semantic analysis, target layout, optimization 
 
 ## What changes in compiled code
 
-With the default `-fweavec-checks=trap`, `weavec-cc` compiles each C unit as Clang does and adds a guard before every memory access that a simple local rule cannot prove safe, in LLVM IR, against the runtime's shadow memory. There is no change to pointer representation or the ABI, and objects link with objects from any compiler, but the link must go through `weavec-cc`: the guards call WeaveC's runtime, the shared library `libweavec_rt` that every enforcing link adds and that the program loads where it runs (`libweavec_rt.a` in a `-static` Linux program). `-fweavec-checks=none` produces the object Clang would produce and links nothing; `-fno-weavec` is plain Clang.
+With the default `-fweavec-checks=trap`, `weavec-cc` compiles each C and C++ unit as Clang does and adds a guard before every memory access that a simple local rule cannot prove safe, in LLVM IR, against the runtime's shadow memory. There is no change to pointer representation or the ABI, and objects link with objects from any compiler, but the link must go through `weavec-cc`: the guards call WeaveC's runtime, the shared library `libweavec_rt` that every enforcing link adds and that the program loads where it runs (`libweavec_rt.a` in a `-static` Linux program). `-fweavec-checks=none` produces the object Clang would produce and links nothing; `-fno-weavec` is plain Clang.
 
 A guarded compile also turns on some of Clang's own options: `-fsanitize=array-bounds` for typed array indexes, reported through WeaveC's runtime (unless the command line already asks for a sanitizer); source locations for the reports, without emitting debug information when there is no `-g`; lifetime markers at every optimization level, so that a use after scope is caught at `-O0` too; and, on AArch64, no conditional compares in the backend. Object code is larger and compiles take longer than with Clang alone.
 

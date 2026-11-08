@@ -11,6 +11,7 @@
 #include "weavec/Config/Version.h"
 
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Demangle/Demangle.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
@@ -81,6 +82,7 @@ const char *outcomeName(LedgerRow::Outcome outcome) {
 static llvm::json::Value rowJson(const LedgerRow &row) {
   return llvm::json::Object{
       {.K = "function", .V = row.function},
+      {.K = "display", .V = llvm::demangle(row.function)},
       {.K = "file", .V = row.file},
       {.K = "line", .V = row.line},
       {.K = "column", .V = row.column},

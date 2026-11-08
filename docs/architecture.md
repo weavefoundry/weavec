@@ -7,8 +7,8 @@ after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md) and the
 guards of [RFC 0035](rfcs/0035-guard-by-default.md), *Guard by default*;
 each RFC's *Implementation amendments* override its body.
 
-`weavec-cc` guards every memory access of the C code it compiles, in LLVM
-IR, against the runtime's shadow memory. It removes a guard only where a
+`weavec-cc` guards every memory access of the C and C++ code it compiles
+(`weavec-c++`, a link to it, is its C++ driver: RFC 0039), in LLVM IR, against the runtime's shadow memory. It removes a guard only where a
 simple local rule proves it redundant. The locals a guard can reach get
 redzones in their frame (locals whose lifetimes never overlap share space),
 globals get redzones, locals are zero-initialized, typed array indexes are
@@ -151,7 +151,10 @@ collected.
 
 Nothing else changes: no AST is rewritten and code generation is not
 deferred. A unit compiled with `-fweavec-checks=none` or `-fno-weavec`, or
-as C++, Objective-C, OpenCL or CUDA, is compiled as Clang compiles it.
+as Objective-C, Objective-C++, OpenCL or CUDA, is compiled as Clang compiles
+it. A C++ unit is guarded as a C unit is, with the C++ libraries' bounds
+checks defined (RFC 0039 §1); every pass treats an `invoke` as the call it
+is, and a check after one goes on its normal path (§2).
 
 ## Guards and the shadow
 
@@ -318,16 +321,30 @@ VLA, or a static alloca outside the entry block) of `n` bytes allocates
 restore and before each return, `__weavec_rt_alloca_unpoison(top, bottom)`
 clears the shadow of the dynamic objects made since.
 
-**Non-local exits** (RFC 0035 §3.5). Before each call of a function that does not
-return, other than the runtime's own and those that end the process
-(`abort`, `exit`, the assertion failures, `err` and the like), the pass
-calls `__weavec_rt_unpoison_stack()`, which clears the shadow from the
-current stack pointer to the thread's stack base. A `longjmp`,
-`siglongjmp`, `pthread_exit`, or an interpreter's error jump written in
-assembly but declared `noreturn` then leaves no poison in the frames it
-abandons. A frame left by code not built by `weavec-cc` (an exception
-unwinding through C frames) keeps its poison until the stack is reused
-(assumption A5).
+**Non-local exits** (RFC 0035 §3.5, RFC 0039 §3). Before each call of a
+function that does not return, other than the runtime's own and those the
+library table marks `exits` (they end the process: `abort`, `exit`, the
+assertion failures, `err` and the like) or `unwinds` (a throw:
+`__cxa_throw`, `_Unwind_Resume` and the rest), the pass calls
+`__weavec_rt_unpoison_stack()`, which clears the shadow from the current
+stack pointer to the thread's stack base and turns color checks off on
+that thread's stack. A `longjmp`, `siglongjmp`, `pthread_exit`, or an
+interpreter's error jump written in assembly but declared `noreturn` then
+leaves no poison in the frames it abandons (assumption A5). An exception
+marks only the frames it unwound: the runtime stands in front of the
+unwinder's `_Unwind_RaiseException` and `_Unwind_Resume_or_Rethrow`
+(where the throw began) and `__cxa_begin_catch` (where it ended), and a
+landing pad of a guarded function calls `__weavec_rt_landed()`; the bytes
+between are marked as a frame that returned (`0xF5`), which `settle`
+treats as RFC 0037 §9 says.
+
+**C++'s library** (RFC 0039 §6–§7). GuardExpand turns each trap of the C++
+library's hardening (`__builtin_verbose_trap`, whose message is the name of
+the artificial function its location is inlined at) into a call of
+`__weavec_rt_library_assertion`. The library table's mangled rows guard
+the buffer arguments of the members of `std::string` and the streams that
+the C++ library's shared object defines, as C library calls are guarded;
+an `available_externally` callee counts as a declaration.
 
 **Globals** (`GuardGlobals.cpp`, RFC 0035 §4). A global the unit defines exactly is
 tracked unless it is thread-local, in a named section, in a comdat, in a
@@ -432,8 +449,9 @@ reason:
 | `proven` | `in-bounds`, `dominated`, `merged`, `optimized` (the optimizer removed every copy of the access) |
 | `unguarded` | `unsafe` |
 
-`-fweavec-ledger=<path>` writes the rows as JSON, `weavec-ledger` version 3
-(`EnforcementLedgerVersion`): an object with `schema`, `version`,
+`-fweavec-ledger=<path>` writes the rows as JSON, `weavec-ledger` version 4
+(`EnforcementLedgerVersion`; each row's `display` is its function's name
+demangled, RFC 0039 §8): an object with `schema`, `version`,
 `producer` and `units`, each unit with its `source`, `object`, `target`,
 `config` (`checks`, `zeroInit`), `summary` (`accesses`, `proven`,
 `guarded`, `unguarded`) and `rows`. A path ending in `/`, or an existing
@@ -472,17 +490,21 @@ hides the rest, and, on Linux, `libweavec_rt.a` for `-static` programs.
 | | [`weavec_asan.c`](../runtime/weavec_asan.c) | ASan's and LeakSanitizer's interface over WeaveC's shadow |
 | | [`weavec_report.c`](../runtime/weavec_report.c) | reports, `__weavec_rt_fatal`, `__weavec_rt_trapping`, the fault handler, the `WEAVEC_RT_*` settings and the counters; the check for a second runtime and a foreign allocator |
 | | [`weavec_malloc.c`](../runtime/weavec_malloc.c) | the standard allocation functions over the arena |
+| | [`weavec_cxx.c`](../runtime/weavec_cxx.c) | RFC 0039: C++'s `operator new` and `operator delete` (weak, by their Itanium names) with the form of each block, the marking of frames an exception unwound (`__weavec_rt_landed`), and the C++ libraries' failed checks (`library-assertion`) |
+| | [`weavec_unwind.c`](../runtime/weavec_unwind.c) | RFC 0039: the interposers of `_Unwind_RaiseException`, `_Unwind_Resume_or_Rethrow` and `__cxa_begin_catch` (Darwin: `__DATA,__interpose`; Linux: the library's own definitions; `-static`: `--wrap`). It and `weavec_cxx.c` are compiled once for the shared library and once for the archive, which on Darwin has no allocation functions |
 
 ### The allocator
 
 The allocator reserves one arena inside the shadow's window at first use:
 one region of 2 GiB (1 GiB when that cannot be reserved) per size class,
 followed by the metadata. The classes are 16 to 128 bytes in steps of 16,
-then four per doubling up to 2^30 bytes. A request takes a slot of the
-smallest class strictly larger than it, so at least one byte after every
-object belongs to no object. Each slot has one 32-bit word of metadata,
-`value << 2 | state`: a live slot's value is its object's size, a free or
-released one's the next slot on its list. Free lists and
+then four per doubling up to 2^28 bytes (a larger request is a huge block).
+A request takes a slot of the smallest class strictly larger than it, so at
+least one byte after every object belongs to no object. Each slot has one
+32-bit word of metadata: a live slot's is `size << 4 | form << 2 | state`,
+its object's size and the form that allocated it (`malloc`, `new`, `new[]`,
+RFC 0039 §4), a free or released one's `next << 2 | state`, the next slot
+on its list. Free lists and
 the quarantine queues live in the metadata, never in freed memory. An
 allocation writes the slot's color over the object's whole granules, the
 partial byte over a partial last granule and `0xFA` over the rest of its
@@ -592,10 +614,14 @@ the live heap and the dirtied writable data.
 `__asan_describe_address`, `__asan_handle_no_return` (which clears the
 stack's shadow, as before a `noreturn` call),
 `__asan_get_current_fake_stack`, `__asan_addr_is_in_fake_stack`,
-`__sanitizer_print_stack_trace`, `__sanitizer_set_report_path`,
-`__sanitizer_annotate_contiguous_container`, the fiber-switch
-announcements, and LeakSanitizer's entry points. What ASan does that
-WeaveC does not (leak checking, fake stacks) does nothing.
+`__sanitizer_print_stack_trace`, `__sanitizer_set_report_path`, the
+fiber-switch announcements, and LeakSanitizer's entry points. What ASan
+does that WeaveC does not (leak checking, fake stacks) does nothing. RFC
+0039 §5: the container annotations
+(`__sanitizer_annotate_contiguous_container`, the double-ended form, and
+the `verify` and `find_bad_address` queries) write `0xFC`
+(`container-overflow`) over a heap block's container storage past its
+elements; `WEAVEC_RT_CONTAINERS=0` makes them no-ops.
 
 ### One runtime per process
 
@@ -732,14 +758,16 @@ goes in the table, never in a comparison of a callee's name.
 | Component | Role |
 | --- | --- |
 | `GuardPass` (`GuardPass.h`; `GuardPass.cpp`, `GuardPassImpl.h`, `GuardInsert.cpp`, `GuardLibrary.cpp`, `GuardLoops.cpp`, `GuardExpand.cpp`, `GuardFrames.cpp`, `GuardGlobals.cpp`) | The four passes of *Compile pipeline* and `registerGuardPasses`, which adds them through `CodeGenOptions::PassBuilderCallbacks` with the mode (trap, report, verify), the unit's unsafe regions and its enforcement ledger. |
-| `EnforcementLedger` | The rows the passes record, their rollup, the `weavec-ledger` version 3 JSON writer and the summary line. |
+| `EnforcementLedger` | The rows the passes record, their rollup, the `weavec-ledger` version 4 JSON writer and the summary line. |
 | `UnsafeRegions` | The `WEAVEC_UNSAFE` and `no_sanitize` ranges of a unit, by file, the AST consumer that collects them, and `UnsafeAnnotation`. |
 | `Driver` | `weavec-cc`: `DriverOptions` (WeaveC's flags, split from Clang's), the in-process `-cc1` jobs with the enforcement set-up (`configureEnforcement`), ASan's contract and fortification, the wrapper action that adds the unsafe-region collector, the runtime's link line (`addRuntimeLibraries`, `runtimeObstacle`, `allocatorDefinedBy`, `dropAllocatorIfDefined`), and `--help-weavec`. |
 | `ResourceDir` | Locates `weavec.h`, the runtime's library and the Apple SDK. |
 
 ## `tools/weavec-cc`
 
-`weavec-cc` is the drop-in compiler: `CC=weavec-cc make`. Its own flags,
+`weavec-cc` is the drop-in compiler: `CC=weavec-cc CXX=weavec-c++ make`.
+Invoked as `weavec-c++` (a link the build and the installation make) it is
+in Clang's `g++` mode. Its own flags,
 which `weavec-cc --help-weavec` lists, are `-f[no-]weavec`,
 `-fweavec-checks=trap|report|verify|none`, `-f[no-]weavec-zero-init`,
 `-fweavec-ledger=<path>`, `-f[no-]weavec-summary`,

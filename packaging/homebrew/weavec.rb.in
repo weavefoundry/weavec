@@ -29,6 +29,7 @@ class Weavec < Formula
     # bin/weavec-cc, so the tree is kept whole.
     libexec.install Dir["*"]
     bin.install_symlink libexec/"bin/weavec-cc"
+    bin.install_symlink libexec/"bin/weavec-c++"
     # Programs record the stable path, which an upgrade keeps (RFC 0038,
     # amendment 23), not this version's Cellar directory.
     (libexec/"lib/weavec/default-rpath").write "#{opt_libexec}/lib/weavec\n"
@@ -42,5 +43,11 @@ class Weavec < Formula
     system bin/"weavec-cc", "-O1", "t.c", "-o", "t"
     # The guard traps (SIGTRAP, or SIGILL on x86-64) after its report.
     assert_match "heap-buffer-overflow", shell_output("./t 2>&1 || true")
+    (testpath/"v.cpp").write <<~CPP
+      #include <vector>
+      int main(int argc, char **) { std::vector<int> v; v.reserve(8); v.push_back(1); return v.data()[argc + 4]; }
+    CPP
+    system bin/"weavec-c++", "-O1", "v.cpp", "-o", "v"
+    assert_match "container-overflow", shell_output("./v 2>&1 || true")
   end
 end

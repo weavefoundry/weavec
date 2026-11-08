@@ -30,6 +30,7 @@
 #   clause   ::= 'disjoint(' INT ',' INT ',' term ')' | 'wide'
 #              | 'printf(' INT ',' INT ')' | 'scanf(' INT ',' INT ')'
 #              | 'chk(' NAME ':' carg { ',' carg } ')' | 'wrapper(' NAME ')'
+#              | 'exits' | 'unwinds'
 #   carg     ::= INT | '_' | 'size'
 #   term     ::= INT | 'a' N | 'strlen(a' N ')' | term '*' term
 #              | term '+' term | term '-' INT | term '/' INT
@@ -79,7 +80,12 @@
 #                    __weavec_rt_N, which takes the call's arguments and its
 #                    site (first when the call is variadic, last otherwise)
 #                    and checks what the call reads and writes as it runs. N
-#                    is the row's name.
+#                    is the row's name; a C++ row's (a mangled name, RFC
+#                    0039 section 6) may name another.
+#   exits, unwinds   (RFC 0039 section 3) the call ends the process, or
+#                    unwinds the stack (a throw): the stack's shadow is not
+#                    cleared before it, as it is before any other call that
+#                    does not return.
 #   chk(A: c0, c1, ...)
 #                    A is an alias of the row (a fortified form): its k-th
 #                    argument is the row's argument c_k, dropped ('_', a
@@ -113,6 +119,11 @@
 #   whose size is an argument, that size (the fortified forms of both
 #   libraries enforce it). Element sizes are those of the 64-bit targets
 #   (int and gid_t 4 bytes, pointers 8).
+#
+# C++
+#   A C++ function's row is named by its Itanium mangling and lists the
+#   arguments of its call in the IR: a member function's implicit object
+#   first (RFC 0039 section 7).
 #
 # OVERLOADS
 #   A name may have several rows; a call uses the first whose arity it
@@ -630,10 +641,10 @@ globfree (rw) -> void;
 wordexp (r:str, rw, int) -> int;
 wordfree (rw:null-ok) -> void;
 
-err (int, r:str:null-ok, ...) -> void printf(1,2);
-errx (int, r:str:null-ok, ...) -> void printf(1,2);
-verr (int, r:str:null-ok, other) -> void printf(1,2);
-verrx (int, r:str:null-ok, other) -> void printf(1,2);
+err (int, r:str:null-ok, ...) -> void printf(1,2) exits;
+errx (int, r:str:null-ok, ...) -> void printf(1,2) exits;
+verr (int, r:str:null-ok, other) -> void printf(1,2) exits;
+verrx (int, r:str:null-ok, other) -> void printf(1,2) exits;
 warn (r:str:null-ok, ...) -> void printf(0,1);
 warnx (r:str:null-ok, ...) -> void printf(0,1);
 vwarn (r:str:null-ok, other) -> void printf(0,1);
@@ -1078,8 +1089,187 @@ __atomic_compare_exchange (int, rw:bytes(a0), rw:bytes(a0), r:bytes(a0), \
 
 # The functions assert() calls when an assertion fails: glibc and musl,
 # macOS. They abort the process.
-__assert_fail (r:str, r:str, int, r:str:null-ok) -> void;
-__assert_perror_fail (int, r:str, int, r:str:null-ok) -> void;
-__assert_rtn (r:str:null-ok, r:str, int, r:str) -> void;
-__assert (r:str, r:str, int) -> void;
+__assert_fail (r:str, r:str, int, r:str:null-ok) -> void exits;
+__assert_perror_fail (int, r:str, int, r:str:null-ok) -> void exits;
+__assert_rtn (r:str:null-ok, r:str, int, r:str) -> void exits;
+__assert (r:str, r:str, int) -> void exits;
+
+#============================================================================
+# The end of the process and exceptions (RFC 0039 section 3)
+#============================================================================
+
+abort () -> void exits;
+exit (int) -> void exits;
+_exit (int) -> void exits;
+_Exit (int) -> void exits;
+quick_exit (int) -> void exits;
+__stack_chk_fail () -> void exits;
+__chk_fail () -> void exits;
+__fortify_fail (r:str) -> void exits;
+# std::terminate()
+_ZSt9terminatev () -> void exits;
+
+# The Itanium ABI's throws and the unwinder's, and std::rethrow_exception
+# (libc++, libstdc++).
+__cxa_throw (none, none, fn) -> void unwinds;
+__cxa_rethrow () -> void unwinds;
+_Unwind_RaiseException (none) -> int unwinds;
+_Unwind_Resume (none) -> void unwinds;
+_Unwind_Resume_or_Rethrow (none) -> int unwinds;
+_ZSt17rethrow_exceptionSt13exception_ptr (none) -> void unwinds;
+_ZSt17rethrow_exceptionNSt15__exception_ptr13exception_ptrE (none) -> void \
+    unwinds;
+# libstdc++'s out-of-line throws (std::__throw_out_of_range and the like).
+_ZSt17__throw_bad_allocv () -> void unwinds;
+_ZSt16__throw_bad_castv () -> void unwinds;
+_ZSt18__throw_bad_typeidv () -> void unwinds;
+_ZSt21__throw_bad_exceptionv () -> void unwinds;
+_ZSt25__throw_bad_function_callv () -> void unwinds;
+_ZSt28__throw_bad_array_new_lengthv () -> void unwinds;
+_ZSt19__throw_logic_errorPKc (r:str) -> void unwinds;
+_ZSt20__throw_domain_errorPKc (r:str) -> void unwinds;
+_ZSt24__throw_invalid_argumentPKc (r:str) -> void unwinds;
+_ZSt20__throw_length_errorPKc (r:str) -> void unwinds;
+_ZSt20__throw_out_of_rangePKc (r:str) -> void unwinds;
+_ZSt24__throw_out_of_range_fmtPKcz (r:str, ...) -> void unwinds;
+_ZSt21__throw_runtime_errorPKc (r:str) -> void unwinds;
+_ZSt19__throw_range_errorPKc (r:str) -> void unwinds;
+_ZSt22__throw_overflow_errorPKc (r:str) -> void unwinds;
+_ZSt23__throw_underflow_errorPKc (r:str) -> void unwinds;
+_ZSt20__throw_system_errori (int) -> void unwinds;
+_ZSt19__throw_future_errori (int) -> void unwinds;
+_ZSt19__throw_ios_failurePKc (r:str) -> void unwinds;
+_ZSt19__throw_ios_failurePKci (r:str, int) -> void unwinds;
+
+#============================================================================
+# The C++ library (RFC 0039 sections 6 and 7)
+#============================================================================
+
+# A failed check: libstdc++'s _GLIBCXX_ASSERTIONS
+# (std::__glibcxx_assert_fail(file, line, function, condition)) and
+# libc++'s verbose abort, reported as library-assertion.
+_ZSt21__glibcxx_assert_failPKciS0_S0_ (none, int, none, none) -> void \
+    wrapper(glibcxx_assert_fail);
+_ZNSt3__122__libcpp_verbose_abortEPKcz (none, ...) -> void \
+    wrapper(libcpp_verbose_abort);
+
+# The members the headers leave to the C++ library's shared object (extern
+# templates) that take a raw buffer, for char and wchar_t: the object
+# first, then the buffer over the count it is given. basic_string::copy is
+# checked at its first byte (the bytes it writes depend on the string).
+# libc++: basic_string<char> and <wchar_t> (24-byte objects).
+_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm (rw:bytes(24), r:bytes(a2):null-if-zero(a2), int) -> ptr;
+_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc (rw:bytes(24), r:str) -> ptr;
+_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKcm (rw:bytes(24), r:bytes(a2):null-if-zero(a2), int) -> ptr;
+_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc (rw:bytes(24), r:str) -> ptr;
+_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmPKcm (rw:bytes(24), int, r:bytes(a3):null-if-zero(a3), int) -> ptr;
+_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmPKc (rw:bytes(24), int, r:str) -> ptr;
+_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmPKcm (rw:bytes(24), int, int, r:bytes(a4):null-if-zero(a4), int) -> ptr;
+_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmPKc (rw:bytes(24), int, int, r:str) -> ptr;
+_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEPKcmm (r:bytes(24), r:bytes(a3):null-if-zero(a3), int, int) -> int;
+_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEPKcmm (r:bytes(24), r:bytes(a3):null-if-zero(a3), int, int) -> int;
+_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE13find_first_ofEPKcmm (r:bytes(24), r:bytes(a3):null-if-zero(a3), int, int) -> int;
+_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE12find_last_ofEPKcmm (r:bytes(24), r:bytes(a3):null-if-zero(a3), int, int) -> int;
+_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE17find_first_not_ofEPKcmm (r:bytes(24), r:bytes(a3):null-if-zero(a3), int, int) -> int;
+_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE16find_last_not_ofEPKcmm (r:bytes(24), r:bytes(a3):null-if-zero(a3), int, int) -> int;
+_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEPKc (r:bytes(24), r:str) -> int;
+_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEmmPKc (r:bytes(24), int, int, r:str) -> int;
+_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEmmPKcm (r:bytes(24), int, int, r:bytes(a4):null-if-zero(a4), int) -> int;
+_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4copyEPcmm (r:bytes(24), w:null-if-zero(a2), int, int) -> int;
+_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm (rw:bytes(24), r:bytes(a2):null-if-zero(a2), int) -> void;
+_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm (rw:bytes(24), r:bytes(a2):null-if-zero(a2), int, int) -> void;
+_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE21__grow_by_and_replaceEmmmmmmPKc (rw:bytes(24), int, int, int, int, int, int, r:bytes(a6):null-if-zero(a6)) -> void;
+_ZNSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE6appendEPKwm (rw:bytes(24), r:count(a2):null-if-zero(a2), int) -> ptr wide;
+_ZNSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE6appendEPKw (rw:bytes(24), r:str) -> ptr wide;
+_ZNSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE6assignEPKwm (rw:bytes(24), r:count(a2):null-if-zero(a2), int) -> ptr wide;
+_ZNSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE6assignEPKw (rw:bytes(24), r:str) -> ptr wide;
+_ZNSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE6insertEmPKwm (rw:bytes(24), int, r:count(a3):null-if-zero(a3), int) -> ptr wide;
+_ZNSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE6insertEmPKw (rw:bytes(24), int, r:str) -> ptr wide;
+_ZNSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE7replaceEmmPKwm (rw:bytes(24), int, int, r:count(a4):null-if-zero(a4), int) -> ptr wide;
+_ZNSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE7replaceEmmPKw (rw:bytes(24), int, int, r:str) -> ptr wide;
+_ZNKSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE4findEPKwmm (r:bytes(24), r:count(a3):null-if-zero(a3), int, int) -> int wide;
+_ZNKSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE5rfindEPKwmm (r:bytes(24), r:count(a3):null-if-zero(a3), int, int) -> int wide;
+_ZNKSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE13find_first_ofEPKwmm (r:bytes(24), r:count(a3):null-if-zero(a3), int, int) -> int wide;
+_ZNKSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE12find_last_ofEPKwmm (r:bytes(24), r:count(a3):null-if-zero(a3), int, int) -> int wide;
+_ZNKSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE17find_first_not_ofEPKwmm (r:bytes(24), r:count(a3):null-if-zero(a3), int, int) -> int wide;
+_ZNKSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE16find_last_not_ofEPKwmm (r:bytes(24), r:count(a3):null-if-zero(a3), int, int) -> int wide;
+_ZNKSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE7compareEPKw (r:bytes(24), r:str) -> int wide;
+_ZNKSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE7compareEmmPKw (r:bytes(24), int, int, r:str) -> int wide;
+_ZNKSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE7compareEmmPKwm (r:bytes(24), int, int, r:count(a4):null-if-zero(a4), int) -> int wide;
+_ZNKSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE4copyEPwmm (r:bytes(24), w:null-if-zero(a2), int, int) -> int wide;
+_ZNSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE6__initEPKwm (rw:bytes(24), r:count(a2):null-if-zero(a2), int) -> void wide;
+_ZNSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE6__initEPKwmm (rw:bytes(24), r:count(a2):null-if-zero(a2), int, int) -> void wide;
+_ZNSt3__112basic_stringIwNS_11char_traitsIwEENS_9allocatorIwEEE21__grow_by_and_replaceEmmmmmmPKw (rw:bytes(24), int, int, int, int, int, int, r:count(a6):null-if-zero(a6)) -> void wide;
+# libc++: basic_ostream::write, basic_istream's reads into a buffer.
+_ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE5writeEPKcl (rw, r:bytes(a2):null-if-zero(a2), int) -> ptr;
+_ZNSt3__113basic_istreamIcNS_11char_traitsIcEEE4readEPcl (rw, w:bytes(a2):null-if-zero(a2), int) -> ptr;
+_ZNSt3__113basic_istreamIcNS_11char_traitsIcEEE8readsomeEPcl (rw, w:bytes(a2):null-if-zero(a2), int) -> int;
+_ZNSt3__113basic_istreamIcNS_11char_traitsIcEEE3getEPcl (rw, w:bytes(a2):null-if-zero(a2), int) -> ptr;
+_ZNSt3__113basic_istreamIcNS_11char_traitsIcEEE3getEPclc (rw, w:bytes(a2):null-if-zero(a2), int, int) -> ptr;
+_ZNSt3__113basic_istreamIcNS_11char_traitsIcEEE7getlineEPcl (rw, w:bytes(a2):null-if-zero(a2), int) -> ptr;
+_ZNSt3__113basic_istreamIcNS_11char_traitsIcEEE7getlineEPclc (rw, w:bytes(a2):null-if-zero(a2), int, int) -> ptr;
+_ZNSt3__113basic_ostreamIwNS_11char_traitsIwEEE5writeEPKwl (rw, r:count(a2):null-if-zero(a2), int) -> ptr wide;
+_ZNSt3__113basic_istreamIwNS_11char_traitsIwEEE4readEPwl (rw, w:count(a2):null-if-zero(a2), int) -> ptr wide;
+_ZNSt3__113basic_istreamIwNS_11char_traitsIwEEE8readsomeEPwl (rw, w:count(a2):null-if-zero(a2), int) -> int wide;
+_ZNSt3__113basic_istreamIwNS_11char_traitsIwEEE3getEPwl (rw, w:count(a2):null-if-zero(a2), int) -> ptr wide;
+_ZNSt3__113basic_istreamIwNS_11char_traitsIwEEE3getEPwlw (rw, w:count(a2):null-if-zero(a2), int, int) -> ptr wide;
+_ZNSt3__113basic_istreamIwNS_11char_traitsIwEEE7getlineEPwl (rw, w:count(a2):null-if-zero(a2), int) -> ptr wide;
+_ZNSt3__113basic_istreamIwNS_11char_traitsIwEEE7getlineEPwlw (rw, w:count(a2):null-if-zero(a2), int, int) -> ptr wide;
+
+# libstdc++: basic_string<char> and <wchar_t> (32-byte objects).
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6appendEPKcm (rw:bytes(32), r:bytes(a2):null-if-zero(a2), int) -> ptr;
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6appendEPKc (rw:bytes(32), r:str) -> ptr;
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6assignEPKcm (rw:bytes(32), r:bytes(a2):null-if-zero(a2), int) -> ptr;
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6assignEPKc (rw:bytes(32), r:str) -> ptr;
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6insertEmPKcm (rw:bytes(32), int, r:bytes(a3):null-if-zero(a3), int) -> ptr;
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6insertEmPKc (rw:bytes(32), int, r:str) -> ptr;
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE7replaceEmmPKcm (rw:bytes(32), int, int, r:bytes(a4):null-if-zero(a4), int) -> ptr;
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE7replaceEmmPKc (rw:bytes(32), int, int, r:str) -> ptr;
+_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE4findEPKcmm (r:bytes(32), r:bytes(a3):null-if-zero(a3), int, int) -> int;
+_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE5rfindEPKcmm (r:bytes(32), r:bytes(a3):null-if-zero(a3), int, int) -> int;
+_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE13find_first_ofEPKcmm (r:bytes(32), r:bytes(a3):null-if-zero(a3), int, int) -> int;
+_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE12find_last_ofEPKcmm (r:bytes(32), r:bytes(a3):null-if-zero(a3), int, int) -> int;
+_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE17find_first_not_ofEPKcmm (r:bytes(32), r:bytes(a3):null-if-zero(a3), int, int) -> int;
+_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE16find_last_not_ofEPKcmm (r:bytes(32), r:bytes(a3):null-if-zero(a3), int, int) -> int;
+_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE7compareEPKc (r:bytes(32), r:str) -> int;
+_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE7compareEmmPKc (r:bytes(32), int, int, r:str) -> int;
+_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE7compareEmmPKcm (r:bytes(32), int, int, r:bytes(a4):null-if-zero(a4), int) -> int;
+_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE4copyEPcmm (r:bytes(32), w:null-if-zero(a2), int, int) -> int;
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_appendEPKcm (rw:bytes(32), r:bytes(a2):null-if-zero(a2), int) -> ptr;
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE10_M_replaceEmmPKcm (rw:bytes(32), int, int, r:bytes(a4):null-if-zero(a4), int) -> ptr;
+_ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE6appendEPKwm (rw:bytes(32), r:count(a2):null-if-zero(a2), int) -> ptr wide;
+_ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE6appendEPKw (rw:bytes(32), r:str) -> ptr wide;
+_ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE6assignEPKwm (rw:bytes(32), r:count(a2):null-if-zero(a2), int) -> ptr wide;
+_ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE6assignEPKw (rw:bytes(32), r:str) -> ptr wide;
+_ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE6insertEmPKwm (rw:bytes(32), int, r:count(a3):null-if-zero(a3), int) -> ptr wide;
+_ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE6insertEmPKw (rw:bytes(32), int, r:str) -> ptr wide;
+_ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE7replaceEmmPKwm (rw:bytes(32), int, int, r:count(a4):null-if-zero(a4), int) -> ptr wide;
+_ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE7replaceEmmPKw (rw:bytes(32), int, int, r:str) -> ptr wide;
+_ZNKSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE4findEPKwmm (r:bytes(32), r:count(a3):null-if-zero(a3), int, int) -> int wide;
+_ZNKSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE5rfindEPKwmm (r:bytes(32), r:count(a3):null-if-zero(a3), int, int) -> int wide;
+_ZNKSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE13find_first_ofEPKwmm (r:bytes(32), r:count(a3):null-if-zero(a3), int, int) -> int wide;
+_ZNKSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE12find_last_ofEPKwmm (r:bytes(32), r:count(a3):null-if-zero(a3), int, int) -> int wide;
+_ZNKSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE17find_first_not_ofEPKwmm (r:bytes(32), r:count(a3):null-if-zero(a3), int, int) -> int wide;
+_ZNKSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE16find_last_not_ofEPKwmm (r:bytes(32), r:count(a3):null-if-zero(a3), int, int) -> int wide;
+_ZNKSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE7compareEPKw (r:bytes(32), r:str) -> int wide;
+_ZNKSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE7compareEmmPKw (r:bytes(32), int, int, r:str) -> int wide;
+_ZNKSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE7compareEmmPKwm (r:bytes(32), int, int, r:count(a4):null-if-zero(a4), int) -> int wide;
+_ZNKSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE4copyEPwmm (r:bytes(32), w:null-if-zero(a2), int, int) -> int wide;
+_ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE9_M_appendEPKwm (rw:bytes(32), r:count(a2):null-if-zero(a2), int) -> ptr wide;
+_ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE10_M_replaceEmmPKwm (rw:bytes(32), int, int, r:count(a4):null-if-zero(a4), int) -> ptr wide;
+# libstdc++: basic_ostream::write, basic_istream's reads into a buffer.
+_ZNSo5writeEPKcl (rw, r:bytes(a2):null-if-zero(a2), int) -> ptr;
+_ZNSi4readEPcl (rw, w:bytes(a2):null-if-zero(a2), int) -> ptr;
+_ZNSi8readsomeEPcl (rw, w:bytes(a2):null-if-zero(a2), int) -> int;
+_ZNSi3getEPcl (rw, w:bytes(a2):null-if-zero(a2), int) -> ptr;
+_ZNSi3getEPclc (rw, w:bytes(a2):null-if-zero(a2), int, int) -> ptr;
+_ZNSi7getlineEPcl (rw, w:bytes(a2):null-if-zero(a2), int) -> ptr;
+_ZNSi7getlineEPclc (rw, w:bytes(a2):null-if-zero(a2), int, int) -> ptr;
+_ZNSt13basic_ostreamIwSt11char_traitsIwEE5writeEPKwl (rw, r:count(a2):null-if-zero(a2), int) -> ptr wide;
+_ZNSt13basic_istreamIwSt11char_traitsIwEE4readEPwl (rw, w:count(a2):null-if-zero(a2), int) -> ptr wide;
+_ZNSt13basic_istreamIwSt11char_traitsIwEE8readsomeEPwl (rw, w:count(a2):null-if-zero(a2), int) -> int wide;
+_ZNSt13basic_istreamIwSt11char_traitsIwEE3getEPwl (rw, w:count(a2):null-if-zero(a2), int) -> ptr wide;
+_ZNSt13basic_istreamIwSt11char_traitsIwEE3getEPwlw (rw, w:count(a2):null-if-zero(a2), int, int) -> ptr wide;
+_ZNSt13basic_istreamIwSt11char_traitsIwEE7getlineEPwl (rw, w:count(a2):null-if-zero(a2), int) -> ptr wide;
+_ZNSt13basic_istreamIwSt11char_traitsIwEE7getlineEPwlw (rw, w:count(a2):null-if-zero(a2), int, int) -> ptr wide;
 

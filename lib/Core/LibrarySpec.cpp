@@ -665,6 +665,12 @@ bool LibrarySpecParser::parseClause(LibraryEntry &entry,
     entry.wide = true;
     return true;
   }
+  if (clause == "exits" || clause == "unwinds") {
+    if (entry.exits || entry.unwinds)
+      return fail("a row has at most one of 'exits' and 'unwinds'");
+    (clause == "exits" ? entry.exits : entry.unwinds) = true;
+    return true;
+  }
   if (clause == "disjoint") {
     if (!expect('(', "after 'disjoint'"))
       return false;
@@ -794,7 +800,8 @@ bool LibrarySpecParser::validateEntry(const LibraryEntry &entry) {
   }
   // The runtime's wrapper is the row's own: a row that redirects to
   // another's would check that row's arguments.
-  if (entry.wrapper && entry.wrapper->name != entry.name)
+  if (entry.wrapper && entry.wrapper->name != entry.name &&
+      !entry.name.starts_with("_Z"))
     return fail("'wrapper(" + entry.wrapper->name + ")' must name the row");
   for (const LibraryChk &chk : entry.chk)
     for (const std::int8_t row : chk.argumentOf)

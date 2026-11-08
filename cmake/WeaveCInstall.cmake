@@ -2,6 +2,7 @@
 # anywhere, since weavec-cc finds everything relative to its own executable.
 #
 #   bin/weavec-cc
+#   bin/weavec-c++                  a link to weavec-cc (RFC 0039 §1)
 #   lib/weavec/                     the runtime (runtime/CMakeLists.txt) and
 #                                   include/weavec.h; on Darwin, llvm/ with
 #                                   the LLVM libraries weavec-cc loads
@@ -16,6 +17,9 @@
 include(GNUInstallDirs)
 
 install(TARGETS weavec-cc RUNTIME DESTINATION bin COMPONENT WeaveC_Runtime)
+install(
+  CODE "file(CREATE_LINK weavec-cc \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bin/weavec-c++\" SYMBOLIC)"
+  COMPONENT WeaveC_Runtime)
 # Darwin: the LLVM libraries weavec-cc loads, beside it.
 if(APPLE AND WEAVEC_SELF_CONTAINED)
   install(
