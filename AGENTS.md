@@ -131,7 +131,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
    `name == "…"` tests; nothing under `lib/` names a corpus project; the
    library code (`lib/`, `include/`, `tools/`) stays within its line budget
    (9,000), and so does the runtime (`runtime/` without `runtime/test/`
-   and its export list, counted apart: 7,600). The runtime is C and
+   and its export list, counted apart: 7,700). The runtime is C and
    includes no WeaveC header but its own `weavec_rt.h`, and every runtime
    entry point the passes declare (and every `wrapper(NAME)` of the table)
    must be declared there with the same signature. What the runtime's

@@ -894,14 +894,18 @@ static bool addRuntimeLibraries(clang::driver::Compilation &compilation,
     if (target.isOSLinux() && !target.isAndroid())
       added.push_back("-lpthread");
     // RFC 0039 §3: a static C++ program reaches the runtime's unwinding
-    // interposers through the linker's --wrap.
-    if (archive && llvm::any_of(old, [](const char *arg) {
-          return llvm::StringRef(arg) == "-lstdc++" ||
-                 llvm::StringRef(arg) == "-lc++";
-        }))
+    // interposers through the linker's --wrap; amendment 18: and links the
+    // C++ library's functions that a failed `new` calls, which the runtime
+    // references weakly (a weak reference takes no member of an archive).
+    const bool libstdcxx = llvm::is_contained(old, llvm::StringRef("-lstdc++"));
+    if (archive &&
+        (libstdcxx || llvm::is_contained(old, llvm::StringRef("-lc++"))))
       for (const char *wrapped :
            {"--wrap=_Unwind_RaiseException", "--wrap=_Unwind_Resume_or_Rethrow",
-            "--wrap=__cxa_begin_catch", "-u", "__wrap__Unwind_RaiseException"})
+            "--wrap=__cxa_begin_catch", "-u", "__wrap__Unwind_RaiseException",
+            "-u", "_ZSt15get_new_handlerv", "-u",
+            libstdcxx ? "_ZSt17__throw_bad_allocv"
+                      : "_ZNSt3__117__throw_bad_allocEv"})
         added.push_back(wrapped);
     llvm::opt::ArgStringList args(old.begin(), firstLibrary);
     args.append(added.begin(), added.end());

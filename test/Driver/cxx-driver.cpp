@@ -24,7 +24,7 @@
 // DARWIN-SAME: "-lc++"
 // LINUX: libweavec_rt.so"
 // LINUX-SAME: "-lstdc++"
-// STATIC: libweavec_rt.a" "-lpthread" "--wrap=_Unwind_RaiseException" "--wrap=_Unwind_Resume_or_Rethrow" "--wrap=__cxa_begin_catch" "-u" "__wrap__Unwind_RaiseException"
+// STATIC: libweavec_rt.a" "-lpthread" "--wrap=_Unwind_RaiseException" "--wrap=_Unwind_Resume_or_Rethrow" "--wrap=__cxa_begin_catch" "-u" "__wrap__Unwind_RaiseException" "-u" "_ZSt15get_new_handlerv" "-u" "_ZSt17__throw_bad_allocv"
 #include <string>
 #include <vector>
 

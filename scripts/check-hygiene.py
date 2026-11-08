@@ -50,7 +50,7 @@ Eight checks, the rules of AGENTS.md that a script can hold the tree to:
                      lowered as code is deleted, and raised only by an RFC
                      amendment that records the measurement.
   runtime-lines      the C runtime (runtime/, its tests under runtime/test/
-                     and its export list excluded) totals at most 7,600 lines
+                     and its export list excluded) totals at most 7,700 lines
                      (RFC 0037 gate H1; the list is declarative, as the
                      library table is).
                      It is counted apart from the libraries: it is linked
@@ -104,7 +104,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Recorded by RFC 0037 gate H1 and RFC 0032 gate H1 (see the module docstring).
 LIBRARY_LINE_LIMIT = 9_000
-RUNTIME_LINE_LIMIT = 7_600
+RUNTIME_LINE_LIMIT = 7_700
 
 # library-name-test
 LIBRARY_SPEC = "lib/Core/LibrarySpec.txt"

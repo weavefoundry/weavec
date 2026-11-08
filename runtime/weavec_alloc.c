@@ -158,6 +158,7 @@ typedef struct ThreadCache {
   unsigned locks;
   unsigned deferredCount;
   void *deferred[16];
+  unsigned char deferredForm[16];
 } ThreadCache;
 
 /* A thread whose cache has gone (its key's destructor ran) uses none. */
@@ -1583,12 +1584,13 @@ static void release(void *p, unsigned form, size_t bytes, const void *caller) {
  * the allocator (by a signal handler, which C does not allow but programs
  * do) uses no cache and starts no sweep; while the thread holds an
  * allocator lock it allocates nothing and defers its release. */
-/* A deferred release keeps its form in the pointer's low bits. */
+/* A deferred release, by its form (its pointer as given: an invalid one is
+ * reported as such). */
 static void releaseDeferred(ThreadCache *self) {
   while (self->deferredCount != 0) {
-    const uintptr_t entry = (uintptr_t)self->deferred[--self->deferredCount];
-    weavecRtReleaseForm((void *)(entry & ~(uintptr_t)15), entry & 3, SIZE_MAX,
-                        NULL);
+    --self->deferredCount;
+    weavecRtReleaseForm(self->deferred[self->deferredCount],
+                        self->deferredForm[self->deferredCount], SIZE_MAX, NULL);
   }
 }
 
@@ -1627,9 +1629,11 @@ void weavecRtReleaseForm(void *p, unsigned form, size_t size,
   self = ownCache();
   if (self != NULL && self->depth != 0 && self->locks != 0) {
     /* (A release that does not fit waits for no one: the block stays.) */
-    if (self->deferredCount < sizeof self->deferred / sizeof self->deferred[0])
-      self->deferred[self->deferredCount++] =
-          (void *)((uintptr_t)p | weavecRtCallerForm(form, caller));
+    if (self->deferredCount < sizeof self->deferred / sizeof self->deferred[0]) {
+      self->deferredForm[self->deferredCount] =
+          (unsigned char)weavecRtCallerForm(form, caller);
+      self->deferred[self->deferredCount++] = p;
+    }
     return;
   }
   if (self != NULL)
