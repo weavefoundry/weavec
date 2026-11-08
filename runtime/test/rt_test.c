@@ -1491,8 +1491,11 @@ static void testThreads(void) {
 
 static void *releaseAndExit(void *argument) {
   /* The block waits in this thread's cache (RFC 0037 section 2.1) until
-   * the thread exits. */
+   * the thread exits. The thread clears its own stack too: glibc keeps a
+   * joined thread's stack mapped for the next thread, and the sweep scans
+   * it, so a copy the release left there would keep the block. */
   *(volatile uintptr_t *)argument = releasedBlock(7700);
+  scrubStack();
   return NULL;
 }
 
