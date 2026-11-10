@@ -40,6 +40,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 #include <sys/ucontext.h>
 #if defined(__APPLE__)
 #include <mach/mach.h>
@@ -210,7 +211,16 @@ static void putJson(struct Line *line, const char *text) {
   put(line, "\"");
 }
 
-static void putJsonHex(struct Line *line, unsigned long long value) {
+/* `name` (`,"field":`) and the value, a number or a quoted address. */
+static void putNumber(struct Line *line, const char *name,
+                      unsigned long long value) {
+  put(line, name);
+  putUnsigned(line, value, 10);
+}
+
+static void putJsonHex(struct Line *line, const char *name,
+                       unsigned long long value) {
+  put(line, name);
   put(line, "\"");
   putHex(line, value);
   put(line, "\"");
@@ -248,7 +258,7 @@ struct Stack {
   uintptr_t pc[WeavecRtReportFrames];
 };
 
-enum { NoMemory, HeapMemory, StackMemory, GlobalMemory };
+enum { NoMemory, HeapMemory, StackMemory, GlobalMemory, Destination };
 
 /* One report's facts, from which its text or JSON is written. */
 static struct Report {
@@ -276,6 +286,9 @@ static struct Report {
   struct weavecRtHeapObject heap;
   struct Stack released;
   struct Stack allocated;
+  /* A fortified call's destination [lo, hi). */
+  uintptr_t lo;
+  uintptr_t hi;
   /* A frame's function, local and locals; a global's name and location. */
   const struct __weavec_rt_frame *frame;
   uintptr_t frameBase;
@@ -292,8 +305,7 @@ static char reportText[65536];
  * thread's is the program's). */
 static void putThread(struct Line *line, unsigned n) {
   char name[64];
-  put(line, "T");
-  putUnsigned(line, n, 10);
+  putNumber(line, "T", n);
   if (n != 0 && n == weavecRtThread() &&
       pthread_getname_np(pthread_self(), name, sizeof name) == 0 &&
       name[0] != 0) {
@@ -316,8 +328,7 @@ static void putStack(struct Line *line, const struct Stack *stack) {
     const struct weavecRtFrameInfo *frame = &symbols[stack->first + i];
     for (k = 0; k < frame->count; ++k) {
       const struct weavecRtSymbol *symbol = &frame->lines[k];
-      put(line, "    #");
-      putUnsigned(line, i, 10);
+      putNumber(line, "    #", i);
       put(line, " ");
       putHex(line, stack->pc[i]);
       put(line, " in ");
@@ -325,11 +336,9 @@ static void putStack(struct Line *line, const struct Stack *stack) {
       put(line, " ");
       if (symbol->file != NULL) {
         put(line, symbol->file);
-        put(line, ":");
-        putUnsigned(line, symbol->line, 10);
+        putNumber(line, ":", symbol->line);
         if (symbol->column != 0) {
-          put(line, ":");
-          putUnsigned(line, symbol->column, 10);
+          putNumber(line, ":", symbol->column);
         }
       } else {
         put(line, "(");
@@ -358,20 +367,16 @@ static void putJsonStack(struct Line *line, const struct Stack *stack) {
       putFunction(&function, symbol->function);
       *function.at = 0;
       put(line, comma);
-      put(line, "{\"pc\":");
-      putJsonHex(line, stack->pc[i]);
+      putJsonHex(line, "{\"pc\":", stack->pc[i]);
       put(line, ",\"module\":");
       putJson(line, frame->module);
-      put(line, ",\"offset\":");
-      putJsonHex(line, frame->offset);
+      putJsonHex(line, ",\"offset\":", frame->offset);
       put(line, ",\"function\":");
       putJson(line, symbol->function != NULL ? name : NULL);
       put(line, ",\"file\":");
       putJson(line, symbol->file);
-      put(line, ",\"line\":");
-      putUnsigned(line, symbol->line, 10);
-      put(line, ",\"column\":");
-      putUnsigned(line, symbol->column, 10);
+      putNumber(line, ",\"line\":", symbol->line);
+      putNumber(line, ",\"column\":", symbol->column);
       put(line, k + 1 < frame->count ? ",\"inlined\":true}"
                                      : ",\"inlined\":false}");
       comma = ",";
@@ -464,6 +469,13 @@ static int describeHeap(uintptr_t address) {
   return 1;
 }
 
+/* Whether the page holding `at` is mapped. */
+static int mapped(uintptr_t at) {
+  const uintptr_t page = (uintptr_t)sysconf(_SC_PAGESIZE);
+  unsigned char resident;
+  return mincore((void *)(at & ~(page - 1)), 1, (void *)&resident) == 0;
+}
+
 /* RFC 0040 section 5.3: the frame that holds a stack address. Below the
  * address, at the first 32-byte boundary whose shadow is a left redzone or a
  * returned frame's, the two words a frame stores name its descriptor. */
@@ -485,6 +497,10 @@ static int describeFrame(uintptr_t address) {
     const uintptr_t *words = (const uintptr_t *)at;
     if (value != WeavecRtShadowStackLeft && value != WeavecRtShadowReturned)
       continue;
+    /* (Another thread's stack may have been unmapped since its shadow was
+     * written.) */
+    if (!own && !mapped(at))
+      return 0;
     if (words[0] != WeavecRtFrameMagic)
       continue;
     frame = (const struct __weavec_rt_frame *)words[1];
@@ -603,11 +619,9 @@ static void putLocation(struct Line *line, int summary) {
     return;
   }
   put(line, report.file);
-  put(line, ":");
-  putUnsigned(line, report.line, 10);
+  putNumber(line, ":", report.line);
   if (report.column != 0) {
-    put(line, ":");
-    putUnsigned(line, report.column, 10);
+    putNumber(line, ":", report.column);
   }
 }
 
@@ -616,10 +630,8 @@ static void putFrameLocals(struct Line *line) {
   uint32_t i;
   for (i = 0; i < frame->objects && i < 32; ++i) {
     const struct __weavec_rt_frame_object *local = &frame->object[i];
-    put(line, "    [");
-    putUnsigned(line, local->offset, 10);
-    put(line, ", ");
-    putUnsigned(line, (uint64_t)local->offset + local->size, 10);
+    putNumber(line, "    [", local->offset);
+    putNumber(line, ", ", (uint64_t)local->offset + local->size);
     put(line, ") '");
     put(line, (const char *)local + local->name);
     put(line, "'\n");
@@ -685,41 +697,33 @@ static void writeText(struct Line *line) {
 }
 
 static void writeJson(struct Line *line) {
-  put(line, "{\"weavec\":");
-  putUnsigned(line, WEAVEC_RT_ABI, 10);
+  putNumber(line, "{\"weavec\":", WEAVEC_RT_ABI);
   put(line, ",\"kind\":");
   putJson(line, report.kind);
   put(line, report.proven ? ",\"proven\":true" : ",\"proven\":false");
   put(line, ",\"site\":{\"file\":");
   putJson(line, report.file);
-  put(line, ",\"line\":");
-  putUnsigned(line, report.line, 10);
-  put(line, ",\"column\":");
-  putUnsigned(line, report.column, 10);
+  putNumber(line, ",\"line\":", report.line);
+  putNumber(line, ",\"column\":", report.column);
   put(line, "},\"what\":");
   putJson(line, report.what);
   if (report.op != NULL) {
     put(line, ",\"access\":{\"op\":");
     putJson(line, report.op);
-    put(line, ",\"width\":");
-    putUnsigned(line, report.width, 10);
-    put(line, ",\"address\":");
-    putJsonHex(line, report.address);
+    putNumber(line, ",\"width\":", report.width);
+    putJsonHex(line, ",\"address\":", report.address);
     put(line, "}");
   }
   if (report.message != NULL) {
     put(line, ",\"message\":");
     putJson(line, report.message);
   }
-  put(line, ",\"thread\":{\"id\":");
-  putUnsigned(line, weavecRtThread(), 10);
+  putNumber(line, ",\"thread\":{\"id\":", weavecRtThread());
   put(line, "},\"stack\":");
   putJsonStack(line, &report.stack);
   if (report.memory == HeapMemory) {
-    put(line, ",\"object\":{\"memory\":\"heap\",\"base\":");
-    putJsonHex(line, report.heap.base);
-    put(line, ",\"size\":");
-    putUnsigned(line, report.heap.size, 10);
+    putJsonHex(line, ",\"object\":{\"memory\":\"heap\",\"base\":", report.heap.base);
+    putNumber(line, ",\"size\":", report.heap.size);
     put(line, report.heap.live ? ",\"state\":\"live\"" : ",\"state\":\"released\"");
     put(line, ",\"released\":");
     if (!report.heap.live && report.released.count != 0)
@@ -750,10 +754,8 @@ static void writeJson(struct Line *line) {
     for (i = 0; i < frame->objects; ++i) {
       put(line, i != 0 ? ",{\"name\":" : "{\"name\":");
       putJson(line, (const char *)&frame->object[i] + frame->object[i].name);
-      put(line, ",\"offset\":");
-      putUnsigned(line, frame->object[i].offset, 10);
-      put(line, ",\"size\":");
-      putUnsigned(line, frame->object[i].size, 10);
+      putNumber(line, ",\"offset\":", frame->object[i].offset);
+      putNumber(line, ",\"size\":", frame->object[i].size);
       put(line, "}");
     }
     put(line, "]}");
@@ -766,10 +768,12 @@ static void writeJson(struct Line *line) {
     putJson(line, global->location != 0
                       ? (const char *)global + global->location
                       : NULL);
-    put(line, ",\"base\":");
-    putJsonHex(line, global->address);
-    put(line, ",\"size\":");
-    putUnsigned(line, global->size, 10);
+    putJsonHex(line, ",\"base\":", global->address);
+    putNumber(line, ",\"size\":", global->size);
+    put(line, "}");
+  } else if (report.memory == Destination) {
+    putJsonHex(line, ",\"object\":{\"memory\":\"destination\",\"base\":", report.lo);
+    putNumber(line, ",\"size\":", report.hi - report.lo);
     put(line, "}");
   }
   put(line, "}\n");
@@ -937,7 +941,9 @@ void weavecRtFailObject(const char *kind, uintptr_t address, uint64_t width,
     struct Line line = {report.object, report.object + sizeof report.object - 1};
     accessWhat(address, width);
     captureAccess();
-    report.memory = -1; /* (a paragraph of its own) */
+    report.memory = Destination;
+    report.lo = lo;
+    report.hi = hi;
     putHex(&line, address);
     put(&line, " is ");
     putPlace(&line, address, lo, hi);

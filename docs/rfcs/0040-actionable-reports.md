@@ -608,7 +608,8 @@ instead of text (to the log, or stderr):
 ```
 
 `object.memory` is `heap`, `stack` (with `function`, `name`, `locals`),
-`global` (with `name`, `location`) or absent. A release report's `site`
+`global` (with `name`, `location`), `destination` (a fortified call's,
+with `base` and `size`) or absent. A release report's `site`
 is its location and `access` is `{"op":"free"|…}`. The schema's fields
 are documented in the command-line reference; the version is the
 runtime's ABI.

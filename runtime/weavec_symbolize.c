@@ -36,6 +36,7 @@
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
+#include <mach-o/loader.h>
 #else
 #include <link.h>
 #include <sys/auxv.h>
@@ -46,6 +47,8 @@ extern char **environ;
 /*===-- Settings ------------------------------------------------------------===*/
 
 static int symbolizeOff;
+/* WEAVEC_RT_SYMBOLIZER was given: Darwin asks it, not atos. */
+static int symbolizerChosen;
 /* WEAVEC_RT_SYMBOLIZER, or the weavec-cc beside the runtime's library. */
 static char symbolizer[1024];
 static char workDirectory[1024];
@@ -89,7 +92,8 @@ __attribute__((constructor)) static void readSymbolizeSettings(void) {
    * names. */
   symbolizeOff = secure || (value != NULL && strcmp(value, "0") == 0);
   value = getenv("WEAVEC_RT_SYMBOLIZER");
-  if (!secure && value != NULL && *value != 0)
+  symbolizerChosen = !secure && value != NULL && *value != 0;
+  if (symbolizerChosen)
     copyText(symbolizer, sizeof symbolizer, value);
   else
     findDriver();
@@ -113,15 +117,33 @@ static const char *keep(const char *text, size_t length) {
 
 /*===-- Modules -------------------------------------------------------------===*/
 
-/* The module that holds `pc`, the offset the symbolizer takes, and (Darwin)
- * its load address. */
+/* The module that holds `pc`, the offset from its load address, the address
+ * in the file the CODE protocol takes, and (Darwin) its load address. */
 struct Module {
   const char *path;
   uintptr_t offset;
+  uintptr_t address;
   uintptr_t header;
 };
 
 #if defined(__APPLE__)
+/* A Mach-O image's addresses start at its __TEXT segment's (0x100000000 in
+ * an executable). */
+static uintptr_t textAddress(uintptr_t header) {
+  const struct mach_header_64 *image = (const struct mach_header_64 *)header;
+  const struct load_command *command = (const struct load_command *)(image + 1);
+  uint32_t i;
+  for (i = 0; i < image->ncmds; ++i) {
+    const struct segment_command_64 *segment =
+        (const struct segment_command_64 *)command;
+    if (command->cmd == LC_SEGMENT_64 && strcmp(segment->segname, "__TEXT") == 0)
+      return (uintptr_t)segment->vmaddr;
+    command = (const struct load_command *)((const char *)command +
+                                            command->cmdsize);
+  }
+  return 0;
+}
+
 static int moduleOf(uintptr_t pc, struct Module *out) {
   Dl_info info;
   if (dladdr((const void *)pc, &info) == 0 || info.dli_fname == NULL)
@@ -129,6 +151,7 @@ static int moduleOf(uintptr_t pc, struct Module *out) {
   out->path = keep(info.dli_fname, strlen(info.dli_fname));
   out->header = (uintptr_t)info.dli_fbase;
   out->offset = pc - out->header;
+  out->address = out->offset + textAddress(out->header);
   return 1;
 }
 #else
@@ -173,6 +196,7 @@ static int moduleOf(uintptr_t pc, struct Module *out) {
     out->path = keep(search.name, strlen(search.name));
   }
   out->offset = pc - search.bias;
+  out->address = out->offset;
   out->header = search.bias;
   return 1;
 }
@@ -365,7 +389,9 @@ static void parseLocation(const char *text, size_t length,
  * `function (in module) (file:line)`, llvm-symbolizer's pairs of lines. */
 static void readAnswer(struct Reader *reader, int atos, uint64_t deadline,
                        struct weavecRtFrameInfo *frame) {
-  char line[2048];
+  /* (Static, as every large buffer of a report: a fault's report runs on
+   * the program's signal stack, which may be small. Reports hold a lock.) */
+  static char line[2048];
   while (readLine(reader, line, sizeof line, deadline) && line[0] != 0) {
     struct weavecRtSymbol symbol = {NULL, NULL, 0, 0};
     if (atos) {
@@ -383,7 +409,7 @@ static void readAnswer(struct Reader *reader, int atos, uint64_t deadline,
                         &symbol);
       }
     } else {
-      char where[2048];
+      static char where[2048];
       if (!readLine(reader, where, sizeof where, deadline))
         break;
       if (strcmp(line, "??") != 0)
@@ -415,6 +441,12 @@ static void putHexText(char *out, uintptr_t value) {
   *out = 0;
 }
 
+/* One symbolization's modules, and its frames grouped by module. */
+enum { MaxFrames = 3 * WeavecRtReportFrames };
+static struct Module modules[MaxFrames];
+static unsigned done[MaxFrames];
+static unsigned grouped[MaxFrames];
+
 /* Asks the kept weavec-cc (started now if need be) about `indexes`. */
 static int askDriver(const uintptr_t *pcs, const unsigned *indexes,
                      unsigned count, struct weavecRtFrameInfo *out,
@@ -425,8 +457,12 @@ static int askDriver(const uintptr_t *pcs, const unsigned *indexes,
   (void)pcs;
   if (keptFailed || symbolizer[0] == 0)
     return 0;
-  if (kept.pid != 0 && kept.owner != getpid())
-    kept.pid = 0, kept.in = kept.out = -1; /* (the parent's, after a fork) */
+  /* The parent's, after a fork: its pipes are closed, not inherited by
+   * this process's own symbolizer. */
+  if (kept.pid != 0 && kept.owner != getpid()) {
+    (void)close(kept.in), (void)close(kept.out);
+    kept.pid = 0, kept.in = kept.out = -1;
+  }
   if (kept.pid == 0) {
     if (!spawn(&kept, argv)) {
       keptFailed = 1;
@@ -442,7 +478,7 @@ static int askDriver(const uintptr_t *pcs, const unsigned *indexes,
     const size_t path = strlen(frame->module);
     if (path + 40 > sizeof request)
       continue;
-    putHexText(offset, frame->offset);
+    putHexText(offset, modules[indexes[i]].address);
     memcpy(request, "CODE \"", 6);
     memcpy(request + 6, frame->module, path);
     memcpy(request + 6 + path, "\" ", 2);
@@ -468,20 +504,14 @@ static int askAtos(const uintptr_t *pcs, const unsigned *indexes,
                    unsigned count, struct weavecRtFrameInfo *out,
                    uintptr_t header, uint64_t deadline) {
   struct Child child = {0, -1, -1, 0};
-  struct Reader reader;
+  static struct Reader reader;
   char load[24];
-  char *argv[9];
+  char *argv[] = {(char *)"/usr/bin/atos", (char *)"-fullPath", (char *)"-o",
+                  (char *)out[indexes[0]].module, (char *)"-l", load,
+                  (char *)"-i", NULL};
   unsigned i;
   int answered = 0;
   putHexText(load, header);
-  argv[0] = (char *)"/usr/bin/atos";
-  argv[1] = (char *)"-fullPath";
-  argv[2] = (char *)"-o";
-  argv[3] = (char *)out[indexes[0]].module;
-  argv[4] = (char *)"-l";
-  argv[5] = load;
-  argv[6] = (char *)"-i";
-  argv[7] = NULL;
   if (access(argv[0], X_OK) != 0 || !spawn(&child, argv))
     return 0;
   for (i = 0; i < count; ++i) {
@@ -510,10 +540,7 @@ static void fallBack(uintptr_t pc, struct weavecRtFrameInfo *frame) {
   Dl_info info;
   if (frame->count != 0)
     return;
-  frame->lines[0].function = NULL;
-  frame->lines[0].file = NULL;
-  frame->lines[0].line = 0;
-  frame->lines[0].column = 0;
+  memset(&frame->lines[0], 0, sizeof frame->lines[0]);
   if (dladdr((const void *)pc, &info) != 0 && info.dli_sname != NULL)
     frame->lines[0].function = keep(info.dli_sname, strlen(info.dli_sname));
   frame->count = 1;
@@ -522,12 +549,10 @@ static void fallBack(uintptr_t pc, struct weavecRtFrameInfo *frame) {
 void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
                        struct weavecRtFrameInfo *out) {
   const uint64_t deadline = now() + 5000;
-  unsigned done[256];
   unsigned i;
-  struct Module modules[256];
   arenaUsed = 0;
-  if (count > 256)
-    count = 256;
+  if (count > MaxFrames)
+    count = MaxFrames;
   if (getcwd(workDirectory, sizeof workDirectory) == NULL)
     workDirectory[0] = 0;
   for (i = 0; i < count; ++i) {
@@ -542,7 +567,6 @@ void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
   }
   /* One module's frames at a time. */
   for (i = 0; i < count && !symbolizeOff; ++i) {
-    unsigned indexes[256];
     unsigned n = 0;
     unsigned j;
     if (done[i] || out[i].module == NULL)
@@ -550,14 +574,15 @@ void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
     for (j = i; j < count; ++j)
       if (!done[j] && out[j].module != NULL &&
           strcmp(out[j].module, out[i].module) == 0) {
-        indexes[n++] = j;
+        grouped[n++] = j;
         done[j] = 1;
       }
 #if defined(__APPLE__)
-    if (askAtos(pcs, indexes, n, out, modules[i].header, deadline))
+    if (!symbolizerChosen &&
+        askAtos(pcs, grouped, n, out, modules[i].header, deadline))
       continue;
 #endif
-    (void)askDriver(pcs, indexes, n, out, deadline);
+    (void)askDriver(pcs, grouped, n, out, deadline);
   }
   for (i = 0; i < count; ++i)
     fallBack(pcs[i], &out[i]);

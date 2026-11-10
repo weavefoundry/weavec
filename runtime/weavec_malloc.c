@@ -94,8 +94,8 @@ void free(void *p) {
 /* RFC 0040 section 5.5: a guarded call's release, with its site. A
  * program that defines `free` and `realloc` itself (an allocator of its
  * own) gets its calls. */
-void (*weavecRtProgramFree)(void *);
-void *(*weavecRtProgramRealloc)(void *, size_t);
+static void (*programFree)(void *);
+static void *(*programRealloc)(void *, size_t);
 
 static void *programs(const char *name, const void *own) {
 #if defined(__APPLE__)
@@ -114,14 +114,14 @@ static void *programs(const char *name, const void *own) {
 }
 
 __attribute__((constructor(101))) static void findProgramAllocator(void) {
-  weavecRtProgramFree = (void (*)(void *))programs("free", (const void *)free);
-  weavecRtProgramRealloc =
+  programFree = (void (*)(void *))programs("free", (const void *)free);
+  programRealloc =
       (void *(*)(void *, size_t))programs("realloc", (const void *)realloc);
 }
 
 void __weavec_rt_free_at(void *p, const struct __weavec_rt_site *site) {
-  if (weavecRtProgramFree != NULL)
-    weavecRtProgramFree(p);
+  if (programFree != NULL)
+    programFree(p);
   else
     weavecRtReleaseForm(p, WeavecRtFormMalloc, SIZE_MAX,
                         __builtin_return_address(0), site);
@@ -129,8 +129,8 @@ void __weavec_rt_free_at(void *p, const struct __weavec_rt_site *site) {
 
 void *__weavec_rt_realloc_at(void *p, size_t size,
                              const struct __weavec_rt_site *site) {
-  if (weavecRtProgramRealloc != NULL)
-    return weavecRtProgramRealloc(p, size);
+  if (programRealloc != NULL)
+    return programRealloc(p, size);
   return weavecRtReallocAt(p, size, site);
 }
 

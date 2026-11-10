@@ -88,11 +88,11 @@ void weavecRtOwnStack(uintptr_t *low, uintptr_t *high) {
 /* The runtime's functions are in a section of their own (weavec_rt.h), so
  * that its frames are known in its library and in a program that links its
  * archive. */
-#if defined(__APPLE__)
 static uintptr_t textLow;
 static uintptr_t textHigh;
 static int textKnown;
 
+#if defined(__APPLE__)
 static void findText(void) {
   Dl_info info;
   unsigned long size = 0;
@@ -100,17 +100,8 @@ static void findText(void) {
   if (dladdr((const void *)findText, &info) != 0 && info.dli_fbase != NULL)
     start = getsectiondata((const struct mach_header_64 *)info.dli_fbase,
                            "__TEXT", "__weavec_rt", &size);
-  if (start != NULL) {
-    textLow = (uintptr_t)start;
-    textHigh = (uintptr_t)start + size;
-  }
-  __atomic_store_n(&textKnown, 1, __ATOMIC_RELEASE);
-}
-
-static int inRuntime(uintptr_t pc) {
-  if (!__atomic_load_n(&textKnown, __ATOMIC_ACQUIRE))
-    findText();
-  return pc >= textLow && pc < textHigh;
+  textLow = (uintptr_t)start;
+  textHigh = start != NULL ? (uintptr_t)start + size : 0;
 }
 #else
 extern const char __start_weavec_rt_text[]
@@ -118,11 +109,19 @@ extern const char __start_weavec_rt_text[]
 extern const char __stop_weavec_rt_text[]
     __attribute__((weak, visibility("hidden")));
 
-static int inRuntime(uintptr_t pc) {
-  return pc >= (uintptr_t)__start_weavec_rt_text &&
-         pc < (uintptr_t)__stop_weavec_rt_text;
+static void findText(void) {
+  textLow = (uintptr_t)__start_weavec_rt_text;
+  textHigh = (uintptr_t)__stop_weavec_rt_text;
 }
 #endif
+
+static inline int inRuntime(uintptr_t pc) {
+  if (!__atomic_load_n(&textKnown, __ATOMIC_ACQUIRE)) {
+    findText();
+    __atomic_store_n(&textKnown, 1, __ATOMIC_RELEASE);
+  }
+  return pc - textLow < textHigh - textLow;
+}
 
 /*===-- The unwinder (section 1) --------------------------------------------===*/
 
@@ -233,9 +232,7 @@ __attribute__((constructor(101))) static void readStackSettings(void) {
     weavecRtHeapStacks = frames < WeavecRtHeapFramesMax ? (unsigned)frames
                                                         : WeavecRtHeapFramesMax;
   }
-#if defined(__APPLE__)
-  findText();
-#endif
+  (void)inRuntime(0);
 }
 
 static void *mapStore(size_t bytes) {
@@ -362,23 +359,12 @@ uint32_t weavecRtStackId(uintptr_t fp, uintptr_t low, uintptr_t high,
   uintptr_t frames[WeavecRtHeapFramesMax];
   const unsigned max = weavecRtHeapStacks;
   unsigned count = 0;
-  uintptr_t codeLow;
-  uintptr_t codeSize;
-#if defined(__APPLE__)
-  if (!__atomic_load_n(&textKnown, __ATOMIC_ACQUIRE))
-    findText();
-  codeLow = textLow;
-  codeSize = textHigh - textLow;
-#else
-  codeLow = (uintptr_t)__start_weavec_rt_text;
-  codeSize = (uintptr_t)__stop_weavec_rt_text - codeLow;
-#endif
   while (count < max && (fp & 7) == 0 && fp >= low && fp + 16 <= high) {
     const uintptr_t next = ((const uintptr_t *)fp)[0];
     const uintptr_t ret = stripped(((const uintptr_t *)fp)[1]);
     if (ret < 4096)
       break;
-    if (count != 0 || ret - codeLow >= codeSize)
+    if (count != 0 || !inRuntime(ret))
       frames[count++] = ret - 1;
     if (next <= fp)
       break;

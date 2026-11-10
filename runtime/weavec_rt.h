@@ -268,11 +268,9 @@ const char *weavecRtReleaseName(unsigned form);
 unsigned weavecRtCallerForm(unsigned form, const void *caller);
 void weavecRtSetForm(void *p, unsigned form);
 
-/* RFC 0040 section 5.5: a bad release by `by` (free, realloc, operator
- * delete, operator delete[]) of `p`: released already; not a live block's
- * start (`why`, or null when it lies inside one); by another form than the
- * allocation's (`allocatedBy`), or sized (`size`, SIZE_MAX when the forms
- * differ) for another size. */
+/* RFC 0040 section 5.5: a bad release of `p` by `by` (free, realloc,
+ * operator delete[...]): `why` it is no live block's start (null: inside
+ * one); the allocation's form, or (`size`) a sized release's size. */
 enum { WeavecRtDoubleFree, WeavecRtInvalidFree, WeavecRtMismatch };
 struct weavecRtRelease {
   unsigned kind;
@@ -285,10 +283,6 @@ struct weavecRtRelease {
 };
 void weavecRtFailRelease(const struct weavecRtRelease *release)
     __attribute__((noreturn));
-/* The address of the process's own `free` and `realloc` when the program
- * defines them (its own allocator), or null. */
-extern void (*weavecRtProgramFree)(void *);
-extern void *(*weavecRtProgramRealloc)(void *, size_t);
 
 /* What the allocator knows of an address, for reports: whether it is in a
  * heap slot or huge block, that object's start, size, state and form, and
@@ -643,10 +637,9 @@ struct __weavec_rt_global {
   int64_t name;
   int64_t location;
 };
-/* RFC 0040 section 5.3: a frame's descriptor, which the frame names in the
- * first two words of its left redzone ({WeavecRtFrameMagic, descriptor}):
- * the function's name and each tracked local's offset in the frame, size
- * and name, names as offsets from the descriptor. */
+/* RFC 0040 section 5.3: the descriptor a frame names in its left redzone
+ * ({WeavecRtFrameMagic, descriptor}): its function, size (`reserved`) and
+ * locals, each name an offset from its record. */
 struct __weavec_rt_frame_object {
   uint32_t offset;
   uint32_t size;
@@ -670,9 +663,8 @@ __weavec_rt_globals_unregister(const struct __weavec_rt_global *globals,
                                uint64_t n,
                                const struct __weavec_rt_frame *const *frames,
                                uint64_t m);
-/* The registered global that holds or lies nearest below `address` (within
- * its padded extent), or null; whether `frame` is a registered
- * descriptor. */
+/* The registered global whose padded extent holds `address`, or null;
+ * whether `frame` is a registered descriptor. */
 const struct __weavec_rt_global *weavecRtGlobalAt(uintptr_t address);
 int weavecRtFrameKnown(const struct __weavec_rt_frame *frame);
 
@@ -726,42 +718,33 @@ void weavecRtDie(const char *message) __attribute__((noreturn));
 
 /*===-- Stacks (RFC 0040 sections 1 to 4) ----------------------------------===*/
 
-/* Frames a heap block's stacks keep by default and at most
- * (WEAVEC_RT_HEAP_STACKS), and a report's own. */
-enum {
-  WeavecRtHeapFrames = 8,
-  WeavecRtHeapFramesMax = 32,
-  WeavecRtReportFrames = 32
-};
-/* The calling thread's number (T<n>; the main thread is T0). */
+/* Frames a heap block's stack keeps by default and at most, and a
+ * report's own stack. */
+enum { WeavecRtHeapFrames = 8, WeavecRtHeapFramesMax = 32 };
+enum { WeavecRtReportFrames = 32 };
+/* The calling thread's number (T<n>; the main thread is T0) and stack. */
 unsigned weavecRtThread(void);
-/* Follows frame records from `fp` within the thread's stack: up to `max`
- * call addresses (return address - 1), after `pc` when it is not 0 (a
- * faulting instruction); without `pc`, the runtime's frames at the start
- * are dropped. */
+void weavecRtOwnStack(uintptr_t *low, uintptr_t *high);
+/* Up to `max` call addresses from the frame records at `fp`, after `pc`
+ * (a faulting instruction) or else past the runtime's own frames. */
 unsigned weavecRtUnwind(uintptr_t *frames, unsigned max, uintptr_t fp,
                         uintptr_t pc);
-/* The store's identifier of a stack (0: not recorded); the calling stack's,
- * of at most `max` frames; a stored stack's frames and thread. */
+/* The store: a stack's identifier (0: not recorded), the identifier of the
+ * stack walked from `fp` within [low, high), a stored stack, statistics. */
 uint32_t weavecRtStackStore(const uintptr_t *frames, unsigned count,
                             unsigned thread);
 uint32_t weavecRtStackId(uintptr_t fp, uintptr_t low, uintptr_t high,
                          unsigned thread);
-/* The calling thread's stack. */
-void weavecRtOwnStack(uintptr_t *low, uintptr_t *high);
 unsigned weavecRtStackGet(uint32_t id, uintptr_t *frames, unsigned max,
                           unsigned *thread);
 void weavecRtStoreStats(size_t *entries, size_t *bytes);
-/* The frames a heap block's stack keeps (WEAVEC_RT_HEAP_STACKS; 0: none);
- * the calling stack's identifier, walked from `fp` within [low, high). */
+/* The frames a heap block's stack keeps (WEAVEC_RT_HEAP_STACKS; 0: none). */
 extern unsigned weavecRtHeapStacks;
 /* A mapping of the runtime's that neither the sweep nor a core dump reads. */
 void weavecRtExcluded(void *p, size_t bytes);
 
-/* Symbolization (section 4): up to `max` lines of `pc` (the innermost
- * function first, several for inlined calls), each {function, file, line,
- * column}, file null and line 0 when unknown; the module and the offset in
- * it. Returns the count (at least 1). Only while reporting. */
+/* Symbolization (section 4), only while reporting: each pc's module,
+ * offset and lines {function, file, line, column}, the innermost first. */
 struct weavecRtSymbol {
   const char *function;
   const char *file;
