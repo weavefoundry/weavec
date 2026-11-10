@@ -296,7 +296,9 @@ public:
                "'" + annotation.argument +
                    "' in the bound names no integer parameter of '" +
                    function.getName().str() + "'",
-               "name an integer parameter of the function, or a constant");
+               "name an integer parameter of the function, an integer "
+               "literal, or a macro that expands to one (an expression is "
+               "not read)");
         bounds.kind = PointerBounds::Kind::Single;
         continue;
       }
@@ -322,19 +324,55 @@ public:
                               : preprocessor->getMacroInfo(identifier);
     if (macro == nullptr || macro->isFunctionLike())
       return std::nullopt;
+    // Exactly one integer literal, perhaps in parentheses: an expression
+    // (`(2*30+1)`) is not read, so a bound is never a part of one.
+    std::optional<std::uint64_t> found;
     for (const clang::Token &token : macro->tokens()) {
       if (token.isOneOf(clang::tok::l_paren, clang::tok::r_paren))
         continue;
-      if (!token.is(clang::tok::numeric_constant))
+      if (!token.is(clang::tok::numeric_constant) || found.has_value())
         return std::nullopt;
       llvm::StringRef spelled(token.getLiteralData(), token.getLength());
       spelled = spelled.rtrim("uUlL");
       unsigned long long value = 0;
       if (spelled.getAsInteger(0, value))
         return std::nullopt;
-      return value;
+      found = value;
     }
-    return std::nullopt;
+    return found;
+  }
+
+  /// A struct's bounds name its own fields, a literal or a macro that
+  /// expands to one (their counts are not used at run time, amendment 1,
+  /// but a bound that names nothing is a mistake).
+  void checkRecord(const clang::RecordDecl &record) {
+    for (const clang::FieldDecl *field : record.fields())
+      for (const TypeAnnotation &annotation :
+           annotationsOf(field->getType(), ast)) {
+        const llvm::StringRef name = annotation.name;
+        if (name == EscapesAnnotation || name == BorrowedAnnotation ||
+            name == NullTerminatedAnnotation ||
+            name == NullTerminatedOrNullAnnotation)
+          continue;
+        unsigned long long literal = 0;
+        if (!llvm::StringRef(annotation.argument).getAsInteger(0, literal) ||
+            macroConstant(annotation.argument).has_value())
+          continue;
+        const bool named =
+            llvm::any_of(record.fields(), [&](const clang::FieldDecl *other) {
+              return other->getName() == annotation.argument &&
+                     (name == EndedByAnnotation
+                          ? other->getType()->isPointerType()
+                          : other->getType()->isIntegerType());
+            });
+        if (!named)
+          report(field->getLocation(), rule::BadAnnotation,
+                 "'" + annotation.argument + "' in the bound of field '" +
+                     field->getName().str() + "' names no field of the struct",
+                 "name an integer field of the same struct (a pointer "
+                 "field for WEAVEC_ENDED_BY), an integer literal, or a "
+                 "macro that expands to one");
+      }
   }
 
   FunctionBounds tableOf(const clang::FunctionDecl &function) {
@@ -985,12 +1023,18 @@ private:
 
   std::string text(const clang::Expr *expression) const {
     const clang::SourceManager &sources = ast.getSourceManager();
-    llvm::StringRef spelled = clang::Lexer::getSourceText(
+    const llvm::StringRef spelled = clang::Lexer::getSourceText(
         clang::CharSourceRange::getTokenRange(expression->getSourceRange()),
         sources, ast.getLangOpts());
-    if (spelled.empty() || spelled.size() > 48)
-      return "this pointer";
-    return spelled.str();
+    if (!spelled.empty() && spelled.size() <= 48)
+      return spelled.str();
+    // A variable or field by its name, however a macro spelled it.
+    const clang::Expr *bare = expression->IgnoreParenImpCasts();
+    if (const auto *reference = llvm::dyn_cast<clang::DeclRefExpr>(bare))
+      return reference->getDecl()->getName().str();
+    if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(bare))
+      return member->getMemberDecl()->getName().str();
+    return "this pointer";
   }
 
   /// An integer constant 0: indexing a single pointer by it is `*p`.
@@ -1126,7 +1170,7 @@ private:
           match->entry->params[static_cast<std::size_t>(other)].access !=
               core::LibraryParam::Access::Read)
         continue;
-      const clang::Expr *source = call->getArg(i)->IgnoreParenImpCasts();
+      const clang::Expr *source = call->getArg(i)->IgnoreParenCasts();
       if (source->getType()->isPointerType() &&
           sameShape(source->getType()->getPointeeType(), from))
         return true;
@@ -1247,6 +1291,10 @@ private:
         collect(inner, ast, declarations, safe);
         continue;
       }
+      if (const auto *record = llvm::dyn_cast<clang::RecordDecl>(declaration);
+          record != nullptr && record->isThisDeclarationADefinition() &&
+          !ast.getSourceManager().isInSystemHeader(record->getLocation()))
+        declarations.checkRecord(*record);
       const auto *function = llvm::dyn_cast<clang::FunctionDecl>(declaration);
       if (function == nullptr || function->getName().empty())
         continue;

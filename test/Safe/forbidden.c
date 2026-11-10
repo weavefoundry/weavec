@@ -33,3 +33,15 @@ WEAVEC_SAFE int typo(const int *WEAVEC_COUNTED_BY(m) v, size_t n) { // expected-
 
 #define SLOTS 8
 WEAVEC_SAFE int slots(const int *WEAVEC_COUNTED_BY(SLOTS) v) { return v[SLOTS - 1]; }
+
+#define WINDOW (2 * 30 + 1)
+WEAVEC_SAFE int window(const int *WEAVEC_COUNTED_BY(WINDOW) v) { // expected-error {{'WINDOW' in the bound names no integer parameter of 'window' [weavec-safe:bad-annotation]}}
+  return v[0];
+}
+
+struct table {
+  int *WEAVEC_COUNTED_BY(count) items;
+  int *WEAVEC_COUNTED_BY(cuont) typo; // expected-error {{'cuont' in the bound of field 'typo' names no field of the struct [weavec-safe:bad-annotation]}}
+  int *WEAVEC_COUNTED_BY(SLOTS) fixed;
+  size_t count;
+};

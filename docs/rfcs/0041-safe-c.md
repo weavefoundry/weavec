@@ -996,4 +996,12 @@ They override the body.
     `escape` error about a borrowed field's pointer no longer suggests
     `WEAVEC_LIFETIMEBOUND`, and one about a parameter mentions
     `WEAVEC_BORROWED` fields.
+16. **What zlib's conversion corrected.** A macro bound is read only when
+    its expansion is one integer literal: `(2*30+1)` had been read as 2, a
+    bound smaller than meant, and an expression could as well have been read
+    larger. Any other macro or expression is a `bad-annotation` error. A
+    field's bound must name a field of its struct (an integer one, a pointer
+    one for `WEAVEC_ENDED_BY`), a literal or such a macro. A copy whose
+    operands are cast to `void *` explicitly is a copy of their types. An
+    error names a variable or field a macro parenthesized by its name.
 
