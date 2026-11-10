@@ -26,7 +26,7 @@ int main(int argc, char **argv) {
   (void)plain(argc);
   if (argc > 1 && strcmp(argv[1], "stale") == 0)
     // CHECK: weavec: stack-use-after-return at {{.*}}use-after-return.c:[[@LINE+2]]:{{[0-9]+}}: read of 4 bytes
-    // CHECK-NEXT: weavec: 0x{{[0-9a-f]+}} is in a frame that returned
+    // CHECK: weavec: 0x{{[0-9a-f]+}} is in a frame that returned
     return p[1];
   return 0;
 }

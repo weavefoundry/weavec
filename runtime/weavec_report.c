@@ -1,4 +1,4 @@
-/*===- weavec_report.c - Failures: reports and fatal errors -------*- C -*-===*\
+/*===- weavec_report.c - Reports ----------------------------------*- C -*-===*\
 |*
 |* Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 |* See LICENSE for license information.
@@ -6,24 +6,22 @@
 |*
 |*===----------------------------------------------------------------------===*|
 |*
-|* RFC 0035, section 5.3. A failed guard prints
+|* RFC 0035 section 5.3, RFC 0040 section 5. A failure prints
 |*
-|*   weavec: <kind> at <file>:<line>:<column>: <read|write> of <n> bytes at <a>
+|*   weavec: <kind> at <file>:<line>:<column>: <what>
+|*       #0 <pc> in <function> <file>:<line>:<column>
+|*       ...
+|*   weavec: <the object the address lies in or near>
+|*       #0 ... (a heap block's release and allocation)
+|*   weavec: summary: <kind> at <location> in <function> (thread T<n>)
 |*
-|* to stderr (a second line places a heap address in its object) and traps;
-|* under -fweavec-checks=report it prints the line once per site and the
-|* program goes on, with no guarantee. With WEAVEC_RT_ABORT=1 a report traps
-|* too. The case runner and the corpus gate attribute traps to lines and
-|* kinds through this output.
-|*
-|* __weavec_rt_fatal is how the allocator stops an invalid release: it
-|* prints
-|*
-|*   weavec: <what> of <pointer>: <why>
-|*
-|* and traps. It uses no allocation and no stdio. RFC 0039: a failed check
-|* of the C++ library ends its first line in the library's message, and a
-|* backtrace names C++ functions demangled.
+|* to stderr (or WEAVEC_RT_REPORT_LOG), or one line of JSON under
+|* WEAVEC_RT_REPORT_FORMAT=json (section 6), and traps; under
+|* -fweavec-checks=report it prints a site once and the program goes on,
+|* with no guarantee. With WEAVEC_RT_ABORT=1 a report traps too. A bad
+|* release (section 5.5) and a failed check of the C++ library stop the
+|* program in every mode. A report is formatted in a buffer of the
+|* runtime's under a lock, and written at once.
 |*
 |* __weavec_rt_trapping (RFC 0033, section 6.1) runs before every trap of a
 |* failure: a trap the program has blocked or catches would otherwise repeat
@@ -38,7 +36,6 @@
 #include "weavec_rt.h"
 
 #include <dlfcn.h>
-#include <execinfo.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
@@ -56,6 +53,8 @@
 #include <sys/auxv.h>
 #endif
 
+/*===-- Report mode's sites -------------------------------------------------===*/
+
 /* The sites already reported, as 64-bit hashes of (kind, file, line,
  * column) in an open-addressing table; 0 marks a free slot. When the table
  * is full every further failure is printed, which is harmless. */
@@ -69,18 +68,10 @@ static unsigned long long hashText(unsigned long long hash, const char *text) {
   return (hash ^ 0xffU) * 1099511628211ULL;
 }
 
-static unsigned long long siteHash(const char *check, const char *file,
-                                   unsigned line, unsigned column) {
-  unsigned long long hash = hashText(14695981039346656037ULL, check);
-  hash = hashText(hash, file);
-  hash = (hash ^ line) * 1099511628211ULL;
-  hash = (hash ^ column) * 1099511628211ULL;
-  return hash ? hash : 1;
-}
-
 /* True the first time a site is seen; safe under concurrent reports. */
 static int firstReport(unsigned long long hash) {
   unsigned probe;
+  hash = hash != 0 ? hash : 1;
   for (probe = 0; probe < SiteSlots; ++probe) {
     unsigned long long *slot = &reportedSites[(hash + probe) % SiteSlots];
     unsigned long long seen = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
@@ -95,28 +86,24 @@ static int firstReport(unsigned long long hash) {
   return 1;
 }
 
-/* The settings below are read in a constructor, never while reporting: a
- * check can fail in a function the C library calls with its environment
- * lock held, and `getenv` takes it again. */
+/*===-- Settings ------------------------------------------------------------===*/
 
-/* WEAVEC_RT_ABORT=1. */
+/* Read in a constructor, never while reporting: a check can fail in a
+ * function the C library calls with its environment lock held, and
+ * `getenv` takes it again. WEAVEC_RT_ABORT=1;
+ * WEAVEC_RT_REPORT_FORMAT=json; WEAVEC_RT_REPORT_LOG=<path>: every report is
+ * appended to that file and not printed (RFC 0033, section 6.3: a test that
+ * captures standard error sees only the program's own output). */
 static int abortSetting;
-/* WEAVEC_RT_BACKTRACE=1: the stack of the access that stops the program,
- * after its report. */
-static int backtraceSetting;
-
-/* WEAVEC_RT_REPORT_LOG=<path>: every report is appended to that file, one
- * write per line, for a test harness that keeps the output of a passing test
- * to itself, and not printed (RFC 0033, section 6.3: a test that captures
- * standard error sees only the program's own output). */
+static int jsonSetting;
 static char reportLog[1024];
 
 __attribute__((constructor)) static void readReportSettings(void) {
   const char *value = getenv("WEAVEC_RT_ABORT");
   const char *path;
   abortSetting = value != NULL && strcmp(value, "1") == 0;
-  value = getenv("WEAVEC_RT_BACKTRACE");
-  backtraceSetting = value != NULL && strcmp(value, "1") == 0;
+  value = getenv("WEAVEC_RT_REPORT_FORMAT");
+  jsonSetting = value != NULL && strcmp(value, "json") == 0;
   /* A set-user-ID or set-group-ID program does not write where its
    * environment says. */
 #if defined(__APPLE__)
@@ -131,23 +118,17 @@ __attribute__((constructor)) static void readReportSettings(void) {
     memcpy(reportLog, path, strlen(path) + 1);
 }
 
-static int shouldAbort(void) { return abortSetting; }
-
-/* Appends a report to the log; returns whether it was written there. */
-static int logReport(const char *text, size_t size) {
-  int fd;
-  if (reportLog[0] == 0)
-    return 0;
-  fd = open(reportLog, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
-            0644);
-  if (fd < 0)
-    return 0;
-  {
-    const long written = (long)write(fd, text, size);
-    (void)written;
-  }
-  (void)close(fd);
-  return 1;
+/* Writes a report to the log, or else to stderr, in one write. */
+static void emit(const char *text, size_t size) {
+  int fd = -1;
+  long written;
+  if (reportLog[0] != 0)
+    fd = open(reportLog, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+              0644);
+  written = (long)write(fd >= 0 ? fd : 2, text, size);
+  (void)written;
+  if (fd >= 0)
+    (void)close(fd);
 }
 
 void __weavec_rt_trapping(void) {
@@ -170,17 +151,14 @@ void __weavec_rt_trapping(void) {
   (void)pthread_sigmask(SIG_UNBLOCK, &traps, NULL);
 }
 
-/* Prints a report line (or appends it to the log). */
-static void emit(const char *text, int size) {
-  if (size < 0)
-    return;
-  if (!logReport(text, (size_t)size)) {
-    const long written = (long)write(2, text, (size_t)size);
-    (void)written;
-  }
+static __attribute__((noreturn)) void trapNow(void) {
+  __weavec_rt_trapping();
+  __builtin_trap();
 }
 
-/* A line being written. The runtime formats its own numbers: a program may
+/*===-- Text ----------------------------------------------------------------===*/
+
+/* Text being written. The runtime formats its own numbers: a program may
  * define snprintf (an embedded printf without %ll). */
 struct Line {
   char *at;
@@ -188,7 +166,7 @@ struct Line {
 };
 
 static void put(struct Line *line, const char *text) {
-  while (*text != 0 && line->at < line->end)
+  while (text != NULL && *text != 0 && line->at < line->end)
     *line->at++ = *text++;
 }
 
@@ -209,238 +187,975 @@ static void putHex(struct Line *line, unsigned long long value) {
   putUnsigned(line, value, 16);
 }
 
-/* Ends the line with a newline, which always fits, and returns its size. */
-static int finish(struct Line *line, char *text) {
-  *line->at++ = '\n';
-  return (int)(line->at - text);
-}
-
-/* `address` relative to the object [lo, hi), for the second line. */
-static int describeRange(uintptr_t address, uintptr_t lo, uintptr_t hi,
-                         const char *noun, char *text, size_t room) {
-  struct Line line = {text, text + room - 1};
-  put(&line, "weavec: ");
-  putHex(&line, address);
-  if (address >= hi) {
-    put(&line, " is ");
-    putUnsigned(&line, address - hi, 10);
-    put(&line, " bytes after the ");
-  } else if (address < lo) {
-    put(&line, " is ");
-    putUnsigned(&line, lo - address, 10);
-    put(&line, " bytes before the ");
-  } else {
-    put(&line, " is ");
-    putUnsigned(&line, address - lo, 10);
-    put(&line, " bytes inside the ");
+/* A string in JSON, quoted; null as `null`. */
+static void putJson(struct Line *line, const char *text) {
+  if (text == NULL) {
+    put(line, "null");
+    return;
   }
-  putUnsigned(&line, hi - lo, 10);
-  put(&line, "-byte ");
-  put(&line, noun);
-  put(&line, " at ");
-  putHex(&line, lo);
-  return finish(&line, text);
+  put(line, "\"");
+  for (; *text != 0 && line->at + 6 < line->end; ++text) {
+    const unsigned char c = (unsigned char)*text;
+    if (c == '"' || c == '\\') {
+      *line->at++ = '\\';
+      *line->at++ = (char)c;
+    } else if (c < 0x20) {
+      put(line, "\\u00");
+      *line->at++ = "0123456789abcdef"[c >> 4];
+      *line->at++ = "0123456789abcdef"[c & 15];
+    } else {
+      *line->at++ = (char)c;
+    }
+  }
+  put(line, "\"");
 }
 
-/* Where a heap address lies relative to its object, for the second line;
- * its size, 0 when there is nothing to say. */
-static int describeHeap(uintptr_t address, char *text, size_t room) {
-  const struct weavecRtHeapObject object = weavecRtHeapObjectAt(address);
-  struct Line line = {text, text + room - 1};
-  if (!object.found)
+static void putJsonHex(struct Line *line, unsigned long long value) {
+  put(line, "\"");
+  putHex(line, value);
+  put(line, "\"");
+}
+
+/* A C++ name demangled by the C++ library's own __cxa_demangle, when the
+ * process has one (RFC 0039 section 8). */
+static void putFunction(struct Line *line, const char *name) {
+  typedef char *Demangle(const char *, char *, size_t *, int *);
+  static Demangle *demangle;
+  static int looked;
+  char *plain = NULL;
+  int status = -1;
+  if (name == NULL) {
+    put(line, "?");
+    return;
+  }
+  if (!looked) {
+    demangle = (Demangle *)dlsym(RTLD_DEFAULT, "__cxa_demangle");
+    looked = 1;
+  }
+  if (demangle != NULL && strncmp(name, "_Z", 2) == 0)
+    plain = demangle(name, NULL, NULL, &status);
+  put(line, plain != NULL && status == 0 ? plain : name);
+  free(plain);
+}
+
+/*===-- The report being written --------------------------------------------===*/
+
+struct Stack {
+  unsigned count;
+  unsigned thread;
+  /* Where its frames are in `symbols`. */
+  unsigned first;
+  uintptr_t pc[WeavecRtReportFrames];
+};
+
+enum { NoMemory, HeapMemory, StackMemory, GlobalMemory };
+
+/* One report's facts, from which its text or JSON is written. */
+static struct Report {
+  const char *kind;
+  int proven;
+  int writes;
+  /* The failing access, or its release (`op` "free" and so on). */
+  const char *op;
+  uint64_t width;
+  uintptr_t address;
+  /* The location: the site's, or the stack's first frame's. */
+  const char *file;
+  unsigned line;
+  unsigned column;
+  /* A fault's instruction, which its first line names (RFC 0037 §6). */
+  uintptr_t pc;
+  char what[640];
+  /* A line before the object's (a color mismatch's root). */
+  char note[256];
+  const char *message;
+  struct Stack stack;
+  /* The object paragraphs. */
+  int memory;
+  char object[1024];
+  struct weavecRtHeapObject heap;
+  struct Stack released;
+  struct Stack allocated;
+  /* A frame's function, local and locals; a global's name and location. */
+  const struct __weavec_rt_frame *frame;
+  uintptr_t frameBase;
+  int local;
+  const struct __weavec_rt_global *global;
+} report;
+
+static WeavecRtLock reportLock;
+static int reportOwner = -1;
+static struct weavecRtFrameInfo symbols[3 * WeavecRtReportFrames];
+static char reportText[65536];
+
+/* The thread `n`, with its name when it is the calling one's (the main
+ * thread's is the program's). */
+static void putThread(struct Line *line, unsigned n) {
+  char name[64];
+  put(line, "T");
+  putUnsigned(line, n, 10);
+  if (n != 0 && n == weavecRtThread() &&
+      pthread_getname_np(pthread_self(), name, sizeof name) == 0 &&
+      name[0] != 0) {
+    put(line, " '");
+    put(line, name);
+    put(line, "'");
+  }
+}
+
+static const struct weavecRtSymbol *innermost(const struct Stack *stack) {
+  return stack->count != 0 ? &symbols[stack->first].lines[0] : NULL;
+}
+
+/* A stack's frames: `    #<i> <pc> in <function> <file>:<line>:<column>`,
+ * an inlined call's lines under one number. */
+static void putStack(struct Line *line, const struct Stack *stack) {
+  unsigned i;
+  unsigned k;
+  for (i = 0; i < stack->count; ++i) {
+    const struct weavecRtFrameInfo *frame = &symbols[stack->first + i];
+    for (k = 0; k < frame->count; ++k) {
+      const struct weavecRtSymbol *symbol = &frame->lines[k];
+      put(line, "    #");
+      putUnsigned(line, i, 10);
+      put(line, " ");
+      putHex(line, stack->pc[i]);
+      put(line, " in ");
+      putFunction(line, symbol->function);
+      put(line, " ");
+      if (symbol->file != NULL) {
+        put(line, symbol->file);
+        put(line, ":");
+        putUnsigned(line, symbol->line, 10);
+        if (symbol->column != 0) {
+          put(line, ":");
+          putUnsigned(line, symbol->column, 10);
+        }
+      } else {
+        put(line, "(");
+        put(line, frame->module != NULL ? frame->module : "?");
+        put(line, "+");
+        putHex(line, frame->offset);
+        put(line, ")");
+      }
+      put(line, "\n");
+    }
+  }
+}
+
+static void putJsonStack(struct Line *line, const struct Stack *stack) {
+  unsigned i;
+  unsigned k;
+  const char *comma = "";
+  put(line, "[");
+  /* (Frames that do not fit leave room to end the line as JSON.) */
+  for (i = 0; i < stack->count && line->end - line->at > 8192; ++i) {
+    const struct weavecRtFrameInfo *frame = &symbols[stack->first + i];
+    for (k = 0; k < frame->count; ++k) {
+      const struct weavecRtSymbol *symbol = &frame->lines[k];
+      char name[512];
+      struct Line function = {name, name + sizeof name - 1};
+      putFunction(&function, symbol->function);
+      *function.at = 0;
+      put(line, comma);
+      put(line, "{\"pc\":");
+      putJsonHex(line, stack->pc[i]);
+      put(line, ",\"module\":");
+      putJson(line, frame->module);
+      put(line, ",\"offset\":");
+      putJsonHex(line, frame->offset);
+      put(line, ",\"function\":");
+      putJson(line, symbol->function != NULL ? name : NULL);
+      put(line, ",\"file\":");
+      putJson(line, symbol->file);
+      put(line, ",\"line\":");
+      putUnsigned(line, symbol->line, 10);
+      put(line, ",\"column\":");
+      putUnsigned(line, symbol->column, 10);
+      put(line, k + 1 < frame->count ? ",\"inlined\":true}"
+                                     : ",\"inlined\":false}");
+      comma = ",";
+    }
+  }
+  put(line, "]");
+}
+
+/* A heap block's stack from the store, or none. */
+static void loadStack(struct Stack *stack, uint32_t id) {
+  stack->count = weavecRtStackGet(id, stack->pc, WeavecRtHeapFrames,
+                                  &stack->thread);
+}
+
+/* `, released by thread T<n>:` (its stack follows), or that it was not
+ * recorded. */
+static void putWhose(struct Line *line, const char *what,
+                     const struct Stack *stack) {
+  if (stack->count != 0) {
+    put(line, ", ");
+    put(line, what);
+    put(line, " by thread ");
+    putThread(line, stack->thread);
+    put(line, ":");
+    return;
+  }
+  put(line, "; it was ");
+  put(line, what);
+  put(line, weavecRtHeapStacks ? " where no stack was recorded"
+                               : " (not recorded: WEAVEC_RT_HEAP_STACKS=0)");
+}
+
+/*===-- Objects (sections 5.2 to 5.4) ---------------------------------------===*/
+
+/* Where `address` lies relative to [lo, hi): `<n> bytes after the`, ... */
+static void putPlace(struct Line *line, uintptr_t address, uintptr_t lo,
+                     uintptr_t hi) {
+  if (address >= hi && hi > lo) {
+    putUnsigned(line, address - hi, 10);
+    put(line, " bytes after ");
+  } else if (address < lo) {
+    putUnsigned(line, lo - address, 10);
+    put(line, " bytes before ");
+  } else {
+    putUnsigned(line, address - lo, 10);
+    put(line, " bytes inside ");
+  }
+}
+
+/* The heap paragraph of an address the allocator knows. */
+static int describeHeap(uintptr_t address) {
+  struct weavecRtHeapObject *object = &report.heap;
+  struct Line line = {report.object, report.object + sizeof report.object - 1};
+  *object = weavecRtHeapObjectAt(address);
+  if (!object->found)
     return 0;
+  report.memory = HeapMemory;
+  loadStack(&report.allocated, object->allocated);
+  if (!object->live)
+    loadStack(&report.released, object->released);
+  putHex(&line, address);
+  put(&line, " is ");
   /* RFC 0039 section 5: past the elements, which end at the first container
    * granule (or inside the partial one before it). */
-  if (object.live && address < object.base + object.size &&
+  if (object->live && address < object->base + object->size &&
       (*weavecRtShadowOf(address) == WeavecRtShadowContainer ||
        *weavecRtShadowOf((address | 15) + 1) == WeavecRtShadowContainer)) {
-    uintptr_t end = object.base;
+    uintptr_t end = object->base;
     while (*weavecRtShadowOf(end) != WeavecRtShadowContainer)
       end += 16;
-    if (end > object.base && !weavecRtShadowFull(*weavecRtShadowOf(end - 16)))
+    if (end > object->base && !weavecRtShadowFull(*weavecRtShadowOf(end - 16)))
       end -= 16 - weavecRtShadowBytes(*weavecRtShadowOf(end - 16));
-    put(&line, "weavec: ");
-    putHex(&line, address);
-    put(&line, " is ");
     putUnsigned(&line, address >= end ? address - end : 0, 10);
     put(&line, " bytes past the elements of a container in the ");
-    putUnsigned(&line, object.size, 10);
-    put(&line, "-byte heap object at ");
-    putHex(&line, object.base);
-    return finish(&line, text);
+  } else if (address == object->base && report.op != NULL &&
+             report.width == 0) {
+    put(&line, "the "); /* (a release) */
+  } else {
+    putPlace(&line, address, object->base, object->base + object->size);
+    put(&line, "the ");
   }
-  if (!object.live) {
-    put(&line, "weavec: ");
-    putHex(&line, address);
-    put(&line, " is inside a released heap block at ");
-    putHex(&line, object.base);
-    return finish(&line, text);
-  }
-  if (address >= object.base + object.size)
-    return describeRange(address, object.base, object.base + object.size,
-                         "heap object", text, room);
-  return 0;
+  putUnsigned(&line, object->size, 10);
+  put(&line, object->live ? "-byte heap object at " : "-byte heap block at ");
+  putHex(&line, object->base);
+  if (object->live)
+    putWhose(&line, "allocated", &report.allocated);
+  else
+    putWhose(&line, "released", &report.released);
+  *line.at = 0;
+  return 1;
 }
 
-/* The first line of a report; false when report mode already reported the
- * site. */
-static int reportLine(const char *kind, uintptr_t address, uint64_t width,
-                      const char *message, const struct __weavec_rt_site *site);
+/* RFC 0040 section 5.3: the frame that holds a stack address. Below the
+ * address, at the first 32-byte boundary whose shadow is a left redzone or a
+ * returned frame's, the two words a frame stores name its descriptor. */
+static int describeFrame(uintptr_t address) {
+  const uintptr_t bottom = weavecRtStackBottom();
+  const uintptr_t top = weavecRtStackTop();
+  const int own = top != 0 && address >= bottom && address < top;
+  uintptr_t at = address & ~(uintptr_t)31;
+  unsigned steps;
+  const struct __weavec_rt_frame *frame = NULL;
+  struct Line line = {report.object, report.object + sizeof report.object - 1};
+  uint32_t i;
+  int nearest = -1;
+  uint64_t distance = ~(uint64_t)0;
+  if (!weavecRtShadowReady() || !weavecRtInWindow(address))
+    return 0;
+  for (steps = 0; steps < 65536 && (!own || at >= bottom); ++steps, at -= 32) {
+    const unsigned char value = *weavecRtShadowOf(at);
+    const uintptr_t *words = (const uintptr_t *)at;
+    if (value != WeavecRtShadowStackLeft && value != WeavecRtShadowReturned)
+      continue;
+    if (words[0] != WeavecRtFrameMagic)
+      continue;
+    frame = (const struct __weavec_rt_frame *)words[1];
+    if (!weavecRtFrameKnown(frame) || address >= at + frame->reserved + 64)
+      return 0;
+    break;
+  }
+  if (frame == NULL)
+    return 0;
+  report.memory = StackMemory;
+  report.frame = frame;
+  report.frameBase = at;
+  /* The local the address lies in, or nearest. */
+  for (i = 0; i < frame->objects; ++i) {
+    const uintptr_t lo = at + frame->object[i].offset;
+    const uintptr_t hi = lo + frame->object[i].size;
+    const uint64_t d = address < lo ? lo - address
+                       : address >= hi ? address - hi + 1
+                                       : 0;
+    if (d < distance)
+      distance = d, nearest = (int)i;
+  }
+  report.local = nearest;
+  putHex(&line, address);
+  put(&line, " is ");
+  if (nearest >= 0) {
+    const struct __weavec_rt_frame_object *local = &frame->object[nearest];
+    const uintptr_t lo = at + local->offset;
+    putPlace(&line, address, lo, lo + local->size);
+    put(&line, "'");
+    put(&line, (const char *)local + local->name);
+    put(&line, "' (");
+    putUnsigned(&line, local->size, 10);
+    put(&line, " bytes at offset ");
+    putUnsigned(&line, local->offset, 10);
+    put(&line, ")");
+    if (strcmp(report.kind, "stack-use-after-scope") == 0)
+      put(&line, ", whose scope has ended,");
+  } else {
+    put(&line, "in a frame");
+  }
+  put(&line, strcmp(report.kind, "stack-use-after-return") == 0
+                 ? " in a frame of "
+                 : " in the frame of ");
+  put(&line, "\x01"); /* (the function's name, demangled when written) */
+  if (strcmp(report.kind, "stack-use-after-return") == 0)
+    put(&line, " that returned");
+  if (own) {
+    put(&line, " (thread ");
+    putThread(&line, weavecRtThread());
+    put(&line, ")");
+  }
+  put(&line, frame->objects != 0 ? ", whose locals are:" : "");
+  *line.at = 0;
+  return 1;
+}
 
-/* WEAVEC_RT_BACKTRACE=1: one line per frame, a C++ function's name
- * demangled by the C++ library's own __cxa_demangle when the process has
- * one (RFC 0039 section 8). */
-static void printBacktrace(void) {
-  typedef char *Demangle(const char *, char *, size_t *, int *);
-  Demangle *demangle = (Demangle *)dlsym(RTLD_DEFAULT, "__cxa_demangle");
-  void *frames[64];
-  const int count = backtrace(frames, 64);
-  int i;
-  for (i = 0; i < count; ++i) {
-    Dl_info info;
-    char text[1024];
-    struct Line line = {text, text + sizeof text - 1};
-    char *plain = NULL;
-    int status = -1;
-    put(&line, "  #");
-    putUnsigned(&line, (unsigned)i, 10);
-    put(&line, " ");
-    putHex(&line, (uintptr_t)frames[i]);
-    if (dladdr(frames[i], &info) != 0 && info.dli_sname != NULL) {
-      if (demangle != NULL && strncmp(info.dli_sname, "_Z", 2) == 0)
-        plain = demangle(info.dli_sname, NULL, NULL, &status);
-      put(&line, " in ");
-      put(&line, plain != NULL && status == 0 ? plain : info.dli_sname);
-      put(&line, " + ");
-      putUnsigned(&line, (uintptr_t)frames[i] - (uintptr_t)info.dli_saddr, 10);
-      free(plain);
+/* RFC 0040 section 5.4. */
+static int describeGlobal(uintptr_t address) {
+  const struct __weavec_rt_global *global = weavecRtGlobalAt(address);
+  struct Line line = {report.object, report.object + sizeof report.object - 1};
+  if (global == NULL)
+    return 0;
+  report.memory = GlobalMemory;
+  report.global = global;
+  putHex(&line, address);
+  put(&line, " is ");
+  putPlace(&line, address, global->address, global->address + global->size);
+  put(&line, "the ");
+  putUnsigned(&line, global->size, 10);
+  put(&line, "-byte global '");
+  putFunction(&line, global->name != 0 ? (const char *)global + global->name
+                                        : "?");
+  put(&line, "'");
+  if (global->location != 0) {
+    put(&line, " defined at ");
+    put(&line, (const char *)global + global->location);
+  }
+  *line.at = 0;
+  return 1;
+}
+
+/* The object paragraph of `address`, by what memory it is. */
+static void describe(uintptr_t address) {
+  if (strncmp(report.kind, "stack-", 6) == 0 &&
+      strcmp(report.kind, "dynamic-stack-buffer-overflow") != 0) {
+    /* (A frame that returned is overwritten by the report's own frames
+     * unless it was deep below.) */
+    if (!describeFrame(address) &&
+        strcmp(report.kind, "stack-use-after-return") == 0) {
+      struct Line line = {report.note, report.note + sizeof report.note - 1};
+      putHex(&line, address);
+      put(&line, " is in a frame that returned");
+      *line.at = 0;
     }
-    emit(text, finish(&line, text));
+    return;
+  }
+  if (strncmp(report.kind, "global-", 7) == 0) {
+    (void)describeGlobal(address);
+    return;
+  }
+  if (!describeHeap(address) && !describeGlobal(address))
+    (void)describeFrame(address);
+}
+
+/*===-- Writing -------------------------------------------------------------===*/
+
+static void putLocation(struct Line *line, int summary) {
+  if (report.pc != 0 && !summary) {
+    put(line, "pc ");
+    putHex(line, report.pc);
+    return;
+  }
+  if (report.file == NULL) {
+    put(line, "<unknown>");
+    return;
+  }
+  put(line, report.file);
+  put(line, ":");
+  putUnsigned(line, report.line, 10);
+  if (report.column != 0) {
+    put(line, ":");
+    putUnsigned(line, report.column, 10);
   }
 }
 
-static __attribute__((noreturn)) void trapNow(void) {
-  __weavec_rt_trapping();
-  if (backtraceSetting)
-    printBacktrace();
-  __builtin_trap();
+static void putFrameLocals(struct Line *line) {
+  const struct __weavec_rt_frame *frame = report.frame;
+  uint32_t i;
+  for (i = 0; i < frame->objects && i < 32; ++i) {
+    const struct __weavec_rt_frame_object *local = &frame->object[i];
+    put(line, "    [");
+    putUnsigned(line, local->offset, 10);
+    put(line, ", ");
+    putUnsigned(line, (uint64_t)local->offset + local->size, 10);
+    put(line, ") '");
+    put(line, (const char *)local + local->name);
+    put(line, "'\n");
+  }
+}
+
+static void writeText(struct Line *line) {
+  const struct weavecRtSymbol *first = innermost(&report.stack);
+  const char *at;
+  put(line, "weavec: ");
+  if (report.proven)
+    put(line, "weavec.proven: ");
+  put(line, report.kind);
+  put(line, " at ");
+  putLocation(line, 0);
+  put(line, ": ");
+  put(line, report.what);
+  put(line, "\n");
+  putStack(line, &report.stack);
+  if (report.note[0] != 0) {
+    put(line, "weavec: ");
+    put(line, report.note);
+    put(line, "\n");
+  }
+  if (report.memory != NoMemory) {
+    put(line, "weavec: ");
+    for (at = report.object; *at != 0; ++at)
+      if (*at == '\x01')
+        putFunction(line, (const char *)report.frame + report.frame->function);
+      else if (line->at < line->end)
+        *line->at++ = *at;
+    put(line, "\n");
+  }
+  if (report.memory == HeapMemory) {
+    putStack(line, report.heap.live ? &report.allocated : &report.released);
+    if (!report.heap.live) {
+      put(line, "weavec: the block was allocated");
+      if (report.allocated.count != 0) {
+        put(line, " by thread ");
+        putThread(line, report.allocated.thread);
+        put(line, ":\n");
+        putStack(line, &report.allocated);
+      } else {
+        put(line, weavecRtHeapStacks
+                      ? " where no stack was recorded\n"
+                      : " (not recorded: WEAVEC_RT_HEAP_STACKS=0)\n");
+      }
+    }
+  } else if (report.memory == StackMemory) {
+    putFrameLocals(line);
+  }
+  put(line, "weavec: summary: ");
+  put(line, report.kind);
+  put(line, " at ");
+  putLocation(line, 1);
+  if (first != NULL && first->function != NULL) {
+    put(line, " in ");
+    putFunction(line, first->function);
+  }
+  put(line, " (thread ");
+  putThread(line, weavecRtThread());
+  put(line, ")\n");
+}
+
+static void writeJson(struct Line *line) {
+  put(line, "{\"weavec\":");
+  putUnsigned(line, WEAVEC_RT_ABI, 10);
+  put(line, ",\"kind\":");
+  putJson(line, report.kind);
+  put(line, report.proven ? ",\"proven\":true" : ",\"proven\":false");
+  put(line, ",\"site\":{\"file\":");
+  putJson(line, report.file);
+  put(line, ",\"line\":");
+  putUnsigned(line, report.line, 10);
+  put(line, ",\"column\":");
+  putUnsigned(line, report.column, 10);
+  put(line, "},\"what\":");
+  putJson(line, report.what);
+  if (report.op != NULL) {
+    put(line, ",\"access\":{\"op\":");
+    putJson(line, report.op);
+    put(line, ",\"width\":");
+    putUnsigned(line, report.width, 10);
+    put(line, ",\"address\":");
+    putJsonHex(line, report.address);
+    put(line, "}");
+  }
+  if (report.message != NULL) {
+    put(line, ",\"message\":");
+    putJson(line, report.message);
+  }
+  put(line, ",\"thread\":{\"id\":");
+  putUnsigned(line, weavecRtThread(), 10);
+  put(line, "},\"stack\":");
+  putJsonStack(line, &report.stack);
+  if (report.memory == HeapMemory) {
+    put(line, ",\"object\":{\"memory\":\"heap\",\"base\":");
+    putJsonHex(line, report.heap.base);
+    put(line, ",\"size\":");
+    putUnsigned(line, report.heap.size, 10);
+    put(line, report.heap.live ? ",\"state\":\"live\"" : ",\"state\":\"released\"");
+    put(line, ",\"released\":");
+    if (!report.heap.live && report.released.count != 0)
+      putJsonStack(line, &report.released);
+    else
+      put(line, "null");
+    put(line, ",\"allocated\":");
+    if (report.allocated.count != 0)
+      putJsonStack(line, &report.allocated);
+    else
+      put(line, "null");
+    put(line, "}");
+  } else if (report.memory == StackMemory) {
+    const struct __weavec_rt_frame *frame = report.frame;
+    char name[512];
+    struct Line function = {name, name + sizeof name - 1};
+    uint32_t i;
+    putFunction(&function, (const char *)frame + frame->function);
+    *function.at = 0;
+    put(line, ",\"object\":{\"memory\":\"stack\",\"function\":");
+    putJson(line, name);
+    put(line, ",\"name\":");
+    putJson(line, report.local >= 0
+                      ? (const char *)&frame->object[report.local] +
+                            frame->object[report.local].name
+                      : NULL);
+    put(line, ",\"locals\":[");
+    for (i = 0; i < frame->objects; ++i) {
+      put(line, i != 0 ? ",{\"name\":" : "{\"name\":");
+      putJson(line, (const char *)&frame->object[i] + frame->object[i].name);
+      put(line, ",\"offset\":");
+      putUnsigned(line, frame->object[i].offset, 10);
+      put(line, ",\"size\":");
+      putUnsigned(line, frame->object[i].size, 10);
+      put(line, "}");
+    }
+    put(line, "]}");
+  } else if (report.memory == GlobalMemory) {
+    const struct __weavec_rt_global *global = report.global;
+    put(line, ",\"object\":{\"memory\":\"global\",\"name\":");
+    putJson(line, global->name != 0 ? (const char *)global + global->name
+                                    : NULL);
+    put(line, ",\"location\":");
+    putJson(line, global->location != 0
+                      ? (const char *)global + global->location
+                      : NULL);
+    put(line, ",\"base\":");
+    putJsonHex(line, global->address);
+    put(line, ",\"size\":");
+    putUnsigned(line, global->size, 10);
+    put(line, "}");
+  }
+  put(line, "}\n");
+}
+
+/* Starts a report: false when one is being written by this thread (a
+ * failure inside a report). */
+static int begin(const char *kind, const struct __weavec_rt_site *site) {
+  const int self = (int)weavecRtThread();
+  if (__atomic_load_n(&reportOwner, __ATOMIC_RELAXED) == self)
+    return 0;
+  weavecRtLock(&reportLock);
+  __atomic_store_n(&reportOwner, self, __ATOMIC_RELAXED);
+  memset(&report, 0, sizeof report);
+  report.kind = kind;
+  report.local = -1;
+  if (site != NULL) {
+    report.proven = (site->flags & WeavecRtSiteProven) != 0;
+    report.writes = (site->flags & WeavecRtSiteWrite) != 0;
+    report.file = weavecRtSiteFile(site);
+    report.line = site->line;
+    report.column = site->column;
+  }
+  return 1;
+}
+
+/* Symbolizes every stack of the report, writes it and ends it. */
+static void finish(void) {
+  uintptr_t pcs[3 * WeavecRtReportFrames];
+  unsigned count = 0;
+  struct Stack *const stacks[3] = {&report.stack, &report.released,
+                                   &report.allocated};
+  unsigned i;
+  struct Line line = {reportText, reportText + sizeof reportText - 2};
+  for (i = 0; i < 3; ++i) {
+    stacks[i]->first = count;
+    memcpy(&pcs[count], stacks[i]->pc, stacks[i]->count * sizeof(uintptr_t));
+    count += stacks[i]->count;
+  }
+  weavecRtSymbolize(pcs, count, symbols);
+  /* A location the site does not give: the first frame's. */
+  if (report.file == NULL && innermost(&report.stack) != NULL &&
+      innermost(&report.stack)->file != NULL) {
+    report.file = innermost(&report.stack)->file;
+    report.line = innermost(&report.stack)->line;
+    report.column = innermost(&report.stack)->column;
+  }
+  if (jsonSetting)
+    writeJson(&line);
+  else
+    writeText(&line);
+  /* (A report cut at the buffer's end still ends its line.) */
+  if (line.at == line.end)
+    *line.at++ = '\n';
+  emit(reportText, (size_t)(line.at - reportText));
+  __atomic_store_n(&reportOwner, -1, __ATOMIC_RELAXED);
+  weavecRtUnlock(&reportLock);
+}
+
+/* The access's stack: the program's frames from its call into the
+ * runtime. */
+static __attribute__((noinline)) void captureAccess(void) {
+  report.stack.count =
+      weavecRtUnwind(report.stack.pc, WeavecRtReportFrames,
+                     (uintptr_t)__builtin_frame_address(0), 0);
+  report.stack.thread = weavecRtThread();
+}
+
+/* The first line's `<what>` of an access. */
+static void accessWhat(uintptr_t address, uint64_t width) {
+  struct Line line = {report.what, report.what + sizeof report.what - 1};
+  report.address = address;
+  report.width = width;
+  if (strcmp(report.kind, "index-out-of-bounds") == 0) {
+    put(&line, "index ");
+    if ((long long)address < 0) {
+      put(&line, "-");
+      putUnsigned(&line, 0 - (unsigned long long)address, 10);
+    } else {
+      putUnsigned(&line, address, 10);
+    }
+    report.op = NULL;
+  } else if (width == 0) {
+    put(&line, "access at ");
+    putHex(&line, address);
+    report.op = "access";
+  } else {
+    report.op = report.writes ? "write" : "read";
+    put(&line, report.op);
+    put(&line, " of ");
+    putUnsigned(&line, width, 10);
+    put(&line, " bytes at ");
+    putHex(&line, address);
+  }
+  *line.at = 0;
+}
+
+/* Whether report mode reported the site already (or should not stop). */
+static int reportsOnce(const struct __weavec_rt_site *site) {
+  return site != NULL && (site->flags & WeavecRtSiteReport) != 0 &&
+         !abortSetting;
+}
+
+static int seenSite(const char *kind, const struct __weavec_rt_site *site) {
+  unsigned long long hash = hashText(14695981039346656037ULL, kind);
+  hash = hashText(hash, weavecRtSiteFile(site));
+  hash = (hash ^ site->line) * 1099511628211ULL;
+  hash = (hash ^ site->column) * 1099511628211ULL;
+  return !firstReport(hash);
 }
 
 static void stop(const struct __weavec_rt_site *site) {
-  const unsigned flags = site != NULL ? site->flags : 0;
-  if ((flags & WeavecRtSiteReport) == 0 || shouldAbort())
+  if (!reportsOnce(site))
     trapNow();
 }
+
+/*===-- Failures ------------------------------------------------------------===*/
 
 /* RFC 0039 section 6: the C++ library's code after a failed check is
  * unreachable, so the report stops the program in every mode. */
 void weavecRtFailMessage(const char *kind, const char *message,
                          const struct __weavec_rt_site *site) {
-  (void)reportLine(kind, 0, 0, message, site);
+  if (begin(kind, site)) {
+    struct Line line = {report.what, report.what + sizeof report.what - 1};
+    put(&line, message);
+    *line.at = 0;
+    report.message = message;
+    captureAccess();
+    finish();
+  }
   trapNow();
 }
 
-void weavecRtFailObject(const char *kind, uintptr_t address, uint64_t width,
-                        uintptr_t lo, uintptr_t hi,
-                        const struct __weavec_rt_site *site) {
-  char text[256];
-  int size;
-  if (!reportLine(kind, address, width, NULL, site))
+/* A report whose object paragraph is `address`'s, or the one
+ * `paragraph` writes. */
+static void fail(const char *kind, uintptr_t address, uint64_t width,
+                 const struct __weavec_rt_site *site, int object) {
+  if (reportsOnce(site) && seenSite(kind, site))
     return;
-  size = describeRange(address, lo, hi, "destination", text, sizeof text);
-  if (size > 0)
-    emit(text, size);
-  stop(site);
+  if (begin(kind, site)) {
+    accessWhat(address, width);
+    captureAccess();
+    if (object)
+      describe(address);
+    finish();
+  }
 }
 
 void weavecRtFail(const char *kind, uintptr_t address, uint64_t width,
                   const struct __weavec_rt_site *site) {
-  char text[256];
-  int size;
-  if (!reportLine(kind, address, width, NULL, site))
+  fail(kind, address, width, site,
+       strcmp(kind, "null-dereference") != 0 &&
+           strcmp(kind, "index-out-of-bounds") != 0 &&
+           strcmp(kind, "overlapping-copy") != 0);
+  stop(site);
+}
+
+/* RFC 0036 section 6: the destination [lo, hi) of a fortified call. */
+void weavecRtFailObject(const char *kind, uintptr_t address, uint64_t width,
+                        uintptr_t lo, uintptr_t hi,
+                        const struct __weavec_rt_site *site) {
+  if (reportsOnce(site) && seenSite(kind, site))
     return;
-  if (strncmp(kind, "heap-", 5) == 0 ||
-      strcmp(kind, "container-overflow") == 0) {
-    size = describeHeap(address, text, sizeof text);
-    if (size > 0)
-      emit(text, size);
-  } else if (strcmp(kind, "stack-use-after-return") == 0) {
-    struct Line line = {text, text + sizeof text - 1};
-    put(&line, "weavec: ");
+  if (begin(kind, site)) {
+    struct Line line = {report.object, report.object + sizeof report.object - 1};
+    accessWhat(address, width);
+    captureAccess();
+    report.memory = -1; /* (a paragraph of its own) */
     putHex(&line, address);
-    put(&line, " is in a frame that returned");
-    emit(text, finish(&line, text));
+    put(&line, " is ");
+    putPlace(&line, address, lo, hi);
+    put(&line, "the ");
+    putUnsigned(&line, hi - lo, 10);
+    put(&line, "-byte destination at ");
+    putHex(&line, lo);
+    *line.at = 0;
+    finish();
   }
   stop(site);
 }
 
+/* RFC 0037 section 8.3: a color mismatch names the root the access was
+ * computed from, and the object the access landed in. */
 void weavecRtFailJump(const char *kind, uintptr_t address, uint64_t width,
                       uintptr_t root, const struct __weavec_rt_site *site) {
-  char text[256];
-  struct Line line = {text, text + sizeof text - 1};
-  if (!reportLine(kind, address, width, NULL, site))
+  if (reportsOnce(site) && seenSite(kind, site))
     return;
-  /* RFC 0037: the second line of a color mismatch. */
-  put(&line, "weavec: ");
-  putHex(&line, address);
-  put(&line, " is ");
-  putUnsigned(&line, address >= root ? address - root : root - address, 10);
-  put(&line, address >= root ? " bytes after its base " : " bytes before its base ");
-  putHex(&line, root);
-  put(&line, ", in another object");
-  emit(text, finish(&line, text));
+  if (begin(kind, site)) {
+    struct Line line = {report.note, report.note + sizeof report.note - 1};
+    accessWhat(address, width);
+    putHex(&line, address);
+    put(&line, " is ");
+    putUnsigned(&line, address >= root ? address - root : root - address, 10);
+    put(&line, address >= root ? " bytes after its base "
+                               : " bytes before its base ");
+    putHex(&line, root);
+    put(&line, ", in another object");
+    *line.at = 0;
+    captureAccess();
+    describe(address);
+    finish();
+  }
   stop(site);
 }
 
-static int reportLine(const char *kind, uintptr_t address, uint64_t width,
-                      const char *message, const struct __weavec_rt_site *site) {
-  const unsigned flags = site != NULL ? site->flags : 0;
-  const char *file = weavecRtSiteFile(site);
-  const unsigned line = site != NULL ? site->line : 0;
-  const unsigned column = site != NULL ? site->column : 0;
-  const int report = (flags & WeavecRtSiteReport) != 0 && !shouldAbort();
-  char text[1024];
-  struct Line out = {text, text + sizeof text - 1};
-  if (report && !firstReport(siteHash(kind, file, line, column)))
-    return 0;
-  put(&out, "weavec: ");
-  if ((flags & WeavecRtSiteProven) != 0)
-    put(&out, "weavec.proven: ");
-  put(&out, kind);
-  put(&out, " at ");
-  if (file != NULL) {
-    put(&out, file);
-    put(&out, ":");
-    putUnsigned(&out, line, 10);
-    put(&out, ":");
-    putUnsigned(&out, column, 10);
-  } else {
-    put(&out, "<unknown>");
-  }
-  put(&out, ": ");
-  if (message != NULL) {
-    put(&out, message);
-  } else if (strcmp(kind, "index-out-of-bounds") == 0) {
-    put(&out, "index ");
-    if ((long long)address < 0) {
-      put(&out, "-");
-      putUnsigned(&out, 0 - (unsigned long long)address, 10);
-    } else {
-      putUnsigned(&out, address, 10);
-    }
-  } else if (width == 0) {
-    put(&out, "access at ");
-    putHex(&out, address);
-  } else {
-    put(&out, (flags & WeavecRtSiteWrite) != 0 ? "write" : "read");
-    put(&out, " of ");
-    putUnsigned(&out, width, 10);
-    put(&out, " bytes at ");
-    putHex(&out, address);
-  }
-  emit(text, finish(&out, text));
-  return 1;
+static const char *formName(unsigned form) {
+  return form == WeavecRtFormNew        ? "operator new"
+         : form == WeavecRtFormNewArray ? "operator new[]"
+                                        : "malloc";
 }
+
+const char *weavecRtReleaseName(unsigned form) {
+  return form == WeavecRtFormNew        ? "operator delete"
+         : form == WeavecRtFormNewArray ? "operator delete[]"
+                                        : "free";
+}
+
+/* RFC 0040 section 5.5. */
+void weavecRtFailRelease(const struct weavecRtRelease *bad) {
+  static const char *const Kinds[3] = {"double-free", "invalid-free",
+                                       "alloc-release-mismatch"};
+  if (begin(Kinds[bad->kind], bad->site)) {
+    struct Line line = {report.what, report.what + sizeof report.what - 1};
+    const uintptr_t address = (uintptr_t)bad->p;
+    report.op = bad->by;
+    report.address = address;
+    captureAccess();
+    (void)describeHeap(address);
+    put(&line, bad->by);
+    put(&line, " of ");
+    putHex(&line, address);
+    if (bad->kind == WeavecRtInvalidFree) {
+      put(&line, ": ");
+      if (bad->why != NULL) {
+        put(&line, bad->why);
+      } else {
+        put(&line, "inside the ");
+        putUnsigned(&line, report.heap.size, 10);
+        put(&line, "-byte heap block at ");
+        putHex(&line, report.heap.base);
+      }
+      if (report.memory == NoMemory && !describeGlobal(address))
+        (void)describeFrame(address);
+    } else if (bad->kind == WeavecRtMismatch) {
+      if (bad->size == SIZE_MAX) {
+        put(&line, ": allocated by ");
+        put(&line, formName(bad->allocatedBy));
+      } else {
+        put(&line, ": size ");
+        putUnsigned(&line, bad->size, 10);
+        put(&line, " for a ");
+        putUnsigned(&line, report.heap.size, 10);
+        put(&line, "-byte block");
+      }
+    }
+    *line.at = 0;
+    finish();
+  }
+  /* The allocator cannot go on from a bad release. */
+  trapNow();
+}
+
+void weavecRtDie(const char *message) {
+  static const char Prefix[] = "weavec: error: ";
+  char text[512];
+  struct Line line = {text, text + sizeof text - 2};
+  put(&line, Prefix);
+  put(&line, message);
+  *line.at++ = '\n';
+  emit(text, (size_t)(line.at - text));
+  trapNow();
+}
+
+/*===-- Faults (RFC 0037 section 6) ----------------------------------------===*/
+
+/* The faulting instruction's address and, where the context says, whether
+ * it wrote (1), read (0) or is unknown (-1). */
+static uintptr_t faultPc(const void *context, int *write) {
+  const ucontext_t *uc = (const ucontext_t *)context;
+  *write = -1;
+#if defined(__APPLE__) && defined(__aarch64__)
+  /* A data abort's syndrome: bit 6 (WnR) is set by a write. */
+  *write = (uc->uc_mcontext->__es.__esr >> 6) & 1;
+  return (uintptr_t)arm_thread_state64_get_pc(uc->uc_mcontext->__ss);
+#elif defined(__APPLE__) && defined(__x86_64__)
+  *write = (uc->uc_mcontext->__es.__err & 2) != 0;
+  return (uintptr_t)uc->uc_mcontext->__ss.__rip;
+#elif defined(__linux__) && defined(__x86_64__)
+  *write = (uc->uc_mcontext.gregs[REG_ERR] & 2) != 0;
+  return (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+#elif defined(__linux__) && defined(__aarch64__)
+  return (uintptr_t)uc->uc_mcontext.pc;
+#else
+  (void)uc;
+  return 0;
+#endif
+}
+
+/* RFC 0038 section 4: the default disposition, set here rather than left to
+ * SA_RESETHAND, which a program that saved and restored this handler has
+ * dropped (Python's faulthandler): raising the signal again under this
+ * handler would never end. */
+static void raiseDefault(int signal) {
+  struct sigaction action;
+  memset(&action, 0, sizeof action);
+  action.sa_handler = SIG_DFL;
+  sigemptyset(&action.sa_mask);
+  (void)sigaction(signal, &action, NULL);
+  (void)raise(signal);
+}
+
+/* The frame pointer of the interrupted code. */
+static uintptr_t faultFp(const void *context) {
+  const ucontext_t *uc = (const ucontext_t *)context;
+#if defined(__APPLE__) && defined(__aarch64__)
+  return (uintptr_t)arm_thread_state64_get_fp(uc->uc_mcontext->__ss);
+#elif defined(__APPLE__) && defined(__x86_64__)
+  return (uintptr_t)uc->uc_mcontext->__ss.__rbp;
+#elif defined(__linux__) && defined(__x86_64__)
+  return (uintptr_t)uc->uc_mcontext.gregs[REG_RBP];
+#elif defined(__linux__) && defined(__aarch64__)
+  return (uintptr_t)uc->uc_mcontext.regs[29];
+#else
+  (void)uc;
+  return 0;
+#endif
+}
+
+/* A fault the shadow did not see (a wild access, the inaccessible middle of
+ * a huge block): one report, with the stack from the faulting instruction
+ * (RFC 0040 section 5.6), then the signal again under the default
+ * disposition, which ends the program as it would have when the handler
+ * returns (a signal sent, which no access would retry, too). */
+static void onFault(int signal, siginfo_t *info, void *context) {
+  const uintptr_t address = (uintptr_t)info->si_addr;
+  int write = -1;
+  const uintptr_t pc = faultPc(context, &write);
+  /* A signal sent (kill, raise) faulted nothing: Linux says who sent it;
+   * Darwin's arm64 syndrome says the thread was in a system call. */
+#if defined(__APPLE__) && defined(__aarch64__)
+  const int sent = ((((const ucontext_t *)context)->uc_mcontext->__es.__esr >>
+                     26) & 0x3F) == 0x15;
+#else
+  const int sent = info->si_code <= 0;
+#endif
+  if (!sent && begin("memory-fault", NULL)) {
+    struct Line line = {report.what, report.what + sizeof report.what - 1};
+    report.pc = pc;
+    report.op = write == 1 ? "write" : write == 0 ? "read" : "access";
+    report.address = address;
+    put(&line, report.op);
+    put(&line, " at ");
+    putHex(&line, address);
+    *line.at = 0;
+    report.stack.count = weavecRtUnwind(report.stack.pc, WeavecRtReportFrames,
+                                        faultFp(context), pc);
+    report.stack.thread = weavecRtThread();
+    (void)describeHeap(address);
+    finish();
+  }
+  raiseDefault(signal);
+}
+
+/* The handlers go where the disposition is the default, so that a program's
+ * own handler (installed before or after) is its own. WEAVEC_RT_FAULTS=0
+ * installs none. */
+__attribute__((constructor)) static void watchFaults(void) {
+  static const int Faults[2] = {SIGSEGV, SIGBUS};
+  const char *value = getenv("WEAVEC_RT_FAULTS");
+  int i;
+  if (value != NULL && strcmp(value, "0") == 0)
+    return;
+  for (i = 0; i < 2; ++i) {
+    struct sigaction action;
+    if (sigaction(Faults[i], NULL, &action) != 0 ||
+        (action.sa_flags & SA_SIGINFO) != 0 || action.sa_handler != SIG_DFL)
+      continue;
+    memset(&action, 0, sizeof action);
+    action.sa_sigaction = onFault;
+    action.sa_flags = SA_SIGINFO | SA_RESETHAND | SA_ONSTACK;
+    sigemptyset(&action.sa_mask);
+    (void)sigaction(Faults[i], &action, NULL);
+  }
+}
+
+/*===-- Statistics ----------------------------------------------------------===*/
 
 /* Counted without synchronization: a diagnostic aid, not an account. */
 unsigned long long weavecRtStats[WeavecRtStatCount];
@@ -452,32 +1167,35 @@ __attribute__((constructor)) static void readStats(void) {
   weavecRtStatsOn = value != NULL && strcmp(value, "1") == 0;
 }
 
+static void statLine(struct Line *line, char *text) {
+  long written;
+  *line->at++ = '\n';
+  written = (long)write(2, text, (size_t)(line->at - text));
+  (void)written;
+}
+
 __attribute__((destructor)) static void printStats(void) {
   static const char *const Names[WeavecRtStatCount] = {
       "allocations", "releases",     "recycled slots", "huge blocks",
       "slow guards", "range guards", "string guards",  "stack unpoisons",
       "sweeps"};
-  const char *value = getenv("WEAVEC_RT_STATS");
+  char text[400];
+  struct Line line = {text, text + sizeof text - 2};
   int i;
-  if (value == NULL || strcmp(value, "1") != 0)
+  if (!weavecRtStatsOn)
     return;
   for (i = 0; i < WeavecRtStatCount; ++i) {
-    char text[128];
-    struct Line line = {text, text + sizeof text - 1};
+    line.at = text;
     put(&line, "weavec: runtime: ");
     putUnsigned(&line, weavecRtStats[i], 10);
     put(&line, " ");
     put(&line, Names[i]);
-    {
-      const long written = (long)write(2, text, (size_t)finish(&line, text));
-      (void)written;
-    }
+    statLine(&line, text);
   }
   {
     struct weavecRtSweepCounts last;
-    char text[256];
-    struct Line line = {text, text + sizeof text - 1};
     weavecRtLastSweep(&last);
+    line.at = text;
     put(&line, "weavec: runtime: sweeps took ");
     putUnsigned(&line, weavecRtSweepNanos / 1000000, 10);
     put(&line, " ms (longest ");
@@ -487,26 +1205,39 @@ __attribute__((destructor)) static void printStats(void) {
     put(&line, " blocks (");
     putUnsigned(&line, last.retainedBytes, 10);
     put(&line, " bytes)");
-    {
-      const long written = (long)write(2, text, (size_t)finish(&line, text));
-      (void)written;
-    }
+    statLine(&line, text);
   }
   {
     size_t live;
     size_t quarantine;
-    char text[160];
-    struct Line line = {text, text + sizeof text - 1};
     weavecRtPeaks(&live, &quarantine);
+    line.at = text;
     put(&line, "weavec: runtime: at most ");
     putUnsigned(&line, live >> 20, 10);
     put(&line, " MiB of live slots and ");
     putUnsigned(&line, quarantine >> 20, 10);
     put(&line, " MiB of released ones waiting for a sweep");
-    {
-      const long written = (long)write(2, text, (size_t)finish(&line, text));
-      (void)written;
-    }
+    statLine(&line, text);
+  }
+  {
+    /* RFC 0040 sections 2 and 7. */
+    size_t entries;
+    size_t bytes;
+    weavecRtStoreStats(&entries, &bytes);
+    line.at = text;
+    put(&line, "weavec: runtime: ");
+    putUnsigned(&line, entries, 10);
+    put(&line, " stacks recorded (");
+    putUnsigned(&line, bytes >> 10, 10);
+    put(&line, " KiB)");
+    statLine(&line, text);
+    line.at = text;
+    put(&line, "weavec: runtime: ");
+    putUnsigned(&line, weavecRtUntrackedBytes() >> 20, 10);
+    put(&line, " MiB of writable memory the runtime does not track (mappings "
+               "the program or its libraries made: objects an allocator of "
+               "their own carves from them are not checked)");
+    statLine(&line, text);
   }
 }
 
@@ -558,7 +1289,7 @@ __attribute__((constructor)) static void checkProcess(void) {
   Dl_info own;
   const char *other;
   char text[1024];
-  struct Line line = {text, text + sizeof text - 1};
+  struct Line line = {text, text + sizeof text - 2};
   if (dladdr((const void *)checkProcess, &own) == 0 || own.dli_fname == NULL)
     return;
   other = otherRuntime(&own);
@@ -578,7 +1309,8 @@ __attribute__((constructor)) static void checkProcess(void) {
     put(&line, " and ");
     put(&line, own.dli_fname);
     put(&line, "): build every image with one weavec-cc");
-    emit(text, finish(&line, text));
+    *line.at++ = '\n';
+    emit(text, (size_t)(line.at - text));
     _exit(127);
   }
 #if !defined(__APPLE__)
@@ -601,153 +1333,8 @@ __attribute__((constructor)) static void checkProcess(void) {
                "accesses are not checked; preload ");
     put(&line, own.dli_fname);
     put(&line, " to check them");
-    emit(text, finish(&line, text));
+    *line.at++ = '\n';
+    emit(text, (size_t)(line.at - text));
   }
 #endif
-}
-
-/*===-- Faults (RFC 0037 section 6) ----------------------------------------===*/
-
-/* The faulting instruction's address and, where the context says, whether
- * it wrote (1), read (0) or is unknown (-1). */
-static uintptr_t faultPc(const void *context, int *write) {
-  const ucontext_t *uc = (const ucontext_t *)context;
-  *write = -1;
-#if defined(__APPLE__) && defined(__aarch64__)
-  /* A data abort's syndrome: bit 6 (WnR) is set by a write. */
-  *write = (uc->uc_mcontext->__es.__esr >> 6) & 1;
-  return (uintptr_t)arm_thread_state64_get_pc(uc->uc_mcontext->__ss);
-#elif defined(__APPLE__) && defined(__x86_64__)
-  *write = (uc->uc_mcontext->__es.__err & 2) != 0;
-  return (uintptr_t)uc->uc_mcontext->__ss.__rip;
-#elif defined(__linux__) && defined(__x86_64__)
-  *write = (uc->uc_mcontext.gregs[REG_ERR] & 2) != 0;
-  return (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
-#elif defined(__linux__) && defined(__aarch64__)
-  return (uintptr_t)uc->uc_mcontext.pc;
-#else
-  (void)uc;
-  return 0;
-#endif
-}
-
-/* RFC 0038 section 4: the default disposition, set here rather than left to
- * SA_RESETHAND, which a program that saved and restored this handler has
- * dropped (Python's faulthandler): raising the signal again under this
- * handler would never end. */
-static void raiseDefault(int signal) {
-  struct sigaction action;
-  memset(&action, 0, sizeof action);
-  action.sa_handler = SIG_DFL;
-  sigemptyset(&action.sa_mask);
-  (void)sigaction(signal, &action, NULL);
-  (void)raise(signal);
-}
-
-/* A fault the shadow did not see (a wild access, the inaccessible middle of
- * a huge block): one report, then the signal again under the default
- * disposition, which ends the program as it would have when the handler
- * returns (a signal sent, which no access would retry, too). */
-static void onFault(int signal, siginfo_t *info, void *context) {
-  char text[256];
-  struct Line line = {text, text + sizeof text - 1};
-  const uintptr_t address = (uintptr_t)info->si_addr;
-  int write = -1;
-  const uintptr_t pc = faultPc(context, &write);
-  int size;
-  /* A signal sent (kill, raise) faulted nothing: Linux says who sent it;
-   * Darwin's arm64 syndrome says the thread was in a system call. */
-#if defined(__APPLE__) && defined(__aarch64__)
-  const int sent = ((((const ucontext_t *)context)->uc_mcontext->__es.__esr >>
-                     26) & 0x3F) == 0x15;
-#else
-  const int sent = info->si_code <= 0;
-#endif
-  if (sent) {
-    raiseDefault(signal);
-    return;
-  }
-  put(&line, "weavec: memory-fault at pc ");
-  putHex(&line, pc);
-  put(&line, write == 1 ? ": write at " : write == 0 ? ": read at " : ": access at ");
-  putHex(&line, address);
-  emit(text, finish(&line, text));
-  size = describeHeap(address, text, sizeof text);
-  if (size > 0)
-    emit(text, size);
-  if (backtraceSetting) {
-    void *frames[64];
-    backtrace_symbols_fd(frames, backtrace(frames, 64), 2);
-  }
-  raiseDefault(signal);
-}
-
-/* The handlers go where the disposition is the default, so that a program's
- * own handler (installed before or after) is its own. WEAVEC_RT_FAULTS=0
- * installs none. */
-__attribute__((constructor)) static void watchFaults(void) {
-  static const int Faults[2] = {SIGSEGV, SIGBUS};
-  const char *value = getenv("WEAVEC_RT_FAULTS");
-  int i;
-  if (value != NULL && strcmp(value, "0") == 0)
-    return;
-  for (i = 0; i < 2; ++i) {
-    struct sigaction action;
-    if (sigaction(Faults[i], NULL, &action) != 0 ||
-        (action.sa_flags & SA_SIGINFO) != 0 || action.sa_handler != SIG_DFL)
-      continue;
-    memset(&action, 0, sizeof action);
-    action.sa_sigaction = onFault;
-    action.sa_flags = SA_SIGINFO | SA_RESETHAND | SA_ONSTACK;
-    sigemptyset(&action.sa_mask);
-    (void)sigaction(Faults[i], &action, NULL);
-  }
-}
-
-const char *weavecRtReleaseName(unsigned form) {
-  return form == WeavecRtFormNew        ? "operator delete"
-         : form == WeavecRtFormNewArray ? "operator delete[]"
-                                        : "free";
-}
-
-/* RFC 0039, Diagnostics: a release by another form, or of another size. */
-void weavecRtFatalRelease(const void *p, unsigned allocatedBy,
-                          const char *releasedBy, size_t size,
-                          size_t objectSize) {
-  char why[160];
-  struct Line line = {why, why + sizeof why - 1};
-  if (size == SIZE_MAX) {
-    put(&line, "allocated by ");
-    put(&line, allocatedBy == WeavecRtFormNew        ? "operator new"
-               : allocatedBy == WeavecRtFormNewArray ? "operator new[]"
-                                                     : "malloc");
-    put(&line, " and released by ");
-    put(&line, releasedBy);
-  } else {
-    put(&line, "released by ");
-    put(&line, releasedBy);
-    put(&line, " with size ");
-    putUnsigned(&line, size, 10);
-    put(&line, " for a ");
-    putUnsigned(&line, objectSize, 10);
-    put(&line, "-byte object");
-  }
-  *line.at = 0;
-  __weavec_rt_fatal("invalid release", p, why);
-}
-
-void __weavec_rt_fatal(const char *what, const void *p, const char *why) {
-  char text[256];
-  struct Line line = {text, text + sizeof text - 1};
-  put(&line, "weavec: ");
-  put(&line, what);
-  put(&line, " of ");
-  putHex(&line, (uintptr_t)p);
-  put(&line, ": ");
-  put(&line, why);
-  {
-    const long written = (long)write(2, text, (size_t)finish(&line, text));
-    (void)written;
-  }
-  trapNow();
 }

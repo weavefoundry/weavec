@@ -11,12 +11,14 @@
 // holds the original and the redzone, aligned to 32 bytes. A constructor
 // registers the unit's globals with the runtime, which poisons each
 // redzone; a destructor unregisters them, so `dlclose` leaves nothing in the
-// shadow.
+// shadow. RFC 0040 §5.3, §5.4: each record names its global and where it is
+// defined, and the unit's frame descriptors are registered with them.
 //
 //===----------------------------------------------------------------------===//
 
 #include "GuardPassImpl.h"
 
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
@@ -47,22 +49,41 @@ static bool isTracked(const llvm::GlobalVariable &global,
   return !size.isScalable() && size.getFixedValue() != 0;
 }
 
+/// RFC 0040 §5.4: where `global` is defined, for reports: its debug
+/// information's line, or the unit's file.
+static std::string definitionOf(const llvm::GlobalVariable &global) {
+  llvm::SmallVector<llvm::DIGlobalVariableExpression *, 1> expressions;
+  global.getDebugInfo(expressions);
+  for (const llvm::DIGlobalVariableExpression *expression : expressions)
+    if (const llvm::DIGlobalVariable *variable = expression->getVariable();
+        variable != nullptr && variable->getLine() != 0)
+      return (variable->getFilename() + ":" + llvm::Twine(variable->getLine()))
+          .str();
+  return global.getParent()->getSourceFileName();
+}
+
 void instrumentGlobals(ModuleContext &module) {
   const llvm::DataLayout &layout = module.layout;
   std::vector<llvm::GlobalVariable *> globals;
   for (llvm::GlobalVariable &global : module.module.globals())
     if (isTracked(global, layout))
       globals.push_back(&global);
-  if (globals.empty())
+  if (globals.empty() && module.frames.empty())
     return;
   llvm::LLVMContext &context = module.context;
-  auto *recordType =
-      llvm::StructType::get(context, {module.ptr, module.i64, module.i64});
+  auto *recordType = llvm::StructType::get(
+      context, {module.ptr, module.i64, module.i64, module.i64, module.i64});
+  auto *arrayType = llvm::ArrayType::get(recordType, globals.size());
+  auto *array = new llvm::GlobalVariable(
+      module.module, arrayType, /*isConstant=*/true,
+      llvm::GlobalValue::PrivateLinkage, nullptr, "__weavec.globals");
   std::vector<llvm::Constant *> records;
   for (llvm::GlobalVariable *global : globals) {
     llvm::Type *type = global->getValueType();
     const std::uint64_t size = layout.getTypeAllocSize(type).getFixedValue();
     const std::uint64_t padded = paddedSize(size);
+    const std::string name = global->getName().str();
+    const std::string location = definitionOf(*global);
     auto *zone = llvm::ArrayType::get(module.i8, padded - size);
     auto *wrapped = llvm::StructType::get(context, {type, zone});
     auto *initializer = llvm::ConstantStruct::get(
@@ -79,18 +100,27 @@ void instrumentGlobals(ModuleContext &module) {
     replacement->takeName(global);
     global->replaceAllUsesWith(replacement);
     global->eraseFromParent();
+    const auto index = static_cast<unsigned>(records.size());
     records.push_back(llvm::ConstantStruct::get(
         recordType, {replacement, llvm::ConstantInt::get(module.i64, size),
-                     llvm::ConstantInt::get(module.i64, padded)}));
+                     llvm::ConstantInt::get(module.i64, padded),
+                     module.relative(module.text(name), array, {0, index}),
+                     location.empty() ? llvm::ConstantInt::get(module.i64, 0)
+                                      : module.relative(module.text(location),
+                                                        array, {0, index})}));
   }
-  auto *arrayType = llvm::ArrayType::get(recordType, records.size());
-  auto *array = new llvm::GlobalVariable(
-      module.module, arrayType, /*isConstant=*/true,
+  array->setInitializer(llvm::ConstantArray::get(arrayType, records));
+  auto *framesType = llvm::ArrayType::get(module.ptr, module.frames.size());
+  auto *frames = new llvm::GlobalVariable(
+      module.module, framesType, /*isConstant=*/true,
       llvm::GlobalValue::PrivateLinkage,
-      llvm::ConstantArray::get(arrayType, records), "__weavec.globals");
+      llvm::ConstantArray::get(
+          framesType, std::vector<llvm::Constant *>(module.frames.begin(),
+                                                    module.frames.end())),
+      "__weavec.frames");
   llvm::Type *voidType = llvm::Type::getVoidTy(context);
-  auto *entryType =
-      llvm::FunctionType::get(voidType, {module.ptr, module.i64}, false);
+  auto *entryType = llvm::FunctionType::get(
+      voidType, {module.ptr, module.i64, module.ptr, module.i64}, false);
   auto makeHook = [&](llvm::StringRef name, llvm::StringRef entry) {
     auto *hook = llvm::Function::Create(
         llvm::FunctionType::get(voidType, false),
@@ -99,7 +129,8 @@ void instrumentGlobals(ModuleContext &module) {
     llvm::IRBuilder<> builder(llvm::BasicBlock::Create(context, "", hook));
     builder.CreateCall(
         module.runtime(entry, entryType),
-        {array, llvm::ConstantInt::get(module.i64, records.size())});
+        {array, llvm::ConstantInt::get(module.i64, records.size()), frames,
+         llvm::ConstantInt::get(module.i64, module.frames.size())});
     builder.CreateRetVoid();
     return hook;
   };

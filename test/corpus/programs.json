@@ -27,7 +27,7 @@
       "name": "sqlite",
       "url": "https://www.sqlite.org/2025/sqlite-src-3500400.zip",
       "sha256": "b7b4dc060f36053902fb65b344bbbed592e64b2291a26ac06fe77eec097850e9",
-      "notes": "SQLite 3.50.4's source release (the corpus has only the amalgamation) and its Tcl test harness; `make quicktest` runs about 330,000 tests through testfixture.",
+      "notes": "SQLite 3.50.4's source release (the corpus has only the amalgamation) and its Tcl test harness; `make quicktest` runs about 330,000 tests through testfixture. On GitHub's macos-15 runners its timed lock tests (busy2, walsetlk) miss their windows under load with any compiler.",
       "programs": ["tclsh"],
       "build": [
         "./configure CC=\"$CC\" --with-tcl=\"$TCL_CONFIG_DIR\" > configure.log",
@@ -36,7 +36,8 @@
       "test": "make quicktest",
       "failures": "!Failures on these tests: (.*)",
       "timeout": 7200,
-      "referenceFailures": {}
+      "referenceFailures": {"darwin": ["busy2-1.2.3", "walsetlk-2.1.10", "walsetlk-2.1.12", "walsetlk-2.1.14", "walsetlk-2.1.3", "walsetlk-2.1.6", "walsetlk-2.1.8", "walsetlk-2.2.10", "walsetlk-2.2.12", "walsetlk-2.2.3", "walsetlk-2.2.6", "walsetlk-2.2.8"]},
+      "acceptedFailures": {"darwin": {"busy2-1.1.3": "RFC 0040 section 0: a timed lock wait (busy2 expects 0.95-1.5 s, walsetlk 1-4 s) that the loaded macos-15 runner misses, as it misses its siblings with the reference compiler; walsetlk.test and busy2.test pass alone with weavec-cc in three runs of three", "walsetlk-2.2.14": "RFC 0040 section 0: a timed lock wait (busy2 expects 0.95-1.5 s, walsetlk 1-4 s) that the loaded macos-15 runner misses, as it misses its siblings with the reference compiler; walsetlk.test and busy2.test pass alone with weavec-cc in three runs of three"}}
     },
     {
       "name": "cpython",

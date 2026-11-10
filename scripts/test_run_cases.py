@@ -406,20 +406,22 @@ class ParseOutputTest(unittest.TestCase):
     def test_reports(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory).resolve()
-            got = rc.parse_reports(textwrap.dedent("""\
-                weavec: heap-buffer-overflow at a.c:12:5: write of 4 bytes at 0x1000
-                weavec: 0x1000 is 0 bytes after the 16-byte heap object at 0xff0
-                weavec: weavec.proven: index-out-of-bounds at /abs/b.c:3:9: index 7
-                weavec: null-dereference at <unknown>: access at 0x0
-                weavec: invalid release of 0x7ff0: not a heap block
-                weavec: runtime: 3 allocations
-                program output at x.c:1:1: is not a report
-                """), directory)
+            log = directory / "reports.jsonl"
+            log.write_text(textwrap.dedent("""\
+                {"weavec":40,"kind":"heap-buffer-overflow","proven":false,"site":{"file":"a.c","line":12,"column":5}}
+                {"weavec":40,"kind":"index-out-of-bounds","proven":true,"site":{"file":"/abs/b.c","line":3,"column":9}}
+                {"weavec":40,"kind":"null-dereference","proven":false,"site":{"file":null,"line":0,"column":0}}
+                {"weavec":40,"kind":"double-free","proven":false,"site":{"file":"c.c","line":7,"column":0}}
+                not a report
+                {"kind": 3}
+                """))
+            got = rc.parse_reports(log, directory)
             self.assertEqual(got, [
                 rc.Report("heap-buffer-overflow", str(directory / "a.c"), 12, 5, False),
                 rc.Report("index-out-of-bounds", str(Path("/abs/b.c").resolve()), 3, 9, True),
                 rc.Report("null-dereference", None, 0, 0, False),
-                rc.Report("invalid-release", None, 0, 0, False)])
+                rc.Report("double-free", str(directory / "c.c"), 7, 0, False)])
+            self.assertEqual(rc.parse_reports(directory / "none.jsonl", directory), [])
         self.assertTrue(got[1].text().startswith("weavec.proven: index-out-of-bounds at "))
         self.assertEqual(got[2].text(), "null-dereference at <no location>")
 
@@ -430,8 +432,6 @@ class RunTest(unittest.TestCase):
         self.assertEqual(run(TRAP, located).stop, located)
         self.assertEqual(run(-int(signal.SIGILL), located).stop, located)
         self.assertEqual(run(SEGV).stop, rc.Report("null-dereference", None, 0, 0))
-        fatal = report("invalid-release")
-        self.assertEqual(run(ABRT, fatal).stop, fatal)
         self.assertIsNone(run(TRAP).stop)          # a trap with no report (the C library's own)
         self.assertIsNone(run(0, located).stop)    # a report that did not stop the run
         self.assertIsNone(run(1).stop)
@@ -685,12 +685,11 @@ class RunDetectionTest(Fakes):
         self.assertEqual(result["detection"]["stop"], "run")
         self.assertEqual(self.builds, [("bug", (), False), ("twin", ("-DFIX",), False)])
 
-    def test_a_fault_or_an_allocator_stop_counts(self):
+    def test_a_fault_counts(self):
         case = self.detection()
-        for stop in (run(SEGV), run(ABRT, report("invalid-release"))):
-            self.runs["bug"] = [stop]
-            result = rc.run_case(case, self.config())
-            self.assertEqual((result["status"], result["detection"]["stop"]), ("pass", "fault"))
+        self.runs["bug"] = [run(SEGV)]
+        result = rc.run_case(case, self.config())
+        self.assertEqual((result["status"], result["detection"]["stop"]), ("pass", "fault"))
 
     def test_a_stop_elsewhere_or_none_fails(self):
         case = self.detection()

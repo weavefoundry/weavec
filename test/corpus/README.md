@@ -162,7 +162,7 @@ against its `sha256`, with its own build system: once with `CC` and `CXX` set to
 `weavec-cc -fweavec-checks=report` and `weavec-c++ -fweavec-checks=report`
 and once with the reference compiler, in
 fresh trees under `<workdir>/.gate/`. It runs each one's test suite with
-`WEAVEC_RT_REPORT_LOG` collecting the reports and reads the failing tests
+`WEAVEC_RT_REPORT_LOG` collecting the reports as JSON and reads the failing tests
 from its output with the program's `failures` expression. Report mode lets
 a suite run to its end past a report, so every report is seen. The tier
 fails on a report not triaged under the program's name, a test that fails
@@ -208,12 +208,16 @@ measured, every report included.
   on), which names every site a trap-mode run stops at only the first of;
   and the build once more with the reference compiler, not tested, for the
   build-time gate. Then the injections and the benchmarks. A failing build
-  or test command fails the run. A failing guard is a report line
-  (`weavec: <kind> at <file>:<line>:<col>: …`, RFC 0035 section 5.3, in the
-  output or in the `WEAVEC_RT_REPORT_LOG` file the gate sets, so that a
-  harness that hides a passing test's output does not hide it) or the
-  allocator's `weavec: invalid release of …`; a death by `SIGTRAP` or
-  `SIGILL` that no report explains counts too. Each distinct report of the
+  or test command fails the run. A failing guard is a report in the
+  `WEAVEC_RT_REPORT_LOG` file the gate sets, which the runtime writes as
+  one JSON line per report (`WEAVEC_RT_REPORT_FORMAT=json`, RFC 0040
+  section 6), so that a harness that hides a passing test's output does
+  not hide it; the gate takes its `kind` and its `site` (a bad release,
+  `double-free`, `invalid-free` or `alloc-release-mismatch`, is located at
+  the releasing call, or at its stack's first frame with a line). A death
+  by `SIGTRAP` or `SIGILL` that no report explains counts too: the gate
+  still reads the commands' output for such signs and for the tests that
+  failed. Each distinct report of the
   trap and report runs is a trap and fails the run, except those listed in
   `guardFailures`.
 - **`--inject`**: applies each injection's patch to a copy, builds it in
@@ -283,7 +287,8 @@ configs and the other platforms have none yet: record them with `--quick
 
 `guardFailures` lists the reports of a test suite the gate does not count
 as traps: `{config, file, line, verdict, note}`, with an optional `kind` (a
-report kind of RFC 0035, section 5.3). The verdict (RFC 0038, section 5)
+report kind of RFC 0035, section 5.3, or RFC 0040's `double-free`,
+`invalid-free` and `alloc-release-mismatch`). The verdict (RFC 0038, section 5)
 is `"project-bug"` for a true bug of the project, with the evidence in the
 note (an ASan run, a reduced program, the source), or `"accepted"` for a
 false trap an Accepted RFC accepts, which the entry's `rfc` names
@@ -314,8 +319,8 @@ commands run in the copy's root, with `CC`, `CXX`, `JOBS` (from `--jobs`), `SRC`
 generated benchmark input), `INJECTION_DIR` (the injection's directory) and
 `CACHE` (`<workdir>/.cache/<project>`, kept between runs, for downloaded
 test data) and `CORPUS` (the workdir, whose checkouts `uses` names); `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `MAKEFLAGS`, `WEAVEC_RT_ABORT`
-and `WEAVEC_RT_STATS` are cleared, and `WEAVEC_RT_REPORT_LOG` is set to a
-file of the gate's.
+and `WEAVEC_RT_STATS` are cleared, `WEAVEC_RT_REPORT_FORMAT` is `json`,
+and `WEAVEC_RT_REPORT_LOG` is set to a file of the gate's.
 
 ## Injections
 
@@ -337,10 +342,13 @@ must stop:
 - or at `stop` (`{"file": …, "line": …}`), when the bug is not where the
   access is: a freed pointer passed to a function that reads it stops in
   that function (`jsmn-uaf-jsondump`);
-- or, with `"unlocated": "invalid-release"`, by the allocator refusing a
-  release (`weavec: invalid release of …`, which names no line): the double
-  frees; with `"unlocated": "fault"`, by a fault on the null page (a call
-  through a null function pointer, `logc-null-lock`).
+- or, with `"unlocated": "fault"`, the one stop without a location, by a
+  fault on the null page (a call through a null function pointer,
+  `logc-null-lock`).
+
+A double free stops at its line like any other bug since RFC 0040: the
+allocator's report (`double-free`, `invalid-free`,
+`alloc-release-mismatch`) names the releasing call.
 
 An entry's `accepted` says why its miss is accepted and names the RFC that
 accepts it (RFC 0038, amendment 28): the gate does not count the miss, and

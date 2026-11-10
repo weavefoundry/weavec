@@ -109,8 +109,9 @@ struct LibDisjoint {
 /// `wrapper(name)`: the runtime's checked `__weavec_rt_<name>` replaces the
 /// call. It takes the call's arguments and the site (first when the call is
 /// variadic, last otherwise) and checks what the call reads and writes as
-/// it runs. A C row's wrapper is named after it; a C++ row's (a mangled
-/// name) by the name given.
+/// it runs. A C row's wrapper is named after it (RFC 0040 §5.5: a
+/// release's, after it and `_at`); a C++ row's (a mangled name) by the name
+/// given.
 struct LibWrapper {
   std::string name;
 

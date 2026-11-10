@@ -666,6 +666,17 @@ static bool cheapToGuard(const LibraryCall &call) {
   return checked;
 }
 
+/// Whether a call of the row guards one of its pointer arguments: one it
+/// reads or writes and does not release.
+static bool guardsAnArgument(const core::LibraryEntry &entry) {
+  return llvm::any_of(entry.params, [](const core::LibraryParam &param) {
+    return param.type == core::LibraryParam::Type::Pointer &&
+           param.access != core::LibraryParam::Access::None &&
+           param.effect != core::LibraryParam::Effect::Release &&
+           param.effect != core::LibraryParam::Effect::Realloc;
+  });
+}
+
 /// Replaces the call with the runtime's checked version its row names
 /// (section 2.5): the call's arguments and the site, first when the call is
 /// variadic. False when the row names none or the call does not fit it.
@@ -728,10 +739,14 @@ static bool redirect(LibraryCall &call, bool late) {
     replacement = builder.CreateCall(callee, arguments);
   replacement->setDebugLoc(call.call.getDebugLoc());
   call.call.replaceAllUsesWith(replacement);
-  const unsigned row = call.record("checked-call");
-  // A row recorded after the optimizer has its one copy already.
-  if (late)
-    module.copy(row, true, "checked-call");
+  // RFC 0040 §5.5: a release's redirection, which checks no access, is no
+  // row of the ledger.
+  if (guardsAnArgument(entry)) {
+    const unsigned row = call.record("checked-call");
+    // A row recorded after the optimizer has its one copy already.
+    if (late)
+      module.copy(row, true, "checked-call");
+  }
   call.call.eraseFromParent();
   return true;
 }
@@ -852,17 +867,6 @@ void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
     }
     library.guardArguments();
   }
-}
-
-/// Whether a call of the row guards one of its pointer arguments: one it
-/// reads or writes and does not release.
-static bool guardsAnArgument(const core::LibraryEntry &entry) {
-  return llvm::any_of(entry.params, [](const core::LibraryParam &param) {
-    return param.type == core::LibraryParam::Type::Pointer &&
-           param.access != core::LibraryParam::Access::None &&
-           param.effect != core::LibraryParam::Effect::Release &&
-           param.effect != core::LibraryParam::Effect::Realloc;
-  });
 }
 
 void thunkLibraryAddresses(ModuleContext &module, llvm::Module &ir) {

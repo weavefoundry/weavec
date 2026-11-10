@@ -66,7 +66,8 @@ KINDS = (
     "heap-buffer-overflow", "heap-use-after-free", "stack-buffer-overflow",
     "stack-use-after-scope", "dynamic-stack-buffer-overflow", "global-buffer-overflow",
     "intra-object-overflow", "use-after-poison", "null-dereference", "unterminated-string",
-    "index-out-of-bounds", "invalid-release", "invalid-access", "overlapping-copy",
+    "index-out-of-bounds", "double-free", "invalid-free", "alloc-release-mismatch",
+    "invalid-access", "overlapping-copy",
     "memory-fault", "stack-use-after-return", "container-overflow", "library-assertion",
 )
 LEDGER_REASONS = {
@@ -563,25 +564,24 @@ class Report:
         return f"{'weavec.proven: ' if self.proven else ''}{self.kind} at {where}"
 
 
-# A site without a location reports `at <unknown>: ` (runtime/weavec_report.c).
-_REPORT = re.compile(r"^weavec: (weavec\.proven: )?([a-z-]+) at (?:(.+?):(\d+):(\d+)|<unknown>): ")
-_FATAL = re.compile(r"^weavec: (invalid release) of 0x[0-9a-f]+: (.*)$")
-
-
-def parse_reports(output: str, cwd: Path | None = None) -> list[Report]:
+def parse_reports(log: Path, cwd: Path | None = None) -> list[Report]:
+    """The reports of a run, from its JSON report log (RFC 0040 section 6:
+    WEAVEC_RT_REPORT_FORMAT=json, one report per line)."""
     reports: list[Report] = []
-    for line in output.splitlines():
-        match = _REPORT.match(line)
-        if match:
-            proven, kind, file, number, column = match.groups()
-            if file is None:
-                reports.append(Report(kind, None, 0, 0, bool(proven)))
-            else:
-                reports.append(Report(kind, resolve(file, cwd), int(number), int(column),
-                                      bool(proven)))
+    if not log.exists():
+        return reports
+    for line in log.read_text(errors="replace").splitlines():
+        try:
+            report = json.loads(line)
+        except ValueError:
             continue
-        if _FATAL.match(line):
-            reports.append(Report("invalid-release", None, 0, 0))
+        if not isinstance(report, dict) or not isinstance(report.get("kind"), str):
+            continue
+        site = report.get("site") or {}
+        file = site.get("file")
+        reports.append(Report(report["kind"], resolve(file, cwd) if file else None,
+                              int(site.get("line") or 0), int(site.get("column") or 0),
+                              bool(report.get("proven"))))
     return reports
 
 
@@ -618,7 +618,7 @@ class Run:
     @property
     def stop(self) -> Report | None:
         """What stopped the run: its first report, or a fault."""
-        if self.reports and (self.trapped or self.reports[0].kind == "invalid-release"):
+        if self.reports and self.trapped:
             return self.reports[0]
         if self.faulted:
             return Report("null-dereference", None, 0, 0)
@@ -706,7 +706,8 @@ def run_process(command: list[str], cwd: Path, timeout: float, stdin: Path | Non
 
 def run_environment(**extra: str) -> dict:
     env = dict(os.environ)
-    for name in ("WEAVEC_RT_ABORT", "WEAVEC_RT_REPORT_LOG", "WEAVEC_RT_QUARANTINE"):
+    for name in ("WEAVEC_RT_ABORT", "WEAVEC_RT_REPORT_LOG", "WEAVEC_RT_REPORT_FORMAT",
+                 "WEAVEC_RT_QUARANTINE"):
         env.pop(name, None)
     env.update(extra)
     return env
@@ -791,11 +792,13 @@ def build(case: Case, cfg: Config, ev: Evidence, directory: Path, extra: list[st
 
 
 def run_all(case: Case, cfg: Config, ev: Evidence, exe: Path, directory: Path) -> None:
-    env = run_environment()
-    for run_input in case.run_inputs or [RunInput((), None)]:
-        code, _, err, timed_out = run_process([str(exe), *run_input.args], directory,
-                                              cfg.run_timeout, run_input.stdin, env)
-        ev.runs.append(Run(run_input.args, code, timed_out, parse_reports(err, directory)))
+    for index, run_input in enumerate(case.run_inputs or [RunInput((), None)]):
+        log = (directory / f"reports-{index}.jsonl").resolve()
+        log.unlink(missing_ok=True)
+        env = run_environment(WEAVEC_RT_REPORT_FORMAT="json", WEAVEC_RT_REPORT_LOG=str(log))
+        code, _, _, timed_out = run_process([str(exe), *run_input.args], directory,
+                                            cfg.run_timeout, run_input.stdin, env)
+        ev.runs.append(Run(run_input.args, code, timed_out, parse_reports(log, directory)))
 
 
 def run_asan(case: Case, cfg: Config, ev: Evidence, directory: Path) -> None:

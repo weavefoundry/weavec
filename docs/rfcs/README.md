@@ -89,5 +89,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0037](0037-complete-sweep-and-colors.md) | A complete sweep and object colors | Implemented (amended by [0038](0038-drop-in-everywhere.md)) |
 | [0038](0038-drop-in-everywhere.md) | Drop-in everywhere | Accepted |
 | [0039](0039-cxx.md) | C++ | Accepted |
+| [0040](0040-actionable-reports.md) | Reports you can act on | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

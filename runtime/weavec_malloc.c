@@ -16,8 +16,13 @@
 |*
 \*===----------------------------------------------------------------------===*/
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1 /* RTLD_DEFAULT, dladdr */
+#endif
+
 #include "weavec_rt.h"
 
+#include <dlfcn.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -83,7 +88,68 @@ void *reallocarray(void *p, size_t count, size_t size) {
 
 void free(void *p) {
   weavecRtReleaseForm(p, WeavecRtFormMalloc, SIZE_MAX,
-                      __builtin_return_address(0));
+                      __builtin_return_address(0), NULL);
+}
+
+/* RFC 0040 section 5.5: a guarded call's release, with its site. A
+ * program that defines `free` and `realloc` itself (an allocator of its
+ * own) gets its calls. */
+void (*weavecRtProgramFree)(void *);
+void *(*weavecRtProgramRealloc)(void *, size_t);
+
+static void *programs(const char *name, const void *own) {
+#if defined(__APPLE__)
+  void *found = dlsym(RTLD_MAIN_ONLY, name);
+  return found != own ? found : NULL;
+#else
+  Dl_info mine;
+  Dl_info where;
+  void *found = dlsym(RTLD_DEFAULT, name);
+  if (found == NULL || found == own || dladdr(own, &mine) == 0 ||
+      dladdr(found, &where) == 0 || where.dli_fbase == mine.dli_fbase ||
+      (where.dli_fname != NULL && strstr(where.dli_fname, "/libc.so") != NULL))
+    return NULL;
+  return found;
+#endif
+}
+
+__attribute__((constructor(101))) static void findProgramAllocator(void) {
+  weavecRtProgramFree = (void (*)(void *))programs("free", (const void *)free);
+  weavecRtProgramRealloc =
+      (void *(*)(void *, size_t))programs("realloc", (const void *)realloc);
+}
+
+void __weavec_rt_free_at(void *p, const struct __weavec_rt_site *site) {
+  if (weavecRtProgramFree != NULL)
+    weavecRtProgramFree(p);
+  else
+    weavecRtReleaseForm(p, WeavecRtFormMalloc, SIZE_MAX,
+                        __builtin_return_address(0), site);
+}
+
+void *__weavec_rt_realloc_at(void *p, size_t size,
+                             const struct __weavec_rt_site *site) {
+  if (weavecRtProgramRealloc != NULL)
+    return weavecRtProgramRealloc(p, size);
+  return weavecRtReallocAt(p, size, site);
+}
+
+void *__weavec_rt_reallocf_at(void *p, size_t size,
+                              const struct __weavec_rt_site *site) {
+  void *moved = __weavec_rt_realloc_at(p, size, site);
+  if (moved == NULL && p != NULL && size != 0)
+    __weavec_rt_free_at(p, site);
+  return moved;
+}
+
+void *__weavec_rt_reallocarray_at(void *p, size_t count, size_t size,
+                                  const struct __weavec_rt_site *site) {
+  size_t bytes;
+  if (__builtin_mul_overflow(count, size, &bytes)) {
+    errno = ENOMEM;
+    return NULL;
+  }
+  return __weavec_rt_realloc_at(p, bytes, site);
 }
 
 #if WEAVEC_RT_FREE_SIZED

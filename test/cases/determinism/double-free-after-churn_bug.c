@@ -13,7 +13,7 @@ int main(void) {
   for (long i = 0; i < 64L * 1024 * 1024 / 48; i++)
     free(malloc(48));
   char *q = malloc(48);
-  free(p); // TRAP: invalid-release
+  free(p); // TRAP: double-free
   printf("%d\n", p == q);
   return 0;
 }

@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
     } catch (const std::exception &) {
     }
     // UNWOUND: weavec: stack-use-after-return at {{.*}}cxx-exceptions.cpp:[[@LINE+2]]:{{[0-9]+}}: read of 4 bytes
-    // UNWOUND-NEXT: weavec: 0x{{[0-9a-f]+}} is in a frame that returned
+    // UNWOUND: weavec: 0x{{[0-9a-f]+}} is in a frame that returned
     return escaped[0];
   }
   fill(buffer, 16);

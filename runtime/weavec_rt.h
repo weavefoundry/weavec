@@ -175,6 +175,8 @@ void weavecRtShadowClear(uintptr_t low, uintptr_t high);
 uintptr_t weavecRtStackTop(void);
 uintptr_t weavecRtStackBottom(void);
 
+struct __weavec_rt_site;
+
 /*===-- The arena (sections 5.1) -------------------------------------------===*/
 
 enum {
@@ -256,22 +258,49 @@ WEAVEC_RT_API size_t __weavec_rt_size(const void *p);
  * amendment 1); a block another allocator's call returned recorded as
  * `form`; an invalid release by another form (`size` SIZE_MAX) or size. */
 void *weavecRtAllocForm(size_t size, size_t alignment, unsigned form);
+/* (RFC 0040 section 5.5: `site` is a guarded call's, or null.) */
 void weavecRtReleaseForm(void *p, unsigned form, size_t size,
-                         const void *caller);
+                         const void *caller,
+                         const struct __weavec_rt_site *site);
+void *weavecRtReallocAt(void *p, size_t size,
+                        const struct __weavec_rt_site *site);
 const char *weavecRtReleaseName(unsigned form);
 unsigned weavecRtCallerForm(unsigned form, const void *caller);
 void weavecRtSetForm(void *p, unsigned form);
-void weavecRtFatalRelease(const void *p, unsigned allocatedBy,
-                          const char *releasedBy, size_t size,
-                          size_t objectSize) __attribute__((noreturn));
+
+/* RFC 0040 section 5.5: a bad release by `by` (free, realloc, operator
+ * delete, operator delete[]) of `p`: released already; not a live block's
+ * start (`why`, or null when it lies inside one); by another form than the
+ * allocation's (`allocatedBy`), or sized (`size`, SIZE_MAX when the forms
+ * differ) for another size. */
+enum { WeavecRtDoubleFree, WeavecRtInvalidFree, WeavecRtMismatch };
+struct weavecRtRelease {
+  unsigned kind;
+  const char *by;
+  const void *p;
+  const char *why;
+  unsigned allocatedBy;
+  size_t size;
+  const struct __weavec_rt_site *site;
+};
+void weavecRtFailRelease(const struct weavecRtRelease *release)
+    __attribute__((noreturn));
+/* The address of the process's own `free` and `realloc` when the program
+ * defines them (its own allocator), or null. */
+extern void (*weavecRtProgramFree)(void *);
+extern void *(*weavecRtProgramRealloc)(void *, size_t);
 
 /* What the allocator knows of an address, for reports: whether it is in a
- * heap slot or huge block, and that object's start, size and state. */
+ * heap slot or huge block, that object's start, size, state and form, and
+ * its allocation's and release's stacks (RFC 0040 section 3; 0: none). */
 struct weavecRtHeapObject {
   int found;
   int live;
   uintptr_t base;
   size_t size;
+  unsigned form;
+  uint32_t allocated;
+  uint32_t released;
 };
 struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address);
 
@@ -604,20 +633,70 @@ __weavec_rt_libcpp_verbose_abort(const struct __weavec_rt_site *site,
                                  const char *format, ...)
     __attribute__((noreturn));
 
-/* Globals (section 4): `n` records {address, size, size with redzone}. On
- * Darwin a copy that forwards registers them with the owner (RFC 0036
- * section 4). */
+/* Globals (section 4): `n` records {address, size, size with redzone, and
+ * (RFC 0040 section 5.4) the global's name and "<file>:<line>", each as an
+ * offset from the record (0: none)}. */
 struct __weavec_rt_global {
   uintptr_t address;
   uint64_t size;
   uint64_t padded;
+  int64_t name;
+  int64_t location;
 };
+/* RFC 0040 section 5.3: a frame's descriptor, which the frame names in the
+ * first two words of its left redzone ({WeavecRtFrameMagic, descriptor}):
+ * the function's name and each tracked local's offset in the frame, size
+ * and name, names as offsets from the descriptor. */
+struct __weavec_rt_frame_object {
+  uint32_t offset;
+  uint32_t size;
+  int64_t name;
+};
+struct __weavec_rt_frame {
+  int64_t function;
+  uint32_t objects;
+  uint32_t reserved;
+  struct __weavec_rt_frame_object object[];
+};
+#define WeavecRtFrameMagic (0x5745415645430000ULL | WEAVEC_RT_ABI)
+/* A unit's globals and its frames' descriptors (`m` pointers). */
 WEAVEC_RT_API void
 __weavec_rt_globals_register(const struct __weavec_rt_global *globals,
-                             uint64_t n);
+                             uint64_t n,
+                             const struct __weavec_rt_frame *const *frames,
+                             uint64_t m);
 WEAVEC_RT_API void
 __weavec_rt_globals_unregister(const struct __weavec_rt_global *globals,
-                               uint64_t n);
+                               uint64_t n,
+                               const struct __weavec_rt_frame *const *frames,
+                               uint64_t m);
+/* The registered global that holds or lies nearest below `address` (within
+ * its padded extent), or null; whether `frame` is a registered
+ * descriptor. */
+const struct __weavec_rt_global *weavecRtGlobalAt(uintptr_t address);
+int weavecRtFrameKnown(const struct __weavec_rt_frame *frame);
+
+/* RFC 0040 sections 5.5, 9: a guarded call's release, with its site. */
+WEAVEC_RT_API void __weavec_rt_free_at(void *p,
+                                       const struct __weavec_rt_site *site);
+WEAVEC_RT_API void *__weavec_rt_realloc_at(void *p, size_t size,
+                                           const struct __weavec_rt_site *site);
+WEAVEC_RT_API void *
+__weavec_rt_reallocf_at(void *p, size_t size,
+                        const struct __weavec_rt_site *site);
+WEAVEC_RT_API void *
+__weavec_rt_reallocarray_at(void *p, size_t count, size_t size,
+                            const struct __weavec_rt_site *site);
+WEAVEC_RT_API void __weavec_rt_delete_at(void *p,
+                                         const struct __weavec_rt_site *site);
+WEAVEC_RT_API void
+__weavec_rt_delete_sized_at(void *p, size_t size,
+                            const struct __weavec_rt_site *site);
+WEAVEC_RT_API void
+__weavec_rt_delete_array_at(void *p, const struct __weavec_rt_site *site);
+WEAVEC_RT_API void
+__weavec_rt_delete_array_sized_at(void *p, size_t size,
+                                  const struct __weavec_rt_site *site);
 
 /*===-- Reports (section 5.3) ----------------------------------------------===*/
 
@@ -641,17 +720,69 @@ void weavecRtFailMessage(const char *kind, const char *message,
 /* Called by a failure right before it traps, so that the trap ends the
  * program even where the program blocked or caught SIGTRAP and SIGILL. */
 WEAVEC_RT_API void __weavec_rt_trapping(void);
-/* Prints `weavec: <what> of <pointer>: <why>` and traps. */
-WEAVEC_RT_API void __weavec_rt_fatal(const char *what, const void *p,
-                                     const char *why)
-    __attribute__((noreturn));
+/* Prints `weavec: error: <message>` and traps: the runtime cannot go on
+ * (an allocation `operator new` cannot fail, no unwinder). */
+void weavecRtDie(const char *message) __attribute__((noreturn));
+
+/*===-- Stacks (RFC 0040 sections 1 to 4) ----------------------------------===*/
+
+/* Frames a heap block's stacks keep by default and at most
+ * (WEAVEC_RT_HEAP_STACKS), and a report's own. */
+enum {
+  WeavecRtHeapFrames = 8,
+  WeavecRtHeapFramesMax = 32,
+  WeavecRtReportFrames = 32
+};
+/* The calling thread's number (T<n>; the main thread is T0). */
+unsigned weavecRtThread(void);
+/* Follows frame records from `fp` within the thread's stack: up to `max`
+ * call addresses (return address - 1), after `pc` when it is not 0 (a
+ * faulting instruction); without `pc`, the runtime's frames at the start
+ * are dropped. */
+unsigned weavecRtUnwind(uintptr_t *frames, unsigned max, uintptr_t fp,
+                        uintptr_t pc);
+/* The store's identifier of a stack (0: not recorded); the calling stack's,
+ * of at most `max` frames; a stored stack's frames and thread. */
+uint32_t weavecRtStackStore(const uintptr_t *frames, unsigned count,
+                            unsigned thread);
+uint32_t weavecRtStackId(uintptr_t fp, uintptr_t low, uintptr_t high,
+                         unsigned thread);
+/* The calling thread's stack. */
+void weavecRtOwnStack(uintptr_t *low, uintptr_t *high);
+unsigned weavecRtStackGet(uint32_t id, uintptr_t *frames, unsigned max,
+                          unsigned *thread);
+void weavecRtStoreStats(size_t *entries, size_t *bytes);
+/* The frames a heap block's stack keeps (WEAVEC_RT_HEAP_STACKS; 0: none);
+ * the calling stack's identifier, walked from `fp` within [low, high). */
+extern unsigned weavecRtHeapStacks;
+/* A mapping of the runtime's that neither the sweep nor a core dump reads. */
+void weavecRtExcluded(void *p, size_t bytes);
+
+/* Symbolization (section 4): up to `max` lines of `pc` (the innermost
+ * function first, several for inlined calls), each {function, file, line,
+ * column}, file null and line 0 when unknown; the module and the offset in
+ * it. Returns the count (at least 1). Only while reporting. */
+struct weavecRtSymbol {
+  const char *function;
+  const char *file;
+  unsigned line;
+  unsigned column;
+};
+struct weavecRtFrameInfo {
+  const char *module;
+  uintptr_t offset;
+  unsigned count;
+  struct weavecRtSymbol lines[4];
+};
+void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
+                       struct weavecRtFrameInfo *out);
 
 /*===-- One runtime per process (RFC 0038 section 1) -----------------------===*/
 
 /* The library's interface version (libweavec_rt.so.<abi>,
  * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
  * encoding or a site record changes. */
-#define WEAVEC_RT_ABI 39
+#define WEAVEC_RT_ABI 40
 
 /*===-- Internal -----------------------------------------------------------===*/
 
@@ -702,6 +833,9 @@ void weavecRtHeapWork(void (*add)(unsigned region, uint32_t first,
                       size_t chunk);
 void weavecRtMarkSlots(unsigned region, uint32_t first, uint32_t last);
 void weavecRtMarkHuge(void);
+/* RFC 0040 section 7: the resident bytes of writable memory the runtime
+ * does not track (WEAVEC_RT_STATS=1). */
+size_t weavecRtUntrackedBytes(void);
 /* The bytes of live heap slots (approximate). */
 size_t weavecRtLiveBytes(void);
 /* A fork's child: it has no mark workers. */
@@ -759,5 +893,15 @@ static inline void weavecRtLock(WeavecRtLock *lock) {
 static inline void weavecRtUnlock(WeavecRtLock *lock) {
   __atomic_store_n(&lock->held, 0, __ATOMIC_RELEASE);
 }
+
+/* RFC 0040 section 1: the runtime's code in a section of its own, which the
+ * unwinder recognizes (not the runtime's test, which includes this). */
+#if !defined(WEAVEC_RT_TEST)
+#if defined(__APPLE__)
+#pragma clang section text = "__TEXT,__weavec_rt,regular,pure_instructions"
+#else
+#pragma clang section text = "weavec_rt_text"
+#endif
+#endif
 
 #endif /* WEAVEC_RUNTIME_WEAVEC_RT_H */

@@ -43,6 +43,10 @@ static constexpr std::uint8_t ShadowRight = 0xF3;
 static constexpr std::uint8_t ShadowScope = 0xF8;
 /// RFC 0037 §9: a frame that returned.
 static constexpr std::uint8_t ShadowReturned = 0xF5;
+/// RFC 0040 §5.3: the first word of a frame's left redzone, with the
+/// runtime's interface version (runtime/weavec_rt.h, WeavecRtFrameMagic).
+static constexpr std::uint64_t FrameMagic = 0x5745415645430000ULL;
+static constexpr std::uint64_t AbiVersion = 40;
 
 /// The alignment of every object in a frame, and its left redzone: wider
 /// than the redzones between objects, for the negative indexes that reach
@@ -132,11 +136,58 @@ exitsOf(llvm::Function &function) {
   return exits;
 }
 
+/// RFC 0040 §5.3: a local's name for reports: its alloca's, without what
+/// Clang adds to a parameter's copy (`.addr`) and the inliner to a callee's
+/// locals (`.i`).
+static llvm::StringRef localName(const llvm::AllocaInst &alloca) {
+  llvm::StringRef name = alloca.getName();
+  while (name.consume_back(".i")) {
+  }
+  (void)name.consume_back(".addr");
+  return name.empty() ? llvm::StringRef("<unnamed>") : name;
+}
+
+/// The frame's descriptor: its function's name, its size, and each local's
+/// offset, size and name, names as offsets from their records.
+static llvm::GlobalVariable *
+frameDescriptor(ModuleContext &module, const llvm::Function &function,
+                llvm::ArrayRef<FrameObject> objects, std::uint64_t frameSize) {
+  llvm::LLVMContext &context = module.context;
+  auto *entryType =
+      llvm::StructType::get(context, {module.i32, module.i32, module.i64});
+  auto *entries = llvm::ArrayType::get(entryType, objects.size());
+  auto *type = llvm::StructType::get(
+      context, {module.i64, module.i32, module.i32, entries});
+  auto *descriptor = new llvm::GlobalVariable(
+      module.module, type, /*isConstant=*/true,
+      llvm::GlobalValue::PrivateLinkage, nullptr, "__weavec.frame");
+  descriptor->setAlignment(llvm::Align(8));
+  llvm::SmallVector<llvm::Constant *, 8> records;
+  for (unsigned i = 0; i < objects.size(); ++i) {
+    const FrameObject &object = objects[i];
+    records.push_back(llvm::ConstantStruct::get(
+        entryType,
+        {llvm::ConstantInt::get(module.i32, object.offset),
+         llvm::ConstantInt::get(
+             module.i32, std::min<std::uint64_t>(object.size, UINT32_MAX)),
+         module.relative(module.text(localName(*object.alloca)), descriptor,
+                         {0, 3, i})}));
+  }
+  descriptor->setInitializer(llvm::ConstantStruct::get(
+      type, {module.relative(module.text(function.getName()), descriptor, {0}),
+             llvm::ConstantInt::get(module.i32, objects.size()),
+             llvm::ConstantInt::get(
+                 module.i32, std::min<std::uint64_t>(frameSize, UINT32_MAX)),
+             llvm::ConstantArray::get(entries, records)}));
+  module.frames.push_back(descriptor);
+  return descriptor;
+}
+
 /// Lays out the tracked static allocas (section 3.2, 3.3).
 static void layoutStatic(FunctionContext &context,
                          llvm::ArrayRef<llvm::AllocaInst *> allocas,
                          llvm::DenseMap<llvm::Value *, llvm::Value *> &moved) {
-  const ModuleContext &module = context.module;
+  ModuleContext &module = context.module;
   llvm::Function &function = context.function;
   std::vector<FrameObject> objects;
   std::uint64_t alignment = FrameAlign;
@@ -270,6 +321,18 @@ static void layoutStatic(FunctionContext &context,
   auto *frame = builder.CreateAlloca(llvm::ArrayType::get(module.i8, frameSize),
                                      nullptr, "weavec.frame");
   frame->setAlignment(llvm::Align(alignment));
+  // RFC 0040 §5.3: the left redzone's first words name the frame's
+  // descriptor, for reports.
+  {
+    llvm::GlobalVariable *descriptor =
+        frameDescriptor(module, function, objects, frameSize);
+    builder.CreateAlignedStore(
+        llvm::ConstantInt::get(module.i64, FrameMagic | AbiVersion), frame,
+        llvm::Align(8), /*isVolatile=*/true);
+    builder.CreateAlignedStore(
+        descriptor, builder.CreateConstInBoundsGEP1_64(module.i8, frame, 8),
+        llvm::Align(8), /*isVolatile=*/true);
+  }
   // Every object's address first: writing a scope's shadow splits blocks.
   std::vector<llvm::Value *> addresses;
   for (const FrameObject &object : objects) {

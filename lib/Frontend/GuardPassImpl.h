@@ -209,6 +209,16 @@ public:
   /// Whether `name` is the runtime's or a guard's own function.
   [[nodiscard]] static bool isRuntimeName(llvm::StringRef name);
 
+  /// A private constant C string, once per text.
+  llvm::Constant *text(llvm::StringRef value);
+  /// RFC 0040: `target`'s address less the address of the field `indices`
+  /// names in `record`, an i64 (names are offsets from their records).
+  llvm::Constant *relative(llvm::Constant *target, llvm::GlobalVariable *record,
+                           llvm::ArrayRef<unsigned> indices) const;
+  /// RFC 0040 §5.3: the unit's frame descriptors, registered with its
+  /// globals.
+  std::vector<llvm::GlobalVariable *> frames;
+
 private:
   /// Past the frames inlined from artificial functions and the unit's
   /// system headers; `systemFiles` remembers which files are those.

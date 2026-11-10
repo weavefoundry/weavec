@@ -59,11 +59,11 @@ static NewFunction *chain(const char *nothrow, int base);
   void name(void *p, uintptr_t a, uintptr_t b) {                              \
     (void)a, (void)b;                                                          \
     if (!replaced())                                                           \
-      weavecRtReleaseForm(p, form, (size_t)(size), RETURN);                    \
+      weavecRtReleaseForm(p, form, (size_t)(size), RETURN, NULL);              \
     else if ((base) != Own)                                                    \
       ((DeleteFunction *)bases[(base) + 0])(p, (uintptr_t)(align), 0);         \
     else                                                                       \
-      weavecRtReleaseForm(p, WeavecRtFormAny, SIZE_MAX, NULL);                 \
+      weavecRtReleaseForm(p, WeavecRtFormAny, SIZE_MAX, NULL, NULL);           \
   }
 
 enum { New = WeavecRtFormNew, Array = WeavecRtFormNewArray };
@@ -88,6 +88,34 @@ WEAVEC_DELETE(_ZdaPvSt11align_val_t, Array, SIZE_MAX, 6, a)
 WEAVEC_DELETE(_ZdaPvmSt11align_val_t, Array, a, 7, b)
 WEAVEC_DELETE(_ZdaPvRKSt9nothrow_t, Array, SIZE_MAX, 5, 0)
 WEAVEC_DELETE(_ZdaPvSt11align_val_tRKSt9nothrow_t, Array, SIZE_MAX, 7, a)
+
+/* RFC 0040 section 5.5: a guarded delete expression's release, with its
+ * site; a program's own operator delete gets the call. */
+#define WEAVEC_DELETE_AT(name, form, plain)                                     \
+  void name(void *p, size_t size, const struct __weavec_rt_site *site) {      \
+    if (!replaced())                                                           \
+      weavecRtReleaseForm(p, form, size, RETURN, site);                        \
+    else                                                                       \
+      plain(p, size, 0);                                                       \
+  }
+static void deleteAt(void *, size_t, const struct __weavec_rt_site *);
+static void deleteArrayAt(void *, size_t, const struct __weavec_rt_site *);
+WEAVEC_DELETE_AT(deleteAt, New, _ZdlPvm)
+WEAVEC_DELETE_AT(deleteArrayAt, Array, _ZdaPvm)
+void __weavec_rt_delete_at(void *p, const struct __weavec_rt_site *site) {
+  deleteAt(p, SIZE_MAX, site);
+}
+void __weavec_rt_delete_sized_at(void *p, size_t size,
+                                 const struct __weavec_rt_site *site) {
+  deleteAt(p, size, site);
+}
+void __weavec_rt_delete_array_at(void *p, const struct __weavec_rt_site *site) {
+  deleteArrayAt(p, SIZE_MAX, site);
+}
+void __weavec_rt_delete_array_sized_at(void *p, size_t size,
+                                       const struct __weavec_rt_site *site) {
+  deleteArrayAt(p, size, site);
+}
 
 /* The definitions every image resolves the base names to, and whether one
  * is not the runtime's. Linux's library binds its own calls to itself
@@ -175,7 +203,29 @@ static void *newSlow(int nothrow, unsigned form, size_t size, size_t align) {
     return NULL;
   if (fail != NULL)
     fail();
-  __weavec_rt_fatal("operator new", NULL, "out of memory");
+  weavecRtDie("operator new: out of memory");
+}
+#else
+/* (Darwin's archive leaves the allocation functions to the library: the
+ * process's are called.) */
+static void deleteBy(const char *name, void *p, size_t size) {
+  void (*release)(void *, size_t) = (void (*)(void *, size_t))dlsym(RTLD_DEFAULT, name);
+  if (release != NULL)
+    release(p, size);
+}
+void __weavec_rt_delete_at(void *p, const struct __weavec_rt_site *site) {
+  (void)site, deleteBy("_ZdlPv", p, 0);
+}
+void __weavec_rt_delete_sized_at(void *p, size_t size,
+                                 const struct __weavec_rt_site *site) {
+  (void)site, deleteBy("_ZdlPvm", p, size);
+}
+void __weavec_rt_delete_array_at(void *p, const struct __weavec_rt_site *site) {
+  (void)site, deleteBy("_ZdaPv", p, 0);
+}
+void __weavec_rt_delete_array_sized_at(void *p, size_t size,
+                                       const struct __weavec_rt_site *site) {
+  (void)site, deleteBy("_ZdaPvm", p, size);
 }
 #endif
 

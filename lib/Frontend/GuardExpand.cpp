@@ -194,9 +194,12 @@ bool killsGuards(const llvm::Instruction &instruction) {
       return !intrinsic->hasFnAttr(llvm::Attribute::NoFree);
     }
   }
+  // The runtime's entry points free nothing, but the wrappers of releases
+  // (RFC 0040 §5.5: `<row>_at`) and of munmap.
   if (const llvm::Function *callee = call->getCalledFunction();
       callee && ModuleContext::isRuntimeName(callee->getName()))
-    return false;
+    return callee->getName().ends_with("_at") ||
+           callee->getName() == "__weavec_rt_munmap";
   return !call->hasFnAttr(llvm::Attribute::NoFree);
 }
 

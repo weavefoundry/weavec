@@ -80,8 +80,9 @@
 #                    __weavec_rt_N, which takes the call's arguments and its
 #                    site (first when the call is variadic, last otherwise)
 #                    and checks what the call reads and writes as it runs. N
-#                    is the row's name; a C++ row's (a mangled name, RFC
-#                    0039 section 6) may name another.
+#                    is the row's name, or its name and `_at` for a row
+#                    that releases (RFC 0040 section 5.5); a C++ row's (a
+#                    mangled name, RFC 0039 section 6) may name another.
 #   exits, unwinds   (RFC 0039 section 3) the call ends the process, or
 #                    unwinds the stack (a throw): the stack's shadow is not
 #                    cleared before it, as it is before any other call that
@@ -135,6 +136,19 @@
 #============================================================================
 # Heap allocation and release
 #============================================================================
+
+# RFC 0040 section 5.5: a guarded call's release reaches the allocator
+# with its site, so that a bad release names its line; a C row's wrapper
+# for a release is its name and `_at`.
+free (none:null-ok:release) -> void wrapper(free_at);
+realloc (none:null-ok:realloc, int) -> ptr wrapper(realloc_at);
+reallocf (none:null-ok:realloc, int) -> ptr wrapper(reallocf_at);
+reallocarray (none:null-ok:realloc, int, int) -> ptr \
+    wrapper(reallocarray_at);
+_ZdlPv (none:null-ok:release) -> void wrapper(delete_at);
+_ZdlPvm (none:null-ok:release, int) -> void wrapper(delete_sized_at);
+_ZdaPv (none:null-ok:release) -> void wrapper(delete_array_at);
+_ZdaPvm (none:null-ok:release, int) -> void wrapper(delete_array_sized_at);
 
 posix_memalign (w:bytes(8), int, int) -> int;
 # glibc: allocates the result of realpath(path, NULL) in one call.

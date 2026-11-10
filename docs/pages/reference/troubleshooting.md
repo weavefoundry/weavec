@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Resolve installation problems, read each run-time report and find the bug behind it, handle code that reads past objects on purpose or was written for AddressSanitizer, understand the link notes, and deal with memory held by the quarantine, slow programs and the sweep's signal.
+description: Resolve installation problems, read a run-time report, its stacks and objects, and find the bug behind each kind, handle code that reads past objects on purpose or was written for AddressSanitizer, understand the link notes, and deal with memory held by the quarantine, slow programs and the sweep's signal.
 ---
 
 ## CMake cannot find LLVM or Clang
@@ -60,33 +60,53 @@ Undefined `__weavec_rt_` symbols mean the link did not go through `weavec-cc`, o
 
 ## A program built with weavec-cc traps
 
-A trap (`SIGTRAP`, or `SIGILL` on x86-64; a shell shows exit status 133 or 132) means a guard found an access the program must not make, and the program stopped before making it. The runtime prints one line on standard error first, and a second that places the address in its object when it can:
+A trap (`SIGTRAP`, or `SIGILL` on x86-64; a shell shows exit status 133 or 132) means a guard found an access the program must not make, and the program stopped before making it. The runtime prints a report on standard error first; [reading a report](#reading-a-report) explains its parts, and the [command-line reference](/reference/cli/#check-modes) lists every kind.
 
-```text
-weavec: heap-buffer-overflow at vec.c:9:43: read of 4 bytes at 0xbd80000010
-weavec: 0xbd80000010 is 0 bytes after the 16-byte heap object at 0xbd80000000
-```
+A C++ program has three more kinds: `alloc-release-mismatch` (see [bad releases](#the-program-stops-at-a-free-or-delete)); `container-overflow`, an access past a `std::vector`'s or `std::deque`'s elements inside its capacity; and `library-assertion`, a check of the C++ library itself (`libc++ Hardening assertion __n < size() failed: vector[] index out of bounds`), reported at the line that called it. A `container-overflow` that the code cannot explain comes from a container grown by code built without WeaveC (a library compiled by another compiler): rebuild that code with `weavec-c++`, or run with `WEAVEC_RT_CONTAINERS=0`. To turn off the C++ library's checks, define `_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_NONE` or undefine `_GLIBCXX_ASSERTIONS` on the command line.
 
-The first line names the kind of bad access, the source location of the access (`<unknown>` when the unit has no location for it), whether it reads or writes, its width and its address. An index check has its own form, `weavec: index-out-of-bounds at lookup.c:8:12: index -1`, and an access with no known width reads `access at 0x…`. The [command-line reference](/reference/cli/#check-modes) lists every kind and its second line.
-
-A C++ program has three more forms: `weavec: invalid release of 0x…: allocated by operator new[] and released by operator delete` (a release by the wrong form, or `released by operator delete with size 16 for a 48-byte object` for a `delete` through a base class without a virtual destructor); `container-overflow`, an access past a `std::vector`'s or `std::deque`'s elements inside its capacity; and `library-assertion`, a check of the C++ library itself (`libc++ Hardening assertion __n < size() failed: vector[] index out of bounds`), reported at the line that called it. A `container-overflow` that the code cannot explain comes from a container grown by code built without WeaveC (a library compiled by another compiler): rebuild that code with `weavec-c++`, or run with `WEAVEC_RT_CONTAINERS=0`. To turn off the C++ library's checks, define `_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_NONE` or undefine `_GLIBCXX_ASSERTIONS` on the command line.
-
-To see how the program reached the access, run it with `WEAVEC_RT_BACKTRACE=1`, which prints the call stack after the report, C++ names demangled, or under a debugger, which stops at the trap. Compile with `-g` for the most useful stacks.
-
-To see every failing site in one run, rebuild with `-fweavec-checks=report` and rerun: each failure is printed once per site and the program goes on (what it does after an invalid access is not defined). `WEAVEC_RT_ABORT=1` makes a report-mode build trap at the first failure again. `WEAVEC_RT_REPORT_LOG=<path>` appends the reports to that file instead of standard error, which helps when a test harness hides a passing test's output; a set-user-ID program ignores it.
+To see every failing site in one run, rebuild with `-fweavec-checks=report` and rerun: each failure is printed once per site and the program goes on (what it does after an invalid access is not defined). `WEAVEC_RT_ABORT=1` makes a report-mode build trap at the first failure again. `WEAVEC_RT_REPORT_LOG=<path>` appends the reports to that file instead of standard error, which helps when a test harness hides a passing test's output; a set-user-ID program ignores it. `WEAVEC_RT_REPORT_FORMAT=json` writes each report as one line of [JSON](/reference/cli/#json-reports), for a tool to read.
 
 A trap is almost always a real bug. The exceptions are programs that read past an object on purpose, described [below](#code-that-reads-past-an-object-on-purpose). See [false traps](/reference/guarantees/#false-traps) for what the guarantee accepts.
 
+## Reading a report
+
+```text
+weavec: heap-use-after-free at uaf.c:6:56: read of 1 bytes at 0xbe00000000
+    #0 0x100c285f3 in use uaf.c:6
+    #1 0x19b523e7f in start (/usr/lib/dyld+0x31e7f)
+weavec: 0xbe00000000 is 0 bytes inside the 24-byte heap block at 0xbe00000000, released by thread T0:
+    #0 0x100c28593 in drop uaf.c:5
+    #1 0x100c2861b in main uaf.c:7
+    #2 0x19b523e7f in start (/usr/lib/dyld+0x31e7f)
+weavec: the block was allocated by thread T0:
+    #0 0x100c28553 in make uaf.c:4
+    #1 0x100c28613 in main uaf.c:7
+    #2 0x19b523e7f in start (/usr/lib/dyld+0x31e7f)
+weavec: summary: heap-use-after-free at uaf.c:6:56 in use (thread T0)
+```
+
+Read it top to bottom:
+
+1. **What went wrong, and where.** The first line names the kind, the source location of the access (`<unknown>` when the unit has no location for it), whether it reads or writes, its width and its address. An index check has its own form, `weavec: index-out-of-bounds at lookup.c:8:12: index -1`; a bad release names the release instead of an access (`weavec: double-free at f.c:3:40: free of 0x…`); a fault the guards did not see names the faulting instruction (`weavec: memory-fault at pc 0x…: read at 0x…`).
+2. **How the program got there.** The indented lines are the stack of the access, innermost first: function, file and line (and column, on Linux). A frame that repeats the number above it is a call the compiler inlined into that function. A frame such as `start (/usr/lib/dyld+0x31e7f)` is in code with no line table: a system library, or code compiled with `-g0`.
+3. **Which object, and its history.** Each line that starts with `weavec: 0x… is` places the address in an object. For the heap it gives the block's size, where the address lies in it, and the stacks of the `free` that released it and the `malloc` (or `new`) that allocated it: here `drop` freed what `make` allocated, and `use` read it afterwards. For a local it names the variable, its function and the frame's other locals with their offsets; for a global, its name and where it is defined.
+4. **The summary line** repeats the kind and the location with the function and the thread, so `grep 'weavec: summary'` over a log lists every report.
+
+An enforcing compile keeps line tables (as `-gline-tables-only` does) unless its command line ends in `-g0`, so frames carry files and lines in a release build too; on Darwin keep the object files, or the `.dSYM` a one-step build writes, beside the program. The runtime names frames by running a symbolizer (`weavec-cc --weavec-symbolize` on Linux, `atos` on Darwin). When it cannot (it is missing, the program is set-user-ID, `WEAVEC_RT_SYMBOLIZE=0`), a frame reads `in <function> (<module>+0x<offset>)`; save the report with `WEAVEC_RT_REPORT_LOG=<path>` and run `weavec-cc --weavec-symbolize <path>` where the same binaries are to name those frames. Under a debugger the program stops at the trap, in the frame of the access.
+
+A use after return usually gets only `weavec: 0x… is in a frame that returned`: the runtime's own frames, printing the report, overwrite the returned frame's record of its locals. The stack and the location still say which access read the dead frame.
+
 ## Heap reports
 
-- `heap-buffer-overflow`: the access reached the bytes after a heap block's object in its slot. The second line says where (`is 16 bytes after the 64-byte heap object`). An index that jumps further, over the slot's tail into a neighboring live block, is not caught. Look for an index or length that exceeds the allocation, an allocation sized in elements where bytes were meant (or the reverse), or a missing byte for a string's terminator. The runtime's allocator gives each block exactly its requested size: slack a system allocator rounds up to is not addressable, and `malloc_usable_size` returns the requested size.
-- `heap-use-after-free`: the access is to a block that was freed (`is inside a released heap block at …`). Look for a pointer kept across a `free`, or across a `realloc` that moved the block. A released block is not reused while the program holds a pointer to it, so this is reported however long ago the block was freed and however much the program allocated since.
+- `heap-buffer-overflow`: the access reached the bytes after a heap block's object in its slot. The object paragraph says where (`is 16 bytes after the 64-byte heap object at …`) and which call allocated the block. An index that jumps further, over the slot's tail into a neighboring live block, is not caught. Look for an index or length that exceeds the allocation, an allocation sized in elements where bytes were meant (or the reverse), or a missing byte for a string's terminator. The runtime's allocator gives each block exactly its requested size: slack a system allocator rounds up to is not addressable, and `malloc_usable_size` returns the requested size.
+- `heap-use-after-free`: the access is to a block that was freed. The report gives the stack that released the block and the stack that allocated it: look for the pointer the reading function got from the allocating one and kept across the `free`, or across a `realloc` that moved the block. A released block is not reused while the program holds a pointer to it, so this is reported however long ago the block was freed and however much the program allocated since.
 
 ## Stack and global reports
 
-- `stack-buffer-overflow`: the access left a local into the redzone after it (or, for a negative index, before it). `dynamic-stack-buffer-overflow` is the same for an `alloca` block or a variable-length array.
-- `stack-use-after-scope`: the access is to a local whose block has ended, through a pointer that outlived it. This is caught at every optimization level. A use of a local after its function returned is not caught.
-- `global-buffer-overflow`: the access left a global or static variable the unit defines into its redzone.
+- `stack-buffer-overflow`: the access left a local into the redzone after it (or, for a negative index, before it). The report names the local and its function and lists the frame's locals: `0x… is 4 bytes after 'buf' (8 bytes at offset 64) in the frame of idx (thread T0), whose locals are:`. `dynamic-stack-buffer-overflow` is the same for an `alloca` block or a variable-length array.
+- `stack-use-after-scope`: the access is to a local whose block has ended, through a pointer that outlived it (`0x… is 0 bytes inside 'n' (4 bytes at offset 64), whose scope has ended, in the frame of main`). This is caught at every optimization level.
+- `stack-use-after-return`: the access is to a local of a function that returned, through a pointer that outlived the call, before another frame reused its bytes. The report usually says only `0x… is in a frame that returned` ([why](#reading-a-report)); look for a function that returns or stores the address of one of its locals.
+- `global-buffer-overflow`: the access left a global or static variable the unit defines into its redzone. The report names it and where it is defined (`0x… is 4 bytes after the 16-byte global 'table' defined at sg.c`, with its line when the unit was compiled with `-g`).
 
 Within a struct, an index into a declared array field is checked against its bound (`index-out-of-bounds`), and a fortified string call into a field against the size the call states (`intra-object-overflow`): the field's with Darwin's headers, the rest of the object with glibc's; a pointer walk past a field is not checked.
 
@@ -101,22 +121,26 @@ Within a struct, an index into a declared array field is checked against its bou
 - `invalid-access`: the address is not addressable, but the runtime cannot say which kind of object it belongs to.
 - `weavec.proven: <kind>`: only in a `-fweavec-checks=verify` build. A guard that a local rule removed would have failed, so the rule was wrong. Please [report it](#report-an-issue) with the source.
 
-## The program stops with "weavec: invalid release"
+## The program stops at a `free` or `delete`
 
 ```text
-weavec: invalid release of 0xbd00000000: the block was already released
+weavec: double-free at cases.c:7:48: free of 0xbd80000000
+weavec: invalid-free at bad.c:8:15: free of 0xba00000001: inside the 8-byte heap block at 0xba00000000
+weavec: alloc-release-mismatch at cx.cpp:7:51: operator delete of 0xbe00000000: allocated by operator new[]
 ```
 
-The runtime's allocator received a `free` or `realloc` it cannot honor, and stopped the program. This line has no source location, because the allocator validates the release, not a guard. The reasons are:
+The runtime's allocator received a `free`, `realloc` or `delete` it cannot honor, and stopped the program, in every check mode. The location is the call that released; a release through a function pointer, or from code `weavec-cc` did not compile, is located at its stack's first frame with a line. The report goes on with the stack of the release and, for a heap block, the block's history: for a `double-free` the stack of the first release and of the allocation, otherwise the allocation's.
 
-| Reason                                                        | Usual cause                                                                                                                   |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `the block was already released`                              | a double free                                                                                                                 |
-| `not the start of its block`, `not the start of a live block` | a free of an interior pointer                                                                                                 |
-| `no block is allocated there`                                 | a free of a pointer into the heap that no block starts at                                                                     |
-| `not a heap block`                                            | a free of a global or other pointer that no allocator owns (on Linux the C library's allocator rejects such a pointer itself) |
+| Kind and reason                                           | Usual cause                                                                                                                     |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `double-free`                                             | a second release of a block, through a pointer kept after the first                                                             |
+| `invalid-free`: `inside the <n>-byte heap block at …`     | a release of an interior pointer (a pointer advanced past the start of what `malloc` returned)                                  |
+| `invalid-free`: `no block was allocated there`            | a release of a pointer into the heap that no block starts at                                                                    |
+| `invalid-free`: `not heap memory`                         | a release of a global, a local, or memory no allocator the runtime knows owns; the report names the global or local when it can |
+| `alloc-release-mismatch`: `allocated by <form>`           | a release by the wrong form: `delete` of `new[]`, `delete[]` of `new`, `free` of `new`, `delete` or `realloc` of `malloc`'s     |
+| `alloc-release-mismatch`: `size <n> for a <m>-byte block` | a sized `delete` of another size: a `delete` through a base class without a virtual destructor                                  |
 
-A released block is not reused while the program holds a pointer to it, so a second `free` through a pointer the program kept is always reported as `the block was already released`. Run the program with `WEAVEC_RT_BACKTRACE=1` or under a debugger to find the caller of `free`. A program that defines its own allocator does not get this check (see [below](#the-link-prints-defines-the-allocator)).
+A released block is not reused while the program holds a pointer to it, so a second `free` through a pointer the program kept is always a `double-free`, however long after the first. A program that defines its own allocator does not get these checks (see [below](#the-link-prints-defines-the-allocator)).
 
 ## Code that reads past an object on purpose
 
@@ -182,4 +206,4 @@ The runtime takes that signal over, so it must be one the program does not handl
 
 ## Report an issue
 
-Include the WeaveC and LLVM versions, platform, exact command, a minimal source example, and the complete run-time report (with `WEAVEC_RT_BACKTRACE=1` if the stack matters). Remove private source and environment details you do not intend to publish. Open a [bug report](https://github.com/weavefoundry/weavec/issues/new?template=bug_report.yml).
+Include the WeaveC and LLVM versions, platform, exact command, a minimal source example, and the complete run-time report, stacks included. Remove private source and environment details you do not intend to publish. Open a [bug report](https://github.com/weavefoundry/weavec/issues/new?template=bug_report.yml).

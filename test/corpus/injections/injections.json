@@ -8,9 +8,9 @@
     "config's `test` when the entry has none), and the run must stop at `file`:`line`, the line",
     "that carries the INJECTED comment, or at `stop` when the entry names another place (a freed",
     "pointer passed to a function that reads it stops in that function): a run-time report there,",
-    "of one of `kinds` when the entry names them. `unlocated` allows a stop that names no line:",
-    "`invalid-release`, the allocator refusing a release (a double free), or `fault`, a fault on",
-    "the null page (a call through a null function pointer). --inject --reference-only builds each",
+    "of one of `kinds` when the entry names them (a bad release stops at its call: RFC 0040 section 5.5).",
+    "`unlocated` allows a stop that names no line: `fault`, a fault on the null page (a call through",
+    "a null function pointer). --inject --reference-only builds each",
     "with ASan and UBSan (with _FORTIFY_SOURCE for `fortify` entries: short writes ASan cannot",
     "see) and checks that `run` reaches the same place.",
     "`accepted` names the RFC that accepts a miss (RFC 0038, amendment 28): the gate does not count it, and fails once the injection stops."
@@ -30,7 +30,6 @@
       "patch": "sds/df-freesplitres.patch",
       "file": "sds.c",
       "line": 890,
-      "unlocated": "invalid-release",
       "run": "\"$CC\" -std=c99 -I. -o inj-split \"$INJECTION_DIR/split-driver.c\" sds.c && ./inj-split",
       "description": "frees the token vector twice in sdsfreesplitres"
     },
@@ -56,7 +55,6 @@
       "patch": "cJSON/df-valuestring.patch",
       "file": "cJSON.c",
       "line": 266,
-      "unlocated": "invalid-release",
       "run": "ctest --test-dir out --output-on-failure -R '^(cJSON_test|parse_examples|misc_tests)$'",
       "description": "cJSON_Delete frees the value string twice through the deallocate hook, and the runtime's allocator refuses the second release"
     },
@@ -83,7 +81,6 @@
       "patch": "cJSON/df-overwrite.patch",
       "file": "cJSON_Utils.c",
       "line": 802,
-      "unlocated": "invalid-release",
       "description": "overwrite_item deletes the child tree twice (cJSON_Delete is defined in cJSON.c)",
       "accepted": "missed since v0.16.0 (RFC 0036, G5); RFC 0038's G5 and amendment 14 let it stay missed"
     },
@@ -106,7 +103,6 @@
       "patch": "jsmn/df-jsondump.patch",
       "file": "example/jsondump.c",
       "line": 104,
-      "unlocated": "invalid-release",
       "run": "printf '{\"a\": [1, 2, {\"b\": \"c\"}], \"d\": \"e\"}' | ./jsondump",
       "description": "jsondump's end-of-input cleanup frees the input buffer twice"
     },
@@ -170,8 +166,14 @@
       "patch": "linenoise/df-example.patch",
       "file": "example.c",
       "line": 128,
-      "unlocated": "invalid-release",
-      "description": "example.c releases the line twice: free, then linenoiseFree from linenoise.c"
+      "description": "example.c releases the line twice: free, then linenoiseFree from linenoise.c (RFC 0040 section 5.5: the stop is the release call: linenoiseFree, which the example calls twice on one line, frees it)",
+      "stop": {
+        "file": "linenoise.c",
+        "line": 2236
+      },
+      "kinds": [
+        "double-free"
+      ]
     },
     {
       "id": "zlib-df-deflateend",
@@ -179,8 +181,14 @@
       "patch": "zlib/df-deflateend.patch",
       "file": "deflate.c",
       "line": 1302,
-      "unlocated": "invalid-release",
-      "description": "deflateEnd frees the pending buffer twice through the stream's zfree function pointer"
+      "description": "deflateEnd frees the pending buffer twice through the stream's zfree function pointer (RFC 0040 section 5.5: the stop is the release call: zcfree, the default deallocator deflateEnd calls, frees it)",
+      "stop": {
+        "file": "zutil.c",
+        "line": 308
+      },
+      "kinds": [
+        "double-free"
+      ]
     },
     {
       "id": "zlib-uaf-inflateend",
@@ -204,7 +212,6 @@
       "patch": "zlib/df-gzclose-w.patch",
       "file": "gzwrite.c",
       "line": 693,
-      "unlocated": "invalid-release",
       "description": "gzclose_w frees the input buffer twice"
     },
     {
@@ -230,8 +237,14 @@
       "patch": "lua/df-freeproto.patch",
       "file": "lfunc.c",
       "line": 293,
-      "unlocated": "invalid-release",
-      "description": "luaF_freeproto frees the constant array twice through luaM_freearray (g->frealloc)"
+      "description": "luaF_freeproto frees the constant array twice through luaM_freearray (g->frealloc) (RFC 0040 section 5.5: the stop is the release call: luaL_alloc, the allocator luaM_freearray reaches through g->frealloc, frees it)",
+      "stop": {
+        "file": "lauxlib.c",
+        "line": 1065
+      },
+      "kinds": [
+        "double-free"
+      ]
     },
     {
       "id": "lua-uaf-lua-c",
@@ -256,7 +269,6 @@
       "patch": "jansson/df-strbuffer-close.patch",
       "file": "src/strbuffer.c",
       "line": 37,
-      "unlocated": "invalid-release",
       "description": "strbuffer_close frees the buffer a second time outside the null test"
     },
     {
@@ -265,7 +277,6 @@
       "patch": "jansson/df-array-remove.patch",
       "file": "src/value.c",
       "line": 597,
-      "unlocated": "invalid-release",
       "description": "json_array_remove releases the removed element's reference twice",
       "accepted": "missed since v0.16.0 (RFC 0036, G5); RFC 0038's G5 and amendment 14 let it stay missed"
     },

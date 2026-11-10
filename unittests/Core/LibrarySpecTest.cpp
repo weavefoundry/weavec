@@ -268,6 +268,7 @@ TEST(LibrarySpecTest, ParserErrorsNameTheLineAndTheProblem) {
       {"f (w:bytes(a1), int) -> void wrapper(f,room);",
        "after the wrapper name"},
       {"f (r:str) -> int wrapper(g);", "'wrapper(g)' must name the row"},
+      {"f (r:str) -> int wrapper(f_at);", "'wrapper(f_at)' must name the row"},
       {"f (w:bytes(a1), int) -> void wrapper(f) wrapper(f);",
        "duplicate clause 'wrapper'"},
       {"f () -> int", "expected ';' at the end of the entry"},
@@ -421,6 +422,18 @@ TEST(LibrarySpecTest, NumberParsersHaveWrappers) {
 // Heap allocation: every heap result may fail, is released by free, and
 // carries its §11 zero-initialization decision.
 static constexpr auto HeapExpectations = std::to_array<Expectation>({
+    // RFC 0040 §5.5: releases with their sites.
+    {"free", "none nullable releases", "void", "wrapper=free_at"},
+    {"realloc", "none nullable reallocs, int", "ptr", "wrapper=realloc_at"},
+    {"reallocf", "none nullable reallocs, int", "ptr", "wrapper=reallocf_at"},
+    {"reallocarray", "none nullable reallocs, int, int", "ptr",
+     "wrapper=reallocarray_at"},
+    {"_ZdlPv", "none nullable releases", "void", "wrapper=delete_at"},
+    {"_ZdlPvm", "none nullable releases, int", "void",
+     "wrapper=delete_sized_at"},
+    {"_ZdaPv", "none nullable releases", "void", "wrapper=delete_array_at"},
+    {"_ZdaPvm", "none nullable releases, int", "void",
+     "wrapper=delete_array_sized_at"},
     {"posix_memalign", "W bytes=8, int, int", "int", ""},
     {"canonicalize_file_name", "R str nullable", "ptr", ""},
     {"realpath", "R str nullable, W nullable", "ptr",

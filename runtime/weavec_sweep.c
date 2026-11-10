@@ -400,6 +400,15 @@ static uintptr_t skipInternal(uintptr_t address) {
   return address;
 }
 
+/* Whether `address` lies in one of the runtime's own mappings. */
+static int internalAt(uintptr_t address) {
+  unsigned i;
+  for (i = 0; i < internalCount; ++i)
+    if (address >= internalRanges[i].low && address < internalRanges[i].high)
+      return 1;
+  return 0;
+}
+
 #if defined(__APPLE__)
 
 /*===-- Darwin --------------------------------------------------------------===*/
@@ -790,6 +799,31 @@ static int scanMappings(void) {
     weavecRtMarkWords(world->tsd[i], high);
   }
   return 1;
+}
+
+/* RFC 0040 section 7: the resident bytes of writable private memory that
+ * neither the runtime nor a thread's stack holds. */
+size_t weavecRtUntrackedBytes(void) {
+  mach_vm_address_t address = 0;
+  size_t total = 0;
+  for (;;) {
+    mach_vm_size_t size = 0;
+    natural_t depth = 0;
+    vm_region_submap_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
+    if (mach_vm_region_recurse(mach_task_self(), &address, &size, &depth,
+                               (vm_region_recurse_info_t)&info,
+                               &count) != KERN_SUCCESS)
+      break;
+    if (!info.is_submap && (info.protection & VM_PROT_WRITE) != 0 &&
+        info.share_mode != SM_SHARED && info.user_tag != VM_MEMORY_STACK &&
+        (address + size <= cacheLow || address >= cacheHigh) &&
+        !internalAt((uintptr_t)address) &&
+        !weavecRtHeapObjectAt((uintptr_t)address).found)
+      total += (size_t)info.pages_resident * vm_page_size;
+    address += size;
+  }
+  return total;
 }
 
 #else
@@ -1201,6 +1235,48 @@ static int scanMappings(void) {
   if (pagemap >= 0)
     (void)close(pagemap);
   return 1;
+}
+
+/* RFC 0040 section 7 (above): anonymous writable private mappings and the
+ * C library's heap, their resident pages. */
+size_t weavecRtUntrackedBytes(void) {
+  const char *at;
+  size_t total = 0;
+  const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+  if (readMaps() == 0)
+    return 0;
+  for (at = mapsText; *at != 0;) {
+    const uintptr_t low = hex(&at);
+    uintptr_t high;
+    const char *name;
+    ++at;
+    high = hex(&at);
+    ++at;
+    name = at;
+    while (*name != 0 && *name != '\n' && *name != '[' && *name != '/')
+      ++name;
+    if (at[1] == 'w' && at[3] == 'p' &&
+        (*name == '\n' || *name == 0 || strncmp(name, "[heap]", 6) == 0) &&
+        !internalAt(low) && !weavecRtHeapObjectAt(low).found) {
+      unsigned char resident[4096];
+      uintptr_t from;
+      for (from = low; from < high; from += sizeof resident * page) {
+        const size_t pages = (high - from) / page < sizeof resident
+                                 ? (high - from) / page
+                                 : sizeof resident;
+        size_t i;
+        if (mincore((void *)from, pages * page, (void *)resident) != 0)
+          break;
+        for (i = 0; i < pages; ++i)
+          total += (resident[i] & 1) != 0 ? page : 0;
+      }
+    }
+    while (*at != 0 && *at != '\n')
+      ++at;
+    if (*at == '\n')
+      ++at;
+  }
+  return total;
 }
 
 static void lockImages(void) {}

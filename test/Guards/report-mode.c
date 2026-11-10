@@ -14,7 +14,8 @@ int main(void) {
   int s = 0;
   for (int round = 0; round < 3; round++)
     s += read(p, 8 + round);
-  // CHECK-NEXT: weavec: 0x{{[0-9a-f]+}} is 0 bytes after the 8-byte heap object
+  // CHECK: weavec: 0x{{[0-9a-f]+}} is 0 bytes after the 8-byte heap object
+  // CHECK: weavec: summary: heap-buffer-overflow
   // CHECK-NOT: weavec:
   // CHECK: done
   printf("done %d\n", s);

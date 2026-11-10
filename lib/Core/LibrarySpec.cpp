@@ -799,8 +799,15 @@ bool LibrarySpecParser::validateEntry(const LibraryEntry &entry) {
       return fail("'scan' excludes 'wrapper'");
   }
   // The runtime's wrapper is the row's own: a row that redirects to
-  // another's would check that row's arguments.
+  // another's would check that row's arguments. RFC 0040 §5.5: a release's
+  // is its name and `_at`.
+  const bool releases =
+      std::ranges::any_of(entry.params, [](const LibraryParam &param) {
+        return param.effect == LibraryParam::Effect::Release ||
+               param.effect == LibraryParam::Effect::Realloc;
+      });
   if (entry.wrapper && entry.wrapper->name != entry.name &&
+      !(releases && entry.wrapper->name == entry.name + "_at") &&
       !entry.name.starts_with("_Z"))
     return fail("'wrapper(" + entry.wrapper->name + ")' must name the row");
   for (const LibraryChk &chk : entry.chk)

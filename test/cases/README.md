@@ -108,10 +108,11 @@ Report kinds are those of the runtime (`runtime/weavec_report.c`, RFC 0035
 `stack-buffer-overflow`, `dynamic-stack-buffer-overflow`,
 `stack-use-after-scope`, `global-buffer-overflow`, `intra-object-overflow`,
 `use-after-poison`, `null-dereference`, `unterminated-string`,
-`index-out-of-bounds`, `invalid-release`, `invalid-access`,
-`overlapping-copy`, RFC 0037's `stack-use-after-return` and
-`memory-fault`, and RFC 0039's `container-overflow` and
-`library-assertion`.
+`index-out-of-bounds`, `invalid-access`, `overlapping-copy`, RFC 0037's
+`stack-use-after-return` and `memory-fault`, RFC 0039's
+`container-overflow` and `library-assertion`, and RFC 0040's bad releases,
+`double-free`, `invalid-free` and `alloc-release-mismatch`, which replace
+`invalid-release`.
 
 Rules the grammar leaves implicit, as the runner enforces them:
 
@@ -145,12 +146,14 @@ Rules the grammar leaves implicit, as the runner enforces them:
    given); `EXPECT-LEDGER` compares the value its pointer names.
 3. **Runs**, when the build produced an executable (not with `--no-run`):
    once per `RUN-INPUT`, or once without arguments; stdin is `/dev/null`
-   unless redirected. A run's *stop* is its first `weavec: <kind> at
-   <file>:<line>:<col>: ...` report when it died by `SIGTRAP` or `SIGILL`
-   (a report `at <unknown>` has no location); the allocator's
-   `weavec: invalid release of ...` (an `invalid-release` with no location);
-   or `SIGSEGV`/`SIGBUS` (a `null-dereference` with no location, the null
-   page). Every stop must match a `TRAP` (its kind, if it names one, and its
+   unless redirected. Each run has `WEAVEC_RT_REPORT_FORMAT=json` and a
+   `WEAVEC_RT_REPORT_LOG` of its own, and the runner reads the reports
+   from that log (RFC 0040 §6), so a report the program's own output hides
+   still counts. A run's *stop* is its first report when it died by
+   `SIGTRAP` or `SIGILL`, with the report's `kind` and its `site` as the
+   location (a report `at <unknown>` has none; a bad release is located at
+   the releasing call), or `SIGSEGV`/`SIGBUS` (a `null-dereference` with
+   no location, the null page). Every stop must match a `TRAP` (its kind, if it names one, and its
    line, unless the stop has no location); every `TRAP` must be matched by
    some run. A timeout, a death by another signal or a trap with
    no report, and a report that did not stop the run fail the case; in a
