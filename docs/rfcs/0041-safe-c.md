@@ -959,7 +959,7 @@ They override the body.
     it (S0, jsmn). The header keeps the attribute; such a build compiles
     the annotations away by defining `WEAVEC_TYPE_ANNOTATE_` empty first.
 11. **Budgets and ABI.** The library budget is 11,500 lines (the
-    implementation adds about 2,000), the runtime's 10,000; the runtime ABI
+    implementation adds about 2,450), the runtime's 10,000; the runtime ABI
     is 41, and the compiler's frame descriptors take the ABI from the
     build, which a hard-coded 40 had let drift.
 12. **What S0 left for later.** Counts through an out-parameter
@@ -1033,4 +1033,47 @@ They override the body.
     inlined a failed validation is reported at the caller's line, the code
     that overstated the count. Safe callers in another unit pay the entry's
     validation.
+
+## Measured gates
+
+Measured on darwin-arm64 (Homebrew LLVM 23.1, `dev` preset) on 2026-11-09
+and 10. The conversions were made by Claude subagents (the session's model),
+each given a brief with the rules of the exercise and, for the held-out
+projects, only the guide and the compiler's errors; rounds count whole
+compiles of the library with `-fsyntax-only -fweavec-safe`. The checker
+changed during the conversions (amendments 4, 13–18, from what the agents
+reported); the final numbers recompile every conversion with the final
+compiler (0 errors in each) and benchmark the three builds serially on a
+quiet machine (load 2.5–3.2, five interleaved rounds, best user CPU): R the
+original with `clang -O2`, G the original with `weavec-cc -O2`, S the
+conversion with `weavec-cc -O2 -fweavec-safe`.
+
+| Project | Functions safe (guarded helpers) | Lines changed | Rounds (first-round errors) | Tests (S) | G/R | S/R |
+| --- | --- | --- | --- | --- | --- | --- |
+| jsmn | 6/6 (0) | 8.7% | 2 (35) | 16/16 | 1.57 | 1.72 |
+| sds | 48/54 (6) | 19.0% | 3 (139) | 46/46 | 2.15 | 2.04 |
+| cJSON | 116/121 (5) | 6.9% | 10 (269) | 17/18 | 2.47 | 2.48 |
+| linenoise | 86/88 (2) | 5.4% | 3 (96) | 102/102 | — | — |
+| zlib | 152/168 (16) | 2.3% | 9 (668) | pass | 1.34 | 1.29 |
+| inih (held-out) | 9/12 (3) | 17.8% | 8 (27) | 15/15 | 2.48 | 2.50 |
+| tinyexpr (held-out) | 47/51 (4) | 19.0% | 5 (256) | pass | 1.10 | 1.23 |
+
+| Gate | Result |
+| --- | --- |
+| G0 C++ | **Pass with amendments**: Snappy on paper, 190 of 204 functions safe (6.9% guarded) once borrowed fields (amendment 4), counts through pointers (*Future work*) and the empty `asm` barrier are allowed; no decision of §2–§6 had to change for C++ beyond those. |
+| G1 Rules | **Pass**: every rule has an accepted and a rejected test (`test/Safe/`), and every error a note; `notes.c` pins one. |
+| G2 Conversion | **Partly met.** jsmn (0 helpers), linenoise (2) and zlib (90.5% of its functions, 97.4% of the original ones) meet it; sds needs 6 helpers (its header before the string, `SDS_NOINIT`, `va_arg`) and cJSON 5 (the error pointer into the input, the preallocated print buffer, `cast_away_const`, an allocator through a pointer), over the limit of three. Lines changed are at most 19%, under 30%. cJSON's `misc_tests` stops with `stack-escape`, an accepted false trap (amendment 17). |
+| G3 Held-out | **Pass**: inih 9 of its 10 functions safe, tinyexpr all 47; all tests pass. |
+| G4 Detection | **Pass**: `test/cases/safe/` (11 cases, a detection twin among them) and `test/Guards/safe-*.c`. |
+| G5 Run | **Not met.** Only tinyexpr is within 1.25 times the reference. Safe C costs about what guarded C does: below it for sds and zlib (4–5%), equal for cJSON and inih, above it for jsmn (10%) and tinyexpr (12%, a forced out-of-line `call` helper). Three causes: allocation-heavy code is dominated by the runtime's allocator, which both builds pay (sds, cJSON); pointers loaded from fields keep their guards (amendment 1: 88 of 1,657 accesses in zlib's `deflate.c` and none in `inffast.c` became bounds checks); and a bounds check is a comparison per iteration where guarded code's loop versioning (RFC 0035 §6.4) checks a loop's range once. |
+| G6 No change elsewhere | See below. |
+| G7 Verify | **Pass where run**: verify mode reported no `weavec.proven` in zlib's, jsmn's and linenoise's tests. |
+| H1 Hygiene | **Pass**: library 11,295 of 11,500 lines, runtime 9,826 of 10,000. |
+
+What the gates say about the goal: an agent converts real C to Safe C in a
+few rounds of compile errors (2 to 10), changing under a fifth of the lines,
+and the result is checked at compile time and safe at run time. It does not
+yet run like safe Rust: the cost is guarded C's. Closing G5 needs bounds for
+pointers loaded from fields, loop-range checks for bounds, and an allocator
+cost closer to the system's; those are the next RFC's.
 

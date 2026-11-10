@@ -11,7 +11,7 @@ WEAVEC_SAFE void assembly(void) {
 }
 
 WEAVEC_SAFE int jumps(void) {
-  if (setjmp(there))              // expected-error {{'setjmp' cannot be in a safe function [weavec-safe:no-asm]}}
+  if (setjmp(there))              // expected-error-re {{'{{_?}}setjmp' cannot be in a safe function [weavec-safe:no-asm]}}
     return 1;
   longjmp(there, 1);              // expected-error {{'longjmp' cannot be in a safe function}}
 }

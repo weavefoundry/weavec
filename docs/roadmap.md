@@ -32,9 +32,12 @@ RFC. The stages:
 - [x] **S3 The boundary**: entry validation, escaping parameters,
       heap-placed locals, `WEAVEC_BORROWED` fields.
 - [x] **S4 Library calls** keep their guards (amendment 7).
-- [ ] **S5 Conversions by agents** of jsmn, sds, cJSON, linenoise, zlib.
-- [ ] **S6 Held-out conversions** (inih, tinyexpr) and the gates on all
-      three platforms.
+- [x] **S5 Conversions by agents** of jsmn, sds, cJSON, linenoise, zlib
+      (G2 met for three of five).
+- [x] **S6 Held-out conversions** (inih, tinyexpr: G3 met) and the gates
+      on darwin-arm64.
+- [ ] **The cost gate G5** (not met: safe C costs what guarded C does) and
+      the gates on linux-aarch64 and linux-x86_64 (CI).
 
 ## Now: RFC 0040 — Reports you can act on
 
