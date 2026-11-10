@@ -1066,7 +1066,7 @@ conversion with `weavec-cc -O2 -fweavec-safe`.
 | G3 Held-out | **Pass**: inih 9 of its 10 functions safe, tinyexpr all 47; all tests pass. |
 | G4 Detection | **Pass**: `test/cases/safe/` (11 cases, a detection twin among them) and `test/Guards/safe-*.c`. |
 | G5 Run | **Not met.** Only tinyexpr is within 1.25 times the reference. Safe C costs about what guarded C does: below it for sds and zlib (4–5%), equal for cJSON and inih, above it for jsmn (10%) and tinyexpr (12%, a forced out-of-line `call` helper). Three causes: allocation-heavy code is dominated by the runtime's allocator, which both builds pay (sds, cJSON); pointers loaded from fields keep their guards (amendment 1: 88 of 1,657 accesses in zlib's `deflate.c` and none in `inffast.c` became bounds checks); and a bounds check is a comparison per iteration where guarded code's loop versioning (RFC 0035 §6.4) checks a loop's range once. |
-| G6 No change elsewhere | See below. |
+| G6 No change elsewhere | **Pass**: `corpus-gate.py --quick` passes with no ratchet regression; every config guards and proves the same accesses as before (the objects differ from main's only in the runtime ABI their frame descriptors carry, 41). |
 | G7 Verify | **Pass where run**: verify mode reported no `weavec.proven` in zlib's, jsmn's and linenoise's tests. |
 | H1 Hygiene | **Pass**: library 11,295 of 11,500 lines, runtime 9,826 of 10,000. |
 
