@@ -35,6 +35,7 @@
 #include "GuardPassImpl.h"
 #include "weavec/Frontend/SafeCheck.h"
 
+#include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -45,8 +46,27 @@
 
 namespace weavec::frontend::guard {
 
+/// Amendment 18: a safe function with validated parameters is split into
+/// its body (internal, `weavec-safe-body` naming the public symbol) and an
+/// entry with the public symbol that validates them and calls the body.
+static constexpr llvm::StringLiteral BodyAttribute = "weavec-safe-body";
+static constexpr llvm::StringLiteral EntryAttribute = "weavec-safe-entry";
+
+/// The table's entry for `function`, a body by its public symbol.
+static const FunctionBounds *tableOf(const ModuleContext &module,
+                                     const llvm::Function &function) {
+  if (module.options.safe == nullptr)
+    return nullptr;
+  if (function.hasFnAttribute(BodyAttribute))
+    return module.options.safe->find(
+        function.getFnAttribute(BodyAttribute).getValueAsString());
+  return module.options.safe->find(function.getName());
+}
+
 bool isSafe(const ModuleContext &module, const llvm::Function &function) {
-  return module.options.safe != nullptr &&
+  if (module.options.safe == nullptr || function.hasFnAttribute(EntryAttribute))
+    return false;
+  return function.hasFnAttribute(BodyAttribute) ||
          module.options.safe->isSafe(function.getName());
 }
 
@@ -54,9 +74,55 @@ bool isSafe(const ModuleContext &module, const llvm::Function &function) {
 static const FunctionBounds *calleeBounds(const ModuleContext &module,
                                           const llvm::CallBase &call) {
   const llvm::Function *callee = call.getCalledFunction();
-  if (callee == nullptr || module.options.safe == nullptr)
+  if (callee == nullptr)
     return nullptr;
-  return module.options.safe->find(callee->getName());
+  return tableOf(module, *callee);
+}
+
+/// Whether a parameter's bytes are checked against the shadow at entry.
+static bool validated(const PointerBounds &bounds) {
+  return bounds.kind == PointerBounds::Kind::Counted ||
+         bounds.kind == PointerBounds::Kind::Ended;
+}
+
+/// The bytes `bounds` gives `pointer`, with `arguments` the values of the
+/// parameters it names; null when it gives none.
+static llvm::Value *boundBytes(const ModuleContext &module,
+                               const PointerBounds &bounds,
+                               llvm::Value *pointer, llvm::IRBuilder<> &builder,
+                               llvm::ArrayRef<llvm::Value *> arguments) {
+  llvm::Value *bytes = nullptr;
+  if (bounds.kind == PointerBounds::Kind::Counted) {
+    llvm::Value *count = llvm::ConstantInt::get(module.i64, bounds.constant);
+    if (bounds.count >= 0 &&
+        static_cast<std::size_t>(bounds.count) < arguments.size()) {
+      llvm::Value *value = arguments[static_cast<std::size_t>(bounds.count)];
+      if (!value->getType()->isIntegerTy())
+        return nullptr;
+      // A negative signed count is an empty range.
+      count = bounds.countSigned
+                  ? builder.CreateBinaryIntrinsic(
+                        llvm::Intrinsic::smax,
+                        builder.CreateSExtOrTrunc(value, module.i64),
+                        llvm::ConstantInt::get(module.i64, 0))
+                  : builder.CreateZExtOrTrunc(value, module.i64);
+    }
+    bytes = builder.CreateMul(
+        count, llvm::ConstantInt::get(module.i64, bounds.elementSize));
+  } else if (bounds.kind == PointerBounds::Kind::Ended &&
+             static_cast<std::size_t>(bounds.end) < arguments.size()) {
+    llvm::Value *end = builder.CreatePtrToInt(
+        arguments[static_cast<std::size_t>(bounds.end)], module.i64);
+    llvm::Value *start = builder.CreatePtrToInt(pointer, module.i64);
+    // An end before the start is an empty range.
+    bytes = builder.CreateSelect(builder.CreateICmpULT(end, start),
+                                 llvm::ConstantInt::get(module.i64, 0),
+                                 builder.CreateSub(end, start));
+  }
+  if (bytes != nullptr && bounds.orNull)
+    bytes = builder.CreateSelect(builder.CreateIsNull(pointer),
+                                 llvm::ConstantInt::get(module.i64, 0), bytes);
+  return bytes;
 }
 
 /// The location a function's own checks report: its first line.
@@ -259,6 +325,72 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
   alloca.eraseFromParent();
 }
 
+/// Amendment 18: the public symbol of a safe function with validated
+/// parameters becomes an entry that checks them against the shadow and
+/// calls the body, which keeps the definition (internal). Every use of the
+/// function in the unit (calls from guarded code, its address) now names the
+/// entry; a safe caller with bounds for the arguments calls the body
+/// (SafeBounds::callBody).
+static void splitEntry(ModuleContext &module, llvm::Function &function) {
+  const FunctionBounds *table = tableOf(module, function);
+  if (table == nullptr || function.isVarArg() ||
+      !(function.hasExternalLinkage() || function.hasLocalLinkage()) ||
+      llvm::none_of(table->parameters, validated))
+    return;
+  const std::string name = function.getName().str();
+  function.setName(name + ".weavec.safe");
+  llvm::Function *entry =
+      llvm::Function::Create(function.getFunctionType(), function.getLinkage(),
+                             function.getAddressSpace(), name, &module.module);
+  entry->copyAttributesFrom(&function);
+  function.replaceAllUsesWith(entry);
+  function.setLinkage(llvm::GlobalValue::InternalLinkage);
+  function.setVisibility(llvm::GlobalValue::DefaultVisibility);
+  function.setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
+  function.addFnAttr(BodyAttribute, name);
+  entry->addFnAttr(EntryAttribute);
+  if (const llvm::DISubprogram *subprogram = function.getSubprogram()) {
+    llvm::DIBuilder debug(module.module, /*AllowUnresolved=*/false,
+                          subprogram->getUnit());
+    llvm::DISubprogram *own = debug.createFunction(
+        subprogram->getScope(), name, subprogram->getLinkageName(),
+        subprogram->getFile(), subprogram->getLine(), subprogram->getType(),
+        subprogram->getScopeLine(), llvm::DINode::FlagArtificial,
+        subprogram->getSPFlags());
+    entry->setSubprogram(own);
+    debug.finalizeSubprogram(own);
+  }
+  const llvm::DebugLoc location = functionLocation(*entry);
+  llvm::IRBuilder<> builder(
+      llvm::BasicBlock::Create(module.context, "entry", entry));
+  builder.SetCurrentDebugLocation(location);
+  llvm::SmallVector<llvm::Value *, 8> arguments;
+  for (llvm::Argument &argument : entry->args())
+    arguments.push_back(&argument);
+  llvm::CallInst *call = builder.CreateCall(&function, arguments);
+  call->setCallingConv(function.getCallingConv());
+  call->setAttributes(function.getAttributes());
+  if (call->getType()->isVoidTy())
+    builder.CreateRetVoid();
+  else
+    builder.CreateRet(call);
+  builder.SetInsertPoint(call);
+  for (std::size_t i = 0; i < table->parameters.size() && i < arguments.size();
+       ++i) {
+    if (!validated(table->parameters[i]) ||
+        !arguments[i]->getType()->isPointerTy())
+      continue;
+    llvm::Value *bytes = boundBytes(module, table->parameters[i], arguments[i],
+                                    builder, arguments);
+    if (bytes == nullptr)
+      continue;
+    const unsigned row = module.row(*entry, location, "entry", 0,
+                                    LedgerRow::Outcome::Guarded, "range");
+    module.insertRange(call, arguments[i], bytes, 0, row)
+        ->setDebugLoc(location);
+  }
+}
+
 void prepareSafe(ModuleContext &module, llvm::Function &function) {
   {
     llvm::DominatorTree tree(function);
@@ -283,6 +415,7 @@ void prepareSafe(ModuleContext &module, llvm::Function &function) {
         outliving.push_back(alloca);
   for (llvm::AllocaInst *alloca : outliving)
     placeOnHeap(module, function, *alloca);
+  splitEntry(module, function);
 }
 
 //===----------------------------------------------------------------------===//
@@ -300,8 +433,7 @@ struct Bounds {
 class SafeBounds {
 public:
   SafeBounds(ModuleContext &module, llvm::Function &function)
-      : module(module), function(function),
-        table(module.options.safe->find(function.getName())),
+      : module(module), function(function), table(tableOf(module, function)),
         location(functionLocation(function)) {}
 
   void run() {
@@ -315,9 +447,18 @@ public:
           if (marker == MarkerGuard || marker == MarkerRange)
             markers.push_back(call);
         }
+    std::vector<llvm::CallInst *> entries;
+    for (llvm::BasicBlock &block : function)
+      for (llvm::Instruction &instruction : block)
+        if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction);
+            call != nullptr && call->getCalledFunction() != nullptr &&
+            call->getCalledFunction()->hasFnAttribute(EntryAttribute))
+          entries.push_back(call);
     validateParameters();
     for (llvm::CallInst *marker : markers)
       bound(*marker);
+    for (llvm::CallInst *call : entries)
+      callBody(*call);
   }
 
 private:
@@ -336,49 +477,10 @@ private:
     return &*at;
   }
 
-  llvm::Value *countOf(const PointerBounds &bounds, llvm::IRBuilder<> &builder,
-                       llvm::ArrayRef<llvm::Value *> arguments) const {
-    llvm::Value *count = llvm::ConstantInt::get(module.i64, bounds.constant);
-    if (bounds.count >= 0 &&
-        static_cast<std::size_t>(bounds.count) < arguments.size()) {
-      llvm::Value *value = arguments[static_cast<std::size_t>(bounds.count)];
-      if (!value->getType()->isIntegerTy())
-        return nullptr;
-      // A negative signed count is an empty range.
-      count = bounds.countSigned
-                  ? builder.CreateBinaryIntrinsic(
-                        llvm::Intrinsic::smax,
-                        builder.CreateSExtOrTrunc(value, module.i64),
-                        llvm::ConstantInt::get(module.i64, 0))
-                  : builder.CreateZExtOrTrunc(value, module.i64);
-    }
-    return builder.CreateMul(
-        count, llvm::ConstantInt::get(module.i64, bounds.elementSize));
-  }
-
-  /// The bytes `bounds` gives `pointer`, with `arguments` the values of the
-  /// parameters it names; null when it gives none.
   llvm::Value *bytesOf(const PointerBounds &bounds, llvm::Value *pointer,
                        llvm::IRBuilder<> &builder,
                        llvm::ArrayRef<llvm::Value *> arguments) {
-    llvm::Value *bytes = nullptr;
-    if (bounds.kind == PointerBounds::Kind::Counted) {
-      bytes = countOf(bounds, builder, arguments);
-    } else if (bounds.kind == PointerBounds::Kind::Ended &&
-               static_cast<std::size_t>(bounds.end) < arguments.size()) {
-      llvm::Value *end = builder.CreatePtrToInt(
-          arguments[static_cast<std::size_t>(bounds.end)], module.i64);
-      llvm::Value *start = builder.CreatePtrToInt(pointer, module.i64);
-      // An end before the start is an empty range.
-      bytes = builder.CreateSelect(builder.CreateICmpULT(end, start),
-                                   llvm::ConstantInt::get(module.i64, 0),
-                                   builder.CreateSub(end, start));
-    }
-    if (bytes != nullptr && bounds.orNull)
-      bytes =
-          builder.CreateSelect(builder.CreateIsNull(pointer),
-                               llvm::ConstantInt::get(module.i64, 0), bytes);
-    return bytes;
+    return boundBytes(module, bounds, pointer, builder, arguments);
   }
 
   /// §5: a bounded parameter's bytes are checked against the shadow at
@@ -408,6 +510,13 @@ private:
       llvm::Value *bytes = bytesOf(bounds, pointer, builder, arguments);
       if (bytes == nullptr)
         continue;
+      // A body's callers checked its parameters (its entry, or a safe
+      // caller at the call).
+      if (function.hasFnAttribute(BodyAttribute)) {
+        known[pointer] = {.lo = pointer,
+                          .hi = builder.CreateGEP(module.i8, pointer, bytes)};
+        continue;
+      }
       const unsigned row = module.row(function, location, "entry", 0,
                                       LedgerRow::Outcome::Guarded, "range");
       module.insertRange(&*builder.GetInsertPoint(), pointer, bytes, 0, row)
@@ -544,6 +653,67 @@ private:
                            .hi = builder.CreateGEP(module.i8, call, bytes)};
   }
 
+  /// Amendment 18: a call of a safe function's entry from this safe
+  /// function calls its body instead when every validated argument has known
+  /// bounds here, after checking them against the bytes the callee's bounds
+  /// give it: one comparison each, not a scan of the shadow.
+  void callBody(llvm::CallInst &call) {
+    llvm::Function *entry = call.getCalledFunction();
+    llvm::Function *body =
+        module.module.getFunction((entry->getName() + ".weavec.safe").str());
+    const FunctionBounds *callee = tableOf(module, *entry);
+    if (body == nullptr || callee == nullptr)
+      return;
+    llvm::SmallVector<llvm::Value *, 8> arguments(call.args());
+    for (std::size_t i = 0;
+         i < callee->parameters.size() && i < arguments.size(); ++i)
+      if (validated(callee->parameters[i]) && !rooted(arguments[i]))
+        return;
+    for (std::size_t i = 0;
+         i < callee->parameters.size() && i < arguments.size(); ++i) {
+      if (!validated(callee->parameters[i]))
+        continue;
+      llvm::Value *pointer = arguments[i];
+      const Bounds bounds = boundsOf(pointer);
+      llvm::IRBuilder<> builder(&call);
+      builder.SetCurrentDebugLocation(call.getDebugLoc());
+      llvm::Value *bytes =
+          bytesOf(callee->parameters[i], pointer, builder, arguments);
+      if (bytes == nullptr)
+        return;
+      check(call, pointer, bytes, bounds, /*write=*/false);
+    }
+    call.setCalledFunction(body);
+  }
+
+  /// Traps (`pointer-out-of-bounds`) before `before` unless `bytes` bytes at
+  /// `pointer` lie inside `bounds`.
+  void check(llvm::Instruction &before, llvm::Value *pointer,
+             llvm::Value *bytes, const Bounds &bounds, bool write) {
+    llvm::IRBuilder<> builder(&before);
+    builder.SetCurrentDebugLocation(before.getDebugLoc());
+    llvm::Value *lo = builder.CreatePtrToInt(bounds.lo, module.i64);
+    llvm::Value *size =
+        builder.CreateSub(builder.CreatePtrToInt(bounds.hi, module.i64), lo);
+    llvm::Value *limit = builder.CreateBinaryIntrinsic(
+        llvm::Intrinsic::usub_sat,
+        builder.CreateAdd(size, llvm::ConstantInt::get(module.i64, 1)), bytes);
+    llvm::Value *offset =
+        builder.CreateSub(builder.CreatePtrToInt(pointer, module.i64), lo);
+    const bool trap = module.options.mode != GuardOptions::Mode::Report;
+    llvm::Instruction *fail = llvm::SplitBlockAndInsertIfThen(
+        builder.CreateICmpUGE(offset, limit), before.getIterator(),
+        /*Unreachable=*/trap,
+        llvm::MDBuilder(module.context).createUnlikelyBranchWeights());
+    builder.SetInsertPoint(fail);
+    ModuleContext::callSlow(
+        builder, module.boundsFailFunction(),
+        {builder.CreatePtrToInt(pointer, module.i64), bytes,
+         builder.CreatePtrToInt(bounds.lo, module.i64),
+         builder.CreatePtrToInt(bounds.hi, module.i64),
+         module.site(before.getDebugLoc(), write ? SiteWrite : 0)});
+  }
+
   /// Replaces the guard `marker` by a check against its pointer's bounds,
   /// when they are known.
   void bound(llvm::CallInst &marker) {
@@ -553,35 +723,12 @@ private:
     const Bounds bounds = boundsOf(pointer);
     llvm::IRBuilder<> builder(&marker);
     builder.SetCurrentDebugLocation(marker.getDebugLoc());
-    llvm::Value *width = marker.getArgOperand(1);
-    // As offsets from the base, one comparison: the access starts before
-    // `limit`, the number of offsets a `width` access may start at (0 when
-    // the bounds are smaller than the access). The limit is loop-invariant,
-    // and an address below the base wraps to a large offset.
-    llvm::Value *lo = builder.CreatePtrToInt(bounds.lo, module.i64);
-    llvm::Value *size =
-        builder.CreateSub(builder.CreatePtrToInt(bounds.hi, module.i64), lo);
-    llvm::Value *bytes = builder.CreateZExtOrTrunc(width, module.i64);
-    llvm::Value *limit = builder.CreateBinaryIntrinsic(
-        llvm::Intrinsic::usub_sat,
-        builder.CreateAdd(size, llvm::ConstantInt::get(module.i64, 1)), bytes);
-    llvm::Value *offset =
-        builder.CreateSub(builder.CreatePtrToInt(pointer, module.i64), lo);
-    llvm::Value *inside = builder.CreateICmpULT(offset, limit);
+    llvm::Value *width =
+        builder.CreateZExtOrTrunc(marker.getArgOperand(1), module.i64);
     const auto *flags = llvm::cast<llvm::ConstantInt>(marker.getArgOperand(2));
-    const bool write = (flags->getZExtValue() & MarkerWrite) != 0;
-    const bool trap = module.options.mode != GuardOptions::Mode::Report;
-    llvm::Instruction *fail = llvm::SplitBlockAndInsertIfThen(
-        builder.CreateNot(inside), marker.getIterator(), /*Unreachable=*/trap,
-        llvm::MDBuilder(module.context).createUnlikelyBranchWeights());
-    builder.SetInsertPoint(fail);
-    ModuleContext::callSlow(
-        builder, module.boundsFailFunction(),
-        {builder.CreatePtrToInt(pointer, module.i64),
-         builder.CreateZExtOrTrunc(width, module.i64),
-         builder.CreatePtrToInt(bounds.lo, module.i64),
-         builder.CreatePtrToInt(bounds.hi, module.i64),
-         module.site(marker.getDebugLoc(), write ? SiteWrite : 0)});
+    // One comparison against a loop-invariant limit (amendment 3).
+    check(marker, pointer, width, bounds,
+          (flags->getZExtValue() & MarkerWrite) != 0);
     if (module.options.safe->full)
       return;
     const unsigned rowArgument =

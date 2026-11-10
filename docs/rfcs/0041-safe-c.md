@@ -1016,4 +1016,21 @@ They override the body.
     carries no origin. cJSON's `misc_tests` links stack nodes through
     `WEAVEC_ESCAPES` parameters and stops with `stack-escape`: an accepted
     false trap, since the annotation promises a pointer that may be kept.
+18. **Two entry points after all (§5; supersedes amendment 2).** Validating
+    a bounded parameter at every entry scans the shadow over its bytes, and
+    the jsmn conversion's static helpers take the whole 3.5 MB document once
+    per token: parsing became quadratic, 212 times the reference. A safe
+    function with counted or ended parameters is now split: its body keeps
+    the definition (internal, `<name>.weavec.safe`), and its public symbol is
+    an entry that validates the parameters against the shadow and calls the
+    body. Every use in the unit (a call from guarded code, the function's
+    address) names the entry, which closes the hole of amendment 2 for a
+    `static` function too. A call from a safe function whose validated
+    arguments have known bounds calls the body after one comparison per
+    argument (its bytes inside the argument's bounds), which is the
+    `call-args` check of §3 at run time; any other call goes through the
+    entry. The entry is artificial in the debug information, so when it is
+    inlined a failed validation is reported at the caller's line, the code
+    that overstated the count. Safe callers in another unit pay the entry's
+    validation.
 

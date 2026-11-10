@@ -42,7 +42,8 @@ WEAVEC_SAFE size_t length(const char *WEAVEC_NULL_TERMINATED s) {
   return i;
 }
 
-// LIE: weavec: stack-buffer-overflow at {{.*}}safe-bounds.c:[[@LINE+1]]
+// The entry that validates `v` is inlined into the guarded caller: the
+// report names the call that overstated the count.
 WEAVEC_SAFE int first(const int *WEAVEC_COUNTED_BY(n) v, size_t n) {
   return n ? v[0] : 0;
 }
@@ -59,6 +60,7 @@ int main(int argc, char **argv) {
   if (!strcmp(argv[1], "heap"))
     return heap(8, 8);
   if (!strcmp(argv[1], "lie"))
+    // LIE: weavec: stack-buffer-overflow at {{.*}}safe-bounds.c:[[@LINE+1]]
     return first(a, 8);
   char *unterminated = malloc(4);
   memcpy(unterminated, "abcd", 4);

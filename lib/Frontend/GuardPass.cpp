@@ -1090,13 +1090,18 @@ llvm::PreservedAnalyses GuardInsertPass::run(llvm::Module &module,
     return llvm::PreservedAnalyses::all();
   guard::ModuleContext context(module, options);
   guard::thunkLibraryAddresses(context, module);
+  // RFC 0041: safe functions first, which may split one into an entry and
+  // its body (amendment 18), so that every caller sees the split.
+  std::vector<llvm::Function *> safe;
+  for (llvm::Function &function : module)
+    if (!guard::skips(function) && guard::isSafe(context, function))
+      safe.push_back(&function);
+  for (llvm::Function *function : safe)
+    guard::prepareSafe(context, *function);
   for (llvm::Function &function : module)
     if (!guard::skips(function)) {
-      const bool safe = guard::isSafe(context, function);
-      if (safe)
-        guard::prepareSafe(context, function);
       guard::insertGuards(context, function);
-      if (safe)
+      if (guard::isSafe(context, function))
         guard::boundSafe(context, function);
       guard::verified(function);
     }
