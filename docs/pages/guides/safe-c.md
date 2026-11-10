@@ -37,6 +37,7 @@ A pointer in a safe function points to **one object** unless its declaration say
 | `WEAVEC_SIZED_BY(n)`                           | `n` bytes                                                 |
 | `WEAVEC_ENDED_BY(e)`                           | the elements before `e`, another pointer parameter        |
 | `WEAVEC_NULL_TERMINATED`                       | a string, up to and with its NUL                          |
+| `WEAVEC_NULL_TERMINATED_OR_NULL`               | a string, or null                                         |
 | `WEAVEC_COUNTED_BY_OR_NULL(n)`, `WEAVEC_SIZED_BY_OR_NULL(n)` | as above, or null whatever `n` is           |
 
 Clang's own `counted_by`, `sized_by` and their `_or_null` forms on struct fields (the Linux kernel's `__counted_by`) count as the WeaveC forms.
@@ -129,7 +130,7 @@ Taking a local's address is never an error. When the address may outlive the loc
 ## What runs
 
 - An access through a pointer with bounds is compared against them; outside, the program stops with `pointer-out-of-bounds`. The comparisons are plain code the optimizer hoists out of loops and removes where the loop condition implies them.
-- A bounded parameter is checked once when the function is entered: its bytes must be addressable, so a guarded caller that overstates a count stops there. A `WEAVEC_NULL_TERMINATED` parameter is scanned to its NUL.
+- A counted, sized or ended parameter is checked once when the function is entered: its bytes must be addressable, so a guarded caller that overstates a count stops there. A `WEAVEC_NULL_TERMINATED` parameter may be indexed, and its accesses keep their guards (a scan at every call would cost more than it saves).
 - An access through a pointer loaded from memory, or returned by a function whose result has no bound, keeps its guard, as in guarded code.
 - A use after free in a safe function reads or writes the released block's own bytes, never another object's: the runtime does not reuse a block while a pointer to it exists. It is not reported. `-fweavec-safe-checks=full` keeps every guard in safe functions too, so tests report it as `heap-use-after-free`.
 

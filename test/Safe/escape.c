@@ -52,3 +52,7 @@ WEAVEC_SAFE int local(struct list *l) {
 WEAVEC_SAFE struct node *loaded(struct node *n) {
   return n->next;                 // loaded from memory: not borrowed
 }
+
+WEAVEC_SAFE long difference(char *s, char *end) {
+  return end - s;                 // an integer carries no pointer
+}

@@ -34,3 +34,10 @@ WEAVEC_SAFE int listed(int n, va_list list) {
   char *s = va_arg(list, char *); // expected-error {{a variadic argument read as a type that holds pointers could forge a pointer [weavec-safe:variadic]}}
   return x + n + (s != 0);
 }
+
+int has(const char *WEAVEC_NULL_TERMINATED s, char c);
+int maybe(const char *WEAVEC_NULL_TERMINATED_OR_NULL s, char c);
+WEAVEC_SAFE int nulls(void) {
+  return maybe(NULL, 'x') +
+         has(NULL, 'x');          // expected-error {{null passed for 's' of 'has', which points to a string [weavec-safe:call-args]}}
+}

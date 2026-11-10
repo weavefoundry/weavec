@@ -102,6 +102,9 @@
 #define WEAVEC_ENDED_BY(e) WEAVEC_TYPE_ANNOTATE_("weavec.ended_by", #e)
 /** The pointer points to a string: its bytes up to and with its NUL. */
 #define WEAVEC_NULL_TERMINATED WEAVEC_TYPE_ANNOTATE_("weavec.null_terminated")
+/** As WEAVEC_NULL_TERMINATED, or null. */
+#define WEAVEC_NULL_TERMINATED_OR_NULL                                         \
+  WEAVEC_TYPE_ANNOTATE_("weavec.null_terminated_or_null")
 /**
  * After the `*` of a parameter's type: the function may keep the pointer
  * after it returns, so the argument must not point into a stack.

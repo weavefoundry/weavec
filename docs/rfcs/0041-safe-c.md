@@ -968,4 +968,19 @@ They override the body.
     (sds's header before its string), and validation in constant time from
     the allocator's metadata instead of the shadow's range (sds) are
     *Future work*. Snappy's C++ findings D8–D12 belong to the C++ RFC.
+13. **Strings keep their guards (§5).** The held-out inih conversion ran
+    slower safe (3.10 times the reference) than guarded (2.35): its string
+    helpers are called once per line, and each call scanned its
+    `WEAVEC_NULL_TERMINATED` argument to the NUL. A null-terminated
+    parameter is no longer scanned at entry; it may be indexed (the rules
+    treat it as bounded), and its accesses keep their guards, so string code
+    costs what guarded code does. `WEAVEC_NULL_TERMINATED_OR_NULL` is added,
+    and passing a literal null for a parameter without `_OR_NULL` is a
+    `call-args` error.
+14. **What inih's conversion corrected.** Comparing a function pointer with
+    `NULL` is not a conversion; an integer computed from pointers
+    (`end - s`) carries no origin; an `ENDED_BY` end before its start is an
+    empty range, not a huge one; an `escape` error about a pointer loaded
+    from a borrowed field suggests an offset, not an annotation that cannot
+    help.
 

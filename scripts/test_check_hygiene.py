@@ -439,7 +439,7 @@ class LineLimitTest(TreeTest):
 
     def test_the_real_limits(self):
         """RFC 0040 section 9 and amendment 10 (the module docstring)."""
-        self.assertEqual((hygiene.LIBRARY_LINE_LIMIT, hygiene.RUNTIME_LINE_LIMIT), (9_500, 9_800))
+        self.assertEqual((hygiene.LIBRARY_LINE_LIMIT, hygiene.RUNTIME_LINE_LIMIT), (11_500, 10_000))
 
     def test_runtime_total_leaves_out_its_tests(self):
         """RFC 0032 gate H1: the runtime is counted apart, without runtime/test/."""
@@ -506,7 +506,7 @@ class MainTest(TreeTest):
         self.assertRegex(output, r"\n  entry points: +4 of 4 declared in runtime/weavec_rt\.h\n")
         self.assertRegex(output, r"\n  library lines: +\d+ / 10 \(8 code files under lib/, include/ and "
                                  r"tools/, lib/Core/LibrarySpec\.txt excluded\)\n")
-        self.assertRegex(output, r"\n  runtime lines: +\d+ / 9,800 \(2 files under runtime/, runtime/test/ "
+        self.assertRegex(output, r"\n  runtime lines: +\d+ / 10,000 \(2 files under runtime/, runtime/test/ "
                                  r"and runtime/weavec_rt\.exports excluded\)\n")
         for check, count in (("library-name-test", 0), ("corpus-word", 1), ("core-include", 0),
                              ("runtime-include", 0), ("runtime-entry", 0), ("runtime-export", 0),

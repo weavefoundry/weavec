@@ -348,10 +348,13 @@ private:
       bytes = countOf(bounds, builder, arguments);
     } else if (bounds.kind == PointerBounds::Kind::Ended &&
                static_cast<std::size_t>(bounds.end) < arguments.size()) {
-      bytes = builder.CreateSub(
-          builder.CreatePtrToInt(
-              arguments[static_cast<std::size_t>(bounds.end)], module.i64),
-          builder.CreatePtrToInt(pointer, module.i64));
+      llvm::Value *end = builder.CreatePtrToInt(
+          arguments[static_cast<std::size_t>(bounds.end)], module.i64);
+      llvm::Value *start = builder.CreatePtrToInt(pointer, module.i64);
+      // An end before the start is an empty range.
+      bytes = builder.CreateSelect(builder.CreateICmpULT(end, start),
+                                   llvm::ConstantInt::get(module.i64, 0),
+                                   builder.CreateSub(end, start));
     }
     if (bytes != nullptr && bounds.orNull)
       bytes =
@@ -380,18 +383,10 @@ private:
         builder.CreateCall(module.escapeCheckFunction(),
                            {builder.CreatePtrToInt(pointer, module.i64),
                             module.site(location, 0)});
-      if (bounds.kind == PointerBounds::Kind::NullTerminated) {
-        const unsigned row = module.row(function, location, "entry", 0,
-                                        LedgerRow::Outcome::Guarded, "string");
-        llvm::Value *length = module.insertString(
-            builder, pointer, llvm::ConstantInt::get(module.i64, INT64_MAX),
-            row, bounds.orNull ? MarkerNullOk : 0);
-        llvm::Value *bytes =
-            builder.CreateAdd(length, llvm::ConstantInt::get(module.i64, 1));
-        known[pointer] = {.lo = pointer,
-                          .hi = builder.CreateGEP(module.i8, pointer, bytes)};
+      // A string's accesses keep their guards (amendment 13): scanning it
+      // at each entry made string helpers slower than guarded code.
+      if (bounds.kind == PointerBounds::Kind::NullTerminated)
         continue;
-      }
       llvm::Value *bytes = bytesOf(bounds, pointer, builder, arguments);
       if (bytes == nullptr)
         continue;

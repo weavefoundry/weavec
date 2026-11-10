@@ -47,6 +47,8 @@ inline constexpr llvm::StringLiteral SizedByOrNullAnnotation =
 inline constexpr llvm::StringLiteral EndedByAnnotation = "weavec.ended_by";
 inline constexpr llvm::StringLiteral NullTerminatedAnnotation =
     "weavec.null_terminated";
+inline constexpr llvm::StringLiteral NullTerminatedOrNullAnnotation =
+    "weavec.null_terminated_or_null";
 inline constexpr llvm::StringLiteral EscapesAnnotation = "weavec.escapes";
 inline constexpr llvm::StringLiteral BorrowedAnnotation = "weavec.borrowed";
 

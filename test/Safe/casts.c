@@ -3,6 +3,7 @@
 // another type, or from a union member that may hold something else.
 // RUN: %weavec_cc -fsyntax-only -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
 #include <weavec.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,3 +52,5 @@ typedef long (*other)(long);
 WEAVEC_SAFE other functions(unary f) {
   return (other)f;                // expected-error {{a function pointer cannot convert to another type in a safe function}}
 }
+
+WEAVEC_SAFE int present(unary f) { return f != NULL; }

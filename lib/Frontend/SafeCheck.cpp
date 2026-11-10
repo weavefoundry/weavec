@@ -219,8 +219,10 @@ public:
         bounds.escapes = true;
         continue;
       }
-      if (name == NullTerminatedAnnotation) {
+      if (name == NullTerminatedAnnotation ||
+          name == NullTerminatedOrNullAnnotation) {
         bounds.kind = PointerBounds::Kind::NullTerminated;
+        bounds.orNull = name == NullTerminatedOrNullAnnotation;
         continue;
       }
       const bool sized =
@@ -429,9 +431,16 @@ public:
           table != nullptr && i < table->parameters.size()
               ? &table->parameters[i]
               : nullptr;
-      if (bounds != nullptr && bounds->bounded() && !bounded(argument) &&
-          !argument->isNullPointerConstant(
-              ast, clang::Expr::NPC_ValueDependentIsNotNull))
+      const bool null = argument->isNullPointerConstant(
+          ast, clang::Expr::NPC_ValueDependentIsNotNull);
+      if (bounds != nullptr && bounds->bounded() && null && !bounds->orNull &&
+          bounds->kind == PointerBounds::Kind::NullTerminated)
+        report(argument->getExprLoc(), rule::CallArgs,
+               "null passed for '" + parameter->getName().str() + "' of '" +
+                   callee->getName().str() + "', which points to a string",
+               "declare the parameter WEAVEC_NULL_TERMINATED_OR_NULL if it "
+               "may be null, or pass a string");
+      if (bounds != nullptr && bounds->bounded() && !bounded(argument) && !null)
         report(argument->getExprLoc(), rule::CallArgs,
                "the argument for '" + parameter->getName().str() + "' of '" +
                    callee->getName().str() +
@@ -764,6 +773,9 @@ private:
       return;
     }
     if (const auto *op = llvm::dyn_cast<clang::BinaryOperator>(e)) {
+      // `end - s` is an integer: it carries no pointer.
+      if (!e->getType()->isPointerType())
+        return;
       if (op->isAdditiveOp() || op->isCompoundAssignmentOp()) {
         if (op->getLHS()->getType()->isPointerType())
           addOrigins(op->getLHS(), origins);
@@ -876,12 +888,15 @@ private:
     const Origins origins = originsOf(value);
     if (origins.empty())
       return;
+    const bool field = llvm::isa<clang::FieldDecl>(**origins.begin());
     report(at, rule::Escape,
            borrowed(**origins.begin()) +
                " and cannot be stored where it outlives the call",
-           "mark the parameter WEAVEC_ESCAPES (after its '*'; callers then "
-           "cannot pass a stack address), or store a copy of what it points "
-           "to");
+           field ? "keep an offset beside the borrowed field and advance the "
+                   "offset, not the pointer, through a pointer to the struct"
+                 : "mark the parameter WEAVEC_ESCAPES (after its '*'; callers "
+                   "then cannot pass a stack address), or store a copy of "
+                   "what it points to");
   }
 
   void single(clang::SourceLocation at, const clang::Expr *pointer) {
@@ -956,7 +971,9 @@ private:
   void checkPointerCast(const clang::CastExpr &cast) {
     const clang::QualType from = cast.getSubExpr()->getType()->getPointeeType();
     const clang::QualType to = cast.getType()->getPointeeType();
-    if (clang::ASTContext::hasSameUnqualifiedType(from, to))
+    if (clang::ASTContext::hasSameUnqualifiedType(from, to) ||
+        cast.getSubExpr()->isNullPointerConstant(
+            ast, clang::Expr::NPC_ValueDependentIsNotNull))
       return;
     if (from->isFunctionType() || to->isFunctionType()) {
       report(cast.getExprLoc(), rule::PointerCast,
