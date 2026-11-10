@@ -432,7 +432,8 @@ public:
               ? &table->parameters[i]
               : nullptr;
       const bool null = argument->isNullPointerConstant(
-          ast, clang::Expr::NPC_ValueDependentIsNotNull);
+                            ast, clang::Expr::NPC_ValueDependentIsNotNull) !=
+                        clang::Expr::NPCK_NotNull;
       if (bounds != nullptr && bounds->bounded() && null && !bounds->orNull &&
           bounds->kind == PointerBounds::Kind::NullTerminated)
         report(argument->getExprLoc(), rule::CallArgs,
