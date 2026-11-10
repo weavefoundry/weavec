@@ -540,10 +540,20 @@ private:
     llvm::IRBuilder<> builder(&marker);
     builder.SetCurrentDebugLocation(marker.getDebugLoc());
     llvm::Value *width = marker.getArgOperand(1);
-    llvm::Value *end = builder.CreateGEP(module.i8, pointer, width);
-    llvm::Value *inside =
-        builder.CreateAnd(builder.CreateICmpUGE(pointer, bounds.lo),
-                          builder.CreateICmpULE(end, bounds.hi));
+    // As offsets from the base, one comparison: the access starts before
+    // `limit`, the number of offsets a `width` access may start at (0 when
+    // the bounds are smaller than the access). The limit is loop-invariant,
+    // and an address below the base wraps to a large offset.
+    llvm::Value *lo = builder.CreatePtrToInt(bounds.lo, module.i64);
+    llvm::Value *size =
+        builder.CreateSub(builder.CreatePtrToInt(bounds.hi, module.i64), lo);
+    llvm::Value *bytes = builder.CreateZExtOrTrunc(width, module.i64);
+    llvm::Value *limit = builder.CreateBinaryIntrinsic(
+        llvm::Intrinsic::usub_sat,
+        builder.CreateAdd(size, llvm::ConstantInt::get(module.i64, 1)), bytes);
+    llvm::Value *offset =
+        builder.CreateSub(builder.CreatePtrToInt(pointer, module.i64), lo);
+    llvm::Value *inside = builder.CreateICmpULT(offset, limit);
     const auto *flags = llvm::cast<llvm::ConstantInt>(marker.getArgOperand(2));
     const bool write = (flags->getZExtValue() & MarkerWrite) != 0;
     const bool trap = module.options.mode != GuardOptions::Mode::Report;

@@ -7,7 +7,7 @@
 static jmp_buf there;
 
 WEAVEC_SAFE void assembly(void) {
-  __asm__ volatile("");           // expected-error {{inline assembly cannot be in a safe function [weavec-safe:no-asm]}}
+  __asm__ volatile("nop");        // expected-error {{inline assembly cannot be in a safe function [weavec-safe:no-asm]}}
 }
 
 WEAVEC_SAFE int jumps(void) {

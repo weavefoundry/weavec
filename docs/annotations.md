@@ -64,6 +64,7 @@ region too, with no source change.
 | `T *WEAVEC_ENDED_BY(e) p` | the same | `p` points to the elements before the pointer parameter `e`. |
 | `char *WEAVEC_NULL_TERMINATED s` | the same | `s` points to a string, up to and with its NUL. |
 | `T *WEAVEC_ESCAPES p` | after a parameter type's `*` | The function may keep `p` after it returns; callers must not pass a stack address. |
+| `T *WEAVEC_BORROWED f` | after a field type's `*` | The field may hold a borrowed pointer when its struct is a local variable; a pointer loaded from it is borrowed. |
 | `T *p WEAVEC_LIFETIMEBOUND` | after a parameter's name | The function's result may point into `p` (Clang's `lifetimebound`). |
 
 The `WEAVEC_SAFE` and `WEAVEC_GUARDED` forms expand to `annotate`

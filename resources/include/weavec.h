@@ -71,11 +71,17 @@
 /** In a unit compiled with -fweavec-safe: keeps a function guarded. */
 #define WEAVEC_GUARDED WEAVEC_ANNOTATE_("weavec.guarded")
 
+/* A build that must not see `[[…]]` before C23 (-std=c99 -pedantic-errors)
+ * defines WEAVEC_TYPE_ANNOTATE_(...) as nothing before including this. */
 #if defined(__clang__)
+#ifndef WEAVEC_TYPE_ANNOTATE_
 #define WEAVEC_TYPE_ANNOTATE_(...) [[clang::annotate_type(__VA_ARGS__)]]
+#endif
 #define WEAVEC_LIFETIMEBOUND __attribute__((lifetimebound))
 #else
+#ifndef WEAVEC_TYPE_ANNOTATE_
 #define WEAVEC_TYPE_ANNOTATE_(...)
+#endif
 #define WEAVEC_LIFETIMEBOUND
 #endif
 
@@ -101,5 +107,11 @@
  * after it returns, so the argument must not point into a stack.
  */
 #define WEAVEC_ESCAPES WEAVEC_TYPE_ANNOTATE_("weavec.escapes")
+/**
+ * After the `*` of a field's type: the field may hold a borrowed pointer
+ * (a safe function's parameter) when its struct is a local variable; a
+ * pointer loaded from it is borrowed.
+ */
+#define WEAVEC_BORROWED WEAVEC_TYPE_ANNOTATE_("weavec.borrowed")
 
 #endif /* WEAVEC_H */

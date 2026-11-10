@@ -90,6 +90,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0038](0038-drop-in-everywhere.md) | Drop-in everywhere | Accepted |
 | [0039](0039-cxx.md) | C++ | Accepted |
 | [0040](0040-actionable-reports.md) | Reports you can act on | Accepted |
-| [0041](0041-safe-c.md) | Safe C | Draft |
+| [0041](0041-safe-c.md) | Safe C | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

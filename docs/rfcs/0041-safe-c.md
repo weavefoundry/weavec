@@ -1,6 +1,6 @@
 # RFC 0041: Safe C
 
-- **Status**: Draft
+- **Status**: Accepted
 - **Authors**: WeaveC authors
 - **Created**: 2026-11-09
 - **Tracking issue**: TBD
@@ -9,22 +9,24 @@
   that does not opt in. Amends AGENTS.md rule 2 (WeaveC gets compile-time
   diagnostics, for safe functions only), rule 3 (`WEAVEC_UNSAFE` stops
   being the only annotation) and rule 9's library line budget; the
-  enforcement ledger (a new reason, version 4, RFC 0035 §9); the case
+  enforcement ledger (a new reason, RFC 0035 §9); the case
   runner's report kinds. Revisits, with a different premise, the opt-in
   checked code of RFCs 0018–0029 (*Motivation*, *Alternatives*). Its
   stage S0 checks on paper that the design extends to C++ (§12) before
   any of it is built.
 
-This RFC is a draft for discussion. It was written at the request of the
-project owner on 2026-11-09, who stated the goal it serves: C and C++
+This RFC was written at the request of the project owner on 2026-11-09,
+who stated the goal it serves: C and C++
 projects, and projects that would otherwise move to Rust, have AI agents
 rewrite code to Rust because Rust's compiler rejects memory-unsafe code
 and an agent can iterate on its errors until the code is safe. WeaveC
 should give them a reason to stay in C (and later C++) by offering the
 same loop: a compiler that rejects code it cannot show is memory safe,
 with errors an agent can act on, and code that, once accepted, is as safe
-as safe Rust's and about as cheap. Nothing here is accepted; the
-*Unresolved questions* are real.
+as safe Rust's and about as cheap. The same day the owner asked for it to
+be implemented end to end in one change instead of being reviewed alone;
+Accepted records that authorization, not an independent review. The
+*Implementation amendments* at the end override the body.
 
 ## Summary
 
@@ -859,3 +861,111 @@ listed in `cli.md` and `scripts/run-cases.py`):
 - **Tooling for agents**: `weavec-cc --weavec-safe-report` listing each
   function's tier and, for a guarded one, the first rule that blocks it;
   fix-its applied by Clang's `-fixit`.
+
+## Implementation amendments
+
+These record where the implementation departs from the design above, from
+S0's paper conversions (jsmn, sds, and Snappy for C++) and from building it.
+They override the body.
+
+1. **What keeps a guard (§5).** A pointer loaded from memory, and one a call
+   returns without a bound, are not validated where they enter: accesses
+   through them keep their guards, as in guarded code. A guard is replaced by
+   a bounds check only where the pointer derives, through arithmetic, phis
+   and selects, from a root whose bounds the function knows: a bounded
+   parameter, a local, a global the unit defines (its exact size), an
+   allocation (`allocsize`), or a call whose declared result has a bound
+   (checked against the shadow when the callee is not safe). This costs a
+   pointer-chasing loop about what the load validation would have, needs no
+   pointee sizes in IR, keeps guarded code's detection of a use after free
+   through loaded pointers, and is sound in mixed programs whatever guarded
+   code writes into a field. Counts of fields are therefore not used at run
+   time; rule `counted-pair` is not needed and is not implemented.
+2. **One entry point (§5).** A safe function validates its bounded and
+   escaping parameters at its own entry, whoever calls it, instead of
+   having a validating symbol and an internal one. This closes the hole S0
+   found for a `static` safe function called by guarded code in the same
+   unit (jsmn is header-only); a safe caller pays one range guard per
+   bounded argument. Counts are the parameters' values at entry: a function
+   that changes its own count parameter (`while (n--) v[n]`) keeps its
+   bounds.
+3. **Bounds in IR (§4, §8).** The checker hands the passes a table of each
+   function's parameter and result bounds by symbol. In a safe function,
+   before GuardInsert, promotable locals are promoted and `inbounds` is
+   dropped from its address arithmetic, so that an out-of-bounds address is
+   never poison the optimizer could use to delete its check. After
+   GuardInsert, each replaceable guard becomes `offset < usub.sat(size + 1,
+   width)` on offsets from the root: one comparison per access, whose limit
+   is loop-invariant (a `for` loop over a counted parameter compiles to one
+   compare and branch per iteration). Verify mode keeps the guard as its
+   monitor; `-fweavec-safe-checks=full` keeps it as a guard; the ledger
+   records the replacement with the reason `safe` under PROVEN. The ledger's
+   version is unchanged (a new reason value); no `safe-unrooted` counter
+   exists, since an access without rooted bounds simply stays guarded.
+4. **Borrowed fields (§5).** S0's C++ check (Snappy) and cJSON's
+   `parse_buffer` need a struct that carries a borrowed pointer down the
+   call tree. `WEAVEC_BORROWED` after a field type's `*` lets a borrowed
+   pointer be stored in that field of a local variable (through `.` only);
+   a pointer loaded from such a field is borrowed, and so are the local's
+   address and a copy of it, so none of them can be stored, returned or
+   passed to an escaping parameter. Storing through a pointer
+   (`b->content = v`) stays an error: it would need a lifetime relating the
+   two objects.
+5. **The rules (§3).** `arith-bounds` is part of `index-single`, which
+   allows an offset of constant 0 (`p[0]` is `*p`) and does not fire inside
+   a system header's macro (glibc's `ctype` macros index
+   `*__ctype_b_loc()`; the access keeps its guard). Subtracting pointers is
+   allowed: it touches no memory. `pointer-cast` rejects only conversions to
+   a type that holds pointers (a view between types without pointers cannot
+   forge one), with the allocation's result as the exception, and function
+   pointer conversions. `pointer-bytes` allows a byte view passed directly
+   to a function that is not safe (its own accesses are guarded and S-A2
+   holds), to a library call that reads it or releases it, to a copy whose
+   other side has the same type, and to a zero fill. `string` is replaced by
+   scanning a null-terminated parameter at entry (amendment 1), after which
+   it is bounded. `variadic` also rejects `va_arg` of a type that holds
+   pointers (S0, sds: a `va_list` parameter). `no-asm` allows an empty
+   template with no operands, a compiler barrier (S0, Snappy). New
+   identifiers: `bad-annotation` (a bound naming no parameter of the right
+   type) and `cxx` (§12).
+6. **Report kinds (§*Diagnostics*).** `invalid-bounds` is not a kind of its
+   own: an entry validation that fails reports what the shadow says
+   (`stack-buffer-overflow`, `heap-buffer-overflow`, `heap-use-after-free`,
+   `unterminated-string`, `null-dereference`), at the function's line.
+   `pointer-out-of-bounds`'s object line reads `… bytes after the <size>-byte
+   bounds of the pointer at …`. `stack-escape` is as specified.
+7. **Library calls (§9).** A library call in a safe function keeps the
+   row-driven guards and wrappers it has in guarded code; its arguments are
+   not compared against their pointers' bounds. The table describes what a
+   call accesses at object granularity, which is what (S6) now says.
+8. **Heap-placed locals (§6).** The passes decide which locals go on the
+   heap, from the IR after promotion: an address stored in memory, returned,
+   converted to an integer, passed to an escaping parameter, kept through a
+   `lifetimebound` result, or used where the local may be out of scope. The
+   block is allocated with `calloc` (`aligned_alloc` above 16-byte
+   alignment) at each `lifetime.start` and released at each `lifetime.end`
+   and return. The remark is `-Rpass=weavec-safe`, Clang's own remark
+   mechanism, not `-Rweavec-safe-heap-local`. A safe function's locals that
+   stay in its frame and are passed to guarded callees keep their redzones
+   (S0, Snappy D6: checked). *Unresolved question* 9's per-loop cache of a
+   block is withdrawn: reusing a block before a sweep would break (T).
+9. **(S3) and the release record.** RFC 0040 amendment 4 keeps a released
+   block's release stack in its first 16 bytes. A write in a safe function
+   through a pointer to a released block may overwrite that record; its
+   complements then make a later report say "not recorded". The allocator's
+   own state is outside the block, so the guarantee is unchanged.
+10. **Annotation spellings.** `[[clang::annotate_type]]` is accepted in C11
+    and C17 as an extension; `-std=c99 -pedantic -Werror` builds fail on
+    it (S0, jsmn). The header keeps the attribute; such a build compiles
+    the annotations away by defining `WEAVEC_TYPE_ANNOTATE_` empty first.
+11. **Budgets and ABI.** The library budget is 11,500 lines (the
+    implementation adds about 2,000), the runtime's 10,000; the runtime ABI
+    is 41, and the compiler's frame descriptors take the ABI from the
+    build, which a hard-coded 40 had let drift.
+12. **What S0 left for later.** Counts through an out-parameter
+    (`size_t *len`) and counts given by a macro or an expression (Snappy
+    D2, D3; sds), a checked way to find the heap block around a pointer
+    (sds's header before its string), and validation in constant time from
+    the allocator's metadata instead of the shadow's range (sds) are
+    *Future work*. Snappy's C++ findings D8–D12 belong to the C++ RFC.
+

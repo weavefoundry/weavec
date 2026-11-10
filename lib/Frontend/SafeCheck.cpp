@@ -59,8 +59,10 @@ constexpr llvm::StringLiteral BadAnnotation = "bad-annotation";
 constexpr llvm::StringLiteral Cxx = "cxx";
 } // namespace rule
 
-/// Origins of a pointer value: the borrowed parameters it may derive from.
-using Origins = llvm::SmallPtrSet<const clang::ParmVarDecl *, 2>;
+/// Origins of a value: the borrowed parameters it may derive from, the
+/// `WEAVEC_BORROWED` fields it was loaded from, and the local aggregates
+/// holding borrowed pointers it is or points into.
+using Origins = llvm::SmallPtrSet<const clang::NamedDecl *, 2>;
 
 /// One annotation of a pointer type.
 struct TypeAnnotation {
@@ -125,7 +127,8 @@ static bool hasAnnotation(llvm::ArrayRef<TypeAnnotation> annotations,
 /// Whether the annotations give the pointer bounds of more than one object.
 static bool boundedBy(llvm::ArrayRef<TypeAnnotation> annotations) {
   return llvm::any_of(annotations, [](const TypeAnnotation &annotation) {
-    return annotation.name != EscapesAnnotation;
+    return annotation.name != EscapesAnnotation &&
+           annotation.name != BorrowedAnnotation;
   });
 }
 
@@ -164,6 +167,26 @@ static bool holdsPointers(clang::QualType type,
 static bool holdsPointers(clang::QualType type) {
   llvm::SmallPtrSet<const clang::Type *, 8> seen;
   return holdsPointers(type, seen);
+}
+
+/// Whether a field of `type` (or of a struct or array in it) is
+/// `WEAVEC_BORROWED`.
+static bool holdsBorrowed(clang::QualType type, const clang::ASTContext &ast,
+                          unsigned depth = 0) {
+  const clang::Type *canonical = type.getCanonicalType().getTypePtr();
+  if (depth > 8)
+    return false;
+  if (const auto *array = llvm::dyn_cast<clang::ArrayType>(canonical))
+    return holdsBorrowed(array->getElementType(), ast, depth + 1);
+  const clang::RecordDecl *record = canonical->getAsRecordDecl();
+  if (record == nullptr || record->getDefinition() == nullptr)
+    return false;
+  return llvm::any_of(
+      record->getDefinition()->fields(), [&](const clang::FieldDecl *field) {
+        return hasAnnotation(annotationsOf(field->getType(), ast),
+                             BorrowedAnnotation) ||
+               holdsBorrowed(field->getType(), ast, depth + 1);
+      });
 }
 
 /// `char`, `signed char`, `unsigned char` or `void`.
@@ -331,7 +354,8 @@ public:
       if (pointer != nullptr && !isZero(offset) && !bounded(pointer))
         single(op->getExprLoc(), pointer);
     }
-    if (op->getOpcode() == clang::BO_Assign && !isLocalSlot(op->getLHS()))
+    if (op->getOpcode() == clang::BO_Assign && !isLocalSlot(op->getLHS()) &&
+        !isBorrowedSlot(op->getLHS()))
       storesBorrowed(op->getRHS(), op->getExprLoc());
     return true;
   }
@@ -419,9 +443,8 @@ public:
         const Origins origins = originsOf(argument);
         if (!origins.empty())
           report(argument->getExprLoc(), rule::Escape,
-                 "'" + (*origins.begin())->getName().str() +
-                     "' is borrowed for this call and cannot be passed to "
-                     "the escaping parameter '" +
+                 borrowed(**origins.begin()) +
+                     " and cannot be passed to the escaping parameter '" +
                      parameter->getName().str() + "'",
                  "mark '" + (*origins.begin())->getName().str() +
                      "' WEAVEC_ESCAPES too, or pass a copy of what it "
@@ -435,11 +458,11 @@ public:
     const clang::Expr *value = statement->getRetValue();
     if (value == nullptr)
       return true;
-    for (const clang::ParmVarDecl *origin : originsOf(value))
-      if (!origin->hasAttr<clang::LifetimeBoundAttr>()) {
+    for (const clang::NamedDecl *origin : originsOf(value))
+      if (!origin->hasAttr<clang::LifetimeBoundAttr>() ||
+          !llvm::isa<clang::ParmVarDecl>(origin)) {
         report(value->getExprLoc(), rule::Escape,
-               "'" + origin->getName().str() +
-                   "' is borrowed for this call and cannot be returned",
+               borrowed(*origin) + " and cannot be returned",
                "mark the parameter WEAVEC_LIFETIMEBOUND (after its name), so "
                "that callers treat the result as borrowed from it");
         break;
@@ -453,10 +476,31 @@ public:
     return true;
   }
 
-  bool VisitInitListExpr(clang::InitListExpr *list) {
-    for (const clang::Expr *element : list->inits())
-      if (element != nullptr && element->getType()->isPointerType())
-        storesBorrowed(element, element->getExprLoc());
+  bool VisitInitListExpr(clang::InitListExpr *visited) {
+    // A local aggregate's WEAVEC_BORROWED fields may take borrowed pointers.
+    const clang::InitListExpr *list =
+        visited->isSyntacticForm() && visited->getSemanticForm() != nullptr
+            ? visited->getSemanticForm()
+            : visited;
+    const clang::RecordDecl *record = list->getType()->getAsRecordDecl();
+    const bool local = initializesLocal(*list) || initializesLocal(*visited);
+    unsigned index = 0;
+    llvm::SmallVector<const clang::FieldDecl *, 8> fields;
+    if (record != nullptr && !record->isUnion())
+      fields.append(record->field_begin(), record->field_end());
+    for (const clang::Expr *element : list->inits()) {
+      const clang::FieldDecl *field =
+          index < fields.size() ? fields[index] : nullptr;
+      ++index;
+      if (element == nullptr || !(element->getType()->isPointerType() ||
+                                  holdsBorrowed(element->getType(), ast)))
+        continue;
+      if (local && field != nullptr &&
+          hasAnnotation(annotationsOf(field->getType(), ast),
+                        BorrowedAnnotation))
+        continue;
+      storesBorrowed(element, element->getExprLoc());
+    }
     return true;
   }
 
@@ -471,6 +515,10 @@ public:
   }
 
   bool VisitGCCAsmStmt(clang::GCCAsmStmt *statement) {
+    // An empty template is a compiler barrier: it touches no memory itself.
+    if (statement->getNumOutputs() == 0 && statement->getNumInputs() == 0 &&
+        statement->getAsmString().empty())
+      return true;
     forbidden(statement->getAsmLoc(), "inline assembly");
     return true;
   }
@@ -530,7 +578,7 @@ private:
         const std::size_t before = origins.size();
         for (const clang::Expr *value : values) {
           isBounded = isBounded && bounded(value);
-          for (const clang::ParmVarDecl *origin : originsOf(value))
+          for (const clang::NamedDecl *origin : originsOf(value))
             origins.insert(origin);
         }
         if (isBounded != localBounded[variable] || origins.size() != before) {
@@ -689,10 +737,23 @@ private:
         return;
       }
       if (const auto *variable =
-              llvm::dyn_cast<clang::VarDecl>(reference->getDecl()))
+              llvm::dyn_cast<clang::VarDecl>(reference->getDecl())) {
         if (const auto found = localOrigins.find(variable);
             found != localOrigins.end())
           origins.insert(found->second.begin(), found->second.end());
+        // A copy of a local aggregate copies its borrowed pointers.
+        if (variable->hasLocalStorage() &&
+            holdsBorrowed(variable->getType(), ast))
+          origins.insert(variable);
+      }
+      return;
+    }
+    if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(e)) {
+      if (hasAnnotation(annotationsOf(member->getMemberDecl()->getType(), ast),
+                        BorrowedAnnotation))
+        origins.insert(member->getMemberDecl());
+      else if (!member->isArrow())
+        addOrigins(member->getBase(), origins);
       return;
     }
     if (const auto *op = llvm::dyn_cast<clang::UnaryOperator>(e)) {
@@ -748,17 +809,76 @@ private:
     if (const auto *op = llvm::dyn_cast<clang::UnaryOperator>(e);
         op != nullptr && op->getOpcode() == clang::UO_Deref)
       addOrigins(op->getSubExpr(), origins);
+    // `&local`, where the local holds borrowed pointers.
+    if (const auto *reference = llvm::dyn_cast<clang::DeclRefExpr>(e))
+      if (const auto *variable =
+              llvm::dyn_cast<clang::VarDecl>(reference->getDecl());
+          variable != nullptr && variable->hasLocalStorage() &&
+          holdsBorrowed(variable->getType(), ast))
+        origins.insert(variable);
+  }
+
+  /// How an error names an origin.
+  static std::string borrowed(const clang::NamedDecl &origin) {
+    if (llvm::isa<clang::FieldDecl>(origin))
+      return "'" + origin.getName().str() +
+             "' was loaded from a WEAVEC_BORROWED field, so it is borrowed,";
+    if (!llvm::isa<clang::ParmVarDecl>(origin))
+      return "'" + origin.getName().str() +
+             "' holds borrowed pointers (WEAVEC_BORROWED fields),";
+    return "'" + origin.getName().str() + "' is borrowed for this call";
+  }
+
+  /// `local.field` (through `.` only) where the field is WEAVEC_BORROWED: a
+  /// borrowed pointer may be stored there, since the local dies with the
+  /// frame and its address cannot leave it.
+  bool isBorrowedSlot(const clang::Expr *lvalue) const {
+    const auto *member =
+        llvm::dyn_cast<clang::MemberExpr>(lvalue->IgnoreParenImpCasts());
+    if (member == nullptr ||
+        !hasAnnotation(annotationsOf(member->getMemberDecl()->getType(), ast),
+                       BorrowedAnnotation))
+      return false;
+    const clang::Expr *base = member;
+    while (const auto *inner =
+               llvm::dyn_cast<clang::MemberExpr>(base->IgnoreParenImpCasts())) {
+      if (inner->isArrow())
+        return false;
+      base = inner->getBase();
+    }
+    const auto *reference =
+        llvm::dyn_cast<clang::DeclRefExpr>(base->IgnoreParenImpCasts());
+    const auto *variable =
+        reference == nullptr
+            ? nullptr
+            : llvm::dyn_cast<clang::VarDecl>(reference->getDecl());
+    return variable != nullptr && variable->hasLocalStorage();
+  }
+
+  /// Whether `list` initializes a local variable (directly or nested).
+  bool initializesLocal(const clang::Expr &list) const {
+    const clang::Expr *current = &list;
+    for (unsigned depth = 0; depth < 8; ++depth) {
+      const auto parents = ast.getParents(*current);
+      if (parents.empty())
+        return false;
+      if (const auto *variable = parents[0].get<clang::VarDecl>())
+        return variable->hasLocalStorage();
+      const auto *next = parents[0].get<clang::InitListExpr>();
+      if (next == nullptr)
+        return false;
+      current = next;
+    }
+    return false;
   }
 
   void storesBorrowed(const clang::Expr *value, clang::SourceLocation at) {
     const Origins origins = originsOf(value);
     if (origins.empty())
       return;
-    const std::string name = (*origins.begin())->getName().str();
     report(at, rule::Escape,
-           "'" + name +
-               "' is borrowed for this call and cannot be stored where it "
-               "outlives the call",
+           borrowed(**origins.begin()) +
+               " and cannot be stored where it outlives the call",
            "mark the parameter WEAVEC_ESCAPES (after its '*'; callers then "
            "cannot pass a stack address), or store a copy of what it points "
            "to");

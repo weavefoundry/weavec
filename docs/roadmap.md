@@ -12,23 +12,29 @@ milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
-## Proposed: RFC 0041 — Safe C
+## Now: RFC 0041 — Safe C
 
-Design: [RFC 0041 — Safe C](rfcs/0041-safe-c.md) (Draft). WeaveC makes
-unmodified C safe at run time, but gives nothing to iterate on at compile
-time and costs 1.7 to 1.9 times the reference build, so a project
-choosing between rewriting in Rust and staying in C has no reason to
-rewrite into C. RFC 0041 proposes safe functions: C checked against a few
+Design: [RFC 0041 — Safe C](rfcs/0041-safe-c.md) (Accepted, in progress).
+WeaveC makes unmodified C safe at run time, but gives nothing to iterate on
+at compile time and costs 1.7 to 1.9 times the reference build, so a
+project choosing between rewriting in Rust and staying in C has no reason
+to rewrite into C. RFC 0041 adds safe functions: C checked against a few
 local rules at compile time, with errors an agent can act on, spatially
-safe by bounds that every pointer carries (the model of Clang's
+safe by bounds that its pointers carry (the model of Clang's
 `-fbounds-safety`) and temporally safe by the existing sweep, with bounds
-checks in place of guards. Guarded code is unchanged. C++ comes in a
-later RFC, but S0 converts a C++ library on paper first, so the C design
-is changed before it is built if it would not extend. The stages, once
-accepted: S0 the rules on paper, the C++ check and a baseline, S1 the
-checker, S2 bounds
-in IR, S3 the boundary with guarded code, S4 library calls, S5 conversions
-by agents, S6 held-out conversions and the gates.
+checks in place of guards. Guarded code is unchanged; C++ comes in a later
+RFC. The stages:
+
+- [x] **S0 The rules on paper**: jsmn and sds converted against the draft,
+      Snappy for C++ (G0 passed with amendments).
+- [x] **S1 The annotations and the checker**, the rules' tests.
+- [x] **S2 Bounds in IR**, guard replacement, the ledger's reason.
+- [x] **S3 The boundary**: entry validation, escaping parameters,
+      heap-placed locals, `WEAVEC_BORROWED` fields.
+- [x] **S4 Library calls** keep their guards (amendment 7).
+- [ ] **S5 Conversions by agents** of jsmn, sds, cJSON, linenoise, zlib.
+- [ ] **S6 Held-out conversions** (inih, tinyexpr) and the gates on all
+      three platforms.
 
 ## Now: RFC 0040 — Reports you can act on
 

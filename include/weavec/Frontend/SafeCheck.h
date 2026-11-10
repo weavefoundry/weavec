@@ -48,6 +48,7 @@ inline constexpr llvm::StringLiteral EndedByAnnotation = "weavec.ended_by";
 inline constexpr llvm::StringLiteral NullTerminatedAnnotation =
     "weavec.null_terminated";
 inline constexpr llvm::StringLiteral EscapesAnnotation = "weavec.escapes";
+inline constexpr llvm::StringLiteral BorrowedAnnotation = "weavec.borrowed";
 
 /// What a declaration says about one pointer (§2).
 struct PointerBounds {

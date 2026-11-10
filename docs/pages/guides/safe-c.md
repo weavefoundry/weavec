@@ -73,10 +73,10 @@ Each error ends with the rule's identifier.
 | `pointer-cast`   | a pointer converted to a type that holds pointers from another type (`(struct node *)bytes`, `(struct node *)ctx`), and function pointer conversions | convert only between types without pointers, or from an allocation's result (`struct node *n = malloc(sizeof *n)`) |
 | `pointer-bytes`  | a writable byte view of an object that holds pointers: `(char *)node`, `memset(node, 1, …)`, `memcpy(node, other_type, …)`       | `*d = *s`, `memcpy` between two objects of the same type, `memset(…, 0, …)`; passing the object to a function that is not safe is fine |
 | `union-pointer`  | reading a union member that holds a pointer                                                                                     | a tag beside the union and a struct per variant                                                   |
-| `escape`         | storing a pointer parameter where it outlives the call (a field, a global, an array), returning it, or passing it to an escaping parameter | `WEAVEC_ESCAPES` after the parameter's `*` if the function keeps it; `WEAVEC_LIFETIMEBOUND` after its name if the function returns it |
+| `escape`         | storing a pointer parameter where it outlives the call (a field, a global, an array), returning it, or passing it to an escaping parameter | `WEAVEC_ESCAPES` after the parameter's `*` if the function keeps it; `WEAVEC_LIFETIMEBOUND` after its name if the function returns it; a `WEAVEC_BORROWED` field of a local struct to carry it down |
 | `call-args`      | passing a pointer to one object for a parameter that has a bound                                                                | pass a pointer with bounds                                                                        |
 | `variadic`       | calling a variadic function the [library table](https://github.com/weavefoundry/weavec/blob/main/lib/Core/LibrarySpec.txt) does not describe (`printf` is described), `va_start`, and `va_arg` of a type that holds pointers | take the arguments by type                                                                        |
-| `no-asm`         | inline assembly, `setjmp`, `longjmp`, `__builtin_frame_address`, computed `goto`                                                | a guarded helper function                                                                         |
+| `no-asm`         | inline assembly (an empty `asm volatile("" ::: "memory")` barrier is fine), `setjmp`, `longjmp`, `__builtin_frame_address`, computed `goto`                                                | a guarded helper function                                                                         |
 | `unsafe-block`   | a `WEAVEC_UNSAFE` block inside a safe function                                                                                  | move the block into a guarded or unsafe function                                                  |
 | `bad-annotation` | a bound naming no parameter of the right type                                                                                   | name an integer parameter (or a pointer, for `WEAVEC_ENDED_BY`)                                   |
 | `cxx`            | a safe function in C++                                                                                                          | Safe C is C only for now                                                                          |
@@ -102,6 +102,25 @@ WEAVEC_SAFE struct node *second(struct node *n WEAVEC_LIFETIMEBOUND) {
 ```
 
 An escaping parameter must not point into a stack; the program stops with `stack-escape` if a caller passes one. A pointer loaded from memory (`n->next`) is not borrowed.
+
+A parser that keeps its input in a cursor struct needs a struct that holds a borrowed pointer. Mark the field `WEAVEC_BORROWED`: a borrowed pointer may then be stored in it when the struct is a local variable (`buffer.content = text`, not through a pointer), a pointer loaded from it is borrowed, and the local's address is borrowed too, so it can be passed down but not kept.
+
+```c
+typedef struct {
+  const char *WEAVEC_BORROWED WEAVEC_COUNTED_BY(length) content;
+  size_t length;
+  size_t offset;
+} cursor;
+
+WEAVEC_SAFE int next(cursor *c) {
+  return c->offset < c->length ? c->content[c->offset++] : -1;
+}
+
+WEAVEC_SAFE int first(const char *WEAVEC_COUNTED_BY(n) text, size_t n) {
+  cursor c = {text, n, 0};
+  return next(&c);
+}
+```
 
 ### Locals whose address escapes
 
