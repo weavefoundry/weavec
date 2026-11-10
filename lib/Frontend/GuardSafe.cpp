@@ -658,7 +658,7 @@ private:
   /// bounds here, after checking them against the bytes the callee's bounds
   /// give it: one comparison each, not a scan of the shadow.
   void callBody(llvm::CallInst &call) {
-    llvm::Function *entry = call.getCalledFunction();
+    const llvm::Function *entry = call.getCalledFunction();
     llvm::Function *body =
         module.module.getFunction((entry->getName() + ".weavec.safe").str());
     const FunctionBounds *callee = tableOf(module, *entry);
