@@ -69,6 +69,8 @@ struct PointerBounds {
   Kind kind = Kind::None;
   /// Counted: the parameter that holds the count, or -1 for `constant`.
   int count = -1;
+  /// Counted: the count's type is signed (a negative count is empty).
+  bool countSigned = false;
   std::uint64_t constant = 0;
   /// Counted: the bytes of one element (1 for `WEAVEC_SIZED_BY`).
   std::uint64_t elementSize = 1;

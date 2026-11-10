@@ -54,3 +54,7 @@ WEAVEC_SAFE other functions(unary f) {
 }
 
 WEAVEC_SAFE int present(unary f) { return f != NULL; }
+
+WEAVEC_SAFE void names(char *dst[4], const char *const src[4]) {
+  memcpy(dst, src, 4 * sizeof *dst); // const-ness of the pointees forges nothing
+}

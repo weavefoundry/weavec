@@ -33,7 +33,7 @@ A pointer in a safe function points to **one object** unless its declaration say
 | Annotation                                     | The pointer points to                                     |
 | ---------------------------------------------- | --------------------------------------------------------- |
 | none                                           | one object of its type                                    |
-| `WEAVEC_COUNTED_BY(n)`                         | `n` elements; `n` names an integer parameter, or a constant |
+| `WEAVEC_COUNTED_BY(n)`                         | `n` elements; `n` names an integer parameter, or is an integer constant or a macro that expands to one |
 | `WEAVEC_SIZED_BY(n)`                           | `n` bytes                                                 |
 | `WEAVEC_ENDED_BY(e)`                           | the elements before `e`, another pointer parameter        |
 | `WEAVEC_NULL_TERMINATED`                       | a string, up to and with its NUL                          |

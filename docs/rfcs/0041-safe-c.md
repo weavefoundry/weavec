@@ -983,4 +983,17 @@ They override the body.
     empty range, not a huge one; an `escape` error about a pointer loaded
     from a borrowed field suggests an offset, not an annotation that cannot
     help.
+15. **What sds's and tinyexpr's conversions corrected.** A bound may name an
+    object-like macro whose expansion is an integer literal
+    (`WEAVEC_COUNTED_BY(SIZE)`; `#n` stringizes before expansion, so the
+    checker expands it). A negative signed count is an empty range, not a
+    huge one that traps at entry. Address arithmetic is not a use for heap
+    placement (only what uses its result can be out of scope), and
+    `va_start`, `va_copy`, `va_end`, `llvm.objectsize` (fortification) and
+    other queries keep nothing, so they no longer place a local on the heap.
+    A copy between `const T *` and `T *` elements is a copy of one type: the
+    rules compare types without qualifiers at every pointer level. An
+    `escape` error about a borrowed field's pointer no longer suggests
+    `WEAVEC_LIFETIMEBOUND`, and one about a parameter mentions
+    `WEAVEC_BORROWED` fields.
 

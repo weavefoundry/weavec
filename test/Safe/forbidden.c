@@ -30,3 +30,6 @@ WEAVEC_SAFE int block(int x) {
 WEAVEC_SAFE int typo(const int *WEAVEC_COUNTED_BY(m) v, size_t n) { // expected-error {{'m' in the bound names no integer parameter of 'typo' [weavec-safe:bad-annotation]}}
   return v[0] + (int)n;
 }
+
+#define SLOTS 8
+WEAVEC_SAFE int slots(const int *WEAVEC_COUNTED_BY(SLOTS) v) { return v[SLOTS - 1]; }

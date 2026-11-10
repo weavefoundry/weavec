@@ -88,8 +88,19 @@ static bool mayOutlive(const ModuleContext &module, llvm::AllocaInst &alloca,
         return true;
       if (const auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(user)) {
         if (intrinsic->isLifetimeStartOrEnd() ||
-            intrinsic->isDebugOrPseudoInst())
+            intrinsic->isDebugOrPseudoInst() ||
+            llvm::isa<llvm::VAStartInst, llvm::VAEndInst, llvm::VACopyInst>(
+                intrinsic))
           continue;
+        // Queries that keep nothing (fortification's object size).
+        switch (intrinsic->getIntrinsicID()) {
+        case llvm::Intrinsic::objectsize:
+        case llvm::Intrinsic::is_constant:
+        case llvm::Intrinsic::prefetch:
+          continue;
+        default:
+          break;
+        }
         if (llvm::isa<llvm::MemIntrinsic>(intrinsic)) {
           if (scopes.mayBeOutOfScope(alloca, *user))
             return true;
@@ -97,13 +108,14 @@ static bool mayOutlive(const ModuleContext &module, llvm::AllocaInst &alloca,
         }
         return true;
       }
-      if (scopes.mayBeOutOfScope(alloca, *user))
-        return true;
+      // Address arithmetic is not a use: what uses its result is.
       if (llvm::isa<llvm::GetElementPtrInst, llvm::PHINode, llvm::SelectInst,
                     llvm::AddrSpaceCastInst>(user)) {
         derive(user);
         continue;
       }
+      if (scopes.mayBeOutOfScope(alloca, *user))
+        return true;
       if (llvm::isa<llvm::LoadInst, llvm::ICmpInst>(user))
         continue;
       if (const auto *store = llvm::dyn_cast<llvm::StoreInst>(user)) {
@@ -332,7 +344,13 @@ private:
       llvm::Value *value = arguments[static_cast<std::size_t>(bounds.count)];
       if (!value->getType()->isIntegerTy())
         return nullptr;
-      count = builder.CreateZExtOrTrunc(value, module.i64);
+      // A negative signed count is an empty range.
+      count = bounds.countSigned
+                  ? builder.CreateBinaryIntrinsic(
+                        llvm::Intrinsic::smax,
+                        builder.CreateSExtOrTrunc(value, module.i64),
+                        llvm::ConstantInt::get(module.i64, 0))
+                  : builder.CreateZExtOrTrunc(value, module.i64);
     }
     return builder.CreateMul(
         count, llvm::ConstantInt::get(module.i64, bounds.elementSize));

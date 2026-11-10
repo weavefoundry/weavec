@@ -30,11 +30,14 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Lex/Lexer.h"
+#include "clang/Lex/MacroInfo.h"
+#include "clang/Lex/Preprocessor.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -189,6 +192,21 @@ static bool holdsBorrowed(clang::QualType type, const clang::ASTContext &ast,
       });
 }
 
+/// Whether `a` and `b` are one type but for qualifiers, at every level of
+/// pointer: copying a `const char *` into a `char *` forges nothing.
+static bool sameShape(clang::QualType a, clang::QualType b) {
+  a = a.getCanonicalType().getUnqualifiedType();
+  b = b.getCanonicalType().getUnqualifiedType();
+  if (a->isPointerType() && b->isPointerType())
+    return sameShape(a->getPointeeType(), b->getPointeeType());
+  if (const auto *x = llvm::dyn_cast<clang::ConstantArrayType>(a.getTypePtr()))
+    if (const auto *y =
+            llvm::dyn_cast<clang::ConstantArrayType>(b.getTypePtr()))
+      return x->getSize() == y->getSize() &&
+             sameShape(x->getElementType(), y->getElementType());
+  return a == b;
+}
+
 /// `char`, `signed char`, `unsigned char` or `void`.
 static bool isByteType(clang::QualType type) {
   const clang::QualType canonical = type.getCanonicalType();
@@ -201,10 +219,12 @@ namespace {
 class Declarations {
 public:
   Declarations(clang::ASTContext &ast, clang::DiagnosticsEngine &diagnostics,
+               const clang::Preprocessor *preprocessor,
                std::function<void(clang::SourceLocation, llvm::StringRef,
                                   llvm::StringRef, llvm::StringRef)>
                    report)
-      : ast(ast), diagnostics(diagnostics), report(std::move(report)) {}
+      : ast(ast), diagnostics(diagnostics), preprocessor(preprocessor),
+        report(std::move(report)) {}
 
   PointerBounds boundsOf(const clang::FunctionDecl &function,
                          clang::QualType type, clang::SourceLocation at) {
@@ -262,6 +282,12 @@ public:
         bounds.constant = constant;
         continue;
       }
+      if (parameter < 0) {
+        if (const auto value = macroConstant(annotation.argument)) {
+          bounds.constant = *value;
+          continue;
+        }
+      }
       if (parameter < 0 ||
           !function.getParamDecl(static_cast<unsigned>(parameter))
                ->getType()
@@ -275,8 +301,40 @@ public:
         continue;
       }
       bounds.count = parameter;
+      bounds.countSigned =
+          function.getParamDecl(static_cast<unsigned>(parameter))
+              ->getType()
+              ->isSignedIntegerType();
     }
     return bounds;
+  }
+
+  /// A bound that names an object-like macro whose expansion is an integer
+  /// literal, perhaps in parentheses (`#define SIZE 21`).
+  [[nodiscard]] std::optional<std::uint64_t>
+  macroConstant(llvm::StringRef name) const {
+    if (preprocessor == nullptr || name.empty())
+      return std::nullopt;
+    const clang::IdentifierInfo *identifier =
+        preprocessor->getIdentifierInfo(name);
+    const clang::MacroInfo *macro =
+        identifier == nullptr ? nullptr
+                              : preprocessor->getMacroInfo(identifier);
+    if (macro == nullptr || macro->isFunctionLike())
+      return std::nullopt;
+    for (const clang::Token &token : macro->tokens()) {
+      if (token.isOneOf(clang::tok::l_paren, clang::tok::r_paren))
+        continue;
+      if (!token.is(clang::tok::numeric_constant))
+        return std::nullopt;
+      llvm::StringRef spelled(token.getLiteralData(), token.getLength());
+      spelled = spelled.rtrim("uUlL");
+      unsigned long long value = 0;
+      if (spelled.getAsInteger(0, value))
+        return std::nullopt;
+      return value;
+    }
+    return std::nullopt;
   }
 
   FunctionBounds tableOf(const clang::FunctionDecl &function) {
@@ -295,6 +353,7 @@ public:
 private:
   clang::ASTContext &ast;
   [[maybe_unused]] clang::DiagnosticsEngine &diagnostics;
+  const clang::Preprocessor *preprocessor;
   std::function<void(clang::SourceLocation, llvm::StringRef, llvm::StringRef,
                      llvm::StringRef)>
       report;
@@ -473,8 +532,13 @@ public:
           !llvm::isa<clang::ParmVarDecl>(origin)) {
         report(value->getExprLoc(), rule::Escape,
                borrowed(*origin) + " and cannot be returned",
-               "mark the parameter WEAVEC_LIFETIMEBOUND (after its name), so "
-               "that callers treat the result as borrowed from it");
+               llvm::isa<clang::ParmVarDecl>(origin)
+                   ? "mark the parameter WEAVEC_LIFETIMEBOUND (after its "
+                     "name), so that callers treat the result as borrowed "
+                     "from it"
+                   : "return an offset or a copy instead: a pointer from a "
+                     "borrowed field or a local holding one cannot leave "
+                     "the call");
         break;
       }
     return true;
@@ -896,8 +960,9 @@ private:
            field ? "keep an offset beside the borrowed field and advance the "
                    "offset, not the pointer, through a pointer to the struct"
                  : "mark the parameter WEAVEC_ESCAPES (after its '*'; callers "
-                   "then cannot pass a stack address), or store a copy of "
-                   "what it points to");
+                   "then cannot pass a stack address), store a copy of what "
+                   "it points to, or, to carry it in a local struct, make "
+                   "the field WEAVEC_BORROWED");
   }
 
   void single(clang::SourceLocation at, const clang::Expr *pointer) {
@@ -1063,8 +1128,7 @@ private:
         continue;
       const clang::Expr *source = call->getArg(i)->IgnoreParenImpCasts();
       if (source->getType()->isPointerType() &&
-          clang::ASTContext::hasSameUnqualifiedType(
-              source->getType()->getPointeeType(), from))
+          sameShape(source->getType()->getPointeeType(), from))
         return true;
     }
     return false;
@@ -1123,7 +1187,10 @@ public:
       rejectCxx(ast.getTranslationUnitDecl(), report);
       return;
     }
-    Declarations declarations(ast, diagnostics, report);
+    Declarations declarations(
+        ast, diagnostics,
+        compiler.hasPreprocessor() ? &compiler.getPreprocessor() : nullptr,
+        report);
     std::vector<const clang::FunctionDecl *> safe;
     collect(ast.getTranslationUnitDecl(), ast, declarations, safe);
     for (const clang::FunctionDecl *function : safe)
