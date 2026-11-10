@@ -12,6 +12,24 @@ milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
+## Proposed: RFC 0041 — Safe C
+
+Design: [RFC 0041 — Safe C](rfcs/0041-safe-c.md) (Draft). WeaveC makes
+unmodified C safe at run time, but gives nothing to iterate on at compile
+time and costs 1.7 to 1.9 times the reference build, so a project
+choosing between rewriting in Rust and staying in C has no reason to
+rewrite into C. RFC 0041 proposes safe functions: C checked against a few
+local rules at compile time, with errors an agent can act on, spatially
+safe by bounds that every pointer carries (the model of Clang's
+`-fbounds-safety`) and temporally safe by the existing sweep, with bounds
+checks in place of guards. Guarded code is unchanged. C++ comes in a
+later RFC, but S0 converts a C++ library on paper first, so the C design
+is changed before it is built if it would not extend. The stages, once
+accepted: S0 the rules on paper, the C++ check and a baseline, S1 the
+checker, S2 bounds
+in IR, S3 the boundary with guarded code, S4 library calls, S5 conversions
+by agents, S6 held-out conversions and the gates.
+
 ## Now: RFC 0040 — Reports you can act on
 
 Design: [RFC 0040 — Reports you can act on](rfcs/0040-actionable-reports.md)

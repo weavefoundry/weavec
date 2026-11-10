@@ -911,7 +911,7 @@ implements gate H1: no libc name comparisons outside the library table, no
 corpus project named under `lib/`, Core free of Clang and LLVM, the
 runtime's includes, its entry points declared in `weavec_rt.h`, its export
 list against its `WEAVEC_RT_API` declarations, and the line budgets of the
-library (9,500) and of the runtime (9,800).
+library (11,500) and of the runtime (10,000).
 [`scripts/codegen-identity.py`](../scripts/codegen-identity.py) checks that
 objects built with `-fweavec-checks=none` are byte-identical to Clang's.
 

@@ -64,6 +64,7 @@ export default defineConfig({
             item('Adopt incrementally', 'guides/adoption'),
             item('Build integration', 'guides/build-integration'),
             item('Unsafe boundaries', 'guides/unsafe'),
+            item('Safe C', 'guides/safe-c'),
           ],
         },
         {

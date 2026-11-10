@@ -949,7 +949,9 @@ void weavecRtFailObject(const char *kind, uintptr_t address, uint64_t width,
     putPlace(&line, address, lo, hi);
     put(&line, "the ");
     putUnsigned(&line, hi - lo, 10);
-    put(&line, "-byte destination at ");
+    put(&line, strcmp(kind, "pointer-out-of-bounds") == 0
+                   ? "-byte bounds of the pointer at "
+                   : "-byte destination at ");
     putHex(&line, lo);
     *line.at = 0;
     finish();

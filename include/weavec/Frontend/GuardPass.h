@@ -58,6 +58,7 @@ class CodeGenOptions;
 namespace weavec::frontend {
 
 class UnsafeRegions;
+struct SafeUnit;
 
 struct GuardOptions {
   /// `-fweavec-checks=`: a failed guard traps, reports and continues, or
@@ -71,6 +72,9 @@ struct GuardOptions {
   /// RFC 0037 §8: whether arithmetic from a pointer is checked against its
   /// object's color (`-fno-weavec-colors` turns it off).
   bool colors = true;
+  /// RFC 0041: the unit's safe functions and the bounds its declarations
+  /// give; null for none.
+  std::shared_ptr<const SafeUnit> safe;
   /// RFC 0039, amendment 13: a C++ unit, whose markers the inliner prices
   /// as one instruction.
   bool cheapMarkers = false;

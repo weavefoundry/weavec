@@ -612,6 +612,17 @@ WEAVEC_RT_API WEAVEC_RT_SLOW void
 __weavec_rt_limit_fail(uintptr_t address, uint64_t width, uint64_t limit,
                        const struct __weavec_rt_site *site);
 
+/* RFC 0041 section 4: an access of `width` bytes at `address` in a safe
+ * function, outside its pointer's bounds [lo, hi). */
+WEAVEC_RT_API WEAVEC_RT_SLOW void
+__weavec_rt_bounds_fail(uintptr_t address, uint64_t width, uintptr_t lo,
+                        uintptr_t hi, const struct __weavec_rt_site *site);
+/* RFC 0041 section 5: a safe function's escaping parameter must not point
+ * into the calling thread's stack (`stack-escape`). */
+WEAVEC_RT_API void
+__weavec_rt_escape_check(uintptr_t address,
+                         const struct __weavec_rt_site *site);
+
 /* RFC 0039 section 6: a failed check of the C++ library (libc++'s trap,
  * libstdc++'s assertion function, libc++'s verbose abort), reported as
  * `library-assertion`. */
@@ -765,7 +776,7 @@ void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
 /* The library's interface version (libweavec_rt.so.<abi>,
  * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
  * encoding or a site record changes. */
-#define WEAVEC_RT_ABI 40
+#define WEAVEC_RT_ABI 41
 
 /*===-- Internal -----------------------------------------------------------===*/
 

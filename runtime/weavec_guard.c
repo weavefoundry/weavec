@@ -636,6 +636,23 @@ WEAVEC_RT_SLOW void __weavec_rt_limit_fail(uintptr_t address, uint64_t width,
                      address + limit, site);
 }
 
+/*===-- Safe functions (RFC 0041 sections 4 and 5) -------------------------===*/
+
+WEAVEC_RT_SLOW void __weavec_rt_bounds_fail(uintptr_t address, uint64_t width,
+                                            uintptr_t lo, uintptr_t hi,
+                                            const struct __weavec_rt_site *site) {
+  weavecRtFailObject("pointer-out-of-bounds", address, width, lo, hi, site);
+}
+
+void __weavec_rt_escape_check(uintptr_t address,
+                              const struct __weavec_rt_site *site) {
+  uintptr_t low = 0;
+  uintptr_t high = 0;
+  weavecRtOwnStack(&low, &high);
+  if (address >= low && address < high)
+    weavecRtFail("stack-escape", address, 0, site);
+}
+
 /*===-- Array bounds (section 5.4) -----------------------------------------===*/
 
 /* Clang's `array-bounds` instrumentation calls these with its own site

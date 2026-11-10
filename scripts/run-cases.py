@@ -69,10 +69,11 @@ KINDS = (
     "index-out-of-bounds", "double-free", "invalid-free", "alloc-release-mismatch",
     "invalid-access", "overlapping-copy",
     "memory-fault", "stack-use-after-return", "container-overflow", "library-assertion",
+    "pointer-out-of-bounds", "stack-escape",
 )
 LEDGER_REASONS = {
     "GUARDED": ("access", "range", "string", "checked-call", "loop-range"),
-    "PROVEN": ("in-bounds", "dominated", "merged", "optimized"),
+    "PROVEN": ("in-bounds", "dominated", "merged", "optimized", "safe"),
     "UNGUARDED": ("unsafe",),
 }
 

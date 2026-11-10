@@ -408,6 +408,20 @@ llvm::FunctionCallee ModuleContext::limitFailFunction() {
   return callee;
 }
 
+llvm::FunctionCallee ModuleContext::boundsFailFunction() {
+  llvm::FunctionCallee callee = runtime(
+      "bounds_fail", llvm::FunctionType::get(llvm::Type::getVoidTy(context),
+                                             {i64, i64, i64, i64, ptr}, false));
+  slowPath(callee, module);
+  return callee;
+}
+
+llvm::FunctionCallee ModuleContext::escapeCheckFunction() {
+  return runtime("escape_check",
+                 llvm::FunctionType::get(llvm::Type::getVoidTy(context),
+                                         {i64, ptr}, false));
+}
+
 llvm::GlobalVariable *ModuleContext::shadowDescriptor() {
   if (descriptor != nullptr)
     return descriptor;
@@ -1078,7 +1092,12 @@ llvm::PreservedAnalyses GuardInsertPass::run(llvm::Module &module,
   guard::thunkLibraryAddresses(context, module);
   for (llvm::Function &function : module)
     if (!guard::skips(function)) {
+      const bool safe = guard::isSafe(context, function);
+      if (safe)
+        guard::prepareSafe(context, function);
       guard::insertGuards(context, function);
+      if (safe)
+        guard::boundSafe(context, function);
       guard::verified(function);
     }
   return llvm::PreservedAnalyses::none();
