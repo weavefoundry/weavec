@@ -529,8 +529,9 @@ private:
       bytes = bytesOf(callee->result, call, builder, arguments);
       if (bytes == nullptr)
         bytes = llvm::ConstantInt::get(module.i64, 0);
-      // A function that is not safe is trusted only as far as the shadow.
-      if (!callee->safe) {
+      // A declared result bound is checked against the shadow, a safe
+      // callee's too: no rule makes a function return what it declares.
+      {
         builder.SetCurrentDebugLocation(call->getDebugLoc());
         const unsigned row =
             module.row(function, call->getDebugLoc(), "result", 0,

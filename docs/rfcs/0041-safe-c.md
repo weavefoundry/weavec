@@ -1004,4 +1004,16 @@ They override the body.
     one for `WEAVEC_ENDED_BY`), a literal or such a macro. A copy whose
     operands are cast to `void *` explicitly is a copy of their types. An
     error names a variable or field a macro parenthesized by its name.
+17. **What cJSON's conversion corrected.** A declared result bound is
+    checked against the shadow where a safe caller receives it, a safe
+    callee's too: no rule makes a function return what it declares, and a
+    callee that returned 4 bytes for `WEAVEC_COUNTED_BY(n)` let its caller
+    overflow silently. A pointer loaded from a borrowed field is borrowed
+    for as long as the struct it came from: its origins are those of the
+    struct's pointer or local (so it may be returned through a
+    `lifetimebound` parameter), or the field itself when those are not
+    known. An integer read from a struct that holds borrowed pointers
+    carries no origin. cJSON's `misc_tests` links stack nodes through
+    `WEAVEC_ESCAPES` parameters and stops with `stack-escape`: an accepted
+    false trap, since the annotation promises a pointer that may be kept.
 

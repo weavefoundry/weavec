@@ -102,7 +102,7 @@ WEAVEC_SAFE struct node *second(struct node *n WEAVEC_LIFETIMEBOUND) {
 }
 ```
 
-An escaping parameter must not point into a stack; the program stops with `stack-escape` if a caller passes one. A pointer loaded from memory (`n->next`) is not borrowed.
+An escaping parameter must not point into a stack; the program stops with `stack-escape` if a caller passes one, even when the caller's object happens to outlive what the function did with it (a test that links stack nodes into a list and unlinks them before returning): `WEAVEC_ESCAPES` is a promise about the argument, checked when the function is entered. A pointer loaded from memory (`n->next`) is not borrowed.
 
 A parser that keeps its input in a cursor struct needs a struct that holds a borrowed pointer. Mark the field `WEAVEC_BORROWED`: a borrowed pointer may then be stored in it when the struct is a local variable (`buffer.content = text`, not through a pointer), a pointer loaded from it is borrowed, and the local's address is borrowed too, so it can be passed down but not kept.
 

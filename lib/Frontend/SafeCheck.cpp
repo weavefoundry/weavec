@@ -833,6 +833,10 @@ private:
 
   void addOrigins(const clang::Expr *expression, Origins &origins) const {
     const clang::Expr *e = expression->IgnoreParens();
+    // An integer (`c.offset`, `end - s`) carries no pointer.
+    if (!e->getType()->isPointerType() && !e->getType()->isArrayType() &&
+        !holdsBorrowed(e->getType(), ast))
+      return;
     if (const auto *cast = llvm::dyn_cast<clang::CastExpr>(e)) {
       if (cast->getCastKind() != clang::CK_ArrayToPointerDecay)
         addOrigins(cast->getSubExpr(), origins);
@@ -862,10 +866,22 @@ private:
     }
     if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(e)) {
       if (hasAnnotation(annotationsOf(member->getMemberDecl()->getType(), ast),
-                        BorrowedAnnotation))
-        origins.insert(member->getMemberDecl());
-      else if (!member->isArrow())
+                        BorrowedAnnotation)) {
+        // Borrowed for as long as the struct it was loaded from: the
+        // origins of the struct's pointer or local, or the field itself
+        // when those are not known.
+        Origins base;
+        if (member->isArrow())
+          addOrigins(member->getBase(), base);
+        else
+          addAddressOrigins(member->getBase(), base);
+        if (base.empty())
+          origins.insert(member->getMemberDecl());
+        else
+          origins.insert(base.begin(), base.end());
+      } else if (!member->isArrow()) {
         addOrigins(member->getBase(), origins);
+      }
       return;
     }
     if (const auto *op = llvm::dyn_cast<clang::UnaryOperator>(e)) {

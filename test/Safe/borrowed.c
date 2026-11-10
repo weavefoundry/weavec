@@ -19,8 +19,29 @@ WEAVEC_SAFE int peek(parse_buffer *b) {
 }
 
 WEAVEC_SAFE const unsigned char *leak(parse_buffer *b) {
-  kept_bytes = b->content;        // expected-error {{'content' was loaded from a WEAVEC_BORROWED field, so it is borrowed, and cannot be stored where it outlives the call}}
-  return b->content;              // expected-error {{and cannot be returned}}
+  kept_bytes = b->content;        // expected-error {{'b' is borrowed for this call and cannot be stored where it outlives the call}}
+  return b->content;              // expected-error {{'b' is borrowed for this call and cannot be returned}}
+}
+
+// A pointer loaded from a borrowed field is borrowed as long as the struct
+// it came from: through a lifetimebound parameter it may be returned.
+WEAVEC_SAFE const unsigned char *at(parse_buffer *b WEAVEC_LIFETIMEBOUND) {
+  return b->content + b->offset;
+}
+
+static const unsigned char *global_bytes;
+WEAVEC_SAFE void from_global(void) {
+  extern parse_buffer *shared;
+  global_bytes = shared->content; // expected-error {{'content' was loaded from a WEAVEC_BORROWED field, so it is borrowed, and cannot be stored where it outlives the call}}
+}
+
+typedef struct { size_t position; int code; } report;
+WEAVEC_SAFE size_t integers(const unsigned char *WEAVEC_COUNTED_BY(n) v, size_t n) {
+  parse_buffer c = {v, n, 0};
+  report r;
+  r.position = c.offset;          // an integer carries no pointer
+  r.code = 0;
+  return r.position;
 }
 
 WEAVEC_SAFE int parse(const unsigned char *WEAVEC_COUNTED_BY(n) value, size_t n) {
