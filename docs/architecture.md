@@ -726,7 +726,7 @@ LLVM's `Symbolize` library), found at `<prefix>/bin/weavec-cc` beside the
 runtime's `<prefix>/lib/weavec`, started once with `posix_spawn` and kept;
 on Darwin `/usr/bin/atos` per module, which reads the debug map to the
 objects' line tables, falling back to `weavec-cc`. It answers in
-`llvm-symbolizer`'s format and gets two seconds per report. A set-user-ID
+`llvm-symbolizer`'s format and gets five seconds per report. A set-user-ID
 program, `WEAVEC_RT_SYMBOLIZE=0` or a failed spawn leaves a frame as
 `in <function> (<module>+0x<offset>)`, which `weavec-cc --weavec-symbolize
 <log>` rewrites later. So that frames carry lines, an enforcing compile

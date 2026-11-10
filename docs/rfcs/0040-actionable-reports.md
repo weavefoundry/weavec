@@ -792,7 +792,7 @@ named.
 - **G5. Faults and fallbacks.** A fault prints a symbolized stack; with
   the toolchain moved away (no symbolizer), with `WEAVEC_RT_SYMBOLIZE=0`,
   from a set-user-ID program, and with a symbolizer that never answers,
-  a report prints module-and-offset frames within three seconds and the
+  a report prints module-and-offset frames within six seconds (amendment 13) and the
   program stops as it does today.
 
 **Detection**
@@ -930,6 +930,12 @@ override the body.
     ledger: counted as `checked-call` rows they lowered the corpus's
     `provenShare` ratchet with no change in what is proven.
 
+13. **The symbolizer gets five seconds (§4.4; G5).** On a loaded macOS
+    runner (lit's tests in parallel) a cold `atos` took more than two
+    seconds, and reports fell back to modules and offsets. A report gives
+    its symbolizer five seconds; G5's limit for one that never answers is
+    six seconds.
+
 ## Measured gates
 
 Measured on 2026-11-08, darwin-arm64 (the assessment's machine) and
@@ -952,7 +958,8 @@ CI's, after this change lands.
   release helper, named by `stop`), and the gate has no special case left.
 - **G5.** A fault prints a symbolized stack; with `WEAVEC_RT_SYMBOLIZE=0`,
   a missing symbolizer and one that never answers, frames name module and
-  offset and the report ends within the two seconds (`report-fault.c`).
+  offset and the report ends within the five seconds of amendment 13
+  (`report-fault.c`).
   The set-user-ID path and a moved toolchain were not run.
 - **G6.** The case suites pass with their verdicts read from JSON on
   darwin-arm64 and linux-aarch64; the 52 detection probes of the

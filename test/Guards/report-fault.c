@@ -1,7 +1,7 @@
 // RFC 0040 §5.6, §4.4: a fault prints its stack from the faulting
 // instruction; without a symbolizer (WEAVEC_RT_SYMBOLIZE=0, one that is
 // missing, one that never answers) frames name their module and offset,
-// within the two seconds a report gives a symbolizer.
+// within the five seconds a report gives a symbolizer.
 // RUN: %weavec_cc -O2 %s -o %t
 // RUN: not --crash %t 2>&1 | FileCheck %s
 // RUN: env WEAVEC_RT_SYMBOLIZE=0 not --crash %t 2>&1 | FileCheck %s --check-prefix=PLAIN

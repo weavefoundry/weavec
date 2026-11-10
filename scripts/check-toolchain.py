@@ -156,6 +156,11 @@ class Checker:
             stopped = self.run(stale)
             self.check(stopped.returncode != 0 and "weavec: heap-use-after-free at stale.c:" in stopped.stderr,
                        "stale stops with heap-use-after-free")
+            # RFC 0040 G9: the access's, the release's and the allocation's
+            # frames named by the toolchain's symbolizer, without -g.
+            named = re.findall(r"#\d+ 0x[0-9a-f]+ in \S+ \S*stale\.c:\d+", stopped.stderr)
+            self.check(len(named) >= 3, "stale's report names its frames' lines" + (
+                "" if len(named) >= 3 else f": {stopped.stderr.strip()[:600]}"))
 
     def cxx_program(self) -> None:
         (self.work / "cxx.cpp").write_text(CXX)
@@ -170,8 +175,8 @@ class Checker:
         self.check(stopped.returncode != 0 and "weavec: container-overflow at cxx.cpp:" in stopped.stderr,
                    "cxx 1 stops with container-overflow")
         stopped = self.run(program, "2")
-        self.check(stopped.returncode != 0 and "allocated by operator new[] and released by operator delete"
-                   in stopped.stderr, "cxx 2 stops a release by the wrong form")
+        self.check(stopped.returncode != 0 and "weavec: alloc-release-mismatch at cxx.cpp:" in stopped.stderr
+                   and ": allocated by operator new[]" in stopped.stderr, "cxx 2 stops a release by the wrong form")
 
     def shared_library(self) -> None:
         (self.work / "lib.c").write_text(LIBRARY)

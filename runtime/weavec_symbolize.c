@@ -13,7 +13,7 @@
 |* executable to its objects' line tables, falling back to weavec-cc. Both
 |* answer each address with lines `function` and `file:line[:column]` (more
 |* for inlined calls) and a blank line. Without a symbolizer (none found, a
-|* set-user-ID program, WEAVEC_RT_SYMBOLIZE=0, two seconds gone) a frame is
+|* set-user-ID program, WEAVEC_RT_SYMBOLIZE=0, five seconds gone) a frame is
 |* named by its module and offset and by the symbol `dladdr` finds.
 |*
 \*===----------------------------------------------------------------------===*/
@@ -521,7 +521,7 @@ static void fallBack(uintptr_t pc, struct weavecRtFrameInfo *frame) {
 
 void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
                        struct weavecRtFrameInfo *out) {
-  const uint64_t deadline = now() + 2000;
+  const uint64_t deadline = now() + 5000;
   unsigned done[256];
   unsigned i;
   struct Module modules[256];
