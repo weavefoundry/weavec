@@ -183,7 +183,7 @@ static bool inBounds(const Access &access, llvm::ScalarEvolution &evolution,
 /// The runtime's wrappers of the library table's rows that release or
 /// reallocate (`free_at`, `munmap`: RFC 0040 §5.5), by their names.
 static const llvm::StringSet<> &releasingWrappers() {
-  static const llvm::StringSet<> names = [] {
+  static const llvm::StringSet<> Names = [] {
     llvm::StringSet<> found;
     for (const core::LibraryEntry &entry :
          core::LibrarySpec::shipped().entries())
@@ -195,7 +195,7 @@ static const llvm::StringSet<> &releasingWrappers() {
         found.insert("__weavec_rt_" + entry.wrapper->name);
     return found;
   }();
-  return names;
+  return Names;
 }
 
 /// Whether an instruction may release memory or change the shadow of an
