@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: Install WeaveC from a release toolchain or the container image on macOS or Linux, or build it from source.
+description: Install WeaveC from a release toolchain, Homebrew or the container image on macOS or Linux, or build it from source.
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
@@ -50,6 +50,13 @@ xattr -dr com.apple.quarantine weavec-X.Y.Z-darwin-arm64
 ```
 
 Add the `PATH` export to your shell configuration to keep it in new terminals.
+
+</TabItem>
+<TabItem label="Homebrew">
+
+```sh
+brew install weavefoundry/tap/weavec
+```
 
 </TabItem>
 <TabItem label="Container">

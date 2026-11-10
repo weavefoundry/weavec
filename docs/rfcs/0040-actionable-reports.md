@@ -937,6 +937,14 @@ override the body.
     its symbolizer five seconds; G5's limit for one that never answers is
     six seconds.
 
+14. **The tap exists (§0.4, §10).** The owner created
+    `weavefoundry/homebrew-tap` on 2026-11-10, so the README's and the
+    installation page's Homebrew lines stay. The tap holds every
+    WeaveFoundry project's formula: `HOMEBREW_TAP_TOKEN` is an
+    organization secret the projects share, and the release workflow's
+    push rebases onto another project's and retries. The tap was seeded
+    with v0.20.0's `weavec.rb`.
+
 ## Measured gates
 
 Measured on 2026-11-08, darwin-arm64 (the assessment's machine) and

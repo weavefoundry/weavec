@@ -158,7 +158,7 @@ RFC 0038 makes the runtime one shared library per process, so shared libraries a
 
 ## Installing
 
-Each [release](https://github.com/weavefoundry/weavec/releases) publishes a self-contained toolchain for macOS on Apple silicon and Linux on x86-64 and AArch64, `weavec-X.Y.Z-<os>-<arch>.tar.xz`: unpack it anywhere and put its `bin` on `PATH`. It needs no LLVM installation, only the platform's linker and C library headers (Xcode's Command Line Tools, or `build-essential`). Or the container image `ghcr.io/weavefoundry/weavec:X.Y.Z`. See [installation](docs/pages/getting-started/installation.mdx).
+Each [release](https://github.com/weavefoundry/weavec/releases) publishes a self-contained toolchain for macOS on Apple silicon and Linux on x86-64 and AArch64, `weavec-X.Y.Z-<os>-<arch>.tar.xz`: unpack it anywhere and put its `bin` on `PATH`. It needs no LLVM installation, only the platform's linker and C library headers (Xcode's Command Line Tools, or `build-essential`). Or `brew install weavefoundry/tap/weavec`, or the container image `ghcr.io/weavefoundry/weavec:X.Y.Z`. See [installation](docs/pages/getting-started/installation.mdx).
 
 ```sh
 tar -xJf weavec-X.Y.Z-linux-x86_64.tar.xz -C "$HOME/.local/opt"
