@@ -1,6 +1,7 @@
 // RFC 0039 §4: the runtime's operator new and delete record which form
 // allocated a block; a release by another form, or a sized delete of
-// another size, stops the program as an invalid release. One the heap
+// another size, stops the program as an alloc-release-mismatch (RFC 0040
+// §5.5). One the heap
 // cannot serve throws std::bad_alloc (the C++ library's own operator new
 // does), and a nothrow one returns null. An array of a type with a
 // destructor carries its count before the elements; Clang's Itanium ABI
@@ -58,22 +59,22 @@ int main(int argc, char **argv) {
   for (int i = 0; i < 100; ++i)
     owned.push_back(std::make_unique<Base>());
   if (strcmp(how, "array") == 0) {
-    // ARRAY: weavec: invalid release of 0x{{[0-9a-f]+}}: allocated by operator new[] and released by operator delete
+    // ARRAY: weavec: alloc-release-mismatch at {{.*}}cxx-new-delete.cpp:[[@LINE+3]]:{{[0-9]+}}: operator delete of 0x{{[0-9a-f]+}}: allocated by operator new[]
     Base *p = new Base[2];
     use(p);
     delete p;
   } else if (strcmp(how, "free") == 0) {
-    // FREE: weavec: invalid release of 0x{{[0-9a-f]+}}: allocated by operator new and released by free
+    // FREE: weavec: alloc-release-mismatch at {{.*}}cxx-new-delete.cpp:[[@LINE+3]]:{{[0-9]+}}: free of 0x{{[0-9a-f]+}}: allocated by operator new
     int *p = new int(3);
     use(p);
     free(p);
   } else if (strcmp(how, "malloc") == 0) {
-    // MALLOC: weavec: invalid release of 0x{{[0-9a-f]+}}: allocated by malloc and released by operator delete
+    // MALLOC: weavec: alloc-release-mismatch at {{.*}}cxx-new-delete.cpp:[[@LINE+3]]:{{[0-9]+}}: operator delete of 0x{{[0-9a-f]+}}: allocated by malloc
     int *p = static_cast<int *>(malloc(4));
     use(p);
     delete p;
   } else if (strcmp(how, "sized") == 0) {
-    // SIZED: weavec: invalid release of 0x{{[0-9a-f]+}}: released by operator delete with size 16 for a 48-byte object
+    // SIZED: weavec: alloc-release-mismatch at {{.*}}cxx-new-delete.cpp:[[@LINE+3]]:{{[0-9]+}}: operator delete of 0x{{[0-9a-f]+}}: size 16 for a 48-byte block
     Base *p = new Derived;
     use(p);
     delete p;
@@ -89,7 +90,7 @@ int main(int argc, char **argv) {
     } catch (const std::bad_alloc &) {
     }
   } else if (strcmp(how, "realloc") == 0) {
-    // REALLOC: weavec: invalid release of 0x{{[0-9a-f]+}}: allocated by operator new[] and released by realloc
+    // REALLOC: weavec: alloc-release-mismatch at {{.*}}cxx-new-delete.cpp:[[@LINE+3]]:{{[0-9]+}}: realloc of 0x{{[0-9a-f]+}}: allocated by operator new[]
     char *p = new char[16];
     use(p);
     use(realloc(p, 64));

@@ -157,7 +157,7 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
 }
 
 llvm::StringRef driverFlagsHelp() {
-  return R"(WeaveC flags of weavec-cc (RFC 0037); every other flag is Clang's.
+  return R"(WeaveC flags of weavec-cc (RFC 0037, RFC 0040); every other flag is Clang's.
 
   -fweavec, -fno-weavec
       Guard memory accesses (the default), or compile as plain Clang.
@@ -183,6 +183,11 @@ llvm::StringRef driverFlagsHelp() {
       Where a linked image finds the runtime's library (libweavec_rt):
       <dir> ($ORIGIN, @loader_path or an installation path) instead of the
       toolchain's runtime directory, or no rpath at all.
+  --weavec-symbolize [<log>...]
+      The runtime's symbolizer: answer `CODE <module> <address>` lines on
+      standard input with each address's functions and lines; with a saved
+      report's path, name the frames it could only give as a module and an
+      offset (RFC 0040).
 )";
 }
 
@@ -751,6 +756,44 @@ wantsLibraryChecks(llvm::ArrayRef<const char *> args, bool cxx) {
 
 /// RFC 0039 §1: whether the driver runs as `weavec-c++` (Clang's `g++`
 /// mode), by the name it was invoked by or `--driver-mode=`.
+/// RFC 0040 §4.5, §8: what a report's stacks need of an enforcing
+/// compile: line tables unless the command line asks for debug information
+/// or ends in -g0; the locals' names for the frame descriptors; frame
+/// pointers on x86-64 Linux, the one target whose default omits them.
+static std::vector<const char *>
+reportFlags(llvm::ArrayRef<const char *> args) {
+  std::vector<const char *> flags;
+  bool debug = false;
+  bool names = false;
+  bool omits = false;
+  const std::string host = llvm::sys::getDefaultTargetTriple();
+  llvm::StringRef target = host;
+  for (std::size_t i = 1; i < args.size(); ++i) {
+    const llvm::StringRef arg = args[i];
+    if (arg.starts_with("-g") && arg != "-gsplit-dwarf" &&
+        !arg.starts_with("-gno-") && !arg.starts_with("-gz") &&
+        !arg.starts_with("-gcolumn") && !arg.starts_with("-gpubnames"))
+      debug = true;
+    else if (arg == "-fdiscard-value-names" ||
+             arg == "-fno-discard-value-names")
+      names = true;
+    else if (arg == "-fomit-frame-pointer" || arg == "-fno-omit-frame-pointer")
+      omits = true;
+    else if (arg.starts_with("--target="))
+      target = arg.drop_front(9);
+    else if ((arg == "-target" || arg == "--target") && i + 1 < args.size())
+      target = args[i + 1];
+  }
+  if (!debug)
+    flags.push_back("-gline-tables-only");
+  if (!names)
+    flags.push_back("-fno-discard-value-names");
+  const llvm::Triple triple(llvm::Triple::normalize(target));
+  if (!omits && triple.getArch() == llvm::Triple::x86_64 && triple.isOSLinux())
+    flags.push_back("-fno-omit-frame-pointer");
+  return flags;
+}
+
 static bool cxxDriverMode(llvm::ArrayRef<const char *> argv) {
   bool cxx = llvm::sys::path::stem(argv[0]).ends_with("++");
   for (const char *arg : argv.drop_front()) {
@@ -1048,6 +1091,8 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
     const llvm::StringRef mode = argv[1];
     if (mode == "-cc1")
       return runCc1(argv.drop_front(2), argv[0]);
+    if (mode == "--weavec-symbolize")
+      return runSymbolizer(argv.drop_front(2));
     if (mode.starts_with("-cc1")) {
       llvm::errs() << "weavec-cc: error: '" << mode
                    << "' is Clang's tool, which weavec-cc does not include; "
@@ -1145,10 +1190,13 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
         add(include);
       }
       add("-D__WEAVEC__=1");
-      if (weavec.enforces())
+      if (weavec.enforces()) {
         for (const std::string &macro :
              wantsLibraryChecks(clangArgs, compilesCxx(clangArgs, cxxMode)))
           add("-D" + macro);
+        for (const char *flag : reportFlags(clangArgs))
+          add(flag);
+      }
     }
   }
   if (!hasSysroot) {

@@ -87,6 +87,10 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress);
 /// proper with WeaveC's guard passes and unsafe-region collector.
 int runCc1(llvm::ArrayRef<const char *> argv, const char *argv0);
 
+/// RFC 0040 §4.2: `weavec-cc --weavec-symbolize [<log>...]`, the runtime's
+/// symbolizer (no operand) or a saved report's rewriter.
+int runSymbolizer(llvm::ArrayRef<const char *> operands);
+
 } // namespace weavec::frontend
 
 #endif // WEAVEC_FRONTEND_DRIVER_H

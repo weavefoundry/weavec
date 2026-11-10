@@ -18,6 +18,7 @@
 #define _GNU_SOURCE 1
 #endif
 
+#define WEAVEC_RT_TEST 1 /* (its code outside the runtime's section) */
 #include "../weavec_rt.h"
 
 #include <errno.h>
@@ -885,7 +886,14 @@ static void wildFree(void) {
 }
 
 static void testInvalidReleases(void) {
+  char line[256];
   CHECK(trapsIn(doubleFree));
+  firstLine(doubleFree, line, sizeof line);
+  CHECK(strstr(line, "weavec: double-free at ") == line);
+  CHECK(strstr(line, ": free of 0x") != NULL);
+  firstLine(interiorFree, line, sizeof line);
+  CHECK(strstr(line, "weavec: invalid-free at ") == line);
+  CHECK(strstr(line, "-byte heap block at 0x") != NULL);
   CHECK(trapsIn(interiorFree));
   CHECK(trapsIn(reallocDead));
   CHECK(trapsIn(wildFree));
@@ -1154,11 +1162,11 @@ static unsigned char aTrackedGlobal[64] __attribute__((aligned(32)));
 
 static void testGlobals(void) {
   const struct __weavec_rt_global global = {(uintptr_t)aTrackedGlobal, 20, 64};
-  __weavec_rt_globals_register(&global, 1);
+  __weavec_rt_globals_register(&global, 1, NULL, 0);
   CHECK(addressable(aTrackedGlobal, 20));
   CHECK(!addressable(aTrackedGlobal, 21));
   CHECK(!addressable(aTrackedGlobal + 40, 1));
-  __weavec_rt_globals_unregister(&global, 1);
+  __weavec_rt_globals_unregister(&global, 1, NULL, 0);
   CHECK(addressable(aTrackedGlobal, 64));
 }
 
@@ -1221,53 +1229,53 @@ static void *formBlock(unsigned form, size_t size) {
 }
 static void newByFree(void) { free(formBlock(WeavecRtFormNew, 32)); }
 static void arrayByDelete(void) {
-  weavecRtReleaseForm(formBlock(WeavecRtFormNewArray, 32), WeavecRtFormNew, SIZE_MAX, NULL);
+  weavecRtReleaseForm(formBlock(WeavecRtFormNewArray, 32), WeavecRtFormNew, SIZE_MAX, NULL, NULL);
 }
 static void mallocByDelete(void) {
-  weavecRtReleaseForm(opaque(malloc(32)), WeavecRtFormNew, SIZE_MAX, NULL);
+  weavecRtReleaseForm(opaque(malloc(32)), WeavecRtFormNew, SIZE_MAX, NULL, NULL);
 }
 static void newByRealloc(void) {
   (void)opaque(realloc(formBlock(WeavecRtFormNewArray, 32), 64));
 }
 static void hugeArrayByDelete(void) {
   weavecRtReleaseForm(formBlock(WeavecRtFormNewArray, (size_t)300 << 20),
-                      WeavecRtFormNew, SIZE_MAX, NULL);
+                      WeavecRtFormNew, SIZE_MAX, NULL, NULL);
 }
 static void sizedWrongly(void) {
-  weavecRtReleaseForm(formBlock(WeavecRtFormNew, 48), WeavecRtFormNew, 16, NULL);
+  weavecRtReleaseForm(formBlock(WeavecRtFormNew, 48), WeavecRtFormNew, 16, NULL, NULL);
 }
 
 static void testNewDeleteForms(void) {
   char line[256];
   void *p = formBlock(WeavecRtFormNew, 24);
   CHECK(inArena(p) && __weavec_rt_size(p) == 24);
-  weavecRtReleaseForm(p, WeavecRtFormNew, SIZE_MAX, NULL);
+  weavecRtReleaseForm(p, WeavecRtFormNew, SIZE_MAX, NULL, NULL);
   weavecRtReleaseForm(formBlock(WeavecRtFormNewArray, 40),
-                      WeavecRtFormNewArray, SIZE_MAX, NULL);
-  weavecRtReleaseForm(formBlock(WeavecRtFormNew, 40), WeavecRtFormAny, SIZE_MAX, NULL);
+                      WeavecRtFormNewArray, SIZE_MAX, NULL, NULL);
+  weavecRtReleaseForm(formBlock(WeavecRtFormNew, 40), WeavecRtFormAny, SIZE_MAX, NULL, NULL);
   p = formBlock(WeavecRtFormMalloc, 8);
   weavecRtSetForm(p, WeavecRtFormNew);
-  weavecRtReleaseForm(p, WeavecRtFormNew, SIZE_MAX, NULL);
+  weavecRtReleaseForm(p, WeavecRtFormNew, SIZE_MAX, NULL, NULL);
   p = formBlock(WeavecRtFormNewArray, (size_t)300 << 20);
   CHECK(p != NULL && !inArena(p));
-  weavecRtReleaseForm(p, WeavecRtFormNewArray, (size_t)300 << 20, NULL);
+  weavecRtReleaseForm(p, WeavecRtFormNewArray, (size_t)300 << 20, NULL, NULL);
   CHECK(trapsIn(newByFree));
   CHECK(trapsIn(arrayByDelete));
   CHECK(trapsIn(mallocByDelete));
   CHECK(trapsIn(newByRealloc));
   CHECK(trapsIn(hugeArrayByDelete));
   firstLine(arrayByDelete, line, sizeof line);
-  CHECK(strstr(line, ": allocated by operator new[] and released by "
-                     "operator delete\n") != NULL);
+  CHECK(strstr(line, "weavec: alloc-release-mismatch at ") == line);
+  CHECK(strstr(line, ": operator delete of 0x") != NULL);
+  CHECK(strstr(line, ": allocated by operator new[]\n") != NULL);
 }
 
 static void testSizedDelete(void) {
   char line[256];
-  weavecRtReleaseForm(formBlock(WeavecRtFormNew, 48), WeavecRtFormNew, 48, NULL);
+  weavecRtReleaseForm(formBlock(WeavecRtFormNew, 48), WeavecRtFormNew, 48, NULL, NULL);
   CHECK(trapsIn(sizedWrongly));
   firstLine(sizedWrongly, line, sizeof line);
-  CHECK(strstr(line, ": released by operator delete with size 16 for a "
-                     "48-byte object\n") != NULL);
+  CHECK(strstr(line, ": size 16 for a 48-byte block\n") != NULL);
 }
 
 void __sanitizer_annotate_contiguous_container(const void *begin,
@@ -1574,6 +1582,83 @@ static void testFork(void) {
 
 /*===-- main ----------------------------------------------------------------===*/
 
+/*===-- Stacks (RFC 0040 sections 1 to 3) ---------------------------------===*/
+
+static __attribute__((noinline)) unsigned unwindHere(uintptr_t *frames) {
+  /* (Not a tail call: the frame must outlive the walk.) */
+  volatile unsigned count =
+      weavecRtUnwind(frames, 8, (uintptr_t)__builtin_frame_address(0), 0);
+  return count;
+}
+
+static void testUnwinder(void) {
+  uintptr_t frames[8];
+  uintptr_t record[4];
+  CHECK(unwindHere(frames) >= 2);
+  /* A frame pointer off the thread's stack, or a record that does not go
+   * up the stack, ends the walk. */
+  CHECK(weavecRtUnwind(frames, 8, (uintptr_t)aTrackedGlobal, 0) == 0);
+  record[0] = (uintptr_t)record;
+  record[1] = (uintptr_t)testUnwinder + 4;
+  CHECK(weavecRtUnwind(frames, 8, (uintptr_t)record, 0) == 1);
+  record[0] = (uintptr_t)record + 1;
+  CHECK(weavecRtUnwind(frames, 8, (uintptr_t)record, 0) == 1);
+  /* A faulting instruction is the first frame as it is. */
+  CHECK(weavecRtUnwind(frames, 8, (uintptr_t)record, 0x1234) == 2 &&
+        frames[0] == 0x1234);
+}
+
+static uint32_t storedIds[8][2];
+
+static void *storeStacks(void *argument) {
+  const uintptr_t index = (uintptr_t)argument;
+  const uintptr_t shared[3] = {0x1000, 0x2000, 0x3000};
+  uintptr_t own[3] = {0x1000, 0x2000, 0x3000 + index};
+  storedIds[index][0] = weavecRtStackStore(shared, 3, 99);
+  storedIds[index][1] = weavecRtStackStore(own, 3, 99);
+  return NULL;
+}
+
+static void testStackStore(void) {
+  pthread_t threads[8];
+  uintptr_t frames[4];
+  unsigned thread = 0;
+  unsigned i;
+  for (i = 0; i < 8; ++i)
+    pthread_create(&threads[i], NULL, storeStacks, (void *)(uintptr_t)i);
+  for (i = 0; i < 8; ++i)
+    pthread_join(threads[i], NULL);
+  for (i = 0; i < 8; ++i) {
+    CHECK(storedIds[i][0] != 0 && storedIds[i][0] == storedIds[0][0]);
+    CHECK(storedIds[i][1] != 0 && (i == 0 || storedIds[i][1] != storedIds[0][1]));
+  }
+  CHECK(weavecRtStackGet(storedIds[3][1], frames, 4, &thread) == 3);
+  CHECK(frames[2] == 0x3003 && thread == 99);
+  CHECK(weavecRtStackGet(0, frames, 4, &thread) == 0);
+  CHECK(weavecRtStackStore(frames, 0, 0) == 0);
+}
+
+static void testHeapStacks(void) {
+  char *p = (char *)opaque(malloc(40));
+  struct weavecRtHeapObject object = weavecRtHeapObjectAt((uintptr_t)p);
+  const uint32_t allocated = object.allocated;
+  uintptr_t frames[16];
+  unsigned thread = 0;
+  CHECK(object.found && object.live && allocated != 0);
+  CHECK(weavecRtStackGet(allocated, frames, 16, &thread) != 0 &&
+        thread == weavecRtThread());
+  free(p);
+  object = weavecRtHeapObjectAt((uintptr_t)p);
+  CHECK(!object.live && object.allocated == allocated && object.released != 0);
+  /* A huge block keeps its own. */
+  p = (char *)opaque(malloc((size_t)300 << 20));
+  object = weavecRtHeapObjectAt((uintptr_t)p);
+  CHECK(object.found && object.allocated != 0);
+  free(p);
+  object = weavecRtHeapObjectAt((uintptr_t)p);
+  CHECK(!object.live && object.released != 0);
+}
+
 static const struct {
   const char *name;
   void (*run)(void);
@@ -1623,12 +1708,21 @@ static const struct {
     {"thread-caches", testThreadCaches},
     {"fork", testFork},
     {"fault-handler-restored", testFaultHandlerRestored},
+    {"unwinder", testUnwinder},
+    {"stack-store", testStackStore},
+    {"heap-stacks", testHeapStacks},
 };
 
 int main(int argc, char **argv) {
   unsigned i;
   unsigned ran = 0;
   program = argv[0];
+  /* The reports of the tests' children name no frames (RFC 0040 section
+   * 4: the runtime reads WEAVEC_RT_SYMBOLIZE before main). */
+  if (getenv("WEAVEC_RT_SYMBOLIZE") == NULL) {
+    setenv("WEAVEC_RT_SYMBOLIZE", "0", 1);
+    execv(argv[0], argv);
+  }
   weavecRtSiteSet(&trapSite, "rt_test.c", 1, 2, 0);
   weavecRtSiteSet(&reportSite, "rt_test.c", 3, 4, WeavecRtSiteReport);
   for (i = 0; i < sizeof Tests / sizeof Tests[0]; ++i) {

@@ -6,7 +6,8 @@ lookup.c, record the guarded load of `table[i]` in the enforcement ledger
 (`weavec-ledger` version 4, RFC 0035 section 9, RFC 0039 section 8), link it, run it, and stop
 a negative index with an `index-out-of-bounds` report; and it must build
 vec.c and stop a read past its heap block with a `heap-buffer-overflow`
-report (RFC 0035 section 5.3; the default `-fweavec-checks=trap`).
+report, its stack and its summary line (RFC 0035 section 5.3, RFC 0040
+section 5; the default `-fweavec-checks=trap`).
 """
 
 import argparse
@@ -80,8 +81,13 @@ with tempfile.TemporaryDirectory() as temp:
     assert inside.returncode == 0 and inside.stdout == "0\n", (inside.returncode, inside.stdout)
     past = run([vec, "4"])
     expect_trap(past, "heap-buffer-overflow", "vec.c", 9, "read of 4 bytes at 0x[0-9a-f]+$")
-    assert re.search(r"^weavec: 0x[0-9a-f]+ is 0 bytes after the 16-byte heap object at 0x[0-9a-f]+$",
-                     past.stderr, re.M), "no heap object line:\n" + past.stderr
+    assert re.search(r"^weavec: 0x[0-9a-f]+ is 0 bytes after the 16-byte heap object at 0x[0-9a-f]+, "
+                     r"allocated by thread T0:$", past.stderr, re.M), "no heap object line:\n" + past.stderr
+    # RFC 0040 section 5: the access's stack, the allocation's, and the summary line.
+    assert re.search(r"^    #\d+ 0x[0-9a-f]+ in get \S*vec\.c:9\b", past.stderr, re.M), \
+        "no frame of get:\n" + past.stderr
+    assert re.search(r"^weavec: summary: heap-buffer-overflow at \S*vec\.c:9:\d+ in get \(thread T0\)$",
+                     past.stderr, re.M), "no summary line:\n" + past.stderr
 
 print("Documentation examples passed: every example compiles, the guarded load "
       "in the ledger, and the index and heap reports.")

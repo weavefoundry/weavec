@@ -19,10 +19,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "GuardPassImpl.h"
+#include "weavec/Core/LibrarySpec.h"
 
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/LoopInfo.h"
@@ -178,6 +180,24 @@ static bool inBounds(const Access &access, llvm::ScalarEvolution &evolution,
                                       access.marker);
 }
 
+/// The runtime's wrappers of the library table's rows that release or
+/// reallocate (`free_at`, `munmap`: RFC 0040 §5.5), by their names.
+static const llvm::StringSet<> &releasingWrappers() {
+  static const llvm::StringSet<> Names = [] {
+    llvm::StringSet<> found;
+    for (const core::LibraryEntry &entry :
+         core::LibrarySpec::shipped().entries())
+      if (entry.wrapper &&
+          llvm::any_of(entry.params, [](const core::LibraryParam &param) {
+            return param.effect == core::LibraryParam::Effect::Release ||
+                   param.effect == core::LibraryParam::Effect::Realloc;
+          }))
+        found.insert("__weavec_rt_" + entry.wrapper->name);
+    return found;
+  }();
+  return Names;
+}
+
 /// Whether an instruction may release memory or change the shadow of an
 /// object, so that a guard before it says nothing about an access after.
 bool killsGuards(const llvm::Instruction &instruction) {
@@ -194,9 +214,10 @@ bool killsGuards(const llvm::Instruction &instruction) {
       return !intrinsic->hasFnAttr(llvm::Attribute::NoFree);
     }
   }
+  // The runtime's entry points free nothing, but the wrappers of releases.
   if (const llvm::Function *callee = call->getCalledFunction();
       callee && ModuleContext::isRuntimeName(callee->getName()))
-    return false;
+    return releasingWrappers().contains(callee->getName());
   return !call->hasFnAttr(llvm::Attribute::NoFree);
 }
 

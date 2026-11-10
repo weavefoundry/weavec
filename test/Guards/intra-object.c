@@ -19,7 +19,7 @@ int main(int argc, char **argv) {
   if (u == NULL)
     return 1;
   // CHECK: weavec: intra-object-overflow at {{.*}}intra-object.c:[[@LINE+2]]:{{[0-9]+}}: write of 12 bytes at 0x[[AT:[0-9a-f]+]]
-  // CHECK-NEXT: weavec: 0x[[AT]] is 0 bytes inside the 8-byte destination at 0x[[AT]]
+  // CHECK: weavec: 0x[[AT]] is 0 bytes inside the 8-byte destination at 0x[[AT]]
   __builtin___strcpy_chk(u->name, argv[argc - 1],
                          __builtin_object_size(u->name, 1));
   return u->admin;

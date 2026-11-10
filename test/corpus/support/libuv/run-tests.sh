@@ -13,9 +13,16 @@
 #                                 reference runs of the suite, passes alone.
 #   udp_multicast_join            need multicast on the host's interfaces;
 #   udp_multicast_join6           timed out in one of two reference runs.
+#   tcp_connect6_link_local       need an IPv6 link-local address and
+#   udp_multicast_interface       multicast routes, which GitHub's macos-15
+#   udp_multicast_ttl             runners lack: they failed in the weekly run
+#                                 of 2026-11-07 in both modes (ttl: an error
+#                                 other than ENETUNREACH or EPERM) and pass on
+#                                 a workstation (RFC 0040 section 0).
 set -u
 bin=out/uv_run_tests_a
 excluded="emfile spawn_exercise_sigchld_issue udp_multicast_join udp_multicast_join6"
+excluded="$excluded tcp_connect6_link_local udp_multicast_interface udp_multicast_ttl"
 tests=$("$bin" --list | awk '{print $1}') || exit 1
 [ -n "$tests" ] || { echo "no tests listed by $bin"; exit 1; }
 run=0

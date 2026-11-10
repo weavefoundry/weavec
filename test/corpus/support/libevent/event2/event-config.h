@@ -216,8 +216,12 @@
 /* Define to 1 if you have the `pipe' function. */
 #define EVENT__HAVE_PIPE 1
 
-/* Define to 1 if you have the `pipe2' function. */
+/* Define to 1 if you have the `pipe2' function: the macOS 27 SDK is the
+   first to declare it, and the gate's runners build with older ones. */
+#include <Availability.h>
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
 #define EVENT__HAVE_PIPE2 1
+#endif
 
 /* Define to 1 if you have the `poll' function. */
 #define EVENT__HAVE_POLL 1

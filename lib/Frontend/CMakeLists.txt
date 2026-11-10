@@ -13,6 +13,8 @@ weavec_add_library(
           GuardInsert.cpp
           GuardLibrary.cpp
           GuardPass.cpp
+          # RFC 0040 §4.2: weavec-cc --weavec-symbolize.
+          Symbolizer.cpp
           UnsafeRegions.cpp
   PUBLIC_DEPS weavec::Core
   USES_LLVM)
@@ -33,6 +35,8 @@ weavec_link_llvm(
   # allocator).
   Object
   Passes
+  # RFC 0040 §4.2: the symbolizer's line tables.
+  Symbolize
   TransformUtils)
 weavec_link_clang(
   weavecFrontend

@@ -36,9 +36,8 @@ body:
     attributes:
       label: Actual behavior
       description: >
-        The full report (`weavec: <kind> at ...`), compiler output or crash
-        backtrace. `WEAVEC_RT_BACKTRACE=1` adds the stack of the access that
-        stopped the program.
+        The full report (`weavec: <kind> at ...` through its `weavec: summary:`
+        line, with its stacks), compiler output or crash backtrace.
       render: text
     validations:
       required: true

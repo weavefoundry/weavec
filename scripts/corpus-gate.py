@@ -124,20 +124,14 @@ LEDGER_COUNTS = ("accesses", "proven", "guarded", "unguarded")
 # -O in compile.args comes later and wins).
 QUICK_FLAGS = ("-O2",)
 
-# A run-time report (runtime/weavec_report.c, RFC 0035 section 5.3). A test
-# harness may prefix the line (CTest -V prints "12: ").
-REPORT_RE = re.compile(
-    r"weavec: (?P<proven>weavec\.proven: )?(?P<kind>[a-z-]+) at "
-    r"(?:<unknown>|(?P<file>.+?):(?P<line>\d+):(?P<col>\d+)): "
-)
-# The allocator refusing a release: it names no line (RFC 0035, section 5.3).
-INVALID_RELEASE_RE = re.compile(r"weavec: invalid release of 0x[0-9a-f]+: ")
+# Run-time report kinds (runtime/weavec_report.c); the gate reads reports as
+# JSON from WEAVEC_RT_REPORT_LOG (RFC 0040 section 6).
 KINDS = (
     "heap-buffer-overflow", "heap-use-after-free", "stack-buffer-overflow",
     "stack-use-after-scope", "dynamic-stack-buffer-overflow", "global-buffer-overflow",
     "intra-object-overflow", "use-after-poison",
     "null-dereference", "unterminated-string", "index-out-of-bounds",
-    "invalid-release", "double-free", "invalid-access", "overlapping-copy",
+    "double-free", "invalid-free", "alloc-release-mismatch", "invalid-access", "overlapping-copy",
     "stack-use-after-return", "memory-fault", "container-overflow", "library-assertion",
 )
 # How shells, make and CTest describe a process that died by SIGTRAP or
@@ -797,7 +791,9 @@ def run_compile(weavec_cc: str, reference_cc: str | None, config: Config, root: 
     run = CompileRun(file=rel, ledger={}, reasons=collections.Counter(), cpu=result.cpu, maxrss=result.maxrss)
     if result.returncode != 0 or result.timed_out or result.error:
         lines = result.stderr.strip().splitlines()
-        run.failure = f"weavec-cc -c: {describe_status(result)}" + (f": {lines[-1][:300]}" if lines else "")
+        errors = [line for line in lines if " error: " in line or line.startswith("error: ")]
+        detail = (errors or lines[-1:])[:1]
+        run.failure = f"weavec-cc -c: {describe_status(result)}" + (f": {detail[0][:300]}" if detail else "")
         return run
     try:
         run.ledger, run.reasons = read_ledger(ledger)
@@ -1145,28 +1141,31 @@ def base_env(config: Config, cc: str, src: Path, support_root: Path, bench_dir: 
     for key in ("CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "MAKEFLAGS", "MFLAGS", "WEAVEC_RT_ABORT",
                 "WEAVEC_RT_REPORT_LOG", "WEAVEC_RT_STATS"):
         env.pop(key, None)
+    env["WEAVEC_RT_REPORT_FORMAT"] = "json"
     if extra:
         env.update(extra)
     return env
 
 
 def parse_reports(text: str, root: Path) -> list[dict]:
-    """Run-time reports, once each: {kind, file, line, col, proven}; file is
-    None for a report that names no location (an invalid release)."""
+    """Run-time reports from a JSON report log (RFC 0040 section 6), once
+    each: {kind, file, line, col, proven}; file is None for a report whose
+    stack names no line either."""
     reports = []
     seen = set()
     for line in text.splitlines():
-        m = REPORT_RE.search(line)
-        if m and m.group("kind") in KINDS:
-            file = m.group("file")
-            if file is not None:
-                file = normalize_path(rel_path(file, root) if os.path.isabs(file) else file)
-            report = {"kind": m.group("kind"), "file": file, "line": int(m.group("line") or 0),
-                      "col": int(m.group("col") or 0), "proven": bool(m.group("proven"))}
-        elif INVALID_RELEASE_RE.search(line):
-            report = {"kind": "invalid-release", "file": None, "line": 0, "col": 0, "proven": False}
-        else:
+        try:
+            entry = json.loads(line)
+        except ValueError:
             continue
+        if not isinstance(entry, dict) or entry.get("kind") not in KINDS:
+            continue
+        site = entry.get("site") or {}
+        file = site.get("file")
+        if file:
+            file = normalize_path(rel_path(file, root) if os.path.isabs(file) else file)
+        report = {"kind": entry["kind"], "file": file or None, "line": int(site.get("line") or 0),
+                  "col": int(site.get("column") or 0), "proven": bool(entry.get("proven"))}
         key = tuple(report.values())
         if key not in seen:
             seen.add(key)
@@ -1225,13 +1224,11 @@ def run_build(config: Config, mode: str, compiler: str, flags: list[str], checko
     report_log = logs / "runtime-reports.log"
     env = base_env(config, cc, src, support_root, bench_dir, jobs,
                    {**(extra_env or {}), "WEAVEC_RT_REPORT_LOG": str(report_log)})
-    outputs = []
     run.built = True
     for index, command in enumerate(config.build if build is None else build):
         result = run_shell(command, cwd=src, env=env, timeout=timeout)
         log_path = logs / f"build-{index}.log"
         log_path.write_text(f"$ {command}\n{result.output}")
-        outputs.append(result.output)
         ok = result.returncode == 0 and not result.timed_out
         run.steps.append(StepRun(command, describe_status(result), ok, round(result.seconds, 3),
                                  round(result.cpu, 3), str(log_path), output_tail(result.output)))
@@ -1248,7 +1245,6 @@ def run_build(config: Config, mode: str, compiler: str, flags: list[str], checko
             result = run_shell(command, cwd=src, env=env, timeout=test_timeout)
             log_path = logs / f"test-{index}.log"
             log_path.write_text(f"$ {command}\n{result.output}")
-            outputs.append(result.output)
             ok = result.returncode == 0 and not result.timed_out
             run.tests.append(StepRun(command, describe_status(result), ok, round(result.seconds, 3),
                                      round(result.cpu, 3), str(log_path), output_tail(result.output)))
@@ -1257,9 +1253,7 @@ def run_build(config: Config, mode: str, compiler: str, flags: list[str], checko
             if not ok:
                 passed = False
         run.tests_passed = passed if commands else None
-    if report_log.exists():
-        outputs.append(report_log.read_text(errors="replace"))
-    run.reports = parse_reports("\n".join(outputs), src)
+    run.reports = parse_reports(report_log.read_text(errors="replace") if report_log.exists() else "", src)
     if not keep:
         remove_tree(src)
     return run
@@ -1269,7 +1263,7 @@ def run_build(config: Config, mode: str, compiler: str, flags: list[str], checko
 
 INJECTION_KEYS = frozenset(("id", "config", "patch", "file", "line", "stop", "kinds", "unlocated", "build", "run",
                             "fortify", "description", "accepted"))
-UNLOCATED_STOPS = ("invalid-release", "fault")
+UNLOCATED_STOPS = ("fault",)
 
 
 @dataclasses.dataclass
@@ -1380,8 +1374,6 @@ def stops_at(inj: Injection, build: BuildRun) -> list[str]:
         if (report["file"] and report["line"] == inj.stop_line and same_file(report["file"], inj.stop_file)
                 and (not inj.kinds or report["kind"] in inj.kinds)):
             via.append(describe_report(report))
-    if inj.unlocated == "invalid-release":
-        via.extend(describe_report(r) for r in build.reports if r["kind"] == "invalid-release" and not r["file"])
     if inj.unlocated == "fault":
         via.extend(f"fault: {evidence}" for evidence in build.fault_deaths[:1])
     return via
@@ -1724,15 +1716,14 @@ def run_program(program: Program, mode: str, compiler: str, flags: list[str], ar
     if corpus is not None:
         env["CORPUS"] = str(corpus.resolve())
     env.update({"CC": cc, "CXX": cxx_of(cc), "JOBS": str(jobs), "PREFIX": str(work / "inst"), "TCL_CONFIG_DIR": tcl_config_dir()})
+    env["WEAVEC_RT_REPORT_FORMAT"] = "json"
     build_env = {**env, "WEAVEC_RT_REPORT_LOG": str(build_log)}
     env["WEAVEC_RT_REPORT_LOG"] = str(report_log)
-    output = ""
     for command in program.build:
         result = run_shell(command, cwd=src, env=build_env, timeout=program.timeout)
         run.steps.append(StepRun(command=command, status=describe_status(result), ok=result.returncode == 0,
                                  seconds=round(result.seconds, 1), cpu=round(result.cpu, 1), log="",
                                  tail=output_tail(result.output)))
-        output += result.output
         if result.returncode != 0:
             break
     else:
@@ -1741,13 +1732,10 @@ def run_program(program: Program, mode: str, compiler: str, flags: list[str], ar
         run.steps.append(StepRun(command=program.test, status=describe_status(result), ok=result.returncode == 0,
                                  seconds=round(result.seconds, 1), cpu=round(result.cpu, 1), log="",
                                  tail=output_tail(result.output, 80)))
-        output += result.output
         run.failures = failed_tests(program.failures, result.output)
         if result.timed_out:
             run.failures.add("(the suite timed out)")
-        output = result.output
-    text = (report_log.read_text(errors="replace") if report_log.exists() else "") + output
-    run.reports = parse_reports(text, src)
+    run.reports = parse_reports(report_log.read_text(errors="replace") if report_log.exists() else "", src)
     run.build_reports = parse_reports(build_log.read_text(errors="replace"), src) if build_log.exists() else []
     run.seconds = time.perf_counter() - start
     if not keep:

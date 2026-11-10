@@ -17,7 +17,7 @@ int main(int argc, char **argv) {
   const long jump = (b - a) * atol(argv[argc - 1]) + zero;
   b[0] = 0;
   // CHECK: weavec: heap-buffer-overflow at {{.*}}color-jump.c:[[@LINE+2]]:{{[0-9]+}}: write of 4 bytes
-  // CHECK-NEXT: weavec: 0x{{[0-9a-f]+}} is {{[0-9]+}} bytes {{after|before}} its base 0x{{[0-9a-f]+}}, in another object
+  // CHECK: weavec: 0x{{[0-9a-f]+}} is {{[0-9]+}} bytes {{after|before}} its base 0x{{[0-9a-f]+}}, in another object
   a[jump] = 1;
   return b[0];
 }

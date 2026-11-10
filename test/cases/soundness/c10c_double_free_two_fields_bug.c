@@ -1,7 +1,7 @@
 // ASAN
 #include <stdlib.h>
 struct pair { char *a, *b; };
-static void cleanup(struct pair *s) { free(s->a); free(s->b); } // TRAP: invalid-release
+static void cleanup(struct pair *s) { free(s->a); free(s->b); } // TRAP: double-free
 int main(void) {
   struct pair s;
   s.a = malloc(8);

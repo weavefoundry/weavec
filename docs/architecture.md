@@ -72,10 +72,14 @@ these additions in an enforcing mode (`-fweavec-checks=trap`, the default,
    `__ubsan_handle_out_of_bounds_abort`, unless the command line already
    asks for a sanitizer; report mode adds `-fsanitize-recover` for it. A
    program that also links UBSan's runtime gets UBSan's handlers.
-3. **Locations.** Without `-g`, the unit is compiled with location tracking
-   only (`DebugInfoKind=LocTrackingOnly`, with columns): instructions carry
-   source locations for the passes and the reports, and no debug
-   information is emitted.
+3. **Locations and stacks** (RFC 0040 §4.5, §8). Without `-g`, the unit
+   is compiled with line tables (`-gline-tables-only`, with inlined calls
+   and columns), so that the site records and every frame of a report's
+   stacks carry source locations; a command line with any `-g` keeps its
+   level, and one that ends in `-g0` keeps none. The locals keep their
+   names (`-fno-discard-value-names`) for the frame descriptors, and on
+   x86-64 Linux the frame pointers (`-fno-omit-frame-pointer`, unless the
+   command line chooses) for the runtime's unwinder.
 4. **Lifetime markers at every `-O` level**
    (`SanitizeAddressUseAfterScope`), so a use after scope traps at `-O0`
    too.
@@ -289,7 +293,11 @@ by its redzone, at least 32 bytes and one eighth of the object up to
 4 KiB, so the object and its redzone fill a multiple of 32 bytes
 (`guard::paddedSize`). At entry the pass writes the frame's shadow with
 constant stores (redzones poisoned, objects in their colors, partial
-granules encoded, objects whose scope has not begun `0xF8`), and writes it
+granules encoded, objects whose scope has not begun `0xF8`) and stores two
+words at the bottom of the left redzone, a tag with the runtime's ABI and
+the address of the frame's descriptor (the function's name and each
+tracked local's offset, size and name; RFC 0040 §5.3), from which a stack
+report names the local, and writes it
 `0xF5` (*returned*) before each return. A lifetime start of a tracked
 object makes it addressable and a lifetime end poisons it with `0xF8`, so a
 use after scope traps. A slow path that meets `0xF5` below its caller's
@@ -354,9 +362,11 @@ initialized, aligned above 4 KiB, of size 0, or one of LLVM's or WeaveC's
 own. A tracked global is replaced by a global of the same name, linkage and
 visibility that holds the original and a redzone (sized as a frame
 object's), aligned to 32 bytes. A module constructor of priority 1 calls
-`__weavec_rt_globals_register(array, n)` with
-`{address, size, size with redzone}` per global, which poisons each redzone
-`0xF9`. A shared library's or bundle's copy of the runtime sends the
+`__weavec_rt_globals_register(array, n, frames, m)` with
+`{address, size, size with redzone, name, location}` per global (the name
+and the `file:line` of its definition, self-relative, for a report; RFC
+0040 §5.4) and the unit's frame descriptors, which poisons each redzone
+`0xF9` and keeps both sorted. A shared library's or bundle's copy of the runtime sends the
 registration to the process's owning runtime first (RFC 0036 §4), so its
 globals are poisoned in the shadow its guards read. A module destructor
 unregisters them and clears their shadow, so `dlclose` leaves nothing
@@ -407,7 +417,11 @@ define, before the call (RFC 0035 §2.5 and amendment 7, RFC 0036 §6):
   strings are not scanned (a known gap: a wide string argument is not
   guarded).
 - A null the row accepts (`null-ok`) passes. The arguments a call releases
-  or reallocates are not guarded; the allocator validates them.
+  or reallocates are not guarded; the allocator validates them. The release
+  functions' rows (`free`, `realloc`, `reallocf`, `reallocarray`, the
+  `operator delete` forms) redirect the call to the runtime's
+  `__weavec_rt_<name>_at`, which releases as the plain function does and
+  hands the allocator the call's site for its report (RFC 0040 §5.5).
 - A copy's operands must not overlap: `llvm.memcpy` (except an aggregate
   assignment, which carries `!tbaa.struct`) and a row with a `disjoint`
   clause get a `__weavec.disjoint` marker, and an overlap fails as
@@ -488,7 +502,9 @@ hides the rest, and, on Linux, `libweavec_rt.a` for `-static` programs.
 | | [`weavec_guard.c`](../runtime/weavec_guard.c) | the guards' slow paths (`__weavec_rt_guard`, `__weavec_rt_range`, `__weavec_rt_range_ok`, `__weavec_rt_strlen`, `__weavec_rt_overlap`, `__weavec_rt_null`, `__weavec_rt_limit_fail`), the frames' (`__weavec_rt_unpoison_stack`, `__weavec_rt_alloca_poison`, `_unpoison`), the globals' registration, and the weak `__ubsan_handle_out_of_bounds[_abort]` |
 | | [`weavec_libc.c`](../runtime/weavec_libc.c) | the checked library wrappers `__weavec_rt_<name>`, with their limits for fortified forms, the number parsers, `mmap` and `munmap` |
 | | [`weavec_asan.c`](../runtime/weavec_asan.c) | ASan's and LeakSanitizer's interface over WeaveC's shadow |
-| | [`weavec_report.c`](../runtime/weavec_report.c) | reports, `__weavec_rt_fatal`, `__weavec_rt_trapping`, the fault handler, the `WEAVEC_RT_*` settings and the counters; the check for a second runtime and a foreign allocator |
+| | [`weavec_report.c`](../runtime/weavec_report.c) | reports (the first line, the stacks, the object paragraphs of heap blocks, frames and globals, the summary line, their JSON form, the bad releases' kinds), `__weavec_rt_trapping`, the fault handler, the `WEAVEC_RT_*` settings and the counters; the check for a second runtime and a foreign allocator |
+| | [`weavec_stack.c`](../runtime/weavec_stack.c) | RFC 0040: the frame-pointer unwinder (`weavecRtUnwind`), the store of unique stacks that heap blocks name by identifier, and the threads' numbers |
+| | [`weavec_symbolize.c`](../runtime/weavec_symbolize.c) | RFC 0040: naming a report's frames through a symbolizer (`weavec-cc --weavec-symbolize` on Linux, `atos` on Darwin), with the two-second limit and the fallback to module and offset |
 | | [`weavec_malloc.c`](../runtime/weavec_malloc.c) | the standard allocation functions over the arena |
 | | [`weavec_cxx.c`](../runtime/weavec_cxx.c) | RFC 0039: C++'s `operator new` and `operator delete` (weak, by their Itanium names) with the form of each block, the marking of frames an exception unwound (`__weavec_rt_landed`), and the C++ libraries' failed checks (`library-assertion`) |
 | | [`weavec_unwind.c`](../runtime/weavec_unwind.c) | RFC 0039: the interposers of `_Unwind_RaiseException`, `_Unwind_Resume_or_Rethrow` and `__cxa_begin_catch` (Darwin: `__DATA,__interpose`; Linux: the library's own definitions; `-static`: `--wrap`). It and `weavec_cxx.c` are compiled once for the shared library and once for the archive, which on Darwin has no allocation functions |
@@ -528,8 +544,11 @@ least one poisoned granule after it; at release its mapping is replaced by
 an inaccessible reservation, unmapped only by a sweep that finds no pointer
 to it. The allocator validates every release: a release of an interior
 pointer, of a released or never-allocated slot, or of a stack or global
-object stops the program through `__weavec_rt_fatal`; a release of a
-quarantined block is a double free. A pointer it does not own goes to the
+object stops the program with an `invalid-free` report, and a release
+by another form than the allocation's with an `alloc-release-mismatch`; a
+release of a quarantined block is a `double-free`. Each slot also keeps
+the identifiers of its allocation's and its release's stacks, in a side
+table beside the slot words, for the reports (RFC 0040 §3). A pointer it does not own goes to the
 next allocator (the pointer's own malloc zone on Darwin, `__libc_free` and
 `__libc_realloc` or the next `free` and `realloc` in lookup order
 elsewhere).
@@ -646,29 +665,78 @@ neither its own nor the executable's (a guarded library in a program
 
 ### Reports
 
-A failed guard prints one line on standard error and traps (`SIGTRAP`, or
-`SIGILL` on x86-64):
+A failed guard prints a report on standard error and traps (`SIGTRAP`, or
+`SIGILL` on x86-64). Every report has one shape (RFC 0040 §5):
 
 ```
 weavec: <kind> at <file>:<line>:<column>: <read|write> of <n> bytes at 0x<addr>
+    #0 0x<pc> in <function> <file>:<line>:<column>
+    #1 ...
+weavec: 0x<addr> is <where> <object>[, <history>:]
+    #0 ...
+weavec: summary: <kind> at <file>:<line>:<column> in <function> (thread T<n>)
 ```
 
-with `<unknown>` for a missing location. For the heap a second line places the address:
-`… is <k> bytes after the <m>-byte heap object at …`, or `… is inside a
-released heap block at …`; for a fortified call,
-`… is <k> bytes after the <m>-byte destination at …`. The kinds are
-`heap-buffer-overflow`, `heap-use-after-free`, `stack-buffer-overflow`,
-`dynamic-stack-buffer-overflow`, `stack-use-after-scope`,
-`global-buffer-overflow`, `intra-object-overflow`, `use-after-poison`,
-`null-dereference`, `unterminated-string`, `overlapping-copy`, and
-`invalid-access` for poison the runtime cannot attribute. An index check prints
-`weavec: index-out-of-bounds at <file>:<line>:<column>: index <i>`, and a
-monitor that fails in verify mode `weavec: weavec.proven: <kind> at …`. The
-allocator stops an invalid release with
-`weavec: invalid release of 0x<p>: <why>`, without a location.
+The first line has `<unknown>` for a missing location. An index check
+prints `index-out-of-bounds at …: index <i>`, a monitor that fails in verify
+mode `weavec: weavec.proven: <kind> at …`, and a fault the handler catches
+`memory-fault at pc 0x<pc>: read at 0x<addr>`. The stack is the access's,
+at most 32 frames from the function that made it (`weavecRtUnwind` follows
+the frame records, dropping the runtime's own frames, which sit in a
+section of their own); an inlined call repeats its frame's number. The
+object paragraphs place the address:
+
+- in a heap block: `is <k> bytes after the <m>-byte heap object at …,
+  allocated by thread T<n>:`, or `is <k> bytes inside the <m>-byte heap
+  block at …, released by thread T<n>:` followed by `the block was
+  allocated by thread T<n>:`, each with the stack the allocator recorded
+  (two 32-bit stack identifiers per slot and per huge block, in a side
+  table beside the slot words; the stacks themselves, 16 frames at most,
+  are kept once each in a store the runtime maps and never frees,
+  `weavec_stack.c`);
+- in a frame: `is <k> bytes after 'buf' (8 bytes at offset 64) in the frame
+  of <function> (thread T<n>), whose locals are:` and a `[lo, hi) 'name'`
+  line per tracked local. A tracked frame stores a tag and the address of
+  its descriptor (`struct __weavec_rt_frame`: the function's name and each
+  local's offset, size and name, which the compile keeps with
+  `-fno-discard-value-names`) at the bottom of its left redzone, and the
+  runtime accepts a descriptor only if a unit registered it. A use after
+  return usually gets only `is in a frame that returned`, since the
+  report's own frames overwrite the returned one's;
+- in a global: `is <k> bytes after the <m>-byte global '<name>' defined at
+  <file>[:<line>]`, from the global's record, which carries its name and
+  the location of its definition;
+- for a color mismatch, first `is <k> bytes after its base …, in another
+  object`, then the paragraph of the object it landed in; for a fortified
+  call, `is <k> bytes inside the <m>-byte destination at …`.
+
+The allocator stops a bad release in every mode with a report of its own
+kind: `double-free`, `invalid-free` (`inside the <m>-byte heap block at …`,
+`no block was allocated there`, `not heap memory`) or
+`alloc-release-mismatch` (`allocated by <form>`, `size <n> for a <m>-byte
+block`), as `weavec: double-free at <file>:<line>:<col>: free of 0x<p>`. A
+release call in a guarded unit goes to the runtime's `_at` wrapper
+(`__weavec_rt_free_at`, `__weavec_rt_realloc_at`, the `operator delete`
+forms'; `wrapper(…_at)` rows of the library table), which passes its site;
+any other release is located at its stack's first frame with a line.
+
+Frames are named by a symbolizer the runtime runs (`weavec_symbolize.c`):
+on Linux `weavec-cc --weavec-symbolize` (`lib/Frontend/Symbolizer.cpp`,
+LLVM's `Symbolize` library), found at `<prefix>/bin/weavec-cc` beside the
+runtime's `<prefix>/lib/weavec`, started once with `posix_spawn` and kept;
+on Darwin `/usr/bin/atos` per module, which reads the debug map to the
+objects' line tables, falling back to `weavec-cc`. It answers in
+`llvm-symbolizer`'s format and gets five seconds per report. A set-user-ID
+program, `WEAVEC_RT_SYMBOLIZE=0` or a failed spawn leaves a frame as
+`in <function> (<module>+0x<offset>)`, which `weavec-cc --weavec-symbolize
+<log>` rewrites later. So that frames carry lines, an enforcing compile
+emits line tables (`-gline-tables-only`) unless the command line asks for
+debug information or ends in `-g0`, and keeps frame pointers on x86-64
+Linux.
 
 Reports are formatted by the runtime itself, without `snprintf` (which a
-program may define) and without allocating. Before every trap,
+program may define) and without allocating, into a buffer per thread, and
+written a line at a time. Before every trap,
 `__weavec_rt_trapping` unblocks `SIGTRAP` and `SIGILL` in the thread and
 resets an ignored disposition, so the trap ends the program even when it
 blocked them (a handler the program installed still runs). In report mode
@@ -679,14 +747,18 @@ with no guarantee. The settings:
 | --- | --- |
 | `WEAVEC_RT_ABORT=1` | report mode traps |
 | `WEAVEC_RT_REPORT_LOG=<path>` | append reports to that file instead of standard error (ignored in set-uid programs) |
-| `WEAVEC_RT_BACKTRACE=1` | print the stack of the access that stops the program |
-| `WEAVEC_RT_STATS=1` | print the counters at exit as `weavec: runtime: <n> <what>` (allocations, releases, recycled slots, huge blocks, slow guards, range guards, string guards, stack unpoisons, sweeps), then the sweeps' total and longest pause, what the last one retained, and the peaks of the live slots and of the quarantine; the process's one runtime counts every image's work |
+| `WEAVEC_RT_REPORT_FORMAT=json` | write each report as one line of JSON (`weavec`: the ABI, `kind`, `proven`, `site`, `what`, `access`, `message`, `thread`, `stack`, `object`) |
+| `WEAVEC_RT_HEAP_STACKS=<n>` | frames per allocation and release stack (8; 0 records none) |
+| `WEAVEC_RT_SYMBOLIZE=0` | run no symbolizer: frames by module and offset |
+| `WEAVEC_RT_SYMBOLIZER=<path>` | the symbolizer to run instead of `weavec-cc` or `atos` |
+| `WEAVEC_RT_STATS=1` | print the counters at exit as `weavec: runtime: <n> <what>` (allocations, releases, recycled slots, huge blocks, slow guards, range guards, string guards, stack unpoisons, sweeps), then the sweeps' total and longest pause, what the last one retained, the peaks of the live slots and of the quarantine, the stacks recorded and their memory, and the writable memory the runtime does not track; the process's one runtime counts every image's work |
 | `WEAVEC_RT_NOTES=0` | no note that the process's allocator is not the runtime's |
 | `WEAVEC_RT_QUARANTINE=<bytes>` | the quarantine's least growth before a sweep (`Q`) |
 | `WEAVEC_RT_SWEEP_SIGNAL=<n>` | the signal number that stops threads for a sweep on Linux (default `SIGPWR`, or `SIGXCPU` when the program handles `SIGPWR`) |
 
-Reports have no ids: the kind and the line format are the interface. The
-case runner and the corpus gate attribute traps through this output.
+Reports have no ids: the kind, the first line and the JSON schema are the
+interface. The case runner and the corpus gate read the JSON form from a
+report log of their own.
 
 ## Linking
 
@@ -760,7 +832,7 @@ goes in the table, never in a comparison of a callee's name.
 | `GuardPass` (`GuardPass.h`; `GuardPass.cpp`, `GuardPassImpl.h`, `GuardInsert.cpp`, `GuardLibrary.cpp`, `GuardLoops.cpp`, `GuardExpand.cpp`, `GuardFrames.cpp`, `GuardGlobals.cpp`) | The four passes of *Compile pipeline* and `registerGuardPasses`, which adds them through `CodeGenOptions::PassBuilderCallbacks` with the mode (trap, report, verify), the unit's unsafe regions and its enforcement ledger. |
 | `EnforcementLedger` | The rows the passes record, their rollup, the `weavec-ledger` version 4 JSON writer and the summary line. |
 | `UnsafeRegions` | The `WEAVEC_UNSAFE` and `no_sanitize` ranges of a unit, by file, the AST consumer that collects them, and `UnsafeAnnotation`. |
-| `Driver` | `weavec-cc`: `DriverOptions` (WeaveC's flags, split from Clang's), the in-process `-cc1` jobs with the enforcement set-up (`configureEnforcement`), ASan's contract and fortification, the wrapper action that adds the unsafe-region collector, the runtime's link line (`addRuntimeLibraries`, `runtimeObstacle`, `allocatorDefinedBy`, `dropAllocatorIfDefined`), and `--help-weavec`. |
+| `Driver` | `weavec-cc`: `DriverOptions` (WeaveC's flags, split from Clang's), the in-process `-cc1` jobs with the enforcement set-up (`configureEnforcement`), ASan's contract and fortification, the wrapper action that adds the unsafe-region collector, the runtime's link line (`addRuntimeLibraries`, `runtimeObstacle`, `allocatorDefinedBy`, `dropAllocatorIfDefined`), `--help-weavec`, and `--weavec-symbolize` (`Symbolizer.cpp`: the runtime's symbolizer over LLVM's `Symbolize` library, and the rewriter of a saved report's frames). |
 | `ResourceDir` | Locates `weavec.h`, the runtime's library and the Apple SDK. |
 
 ## `tools/weavec-cc`
@@ -773,11 +845,16 @@ which `weavec-cc --help-weavec` lists, are `-f[no-]weavec`,
 `-fweavec-ledger=<path>`, `-f[no-]weavec-summary`,
 `-f[no-]weavec-asan-compat`, `-f[no-]weavec-colors` and
 `-fweavec-rpath=<dir>`/`-fno-weavec-rpath`; an unknown `-fweavec-*` flag is an error, and
-everything else is Clang's. When WeaveC is on, the driver defines
+everything else is Clang's. `weavec-cc --weavec-symbolize [<log>...]`
+compiles nothing: without an operand it answers `CODE <module> 0x<offset>`
+lines on standard input as `llvm-symbolizer` does (the runtime's
+symbolizer on Linux), and with a saved report's path it prints the report
+with the frames the runtime named only by module and offset symbolized. When WeaveC is on, the driver defines
 `__WEAVEC__=1` and adds `weavec.h`'s directory with `-isystem`.
 `--version` prints Clang's version block, then `weavec-cc version …`, the
 LLVM version, and the runtime's interface version and platform. The
-command line is that of RFC 0035 §7 as RFC 0036 §7 and RFC 0038 §7 amend it.
+command line is that of RFC 0035 §7 as RFC 0036 §7, RFC 0038 §7 and RFC
+0040 §8 amend it.
 
 ## Tests and gates
 
@@ -792,7 +869,8 @@ command line is that of RFC 0035 §7 as RFC 0036 §7 and RFC 0038 §7 amend it.
   and its encoding, the size classes, alignment, reallocation, the sweep
   (recycling, retention, following the heap, stopping threads, pacing,
   the C library's data through the image table), invalid releases (in
-  child processes that must die), huge blocks, foreign pointers, the
+  child processes that must die), the unwinder, the stack store and the
+  heap blocks' stacks, huge blocks, foreign pointers, the
   guards, strings, the checked calls, globals, dynamic allocas and the
   stack's unpoisoning, ASan's interface, the number parsers and limits,
   mappings, the array-bounds handlers, threads, `fork` and a restored
@@ -833,7 +911,7 @@ implements gate H1: no libc name comparisons outside the library table, no
 corpus project named under `lib/`, Core free of Clang and LLVM, the
 runtime's includes, its entry points declared in `weavec_rt.h`, its export
 list against its `WEAVEC_RT_API` declarations, and the line budgets of the
-library (9,000) and of the runtime (7,050).
+library (9,500) and of the runtime (9,800).
 [`scripts/codegen-identity.py`](../scripts/codegen-identity.py) checks that
 objects built with `-fweavec-checks=none` are byte-identical to Clang's.
 

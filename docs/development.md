@@ -122,14 +122,26 @@ build/dev/runtime/weavec_rt_test guards sweep-recycles  # only the named tests
 The tests are `shadow-ready`, `classes`, `shadow-encoding`,
 `reuse-is-zero`, `alignment`, `realloc`, `sweep-recycles`,
 `quarantine-holds`, `sweep-follows-the-heap`, `sweep-stops-threads`,
-`pacing`, `library-data-is-scanned`, `invalid-releases`, `huge`,
-`foreign`, `guards`, `strings`, `checked-calls`, `globals`, `allocas`,
-`unpoison-stack`, `asan-interface`, `parsers-and-limits`, `mappings`,
-`array-bounds`, `threads`, `fork` and `fault-handler-restored`. The sweep tests scrub the stack
+`sweep-stops-blocking-threads`, `sweep-leaves-program-signals`,
+`pacing`, `library-data-is-scanned`, `shared-memory-is-scanned`,
+`read-only-memory-is-scanned`, `file-mapping-is-scanned`,
+`stack-pool-is-scanned`, `thread-data-is-scanned`,
+`vector-registers-are-scanned`, `signals-during-sweeps`,
+`invalid-releases`, `huge`, `huge-releases-sweep`, `foreign`, `guards`,
+`strings`, `checked-calls`, `globals`, `allocas`, `unpoison-stack`,
+`asan-interface`, `stale-root-color`, `new-delete-forms`, `sized-delete`,
+`container-annotations`, `double-ended-annotations`,
+`landed-marks-unwound`, `parsers-and-limits`, `mappings`,
+`array-bounds`, `threads`, `thread-caches`, `fork`,
+`fault-handler-restored`, `unwinder` (the frame-pointer unwinder stops at
+a frame pointer off the thread's stack or a record that does not lead up
+it), `stack-store` (one identifier for a stack however many threads store
+it, 0 for none) and `heap-stacks` (a block, and a huge block, keeps its
+allocation's and its release's stacks). The sweep tests scrub the stack
 they leave behind with a compiler barrier and use size classes no other
 test touches: the scan is conservative, and a stale copy of an address in
 an unused stack slot keeps its block. A
-test that must stop the program (a failed guard, an invalid release) runs
+test that must stop the program (a failed guard, a bad release) runs
 in a child process, and the parent checks how it died. The runtime has
 platform-specific halves (Darwin's malloc zone and its one runtime per
 process, `thread_suspend` against Linux's signals for the sweep, glibc's
@@ -148,8 +160,8 @@ with `lit -v build/dev/test/Guards/heap-overflow.c`. The suites:
 
 | Directory | What it pins |
 | --- | --- |
-| `test/Guards/` | the guard passes and the runtime. `ir-*.c` run `%weavec_cc -O2 -S -emit-llvm` and FileCheck the IR: the inline checks, the frame layout and shared frame space (`ir-frames.c`, `shared-frame.c`), the unpoisoning before `noreturn` calls (`ir-noreturn.c`), the global layout, the guards a rule removes. The others build and run a program and pin the exact report (`weavec: heap-buffer-overflow at …`): heap, stack and global overflows, use after scope, intra-object overflow of fortified calls, use after poison, report mode, verify mode, the ledger and summary line, unsafe regions and `no_sanitize`, the checked library calls, array bounds, `longjmp`, `mmap` and zero-initialization. |
-| `test/Driver/` | `weavec-cc` on the command line: compile and link, the runtime on the link line and its fallback notes (`runtime-link.c`), one runtime per process on Darwin, the globals of a dylib and a bundle (`image-globals.c`), `-D_FORTIFY_SOURCE=3` (`fortify.c`), ASan's macros (`asan-compat*.c`), `-fweavec-*` flags, versions. |
+| `test/Guards/` | the guard passes and the runtime. `ir-*.c` run `%weavec_cc -O2 -S -emit-llvm` and FileCheck the IR: the inline checks, the frame layout and shared frame space (`ir-frames.c`, `shared-frame.c`), the unpoisoning before `noreturn` calls (`ir-noreturn.c`), the global layout, the guards a rule removes. The others build and run a program and pin the exact report (`weavec: heap-buffer-overflow at …`, its stacks with FileCheck patterns for addresses, its object paragraphs and summary line): the report shapes (`report-heap.c`, `report-stack.c`, `report-global.c`, `report-release.c` for `double-free`, `invalid-free` and `alloc-release-mismatch`, `report-fault.c`, `report-json.c`, `report-cxx.cpp`), heap, stack and global overflows, use after scope, intra-object overflow of fortified calls, use after poison, report mode, verify mode, the ledger and summary line, unsafe regions and `no_sanitize`, the checked library calls, array bounds, `longjmp`, `mmap` and zero-initialization. |
+| `test/Driver/` | `weavec-cc` on the command line: compile and link, the runtime on the link line and its fallback notes (`runtime-link.c`), one runtime per process on Darwin, the globals of a dylib and a bundle (`image-globals.c`), `-D_FORTIFY_SOURCE=3` (`fortify.c`), ASan's macros (`asan-compat*.c`), `-fweavec-*` flags, versions, the line tables, value names and frame pointers of enforcing compiles (`report-flags.c`), `--weavec-symbolize` (`symbolize.c`). |
 
 Every change to a run-time report needs a lit test, because these pin the
 exact user-visible output. New tests are named
@@ -167,7 +179,9 @@ the grammar. For each case `scripts/run-cases.py`:
    `GUARDED`, `PROVEN`, `UNGUARDED` and `EXPECT-LEDGER` markers;
 2. runs it once per `RUN-INPUT` and requires every stop to be one a
    `TRAP: <kind>` marker expects (a report kind such as
-   `heap-buffer-overflow`, or `invalid-release`), and every `TRAP` to be hit;
+   `heap-buffer-overflow` or `double-free`), and every `TRAP` to be hit;
+   it runs each case with `WEAVEC_RT_REPORT_FORMAT=json` and a
+   `WEAVEC_RT_REPORT_LOG` of its own and reads the reports from that log;
    `TRAP-AT: <unit>:<line>` expects a stop in a unit several cases share; a
    `CLEAN` case must not stop.
    A `DETECT` case is judged instead by whether its bug stops at or before a
@@ -209,8 +223,8 @@ benchmarks on an idle machine.
 compared outside `lib/Core/LibrarySpec.txt`, no corpus project named under
 `lib/`, no Clang or LLVM header in Core, the runtime's includes, every
 runtime entry point the passes name declared in `runtime/weavec_rt.h`) and
-the line budgets of the libraries (`lib/`, `include/` and `tools/`, 9,000)
-and of the runtime (7,050, counted apart, because it is linked into
+the line budgets of the libraries (`lib/`, `include/` and `tools/`, 9,500)
+and of the runtime (9,800, counted apart, because it is linked into
 compiled programs, not into the compiler); `--help` lists each check and
 its limit. It runs in the Linux
 Release CI job.
@@ -279,14 +293,22 @@ editor integration.
   makes it trap at the first again. `WEAVEC_RT_REPORT_LOG=<path>` appends
   each report to a file instead of standard error, for a test harness that
   keeps a passing test's output to itself.
-- `WEAVEC_RT_BACKTRACE=1` prints the stack of the access that stops the
-  program after its report.
+- Every report prints the access's stack, its object (a heap block with
+  the stacks that allocated and released it, a named local and its
+  frame's locals, a global and its definition) and a summary line.
+  `WEAVEC_RT_REPORT_FORMAT=json` writes each report as one line of JSON;
+  `WEAVEC_RT_HEAP_STACKS=0` records no heap stacks; `WEAVEC_RT_SYMBOLIZE=0`
+  leaves frames as `(<module>+0x<offset>)`, which `weavec-cc
+  --weavec-symbolize <log>` names later, and `WEAVEC_RT_SYMBOLIZER=<path>`
+  runs another symbolizer (an `llvm-symbolizer`) instead of `weavec-cc` or
+  `atos`.
 - `WEAVEC_RT_STATS=1 ./prog` prints the runtime's counters on stderr at
   exit, one line each, `weavec: runtime: <n> <what>`: allocations,
   releases, recycled slots, huge blocks, slow guards, range guards, string
   guards, stack unpoisons and sweeps, then the sweeps' total and
-  longest pause, the blocks and bytes the last sweep retained, and the
-  most the live slots and the quarantine held. The
+  longest pause, the blocks and bytes the last sweep retained, the
+  most the live slots and the quarantine held, the stacks recorded and
+  their memory, and the writable memory the runtime does not track. The
   counters are not synchronized.
 - `WEAVEC_RT_QUARANTINE=<bytes>` sets how much the quarantine must gain
   (and more than a quarter of the live heap) before a sweep is due (paced

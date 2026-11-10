@@ -64,22 +64,24 @@ class ParsingTest(unittest.TestCase):
     def test_reports(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            def entry(kind, file, line, col, proven=False):
+                return json.dumps({"weavec": 40, "kind": kind, "proven": proven,
+                                   "site": {"file": file, "line": line, "column": col}})
             text = "\n".join([
-                f"weavec: heap-buffer-overflow at {root}/src/x.c:10:3: read of 4 bytes at 0x10",
-                "weavec: 0x10 is 0 bytes after the 4-byte heap object at 0xc",
-                "12: weavec: heap-buffer-overflow at ../src/x.c:10:3: read of 4 bytes at 0x10",
-                "weavec: weavec.proven: stack-buffer-overflow at ./y.c:2:1: write of 8 bytes at 0x20",
-                "weavec: null-dereference at <unknown>: access at 0x0",
-                "weavec: invalid release of 0x1234: the block was already released",
+                entry("heap-buffer-overflow", f"{root}/src/x.c", 10, 3),
+                entry("heap-buffer-overflow", "src/x.c", 10, 3),
+                entry("stack-buffer-overflow", "./y.c", 2, 1, True),
+                entry("null-dereference", None, 0, 0),
+                entry("double-free", "z.c", 4, 0),
                 "weavec: runtime: 12 allocations",
-                "weavec: frobnicated at z.c:1:1: nothing",
+                entry("frobnicated", "z.c", 1, 1),
             ])
             reports = gate.parse_reports(text, root)
         self.assertEqual([gate.describe_report(r) for r in reports], [
             "heap-buffer-overflow at src/x.c:10:3",
             "weavec.proven: stack-buffer-overflow at y.c:2:1",
             "null-dereference at no location",
-            "invalid-release at no location",
+            "double-free at z.c:4:0",
         ])
 
     def test_trap_and_fault_evidence(self):
@@ -511,8 +513,9 @@ class ProgramsTest(unittest.TestCase):
                 tarred.add(tree, arcname="prog-1.0")
             sha = hashlib.sha256(archive.read_bytes()).hexdigest()
             program = gate.Program(name="prog", url=archive.as_uri(), sha256=sha, build=["./configure"],
-                                   test="cat config.out; echo 'FAIL: one'; echo weavec: heap-buffer-overflow "
-                                        "at a.c:1:2: read of 1 bytes at 0x10 >> \"$WEAVEC_RT_REPORT_LOG\"",
+                                   test="cat config.out; echo 'FAIL: one'; echo '{\"kind\":\"heap-buffer-overflow\","
+                                        "\"site\":{\"file\":\"a.c\",\"line\":1,\"column\":2}}' "
+                                        ">> \"$WEAVEC_RT_REPORT_LOG\"",
                                    failures="^FAIL: (\\S+)", reference_failures={})
             fetched = gate.fetch_archive(program, root / "cache")
             self.assertEqual(fetched.read_bytes(), archive.read_bytes())
@@ -566,7 +569,7 @@ class TriageTest(unittest.TestCase):
         self.assertFalse(gate.triaged_failure(failures, "c", report(file="src/lookup3.h", line=260)))
         self.assertTrue(gate.triaged_failure(failures, "c", report(kind="heap-buffer-overflow", file="x.c")))
         self.assertFalse(gate.triaged_failure(failures, "c", report(kind="heap-use-after-free", file="x.c")))
-        self.assertFalse(gate.triaged_failure(failures, "c", report(kind="invalid-release", file=None, line=0)))
+        self.assertFalse(gate.triaged_failure(failures, "c", report(kind="double-free", file=None, line=0)))
 
     def test_repository_triage(self):
         triage = gate.load_triage(CORPUS / "triage.json")
@@ -607,12 +610,12 @@ class InjectionTest(unittest.TestCase):
 
     def test_fields(self):
         loaded = self.load([injection(), injection(id="j", run="./x", build=["make x"], kinds=["heap-use-after-free"],
-                                                   unlocated="invalid-release", stop={"file": "b.c", "line": 7})])
+                                                   unlocated="fault", stop={"file": "b.c", "line": 7})])
         self.assertEqual(loaded[0].commands(gate.Config("c", None, [], [], test=["./t"])), ["./t"])
         self.assertEqual((loaded[0].stop_file, loaded[0].stop_line), ("a.c", 3))
         j = loaded[1]
         self.assertEqual((j.run, j.build, j.kinds, j.unlocated), (["./x"], ["make x"], ("heap-use-after-free",),
-                                                                  "invalid-release"))
+                                                                  "fault"))
         self.assertEqual((j.stop_file, j.stop_line), ("b.c", 7))
 
     def test_invalid(self):
@@ -641,9 +644,7 @@ class InjectionTest(unittest.TestCase):
         self.assertEqual(self.stops([report(file="src/a.c")], kinds=("heap-buffer-overflow",)), [])
         self.assertTrue(self.stops([report(file="src/b.c", line=9)], stop=("src/b.c", 9)))
         self.assertFalse(self.stops([report(file="src/a.c")], stop=("src/b.c", 9)))
-        unlocated = report(kind="invalid-release", file=None, line=0)
-        self.assertEqual(self.stops([unlocated]), [])
-        self.assertTrue(self.stops([unlocated], unlocated="invalid-release"))
+        self.assertEqual(self.stops([report(kind="double-free", file=None, line=0)]), [])
         self.assertEqual(self.stops(faults=["./x: killed by SIGSEGV"]), [])
         self.assertTrue(self.stops(faults=["./x: killed by SIGSEGV"], unlocated="fault"))
 
@@ -838,7 +839,9 @@ if not reference:
                                                "weavec.proven: ")):
                 if marker + " " in line:
                     kind = line.split(marker + " ", 1)[1].split()[0]
-                    text = f"weavec: {prefix}{kind} at {os.path.basename(source)}:{number}:5: read of 4 bytes at 0x10"
+                    text = json.dumps({"weavec": 40, "kind": kind, "proven": bool(prefix),
+                                       "site": {"file": os.path.basename(source), "line": number,
+                                                "column": 5}})
                     stop = "kill -TRAP $$" if checks in ("trap", "verify") else ":"
                     body.append(f"if {condition}; then emit {shlex.quote(text)}; {stop}; fi")
                     break

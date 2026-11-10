@@ -23,6 +23,7 @@
 
 #include <pthread.h>
 #include <string.h>
+#include <sys/mman.h>
 
 /*===-- Deciding (section 2.3) ---------------------------------------------===*/
 
@@ -521,10 +522,50 @@ void __weavec_rt_alloca_unpoison(uintptr_t low, uintptr_t high) {
 
 static uint64_t globalColors;
 
+/* RFC 0040 sections 5.3, 5.4: the units registered, for reports: their
+ * globals and their frames' descriptors. */
+typedef struct {
+  const struct __weavec_rt_global *globals;
+  uint64_t n;
+  const struct __weavec_rt_frame *const *frames;
+  uint64_t m;
+} Unit;
+static Unit *units;
+static size_t unitCount;
+static size_t unitRoom;
+static WeavecRtLock unitLock;
+
+static void addUnit(const Unit *unit) {
+  weavecRtLock(&unitLock);
+  if (unitCount == unitRoom) {
+    const size_t room = unitRoom != 0 ? unitRoom * 2 : 256;
+    Unit *grown = (Unit *)mmap(NULL, room * sizeof(Unit),
+                               PROT_READ | PROT_WRITE,
+                               MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (grown == MAP_FAILED) {
+      weavecRtUnlock(&unitLock);
+      return;
+    }
+    weavecRtExcluded(grown, room * sizeof(Unit));
+    if (unitCount != 0)
+      memcpy(grown, units, unitCount * sizeof(Unit));
+    /* (The old table stays mapped: a report may be reading it.) */
+    units = grown;
+    unitRoom = room;
+  }
+  units[unitCount] = *unit;
+  __atomic_store_n(&unitCount, unitCount + 1, __ATOMIC_RELEASE);
+  weavecRtUnlock(&unitLock);
+}
+
 void __weavec_rt_globals_register(const struct __weavec_rt_global *globals,
-                                  uint64_t n) {
+                                  uint64_t n,
+                                  const struct __weavec_rt_frame *const *frames,
+                                  uint64_t m) {
+  const Unit unit = {globals, n, frames, m};
   uint64_t i;
   (void)weavecRtInitialize();
+  addUnit(&unit);
   for (i = 0; i < n; ++i) {
     const struct __weavec_rt_global *global = &globals[i];
     const uint64_t used = (global->size + 15) & ~(uint64_t)15;
@@ -542,11 +583,48 @@ void __weavec_rt_globals_register(const struct __weavec_rt_global *globals,
 }
 
 void __weavec_rt_globals_unregister(const struct __weavec_rt_global *globals,
-                                    uint64_t n) {
-  uint64_t i;
+                                    uint64_t n,
+                                    const struct __weavec_rt_frame *const *frames,
+                                    uint64_t m) {
+  size_t i;
+  (void)frames;
+  (void)m;
+  weavecRtLock(&unitLock);
+  for (i = 0; i < unitCount; ++i)
+    if (units[i].globals == globals) {
+      units[i] = units[unitCount - 1];
+      --unitCount;
+      break;
+    }
+  weavecRtUnlock(&unitLock);
   for (i = 0; i < n; ++i)
     weavecRtShadowClear(globals[i].address,
                         globals[i].address + globals[i].padded);
+}
+
+const struct __weavec_rt_global *weavecRtGlobalAt(uintptr_t address) {
+  const size_t count = __atomic_load_n(&unitCount, __ATOMIC_ACQUIRE);
+  size_t i;
+  uint64_t j;
+  for (i = 0; i < count; ++i)
+    for (j = 0; j < units[i].n; ++j) {
+      const struct __weavec_rt_global *global = &units[i].globals[j];
+      if (address >= global->address &&
+          address - global->address < global->padded)
+        return global;
+    }
+  return NULL;
+}
+
+int weavecRtFrameKnown(const struct __weavec_rt_frame *frame) {
+  const size_t count = __atomic_load_n(&unitCount, __ATOMIC_ACQUIRE);
+  size_t i;
+  uint64_t j;
+  for (i = 0; i < count; ++i)
+    for (j = 0; j < units[i].m; ++j)
+      if (units[i].frames[j] == frame)
+        return 1;
+  return 0;
 }
 
 /*===-- Fortified sizes (RFC 0036 section 6) ------------------------------===*/

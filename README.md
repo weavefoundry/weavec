@@ -22,13 +22,13 @@ WeaveC is a drop-in C and C++ compiler, `weavec-cc` and `weavec-c++`, that makes
 WeaveC is built on Clang and LLVM, which provide parsing, code generation and platform support. WeaveC adds LLVM passes that guard the code, and a runtime in C.
 
 > [!NOTE]
-> WeaveC is early, v0.x software: flags, report formats and the ledger can change between minor versions. The design is [RFC 0039, *C++*](docs/rfcs/0039-cxx.md), which guards C++ as C, over [RFC 0038, *Drop-in everywhere*](docs/rfcs/0038-drop-in-everywhere.md), which makes one shared runtime serve every image on every platform and ships self-contained toolchains, the sweep and colors of [RFC 0037](docs/rfcs/0037-complete-sweep-and-colors.md), the reuse after a sweep of [RFC 0036](docs/rfcs/0036-deterministic-heap-reuse.md) and the guards of [RFC 0035](docs/rfcs/0035-guard-by-default.md). The [roadmap](docs/roadmap.md) tracks progress.
+> WeaveC is early, v0.x software: flags, report formats and the ledger can change between minor versions. The design is [RFC 0040, *Reports you can act on*](docs/rfcs/0040-actionable-reports.md), which gives every report its stacks and names its object, over [RFC 0039, *C++*](docs/rfcs/0039-cxx.md), which guards C++ as C, [RFC 0038, *Drop-in everywhere*](docs/rfcs/0038-drop-in-everywhere.md), which makes one shared runtime serve every image on every platform and ships self-contained toolchains, the sweep and colors of [RFC 0037](docs/rfcs/0037-complete-sweep-and-colors.md), the reuse after a sweep of [RFC 0036](docs/rfcs/0036-deterministic-heap-reuse.md) and the guards of [RFC 0035](docs/rfcs/0035-guard-by-default.md). The [roadmap](docs/roadmap.md) tracks progress.
 
 ## Highlights
 
 - **A drop-in compiler.** `weavec-cc` is Clang's driver with WeaveC inside: point a build at it with `CC=weavec-cc CXX=weavec-c++` and it compiles as `clang` and `clang++` would. A correct program built with the default flags compiles, links and runs as it does with Clang, apart from run time; a false trap is a WeaveC bug.
 - **Nothing to annotate.** Existing code builds unchanged. The only annotation, `WEAVEC_UNSAFE` from `weavec.h`, leaves a function or a block unguarded, for code that reads past an object on purpose.
-- **Precise reports.** A failed guard prints the kind of failure, the source location and the address, and, for the heap, where the address lies relative to its block.
+- **Reports you can act on.** A failed guard prints the kind of failure, the source location and the address, the stack of the access, and where the address lies: for the heap, the block and the stacks that allocated and released it; for a local or a global, its name. Release builds keep the line tables this needs, and `WEAVEC_RT_REPORT_FORMAT=json` writes each report as one line of JSON.
 - **No ABI changes.** Pointers keep their representation and calling conventions are unchanged; objects from other compilers link in.
 - **Compatible with AddressSanitizer's contract.** Code compiled by `weavec-cc` sees `__SANITIZE_ADDRESS__` and `__has_feature(address_sanitizer)`, and the runtime implements ASan's poisoning interface, so code written to be ASan-clean is WeaveC-clean, and a pool that poisons its free space for ASan is checked by WeaveC too.
 - **An auditable ledger.** `-fweavec-ledger` lists every access the compiler saw, whether it kept its guard, and why not.
@@ -45,8 +45,14 @@ int get(struct vec *v, size_t i) { return v->data[i]; }   // v->data holds 4 int
 ```console
 $ weavec-cc vec.c -o vec
 $ ./vec 4
-weavec: heap-buffer-overflow at vec.c:9:43: read of 4 bytes at 0xbd80000010
-weavec: 0xbd80000010 is 0 bytes after the 16-byte heap object at 0xbd80000000
+weavec: heap-buffer-overflow at vec.c:9:43: read of 4 bytes at 0xc080000010
+    #0 0x1041e0853 in get vec.c:9
+    #1 0x1041e0aeb in main vec.c:15
+    #2 0x19b523e7f in start (/usr/lib/dyld+0x31e7f)
+weavec: 0xc080000010 is 0 bytes after the 16-byte heap object at 0xc080000000, allocated by thread T0:
+    #0 0x1041e095b in main vec.c:12
+    #1 0x19b523e7f in start (/usr/lib/dyld+0x31e7f)
+weavec: summary: heap-buffer-overflow at vec.c:9:43 in get (thread T0)
 ```
 
 The program stops with `SIGTRAP` (or `SIGILL` on x86-64) at the access, instead of reading past the block.
@@ -65,11 +71,19 @@ s->on_close();               // but never the one s still points to
 ```console
 $ weavec-cc stale.c -o stale
 $ ./stale
-weavec: heap-use-after-free at stale.c:18:3: read of 8 bytes at 0xbc00000000
-weavec: 0xbc00000000 is inside a released heap block at 0xbc00000000
+weavec: heap-use-after-free at stale.c:18:3: read of 8 bytes at 0xbe00000000
+    #0 0x10412c737 in main stale.c:18
+    #1 0x19b523e7f in start (/usr/lib/dyld+0x31e7f)
+weavec: 0xbe00000000 is 0 bytes inside the 8-byte heap block at 0xbe00000000, released by thread T0:
+    #0 0x10412c64f in main stale.c:15
+    #1 0x19b523e7f in start (/usr/lib/dyld+0x31e7f)
+weavec: the block was allocated by thread T0:
+    #0 0x10412c573 in main stale.c:11
+    #1 0x19b523e7f in start (/usr/lib/dyld+0x31e7f)
+weavec: summary: heap-use-after-free at stale.c:18:3 in main (thread T0)
 ```
 
-The same guards stop an overflow of a local or a global (`stack-buffer-overflow`, `global-buffer-overflow`), a use of a local after its scope (`stack-use-after-scope`), a fortified call that overruns a field (`intra-object-overflow`), an access to memory the program poisoned through ASan's interface (`use-after-poison`), an index past an array's declared bound (`index-out-of-bounds`), and a double or invalid `free`.
+The same guards stop an overflow of a local or a global (`stack-buffer-overflow`, `global-buffer-overflow`), a use of a local after its scope (`stack-use-after-scope`), a fortified call that overruns a field (`intra-object-overflow`), an access to memory the program poisoned through ASan's interface (`use-after-poison`), an index past an array's declared bound (`index-out-of-bounds`), and a double or invalid `free` or `delete` (`double-free`, `invalid-free`, `alloc-release-mismatch`), each with its location and stacks.
 
 ## How it works
 
@@ -105,9 +119,11 @@ Other useful flags and variables:
 | `-fno-weavec-zero-init` | Do not zero-initialize locals. |
 | `-fweavec-ledger=<dir>/`, `-fweavec-summary` | Write the enforcement ledger per unit; print `weavec: file.c: 812 accesses: 431 proven, 381 guarded, 0 unguarded`. |
 | `-fno-weavec-asan-compat` | Do not compile as AddressSanitizer would for the source. |
-| `WEAVEC_RT_STATS=1` | Print the runtime's counters (allocations, releases, sweeps and their pauses) when the program exits. |
+| `WEAVEC_RT_STATS=1` | Print the runtime's counters (allocations, releases, sweeps and their pauses, recorded stacks, memory the runtime does not track) when the program exits. |
 | `WEAVEC_RT_REPORT_LOG=<path>` | Write reports to a file instead of stderr. |
-| `WEAVEC_RT_BACKTRACE=1` | Print the stack after a report that stops the program. |
+| `WEAVEC_RT_REPORT_FORMAT=json` | Write each report as one line of JSON. |
+| `WEAVEC_RT_HEAP_STACKS=<n>` | Keep `n` frames of each allocation and release stack (8 by default, at most 32); `0` records none. |
+| `WEAVEC_RT_SYMBOLIZE=0` | Name a report's frames by module and offset only; `weavec-cc --weavec-symbolize <log>` names them later. |
 | `WEAVEC_RT_QUARANTINE=<bytes>` | Change how much released memory waits before a sweep (16 MiB by default, and at least a quarter of the live heap). |
 | `WEAVEC_RT_SWEEP_SIGNAL=<n>` | On Linux, the signal that stops threads for a sweep (`SIGPWR` by default). |
 
@@ -194,6 +210,7 @@ include/weavec/   Public C++ headers
 lib/              Implementations, mirroring include/ (lib/Core/LibrarySpec.txt is the library table)
 runtime/          The C runtime: the shadow memory, the arena allocator and its sweep, the guards'
                   slow paths, frames and globals, checked library calls, ASan's interface, reports
+                  with their stacks and symbolizer
 tools/weavec-cc/  The drop-in compiler driver (Clang's driver with WeaveC inside; weavec-c++ links to it)
 resources/        weavec.h, the C-facing header with WEAVEC_UNSAFE (installed to lib/weavec/include)
 unittests/        GoogleTest unit tests

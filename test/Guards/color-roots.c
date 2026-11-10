@@ -29,8 +29,8 @@ static unsigned read4(const unsigned char *p) {
 // The optimizer hoists `dictBase - delta` out of the loop and selects it
 // or `base` before adding the index.
 // IR-LABEL: define {{.*}}@match(
-// IR: [[BIASED:%[0-9]+]] = getelementptr i8, ptr %0, i64 %{{[0-9]+}}
-// IR: select i1 %{{[0-9]+}}, ptr [[BIASED]], ptr %1
+// IR: [[BIASED:%[a-zA-Z0-9._]+]] = getelementptr i8, ptr %dictBase, i64 %{{[a-zA-Z0-9._]+}}
+// IR: select i1 %{{[a-zA-Z0-9._]+}}, ptr [[BIASED]], ptr %base
 // IR-NOT: __weavec_rt_jump
 // IR-LABEL: define {{.*}}@integer(
 // IR: __weavec_rt_jump
@@ -76,9 +76,9 @@ int main(int argc, char **argv) {
                  (unsigned)apart + zero) != 4 * 0x02020202u;
   if (strcmp(argv[1], "integer") == 0)
     // INTEGER: weavec: heap-buffer-overflow at {{.*}}color-roots.c:{{[0-9]+}}:{{[0-9]+}}: read of 4 bytes
-    // INTEGER-NEXT: weavec: 0x{{[0-9a-f]+}} is {{[0-9]+}} bytes after its base 0x{{[0-9a-f]+}}, in another object
+    // INTEGER: weavec: 0x{{[0-9a-f]+}} is {{[0-9]+}} bytes after its base 0x{{[0-9a-f]+}}, in another object
     return integer(window, far + 8) == 0;
   // LOOP: weavec: heap-buffer-overflow at {{.*}}color-roots.c:{{[0-9]+}}:{{[0-9]+}}: read of 4 bytes
-  // LOOP-NEXT: weavec: 0x{{[0-9a-f]+}} is {{[0-9]+}} bytes after its base 0x{{[0-9a-f]+}}, in another object
+  // LOOP: weavec: 0x{{[0-9a-f]+}} is {{[0-9]+}} bytes after its base 0x{{[0-9a-f]+}}, in another object
   return loop(window, 16, far) == 0;
 }

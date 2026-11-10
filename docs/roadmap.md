@@ -12,6 +12,35 @@ milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
+## Now: RFC 0040 — Reports you can act on
+
+Design: [RFC 0040 — Reports you can act on](rfcs/0040-actionable-reports.md)
+(Accepted, in progress). WeaveC's reports named the failing access but not
+where its memory came from: a use after free named neither the `malloc` nor
+the `free`, a double free named no location, a stack or global overflow did
+not name the object, and the opt-in backtrace was unsymbolized. RFC 0040
+first makes the weekly corpus run green on all three platforms (settling a
+`heap-use-after-free` report in CPython's suite on Linux) and finishes RFC
+0038 and RFC 0039, then records each heap block's allocation and release
+stacks, symbolizes stacks in the process, names locals and globals, gives
+bad releases their own kinds and locations, and writes reports as JSON for
+tools. The stages:
+
+- [x] **The RFC.**
+- [ ] **S0 The gates**: the darwin runners' failures fixed (libevent's
+      CMake policy and `pipe2`, libuv's network tests, SQLite's timed lock
+      tests); the CPython report reproduced under load and triaged, from
+      this RFC's stacks, as a race in CPython's `drop_gil` at shutdown; the
+      weekly run green, RFC 0038 and RFC 0039 Implemented.
+- [x] **S1 Stacks and the stack store.**
+- [x] **S2 Heap stacks.** Their cost is measured in S6.
+- [x] **S3 Symbolization**: `weavec-cc --weavec-symbolize`, `atos`, line
+      tables.
+- [x] **S4 Reports**: heap, frames, globals, releases, faults.
+- [x] **S5 JSON and the scripts**, untracked memory, the deletions.
+- [ ] **S6 Fresh iterations** on all three platforms, the documentation,
+      the cost gates.
+
 ## Now: RFC 0039 — C++
 
 Design: [RFC 0039 — C++](rfcs/0039-cxx.md) (Accepted, in progress). WeaveC compiles C++

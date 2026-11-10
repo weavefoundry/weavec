@@ -32,14 +32,22 @@ Keep the trapping build (`trap`, the default) for CI: in `report` mode the progr
 
 ## 3. Read each report
 
-Each report names the kind of failure, the source location of the access and its address; a second line places the address relative to the object the pointer came from:
+Each report names the kind of failure, the source location of the access and its address, then the stack of calls that made the access, and then where the address lies: for the heap, the block and the stacks that released and allocated it; for a local, its name and function; for a global, its name and definition. A last line sums it up:
 
 ```text
 weavec: heap-use-after-free at buffer.c:88:12: read of 8 bytes at 0x...
-weavec: 0x... is inside a released heap block at 0x...
+    #0 0x... in buffer_peek buffer.c:88:12
+    #1 0x... in parse_line parser.c:214:9
+weavec: 0x... is 0 bytes inside the 64-byte heap block at 0x..., released by thread T0:
+    #0 0x... in buffer_grow buffer.c:41:5
+    #1 0x... in buffer_append buffer.c:63:7
+weavec: the block was allocated by thread T0:
+    #0 0x... in buffer_new buffer.c:17:20
+    #1 0x... in parse_line parser.c:198:15
+weavec: summary: heap-use-after-free at buffer.c:88:12 in buffer_peek (thread T0)
 ```
 
-`WEAVEC_RT_BACKTRACE=1` adds the stack of the access that stopped the program. The [command-line reference](/reference/cli/#check-modes) lists the report kinds, and [troubleshooting](/reference/troubleshooting/) the common causes.
+The release stack usually points at the bug: here `buffer_grow` released the block `buffer_peek` still read. Release builds carry the line tables these stacks need, since `weavec-cc` emits them unless the command line ends in `-g0`. In CI, set `WEAVEC_RT_REPORT_LOG` to keep the reports, and `WEAVEC_RT_REPORT_FORMAT=json` if a tool reads them; a report whose frames say only `(<module>+0x<offset>)` can be named afterwards with `weavec-cc --weavec-symbolize <log>`. [Reading a report](/reference/troubleshooting/#reading-a-report) explains each part, the [command-line reference](/reference/cli/#check-modes) lists the report kinds, and [troubleshooting](/reference/troubleshooting/) the common causes.
 
 A trap is either a real bug or code that relies on undefined behavior that happens to work: reading one element past an array, reading a word at a time past the end of a string's allocation, using the slack the system allocator leaves after a block (`malloc_usable_size` returns the requested size), or an index computed from one object that lands in another. Fix the code. Code written to be clean under AddressSanitizer needs nothing more: `weavec-cc` compiles it as ASan would (`__SANITIZE_ADDRESS__` and `__has_feature(address_sanitizer)` are set), honors its `no_sanitize("address")` functions, and implements ASan's poisoning interface. If an over-read is intentional and harmless, and the project does not already keep it from ASan, put it in a small `WEAVEC_UNSAFE` region as a last resort: its accesses are not guarded. See [unsafe boundaries](/guides/unsafe/).
 

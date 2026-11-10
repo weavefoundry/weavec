@@ -28,6 +28,14 @@
       "note": "RFC 0038, the programs tier: _PyInterpreterState_GET reads tstate->interp with no thread state when a fatal error test (Py_FatalError without the GIL) reaches _PyFaulthandler_Fini; the reference build dies of the same SIGSEGV there (a macOS crash report of the reference run on darwin-arm64: _PyInterpreterState_GET, get_state, _PyObject_Free, _PyFaulthandler_Fini, fatal_error)."
     },
     {
+      "config": "cpython",
+      "file": "Include/cpython/pyatomic_gcc.h",
+      "line": 347,
+      "kind": "heap-use-after-free",
+      "verdict": "project-bug",
+      "note": "RFC 0040 section 0: a race at shutdown in CPython 3.13's drop_gil (Python/ceval_gil.c), which reads tstate->eval_breaker (FORCE_SWITCHING, _Py_eval_breaker_bit_is_set) after drop_gil_impl has unlocked the GIL's mutex; the comment there names the race (python/cpython issue 104341). Reproduced on linux-aarch64 under load (-j8 on three CPUs) with RFC 0040's stacks: a daemon thread in os.write -> PyEval_SaveThread -> drop_gil read 8 bytes at offset 24 of its own PyThreadState (336 bytes, allocated by alloc_threadstate in ThreadHandle_start), which the main thread had freed in _Py_Finalize -> _PyThreadState_DeleteList after SystemExit, in the window between the unlock and the read. It does not reproduce with each test file alone or at -j4 on four CPUs; an ASan run would need the same timing and was not made."
+    },
+    {
       "config": "git",
       "file": "builtin/fsmonitor--daemon.c",
       "line": 1098,

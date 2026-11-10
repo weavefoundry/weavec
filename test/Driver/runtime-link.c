@@ -98,7 +98,7 @@ int main(void) {
 // SHIM-NOT: defines the allocator
 
 // SHIMMED: shim
-// SHIMMED: weavec: runtime: 1 allocations
+// SHIMMED: weavec: runtime: {{[1-9][0-9]*}} allocations
 
 // STATS: weavec: runtime: {{[0-9]+}} allocations
 // STATS-NEXT: weavec: runtime: {{[0-9]+}} releases

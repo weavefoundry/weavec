@@ -31,7 +31,7 @@ int main(int argc, char **argv) {
   int sum = d[3] + copy[5] + static_cast<int>(names[10].size());
   if (strcmp(how, "past") == 0)
     // PAST: weavec: container-overflow at {{.*}}container-overflow.cpp:[[@LINE+2]]:{{[0-9]+}}: read of 4 bytes
-    // PAST-NEXT: weavec: 0x{{[0-9a-f]+}} is 16 bytes past the elements of a container in the 32-byte heap object at 0x{{[0-9a-f]+}}
+    // PAST: weavec: 0x{{[0-9a-f]+}} is 16 bytes past the elements of a container in the 32-byte heap object at 0x{{[0-9a-f]+}}
     sum += v.data()[5];
   if (strcmp(how, "popped") == 0) {
     v.push_back(2);

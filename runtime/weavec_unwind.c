@@ -48,7 +48,7 @@ WEAVEC_RT_API void *__cxa_begin_catch(void *exception);
 static void *next(const char *name) {
   void *found = dlsym(RTLD_NEXT, name);
   if (found == NULL)
-    __weavec_rt_fatal("an exception", NULL, "the process has no unwinder");
+    weavecRtDie("an exception: the process has no unwinder");
   return found;
 }
 #endif

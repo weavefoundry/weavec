@@ -469,18 +469,7 @@ llvm::Constant *ModuleContext::site(const llvm::DebugLoc &location,
     const llvm::DILocation *at = reportedAt(location.get());
     line = at->getLine();
     column = at->getColumn();
-    llvm::StringRef name = at->getFilename();
-    llvm::Constant *&text = files[name];
-    if (text == nullptr) {
-      auto *array = llvm::ConstantDataArray::getString(context, name);
-      auto *global = new llvm::GlobalVariable(
-          module, array->getType(), /*isConstant=*/true,
-          llvm::GlobalValue::PrivateLinkage, array, "__weavec.file");
-      global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-      global->setAlignment(llvm::Align(1));
-      text = global;
-    }
-    file = text;
+    file = text(at->getFilename());
   }
   llvm::Constant *&record = sites[{file, line, column, flags}];
   if (record != nullptr)
@@ -531,6 +520,33 @@ unsigned ModuleContext::row(const llvm::Function &function,
 void ModuleContext::copy(unsigned row, bool stays, llvm::StringRef reason) {
   if (EnforcementLedger *ledger = options.ledger.get())
     ledger->copy(row, stays, reason);
+}
+
+llvm::Constant *ModuleContext::text(llvm::StringRef value) {
+  llvm::Constant *&global = files[value];
+  if (global == nullptr) {
+    auto *array = llvm::ConstantDataArray::getString(context, value);
+    auto *string = new llvm::GlobalVariable(
+        module, array->getType(), /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage, array, "__weavec.file");
+    string->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+    string->setAlignment(llvm::Align(1));
+    global = string;
+  }
+  return global;
+}
+
+llvm::Constant *
+ModuleContext::relative(llvm::Constant *target, llvm::GlobalVariable *record,
+                        llvm::ArrayRef<unsigned> indices) const {
+  llvm::SmallVector<llvm::Constant *, 4> path;
+  for (const unsigned index : indices)
+    path.push_back(llvm::ConstantInt::get(i32, index));
+  llvm::Constant *field = llvm::ConstantExpr::getInBoundsGetElementPtr(
+      record->getValueType(), record, path);
+  return llvm::ConstantExpr::getSub(
+      llvm::ConstantExpr::getPtrToInt(target, i64),
+      llvm::ConstantExpr::getPtrToInt(field, i64));
 }
 
 bool ModuleContext::isRuntimeName(llvm::StringRef name) {

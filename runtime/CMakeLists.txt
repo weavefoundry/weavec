@@ -24,7 +24,9 @@ add_library(
   weavec_libc.c
   weavec_malloc.c
   weavec_report.c
+  weavec_stack.c
   weavec_sweep.c
+  weavec_symbolize.c
   weavec_rt.h)
 # RFC 0039: what the library and the archive (WEAVEC_RT_ARCHIVE) define
 # differently: the unwinding interposers, and Darwin's weak allocation
@@ -55,6 +57,8 @@ foreach(_weavec_objects IN ITEMS weavec_rt_objects weavec_rt_shared_objects
     PRIVATE -Wall
             -Wextra
             -O2
+            # RFC 0040 section 1: the unwinder follows frame records.
+            -fno-omit-frame-pointer
             -funwind-tables
             -fno-builtin-malloc
             -fno-builtin-calloc
