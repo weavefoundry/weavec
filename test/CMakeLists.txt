@@ -115,7 +115,9 @@ if(TARGET weavec_rt_static)
                INTERPROCEDURAL_OPTIMIZATION OFF
                INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
                INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF)
-  target_compile_options(weavec_rt_test PRIVATE -w)
+  # RFC 0040 §1: its unwinder test walks frame records (x86-64 omits them
+  # by default).
+  target_compile_options(weavec_rt_test PRIVATE -w -fno-omit-frame-pointer)
   add_test(NAME runtime COMMAND weavec_rt_test)
   set_tests_properties(runtime PROPERTIES LABELS "unit")
 endif()
