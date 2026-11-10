@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.21.0 (2026-11-10)
+
+### Features
+
+- Give every report its stacks, and name its object
+  ([#64](https://github.com/weavefoundry/weavec/pull/64),
+  [`0d5c79c`](https://github.com/weavefoundry/weavec/commit/0d5c79cb2799253a1650f207d55437a5ccc9551c))
+
+
 ## v0.20.0 (2026-11-08)
 
 ### Features
