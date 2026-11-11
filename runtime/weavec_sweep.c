@@ -17,7 +17,9 @@
 |*      readable mapping of the process but the runtime's own, code and
 |*      shared files the program cannot write (of the dyld shared cache,
 |*      only the writable segments of the images the process loaded), and
-|*      every live heap block (RFC 0037 section 1);
+|*      every live heap block (RFC 0037 section 1); in a program with typed
+|*      code, a released block something refers to is cleared (RFC 0042
+|*      section 9);
 |*   3. recycle what nothing marked, and resume.
 |*
 |* A sweep that cannot stop every thread, or that finds a thread it did not
@@ -1369,6 +1371,8 @@ void weavecRtSweep(void) {
       scanned = scanMappings();
       weavecRtMarkHeap();
     }
+    /* RFC 0042 section 9: the released blocks still referred to. */
+    weavecRtClearReleased();
     weavecRtRecycle(&counts, scanned && !threadsChanged());
     weavecRtCount(WeavecRtStatSweeps);
     lastCounts = counts;

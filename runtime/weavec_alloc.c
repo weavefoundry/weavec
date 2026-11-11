@@ -332,14 +332,22 @@ static inline uint32_t *slotWords(unsigned region) {
 }
 
 /* RFC 0040 section 3: each slot's allocation stack, parallel to the slot
- * words (null when the table could not be mapped); its release stack is in
- * the released block's first eight bytes, with its complement. */
+ * words (null when the table could not be mapped). RFC 0042 section 9: a
+ * released block's release stack and size, two words per slot in a table of
+ * their own, so that a released block keeps the program's bytes. */
 static uint32_t *allocStacks;
+static uint32_t *releaseRecords;
 
 static inline uint32_t *allocStackOf(unsigned region, uint32_t slot) {
   return (uint32_t *)((uintptr_t)allocStacks +
                       ((uintptr_t)region << (__weavec_rt_heap.shift - 2))) +
          slot;
+}
+
+static inline uint32_t *releaseRecordOf(unsigned region, uint32_t slot) {
+  return (uint32_t *)((uintptr_t)releaseRecords +
+                      ((uintptr_t)region << (__weavec_rt_heap.shift - 1))) +
+         2 * (uintptr_t)slot;
 }
 
 static inline uintptr_t regionStart(unsigned region) {
@@ -608,6 +616,12 @@ static int reserve(unsigned shift) {
     if (stacks != MAP_FAILED) {
       weavecRtExcluded(stacks, meta);
       allocStacks = (uint32_t *)stacks;
+    }
+    stacks = mmap(NULL, 2 * meta, PROT_READ | PROT_WRITE,
+                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (stacks != MAP_FAILED) {
+      weavecRtExcluded(stacks, 2 * meta);
+      releaseRecords = (uint32_t *)stacks;
     }
   }
   __weavec_rt_heap.meta = start + data;
@@ -893,8 +907,10 @@ static void *makeLive(uint64_t taken, size_t size, size_t slotBytes,
   storeWord(&slotWords(region)[slot], liveWord(size, form));
   if (allocStacks != NULL)
     *allocStackOf(region, slot) = stack;
-  if ((taken & 1) != 0 && size != 0)
-    zeroFill(base, size);
+  /* RFC 0042 section 8: the slot's bytes after the object stay zero too,
+   * so that a string in the object ends there at the latest. */
+  if ((taken & 1) != 0)
+    zeroFill(base, size < slotBytes ? size + 1 : size);
   shadowLive(base, size, slotBytes);
   return (void *)base;
 }
@@ -1191,12 +1207,13 @@ static int claim(SlotRef ref, uint32_t word, uint32_t stack) {
           at, &word, ((uint32_t)CachedDead << WeavecRtWordShift) | WeavecRtDead,
           0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
     return 0;
-  /* RFC 0040 section 3: before the shadow says released; with the block's
-   * size, which its word no longer holds. */
-  ((uint32_t *)ref.base)[0] = stack;
-  ((uint32_t *)ref.base)[1] = ~stack;
-  ((uint32_t *)ref.base)[2] = weavecRtLiveSize(word);
-  ((uint32_t *)ref.base)[3] = ~weavecRtLiveSize(word);
+  /* RFC 0040 section 3: with the block's size, which its word no longer
+   * holds; not in the block (RFC 0042 section 9). */
+  if (releaseRecords != NULL) {
+    uint32_t *record = releaseRecordOf(ref.region, ref.slot);
+    record[0] = stack;
+    record[1] = weavecRtLiveSize(word);
+  }
   return 1;
 }
 
@@ -1208,9 +1225,8 @@ static void retire(SlotRef ref) {
   uint32_t *words = slotWords(ref.region);
   /* Before the slot is queued: a sweep may recycle it once it is. */
   shadowDead(ref.base, entry->size);
-  /* (The first page keeps the release's stack and size.) */
   if (entry->size >= WeavecRtDecommitBytes)
-    decommit(ref.base + 16, entry->size - 16);
+    decommit(ref.base, entry->size);
   take(&state->lock);
   storeWord(&words[ref.slot], WeavecRtDead);
   if (state->deadTail != 0)
@@ -1820,6 +1836,8 @@ void *weavecRtReallocAt(void *p, size_t size,
        * allocation is this one. */
       if (size > old)
         memset((char *)p + old, 0, size - old);
+      else if (size < old)
+        memset((char *)p + size, 0, old - size);
       shadowLive(address, size, __weavec_rt_heap.table[ref.region].size);
       storeWord(word, liveWord(size, WeavecRtFormMalloc));
       if (allocStacks != NULL)
@@ -1877,14 +1895,12 @@ struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address) {
     object.form = object.live ? weavecRtLiveForm(word) : 0;
     if (object.found && allocStacks != NULL)
       object.allocated = *allocStackOf(ref.region, ref.slot);
-    /* RFC 0040 section 3: a released block's first words, unless a write
-     * the program made in report mode spoiled them. */
-    if (object.found && !object.live) {
-      const uint32_t *words = (const uint32_t *)ref.base;
-      if (words[1] == ~words[0])
-        object.released = words[0];
-      if (words[3] == ~words[2] && words[2] <= object.size)
-        object.size = words[2];
+    /* RFC 0040 section 3: a released block's record. */
+    if (object.found && !object.live && releaseRecords != NULL) {
+      const uint32_t *record = releaseRecordOf(ref.region, ref.slot);
+      object.released = record[0];
+      if (record[1] != 0 && record[1] <= object.size)
+        object.size = record[1];
     }
     return object;
   }
@@ -2064,6 +2080,43 @@ void weavecRtMarkHeap(void) {
 }
 
 size_t weavecRtLiveBytes(void) { return liveNow(); }
+
+/* RFC 0042 section 9 (amendment 21): in a program with typed code, a
+ * released block that something still refers to is cleared at the sweep, so
+ * that no pointer in it keeps a reused block reachable: a typed function
+ * holding a pointer to it reads nulls and zero counts, which are typed, and
+ * nothing it pointed to is kept for it. */
+int weavecRtTypedProgram;
+
+void weavecRtClearReleased(void) {
+  unsigned region;
+  if (!weavecRtTypedProgram)
+    return;
+  for (region = 0; region < __weavec_rt_heap.regions; ++region) {
+    const RegionState *state = &regionState[region];
+    const size_t size = __weavec_rt_heap.table[region].size;
+    uint32_t w;
+    if (state->marks == NULL || state->deadHead == 0)
+      continue;
+    for (w = 0; w < (state->bump + 63) / 64; ++w) {
+      uint64_t bits = state->marks[w];
+      while (bits != 0) {
+        const uint32_t slot = w * 64 + (uint32_t)__builtin_ctzll(bits);
+        const uintptr_t base = regionStart(region) + (uintptr_t)slot * size;
+        bits &= bits - 1;
+        if (size >= WeavecRtDecommitBytes) {
+          const uintptr_t first = (base + pageBytes - 1) & ~(uintptr_t)(pageBytes - 1);
+          const uintptr_t last = (base + size) & ~(uintptr_t)(pageBytes - 1);
+          memset((void *)base, 0, first - base);
+          decommit(base, size);
+          memset((void *)last, 0, base + size - last);
+        } else {
+          memset((void *)base, 0, size);
+        }
+      }
+    }
+  }
+}
 
 void weavecRtRecycle(struct weavecRtSweepCounts *counts, int recycle) {
   unsigned region;

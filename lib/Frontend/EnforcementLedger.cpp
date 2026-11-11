@@ -11,13 +11,16 @@
 #include "weavec/Config/Version.h"
 
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <system_error>
 #include <tuple>
 
@@ -152,6 +155,13 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
   llvm::json::Array rows;
   for (const LedgerRow &row : ledger.rows)
     rows.push_back(rowJson(row));
+  llvm::json::Array functions;
+  for (const LedgerFunction &function : ledger.functions)
+    functions.push_back(
+        llvm::json::Object{{.K = "function", .V = function.function},
+                           {.K = "tier", .V = function.tier},
+                           {.K = "file", .V = function.file},
+                           {.K = "line", .V = function.line}});
   llvm::json::Object document{
       {.K = "schema", .V = "weavec-ledger"},
       {.K = "version", .V = EnforcementLedgerVersion},
@@ -178,12 +188,16 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                          .V = static_cast<std::int64_t>(ledger.guarded)},
                         {.K = "unguarded",
                          .V = static_cast<std::int64_t>(ledger.unguarded)}}},
+               {.K = "functions", .V = std::move(functions)},
                {.K = "rows", .V = std::move(rows)},
            }}},
   };
   std::string text;
   llvm::raw_string_ostream os(text);
   os << llvm::formatv("{0:2}", llvm::json::Value(std::move(document))) << '\n';
+  // `-fweavec-ledger=out/` names a directory, made if it is missing.
+  if (!path.empty() && llvm::sys::path::is_separator(path.back()))
+    std::ignore = llvm::sys::fs::create_directories(path);
   return writeFileAtomically(
       ledgerPathFor(path, unit.object.empty() ? unit.source : unit.object),
       text, error);
@@ -196,7 +210,168 @@ std::string enforcementSummary(const EnforcementLedger &ledger,
   os << "weavec: " << source << ": " << ledger.accesses()
      << " accesses: " << ledger.proven << " proven, " << ledger.guarded
      << " guarded, " << ledger.unguarded << " unguarded";
+  const auto typed = llvm::count_if(ledger.functions, [](const auto &function) {
+    return function.tier == "typed";
+  });
+  if (typed != 0)
+    os << "; " << typed << " of " << ledger.functions.size()
+       << " functions typed";
   return text;
+}
+
+//===----------------------------------------------------------------------===//
+// The audit (RFC 0042 §10)
+//===----------------------------------------------------------------------===//
+
+namespace {
+/// What the audit lists of one program.
+struct Audit {
+  /// Functions that are not typed: what typed functions trust (T-A1).
+  llvm::json::Array trusted;
+  /// Accesses of typed functions that kept a guard, and why.
+  llvm::json::Array guarded;
+  /// Library calls of typed functions that kept a checked wrapper.
+  llvm::json::Array wrapped;
+  unsigned typed = 0;
+  unsigned functions = 0;
+};
+} // namespace
+
+/// The ledgers `operand` names: a file, or a directory's `*.ledger.json`.
+static void ledgersOf(llvm::StringRef operand,
+                      std::vector<std::string> &paths) {
+  if (!llvm::sys::fs::is_directory(operand)) {
+    paths.push_back(operand.str());
+    return;
+  }
+  std::error_code error;
+  for (llvm::sys::fs::recursive_directory_iterator it(operand, error), end;
+       it != end && !error; it.increment(error))
+    if (llvm::StringRef(it->path()).ends_with(".ledger.json"))
+      paths.push_back(it->path());
+  std::ranges::sort(paths);
+}
+
+static bool auditLedger(llvm::StringRef path, Audit &audit) {
+  auto buffer = llvm::MemoryBuffer::getFile(path);
+  if (!buffer) {
+    llvm::errs() << "weavec-cc: error: cannot read '" << path
+                 << "': " << buffer.getError().message() << '\n';
+    return false;
+  }
+  llvm::Expected<llvm::json::Value> parsed =
+      llvm::json::parse((*buffer)->getBuffer());
+  const llvm::json::Object *document = parsed ? parsed->getAsObject() : nullptr;
+  const llvm::json::Array *units =
+      document != nullptr ? document->getArray("units") : nullptr;
+  if (units == nullptr) {
+    if (!parsed)
+      llvm::consumeError(parsed.takeError());
+    llvm::errs() << "weavec-cc: error: '" << path
+                 << "' is not a WeaveC ledger\n";
+    return false;
+  }
+  for (const llvm::json::Value &each : *units) {
+    const llvm::json::Object *unit = each.getAsObject();
+    if (unit == nullptr)
+      continue;
+    llvm::StringMap<std::string> tiers;
+    if (const llvm::json::Array *functions = unit->getArray("functions"))
+      for (const llvm::json::Value &value : *functions) {
+        const llvm::json::Object *function = value.getAsObject();
+        if (function == nullptr)
+          continue;
+        const std::string name =
+            function->getString("function").value_or("").str();
+        const std::string tier = function->getString("tier").value_or("").str();
+        tiers[name] = tier;
+        ++audit.functions;
+        if (tier == "typed")
+          ++audit.typed;
+        else
+          audit.trusted.push_back(llvm::json::Object(*function));
+      }
+    const llvm::json::Array *rows = unit->getArray("rows");
+    if (rows == nullptr)
+      continue;
+    for (const llvm::json::Value &value : *rows) {
+      const llvm::json::Object *row = value.getAsObject();
+      // An entry's checks are the boundary with code that is not typed.
+      if (row == nullptr || row->getString("outcome") != "guarded" ||
+          row->getString("operation") == "entry")
+        continue;
+      llvm::StringRef name = row->getString("function").value_or("");
+      name.consume_back(".weavec.safe");
+      if (tiers.lookup(name) != "typed")
+        continue;
+      if (row->getString("reason") == "checked-call")
+        audit.wrapped.push_back(llvm::json::Object(*row));
+      else
+        audit.guarded.push_back(llvm::json::Object(*row));
+    }
+  }
+  return true;
+}
+
+static std::string where(const llvm::json::Object &entry) {
+  std::string text = entry.getString("file").value_or("").str();
+  if (const auto line = entry.getInteger("line"); line && *line != 0)
+    text += ":" + std::to_string(*line);
+  if (const auto column = entry.getInteger("column"); column && *column != 0)
+    text += ":" + std::to_string(*column);
+  return text;
+}
+
+int runAudit(llvm::ArrayRef<const char *> operands) {
+  bool json = false;
+  std::vector<std::string> paths;
+  for (const char *operand : operands) {
+    const llvm::StringRef text(operand);
+    if (text == "--format=json")
+      json = true;
+    else if (text != "--format=text")
+      ledgersOf(text, paths);
+  }
+  Audit audit;
+  bool ok = true;
+  for (const std::string &path : paths)
+    ok = auditLedger(path, audit) && ok;
+  if (json) {
+    llvm::outs() << llvm::formatv(
+                        "{0:2}",
+                        llvm::json::Value(llvm::json::Object{
+                            {.K = "schema", .V = "weavec-audit"},
+                            {.K = "version", .V = 1},
+                            {.K = "functions", .V = audit.functions},
+                            {.K = "typed", .V = audit.typed},
+                            {.K = "trusted", .V = std::move(audit.trusted)},
+                            {.K = "guarded", .V = std::move(audit.guarded)},
+                            {.K = "wrapped", .V = std::move(audit.wrapped)}}))
+                 << '\n';
+    return ok ? 0 : 1;
+  }
+  llvm::raw_ostream &out = llvm::outs();
+  auto list = [&](llvm::StringRef title, const llvm::json::Array &entries,
+                  llvm::StringRef what, llvm::StringRef why) {
+    out << '\n' << title << ":\n";
+    for (const llvm::json::Value &value : entries) {
+      const llvm::json::Object &entry = *value.getAsObject();
+      out << "  " << where(entry) << ": " << entry.getString(what).value_or("");
+      if (what == "operation")
+        out << " in " << entry.getString("function").value_or("");
+      if (!why.empty())
+        out << " (" << entry.getString(why).value_or("") << ")";
+      out << '\n';
+    }
+  };
+  out << audit.typed << " of " << audit.functions << " functions typed\n";
+  list("functions that are not typed (typed code trusts them)", audit.trusted,
+       "function", "tier");
+  list("accesses of typed functions that keep a guard", audit.guarded,
+       "operation", "reason");
+  list("library calls of typed functions that keep a checked wrapper",
+       audit.wrapped, "operation", "");
+  return ok ? 0 : 1;
 }
 
 } // namespace weavec::frontend

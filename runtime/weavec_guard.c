@@ -645,6 +645,22 @@ WEAVEC_RT_SLOW void __weavec_rt_bounds_fail(uintptr_t address, uint64_t width,
                      width, lo, hi, site);
 }
 
+WEAVEC_RT_SLOW void
+__weavec_rt_convert_fail(uintptr_t address, uint64_t width, uintptr_t lo,
+                         uintptr_t hi, const struct __weavec_rt_site *site) {
+  weavecRtFailObject("bounds-conversion", "bounds of the pointer", address,
+                     width, lo, hi, site);
+}
+
+void __weavec_rt_convert_string(uintptr_t address, uintptr_t hi,
+                                const struct __weavec_rt_site *site) {
+  if (address == 0)
+    return;
+  if (hi <= address || memchr((const void *)address, 0, hi - address) == NULL)
+    weavecRtFail("unterminated-string", address,
+                 hi > address ? hi - address : 0, site);
+}
+
 void __weavec_rt_escape_check(uintptr_t address,
                               const struct __weavec_rt_site *site) {
   uintptr_t low = 0;

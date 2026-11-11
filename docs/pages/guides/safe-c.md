@@ -145,3 +145,98 @@ Taking a local's address is never an error. When the address may outlive the loc
 5. Run the project's tests. A `pointer-out-of-bounds` report is a bug or a bound that is too small.
 
 What safe functions guarantee, and assume, is listed under [the guarantees](/reference/guarantees/#safe-functions).
+
+## Typed C: safe at full speed
+
+A safe function still checks every pointer it loads from memory against the shadow, because guarded code may have written anything there. That keeps safe C at the cost of guarded C. **`-fweavec-typed`** makes a unit _typed_ ([RFC 0042](/rfcs/0042-typed-memory/)): it is `-fweavec-safe` with a few more rules, and its safe functions, **typed functions**, believe what the declarations of the pointers they load say, as safe Rust believes a slice it loads from a struct. A typed function pays one comparison where an index or a count is known only at run time, and nothing where it is not: no shadow read, no color check.
+
+```console
+$ weavec-cc -O2 -fweavec-typed -c vec.c
+```
+
+| Tier                     | When it compiles                   | When it runs                                                                                                    |
+| ------------------------ | ---------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Typed (`-fweavec-typed`) | Safe C's rules and the rules below | comparisons against bounds; the shadow only at entries from code that is not typed and where a bound is unknown |
+| Safe (`-fweavec-safe`)   | Safe C's rules                     | bounds where the function knows them, guards elsewhere                                                          |
+| Guarded                  | none                               | guards                                                                                                          |
+| Unsafe (`WEAVEC_UNSAFE`) | none                               | none                                                                                                            |
+
+### What the flag claims
+
+The rules make every store of a typed function keep **typed memory**: each pointer in memory is null or points to what its declaration says (one object of its type, or the elements its count gives, or a string). Code that is not typed, a guarded helper, an unsafe function or a library WeaveC did not compile, is **trusted** to keep it too, as Rust trusts `unsafe` code. A guarded function that stores a short buffer in a counted field with a large count is believed by the typed function that loads it. In return:
+
+- `weavec-cc --weavec-audit <ledger directory>` lists what a program's typed functions trust: every function that is not typed, every access of a typed function that kept a guard and why, and the library calls that kept a checked wrapper. Build with `-fweavec-ledger=<directory>/` first. Read the list as Rust's `unsafe` blocks are read.
+- `-fweavec-safe-checks=full` keeps every guard in typed functions, and `-fweavec-checks=verify` keeps each guard a typed function dropped as a monitor that reports `weavec.proven` if it would have failed: run the tests so, and a guarded function that breaks typed memory, or a use after free in typed code, is reported.
+- A program with a typed unit records no allocation stacks by default; `WEAVEC_RT_HEAP_STACKS=<frames>` turns them on.
+
+A typed function does not report a use after free: the access reads the released block's own bytes, which stay as the program left them, and the runtime does not reuse a block that something still refers to, or a block that such a block refers to.
+
+### The rules typed functions add
+
+| Rule            | Rejects                                                                                                                                                        | Write instead                                                                                                                                                                    |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `counted-pair`  | a field that counts a pointer field set to a new value (`v->cap *= 2`, `v->len = n`) without the pointer in the next statement, or with a call between the two | assign the pointer and its count in adjacent statements: allocate into a local first, then `v->data = d; v->cap = n;` (`n++`, `n += k`, `n--`, `n -= k`, `n = 0` alone are fine) |
+| `string-write`  | a store through a `WEAVEC_NULL_TERMINATED` pointer (or one derived from it), or passing it where the callee may write                                          | take the buffer with its size, `char *WEAVEC_COUNTED_BY(cap) s, size_t cap`, or declare the parameter `const`                                                                    |
+| `string-index`  | indexing or offsetting a string pointer by a variable, or moving it back (`s[i]`, `s + n`, `s--`)                                                              | step forward by constants (`s++`, `s[1]`), or measure it first: `size_t n = strlen(s);` with `s` never assigned again                                                            |
+| `field-address` | the address of a pointer field leaving the function (`&node->next` passed, returned or stored)                                                                 | pass the struct that holds the field, or copy the pointer into a local, pass that, and assign the field back                                                                     |
+| `pointer-cast`  | (tightened) converting memory that holds pointers to anything but `void` or `const` bytes, and converting a `void *` to another type                           | convert an allocation's result where it is made; take the type itself as the parameter; keep a `void *` context in a `WEAVEC_GUARDED` helper                                     |
+| `pointer-bytes` | (tightened) copying or zeroing part of an object that holds pointers                                                                                           | copy or zero whole objects: `memset(p, 0, n * sizeof *p)`                                                                                                                        |
+| `counted-pair`  | a struct initializer whose constant count exceeds the array its pointer points to                                                                              | give the count the array's number of elements                                                                                                                                    |
+
+```c
+#include <weavec.h>
+#include <stdlib.h>
+
+struct vec { int *WEAVEC_COUNTED_BY(cap) data; size_t len, cap; };
+
+int grow(struct vec *v) {
+  size_t cap = v->cap ? 2 * v->cap : 8;
+  int *d = realloc(v->data, cap * sizeof *d);
+  if (d == NULL)
+    return -1;
+  v->data = d;   // the pair: one comparison checks that d covers cap ints
+  v->cap = cap;
+  return 0;
+}
+
+int push(struct vec *v, int x) {
+  if (v->len == v->cap && grow(v))
+    return -1;
+  v->data[v->len++] = x;   // one comparison with v->cap, no shadow read
+  return 0;
+}
+```
+
+### What runs
+
+- A pointer loaded from a field is bounded by the field's declaration: one object, or the count read beside it (`WEAVEC_ENDED_BY` fields, and counts in another struct, are not used: those loads keep their guards). An access at a constant offset inside one object needs no check at all; an element at an index is one comparison of the index with the count, which the optimizer removes where the loop's own test implies it.
+- A store of a pointer into a field is compared with the field's bound (`bounds-conversion` when it does not cover it), and so are arguments of typed functions and the results they return. A count that grows alone (`n++`) is checked against the shadow.
+- A string is read at its current byte and stepped forward where a test showed the byte was not zero (the loop's own test in `while (*s) s++;`): no check at all. A step no test covers keeps its guard.
+- Calls between typed functions, in one file or another typed file that declares the callee `WEAVEC_SAFE`, go to the callee's body with no check of the shadow; code that is not typed calls the function's entry, which checks each pointer argument against the shadow once.
+- Library calls whose accesses are given by sizes (`memcpy`, `memset`, `fread`, …) compare the sizes with their arguments' bounds; a string argument that is a string is taken as it is.
+
+### Notes from conversions
+
+- **Strings in tables.** A table of strings that typed code indexes is cheapest as counted fields, which need no scan: `struct name { const char *WEAVEC_COUNTED_BY(size) text; size_t size; }` initialized `{"GET", sizeof "GET"}`. A string loaded from a plain array of `char *` outside a struct has no known bound and keeps its guard.
+- **Steps in branches.** Step a string inside the branch that tested the bytes stepped over (`if (next == '\0') { f++; break; } f += 2;`), not once after the branches join, and test bytes with a comparison (`*p && isxdigit(*p)`), not only with a call: a step no comparison covers keeps its accesses guarded.
+- **Cursors in structs.** A pointer loaded from a counted field is bounded from where it points to the end its count gives: it cannot reach back over bytes behind it, even bytes the function just wrote there. Keep the start in a local (or a field of its own) and index forward from it. Read through the pointer before its count shrinks: advance the pointer and decrease the count in adjacent statements after the read (`memcpy(buf, s->next, len); s->next += len; s->avail -= len;`), not `s->avail -= len;` first.
+- **A bound's parameter** used nowhere else is unused to Clang (`-Wunused-parameter`); write `(void)n;` under `-Werror`.
+- **Public headers.** A header that uses the annotations includes `weavec.h`, which other compilers do not have. Ship a copy with the project, or guard the include: `#if defined(__has_include) && __has_include(<weavec.h>)` / `#include <weavec.h>` / `#else` and empty definitions of the macros you use.
+- **The summary line counts entries.** The checks an entry makes for callers that are not typed are counted as `guarded` in the summary line; the audit leaves them out, since they are the boundary, not a cost of typed code.
+
+### Moving a safe project to typed C
+
+1. Compile with `-fsyntax-only -fweavec-typed` and fix the errors above. String helpers that edit in place (trimming, splitting) take a counted buffer; struct initialization allocates into locals first.
+2. Give pointer fields the bounds their loads need; a field with no annotation points to one object.
+3. Build with `-fweavec-ledger=out/` and read `weavec-cc --weavec-audit out/`: each access that kept a guard says why (`typed-unbounded`: a pointer whose bound the compiler does not know, such as one loaded through `void *` or from an array of pointers outside a struct).
+4. Run the tests under `-fweavec-safe-checks=full` and under `-fweavec-checks=verify`, then measure the plain build.
+
+### Writing new code, or porting from another language
+
+Typed C reads like the C an agent would write anyway, with the bounds a Rust port would carry in its types written as annotations:
+
+- **A vector** is a struct with a `WEAVEC_COUNTED_BY(cap)` pointer, its length and its capacity, grown as above.
+- **A string builder** is a counted `char` buffer with a length; it is written through the buffer, and handed out as `const char *WEAVEC_NULL_TERMINATED` once terminated. Strings that are only read take `const char *WEAVEC_NULL_TERMINATED`.
+- **A sum type** is a tag and one struct pointer per variant, not a union of pointers.
+- **A callback** takes the type it needs (`int (*visit)(struct item *, struct state *)`), not a `void *` context; a library that needs `void *` gets a `WEAVEC_GUARDED` adapter of a few lines.
+- **Ownership** is not checked when the program compiles: release each block once. A double free stops the program (`double-free`), and a use after free in typed code reads only the released block.

@@ -19,7 +19,14 @@ the pointer's object); the program traps at the first bad access with a
 report. A C function marked `WEAVEC_SAFE` (or every one, under
 `-fweavec-safe`) is also checked when it compiles, against a few local
 rules (`lib/Frontend/SafeCheck.cpp`), and its guards on pointers with known
-bounds become bounds checks (`lib/Frontend/GuardSafe.cpp`). `runtime/` is the C
+bounds become bounds checks (`lib/Frontend/GuardSafe.cpp`). In a unit
+compiled with `-fweavec-typed` those functions are *typed*: a few more
+rules keep every pointer in memory within the bound its declaration
+states, so a pointer loaded from a field is believed and its accesses are
+compared with that bound instead of guarded (`lib/Frontend/GuardTyped.cpp`
+reads the fields' implicit annotations); code that is not typed is trusted
+to keep those bounds, and the ledger and `weavec-cc --weavec-audit` list
+it. `runtime/` is the C
 runtime every enforcing link carries: the shadow, the arena allocator (with
 per-thread caches) whose quarantine reuses a released block only after a
 *sweep* (marked in parallel by worker threads) finds no pointer to it, the
@@ -34,7 +41,10 @@ enforcement ledger, the compiler driver). `tools/weavec-cc` is Clang's
 driver with WeaveC inside; there is no other tool, and no analysis beyond
 Safe C's rules, each decided inside one function. Full
 picture: `docs/architecture.md`. Design and the reasoning behind it:
-`docs/rfcs/`. Read `0041-safe-c.md` first, the current design (safe
+`docs/rfcs/`. Read `0042-typed-memory.md` first, the current design
+(typed units: typed memory and what keeps it, bounds from fields, the
+comparisons, the sweep through released blocks, the audit), then
+`0041-safe-c.md` (safe
 functions, their rules and annotations, bounds checks in place of guards,
 the split entry point, locals placed on the heap), then
 `0040-actionable-reports.md` (the reports' stacks, the objects they name,
@@ -72,7 +82,9 @@ Accepted RFC, or contradicts one, stop and write or amend an RFC first
 (`docs/rfcs/README.md` explains when one is required and the process); do
 not encode a new design decision in code alone. Bug fixes that bring code
 in line with an RFC need no RFC. A rule that removes a guard must be local
-to a function and monitored by `verify` mode (RFC 0035 §6).
+to a function and monitored by `verify` mode (RFC 0035 §6); the one other
+justification is typed memory, in a typed function (RFC 0042 §10), and it
+is monitored the same way.
 
 ## Build and test
 
@@ -141,8 +153,8 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
    (the guards read it through `GuardLibrary.cpp`), never in
    `name == "…"` tests; nothing under `lib/` names a corpus project; the
    library code (`lib/`, `include/`, `tools/`) stays within its line budget
-   (11,500, RFC 0041), and so does the runtime (`runtime/` without `runtime/test/`
-   and its export list, counted apart: 10,000). The runtime is C and
+   (14,200, RFC 0042), and so does the runtime (`runtime/` without `runtime/test/`
+   and its export list, counted apart: 10,500). The runtime is C and
    includes no WeaveC header but its own `weavec_rt.h`, and every runtime
    entry point the passes declare (and every `wrapper(NAME)` of the table)
    must be declared there with the same signature. What the runtime's
@@ -173,7 +185,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Change stack frames, shared frame space, scopes, dynamic allocas, non-local exits | `lib/Frontend/GuardFrames.cpp` (RFC 0035 §3, amendment 5; RFC 0036 §2: `StackLifetime`); tests `test/Guards/ir-frames.c`, `shared-frame.c`, `stack-overflow.c`, `use-after-scope*.c`, `vla-overflow.c`, `alloca-entry.c`, `longjmp.c`, `ir-noreturn.c`; case `test/cases/determinism/shared-frame_ok.c` |
 | Change global redzones and registration | `lib/Frontend/GuardGlobals.cpp`; `__weavec_rt_globals_register` in `runtime/weavec_guard.c` (RFC 0035 §4, RFC 0036 §4); tests `test/Guards/ir-globals.c`, `global-overflow.c`, `test/Driver/image-globals.c` |
 | Change unsafe regions                | `lib/Frontend/UnsafeRegions.cpp` (the AST collector; `no_sanitize("address")` functions too; RFC 0035 §2.6, amendment 8) |
-| Change the enforcement ledger or the summary line | `lib/Frontend/EnforcementLedger.cpp` (`weavec-ledger` version 3, `EnforcementLedgerVersion`; RFC 0035 §9, amendment 10); test `test/Guards/ledger.c` |
+| Change the enforcement ledger or the summary line | `lib/Frontend/EnforcementLedger.cpp` (`weavec-ledger` version 5, `EnforcementLedgerVersion`; RFC 0035 §9, amendment 10; RFC 0042 §10: the `functions` list and `runAudit`); test `test/Guards/ledger.c` |
 | Change the allocator, the quarantine or when to sweep | `runtime/weavec_alloc.c` (arena, slot words, quarantine, huge blocks, the heap's shadow; the soft and hard budgets and the pacing, `overBudget`; recycling in address order; RFC 0036 §3; thread caches, spare regions for full classes, the 64 MiB default, RFC 0037 §2), `weavec_malloc.c` (the `malloc` family); `rt_test` tests `pacing`, `sweep-*`, `thread-caches` |
 | Change the sweep                     | `runtime/weavec_sweep.c` (stopping threads: Darwin `thread_suspend`, Linux signals; the roots: registers and vector registers, stacks, thread-specific data, readable mappings, the image table for the dyld shared cache; the conservative mark and its workers; RFC 0036 §3.4, RFC 0037 §1, §3); `rt_test` tests `sweep-*`, `*-is-scanned`, `vector-registers-are-scanned`, `signals-during-sweeps` |
 | Change ASan's interface              | `runtime/weavec_asan.c` (RFC 0036 §5); test `test/Guards/use-after-poison.c`, case `test/cases/determinism/asan-pool_*.c` |
@@ -185,6 +197,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Debug the passes                     | `weavec-cc -O2 -S -emit-llvm file.c -o -` (the expanded guards and the frame layout); `-mllvm -print-after-all` (the markers through the pipeline; the passes print as `weavec::frontend::GuardInsertPass` and so on); `-fweavec-checks=verify` (removed guards kept as monitors) |
 | Add or run a test case               | `test/cases/README.md`, `scripts/run-cases.py`         |
 | Measure on real code                 | `scripts/corpus-gate.py`, `test/corpus/` (README, manifest with per-platform forms, expected ratchet, triage, prerequisites, the programs tier) |
+| Change typed units (field annotations, bounds of loaded pointers, the comparisons' form, conversions at stores, calls and returns, store pairs, strings, the audit) | the typed rules and `annotateFields` in `lib/Frontend/SafeCheck.cpp`; `lib/Frontend/GuardTyped.cpp` (reading the annotations, count reads, store pairs, zeroed locals); `SafeBounds` in `lib/Frontend/GuardSafe.cpp` (`boundedField`, `outside`, `convert*`, `findStrings`); `weavecRtMarkReleased` and the release records in `runtime/weavec_alloc.c`, `__weavec_rt_convert_fail` in `weavec_guard.c` (RFC 0042); tests `test/Safe/typed-rules.c`, `test/Guards/typed-*.c`, `ir-typed.c`, `test/Driver/typed-units.c`, cases `test/cases/typed/`, `rt_test` `release-keeps-bytes` and `sweep-follows-released-blocks`; the guide's "Typed C" section |
 | Change Safe C (its rules, annotations, bounds checks, entry points, heap-placed locals) | `lib/Frontend/SafeCheck.cpp` (the rules and the table, `include/weavec/Frontend/SafeCheck.h`), `lib/Frontend/GuardSafe.cpp` (bounds, entries, heap placement), `resources/include/weavec.h` (RFC 0041); tests `test/Safe/`, `test/Guards/safe-*.c`, `ir-safe.c`, cases `test/cases/safe/`; the guide `docs/pages/guides/safe-c.md` |
 | Add an annotation                    | Don't, without an RFC: `WEAVEC_UNSAFE` and Safe C's are the only ones (`UnsafeRegions.h`, `SafeCheck.h`, `weavec.h`, `docs/annotations.md`) |
 | Change build flags / warnings        | `cmake/WeaveCWarnings.cmake`, `cmake/WeaveCLLVM.cmake` |

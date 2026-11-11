@@ -395,7 +395,7 @@ void LibraryCall::guardScan(unsigned index) const {
     llvm::Value *stop = builder.CreateMul(
         builder.CreateZExtOrTrunc(&call, module().i64), elementBytes);
     if (llvm::Value *bytes = readTo(builder, stop))
-      module().insertRange(after, pointer, bytes, 0, record("scan"));
+      module().insertRange(after, pointer, bytes, MarkerScan, record("scan"));
     return;
   }
   llvm::IRBuilder<> test(after);
@@ -408,7 +408,7 @@ void LibraryCall::guardScan(unsigned index) const {
       atFound.CreateSub(atFound.CreatePtrToInt(&call, module().i64),
                         atFound.CreatePtrToInt(pointer, module().i64));
   if (llvm::Value *bytes = readTo(atFound, stop))
-    module().insertRange(found, pointer, bytes, 0, record("scan"));
+    module().insertRange(found, pointer, bytes, MarkerScan, record("scan"));
   // Not found: the whole extent was read.
   llvm::IRBuilder<> atMissed(missed);
   const std::optional<core::LibTerm> &term =
@@ -421,7 +421,7 @@ void LibraryCall::guardScan(unsigned index) const {
     module().insertRange(missed, pointer,
                          param.bytes ? count
                                      : atMissed.CreateMul(count, elementBytes),
-                         0, record("scan"));
+                         MarkerScan, record("scan"));
 }
 
 void LibraryCall::guardArguments() const {

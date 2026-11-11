@@ -416,6 +416,21 @@ llvm::FunctionCallee ModuleContext::boundsFailFunction() {
   return callee;
 }
 
+llvm::FunctionCallee ModuleContext::convertFailFunction() {
+  llvm::FunctionCallee callee =
+      runtime("convert_fail",
+              llvm::FunctionType::get(llvm::Type::getVoidTy(context),
+                                      {i64, i64, i64, i64, ptr}, false));
+  slowPath(callee, module);
+  return callee;
+}
+
+llvm::FunctionCallee ModuleContext::convertStringFunction() {
+  return runtime("convert_string",
+                 llvm::FunctionType::get(llvm::Type::getVoidTy(context),
+                                         {i64, i64, ptr}, false));
+}
+
 llvm::FunctionCallee ModuleContext::escapeCheckFunction() {
   return runtime("escape_check",
                  llvm::FunctionType::get(llvm::Type::getVoidTy(context),
@@ -534,6 +549,11 @@ unsigned ModuleContext::row(const llvm::Function &function,
 void ModuleContext::copy(unsigned row, bool stays, llvm::StringRef reason) {
   if (EnforcementLedger *ledger = options.ledger.get())
     ledger->copy(row, stays, reason);
+}
+
+void ModuleContext::reason(unsigned row, llvm::StringRef reason) {
+  if (EnforcementLedger *ledger = options.ledger.get())
+    ledger->setReason(row, reason);
 }
 
 llvm::Constant *ModuleContext::text(llvm::StringRef value) {
@@ -1090,6 +1110,8 @@ llvm::PreservedAnalyses GuardInsertPass::run(llvm::Module &module,
     return llvm::PreservedAnalyses::all();
   guard::ModuleContext context(module, options);
   guard::thunkLibraryAddresses(context, module);
+  // RFC 0042 §5: the field annotations, read before anything moves them.
+  guard::readTypedFields(context, module);
   // RFC 0041: safe functions first, which may split one into an entry and
   // its body (amendment 18), so that every caller sees the split.
   std::vector<llvm::Function *> safe;

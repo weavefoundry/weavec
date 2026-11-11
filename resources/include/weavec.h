@@ -28,7 +28,7 @@
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 2
-#define WEAVEC_H_VERSION_MINOR 0
+#define WEAVEC_H_VERSION_MINOR 1
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -55,7 +55,9 @@
  * A safe function is checked against Safe C's rules when it is compiled and
  * rejected with an error naming the rule and the fix when it breaks one;
  * once accepted, its accesses are checked against the bounds its pointers
- * carry. The guide is docs/pages/guides/safe-c.md. The spellings below must
+ * carry. In a typed unit (-fweavec-typed, RFC 0042) the bounds of struct
+ * fields are believed where pointers are loaded and checked where they are
+ * stored. The guide is docs/pages/guides/safe-c.md. The spellings below must
  * match weavec::frontend::SafeAnnotation and its neighbors
  * (include/weavec/Frontend/SafeCheck.h). Under a compiler other than Clang
  * they expand to nothing, so safe C is plain C.
@@ -66,7 +68,9 @@
  *   WEAVEC_SAFE char *find(char *s WEAVEC_LIFETIMEBOUND, char c);
  */
 
-/** Makes a function definition safe (RFC 0041 §1). */
+/** Makes a function definition safe (RFC 0041 §1). On a declaration in a
+ * typed unit (-fweavec-typed, RFC 0042 §6), says that a typed unit defines
+ * the function, whose callers then call its body; the link fails if not. */
 #define WEAVEC_SAFE WEAVEC_ANNOTATE_("weavec.safe")
 /** In a unit compiled with -fweavec-safe: keeps a function guarded. */
 #define WEAVEC_GUARDED WEAVEC_ANNOTATE_("weavec.guarded")

@@ -152,6 +152,8 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
     zeroInit = value;
   } else if (name == "weavec-safe") {
     safe = value;
+  } else if (name == "weavec-typed") {
+    typed = value;
   } else if (name == "weavec-summary") {
     summary = value;
   } else {
@@ -165,7 +167,7 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
 }
 
 llvm::StringRef driverFlagsHelp() {
-  return R"(WeaveC flags of weavec-cc (RFC 0037, RFC 0040, RFC 0041); every other flag is Clang's.
+  return R"(WeaveC flags of weavec-cc (RFC 0037, RFC 0040, RFC 0041, RFC 0042); every other flag is Clang's.
 
   -fweavec, -fno-weavec
       Guard memory accesses (the default), or compile as plain Clang.
@@ -192,6 +194,11 @@ llvm::StringRef driverFlagsHelp() {
       (RFC 0041): checked against Safe C's rules when compiled, its
       accesses checked against its pointers' bounds. WEAVEC_GUARDED keeps
       a function guarded. Without the flag, WEAVEC_SAFE marks one function.
+  -fweavec-typed, -fno-weavec-typed
+      Make the unit typed (RFC 0042): -fweavec-safe, with typed memory's
+      rules, and its safe functions trust the bounds that pointers in memory
+      declare instead of checking them against the shadow. Code that is not
+      typed is trusted to keep those bounds; the ledger lists it.
   -fweavec-safe-checks=bounds|full
       Safe functions' accesses are checked against their bounds (bounds,
       the default), or keep their guards as well, so that a use after free
@@ -200,6 +207,11 @@ llvm::StringRef driverFlagsHelp() {
       Where a linked image finds the runtime's library (libweavec_rt):
       <dir> ($ORIGIN, @loader_path or an installation path) instead of the
       toolchain's runtime directory, or no rpath at all.
+  --weavec-audit [--format=json] <ledger>...
+      What a program's typed functions trust (RFC 0042): from its ledgers
+      (-fweavec-ledger=<dir>/; files or directories), the functions that
+      are not typed, the accesses of typed functions that kept a guard and
+      why, and the library calls that kept a checked wrapper.
   --weavec-symbolize [<log>...]
       The runtime's symbolizer: answer `CODE <module> <address>` lines on
       standard input with each address's functions and lines; with a saved
@@ -577,6 +589,7 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   // too, so that an agent can iterate on them with -fsyntax-only.
   auto safe = std::make_shared<SafeUnit>();
   safe->full = weavec.safeFull;
+  safe->typed = weavec.typed;
   if (weavec.enforces() && codegen) {
     unsafe = std::make_shared<UnsafeRegions>();
     ledger = configureEnforcement(*compiler, weavec, unsafe, safe);
@@ -585,11 +598,17 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   // precompiled header or module keeps it in its options, as the compiles
   // that read it have it.
   const bool asanCompat = applyAsanCompat(*compiler, weavec) && codegen;
-  WeaveCWrapperAction action(std::move(inner), unsafe, safe, weavec.safe,
-                             asanCompat);
+  WeaveCWrapperAction action(std::move(inner), unsafe, safe,
+                             weavec.safe || weavec.typed, asanCompat);
   success = compiler->ExecuteAction(action);
-  if (success && ledger)
+  if (success && ledger) {
+    for (const SafeUnit::Definition &definition : safe->definitions)
+      ledger->functions.push_back({.function = definition.name,
+                                   .tier = definition.tier,
+                                   .file = definition.file,
+                                   .line = definition.line});
     success = emitEnforcementLedger(*compiler, weavec, *ledger);
+  }
   return success ? 0 : 1;
 }
 
@@ -1125,6 +1144,8 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
       return runCc1(argv.drop_front(2), argv[0]);
     if (mode == "--weavec-symbolize")
       return runSymbolizer(argv.drop_front(2));
+    if (mode == "--weavec-audit")
+      return runAudit(argv.drop_front(2));
     if (mode.starts_with("-cc1")) {
       llvm::errs() << "weavec-cc: error: '" << mode
                    << "' is Clang's tool, which weavec-cc does not include; "
@@ -1311,6 +1332,12 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
 
   int status = 0;
   for (const clang::driver::Command &job : compilation->getJobs()) {
+    // After a failure the other inputs are still compiled, as Clang's driver
+    // does (an agent's round sees every file's errors); nothing else runs.
+    const bool compile = !job.getArguments().empty() &&
+                         llvm::StringRef(job.getArguments().front()) == "-cc1";
+    if (status != 0 && !compile)
+      continue;
     // The objects exist now: a program-defined allocator is visible.
     if (job.getSource().getKind() == clang::driver::Action::LinkJobClass &&
         weavec.enforces())
@@ -1326,7 +1353,6 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
         compilation->CleanupFileMap(compilation->getFailureResultFiles(),
                                     action);
       }
-      break;
     }
   }
   return status;

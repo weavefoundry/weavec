@@ -218,6 +218,16 @@ static size_t storeEntries;
 
 unsigned weavecRtHeapStacks = WeavecRtHeapFrames;
 
+/* Whether WEAVEC_RT_HEAP_STACKS set the depth (RFC 0042 section 9: a typed
+ * program's default does not override it). */
+static int heapStacksSet;
+
+void __weavec_rt_typed_program(void) {
+  weavecRtTypedProgram = 1;
+  if (!heapStacksSet)
+    weavecRtHeapStacks = 0;
+}
+
 /* WEAVEC_RT_HEAP_STACKS=<frames> (0: none), read before the program's
  * constructors. */
 __attribute__((constructor(101))) static void readStackSettings(void) {
@@ -229,6 +239,7 @@ __attribute__((constructor(101))) static void readStackSettings(void) {
   (void)weavecRtThread();
   if (value != NULL && *value >= '0' && *value <= '9') {
     const unsigned long frames = strtoul(value, NULL, 10);
+    heapStacksSet = 1;
     weavecRtHeapStacks = frames < WeavecRtHeapFramesMax ? (unsigned)frames
                                                         : WeavecRtHeapFramesMax;
   }

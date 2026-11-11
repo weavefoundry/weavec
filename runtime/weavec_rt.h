@@ -617,6 +617,20 @@ __weavec_rt_limit_fail(uintptr_t address, uint64_t width, uint64_t limit,
 WEAVEC_RT_API WEAVEC_RT_SLOW void
 __weavec_rt_bounds_fail(uintptr_t address, uint64_t width, uintptr_t lo,
                         uintptr_t hi, const struct __weavec_rt_site *site);
+/* RFC 0042 section 6: a pointer stored, passed or returned where `width`
+ * bytes are declared, whose bounds [lo, hi) do not cover them
+ * (`bounds-conversion`). */
+WEAVEC_RT_API WEAVEC_RT_SLOW void
+__weavec_rt_convert_fail(uintptr_t address, uint64_t width, uintptr_t lo,
+                         uintptr_t hi, const struct __weavec_rt_site *site);
+/* RFC 0042 section 6: a pointer with bounds [address, hi) converted to a
+ * string has a zero byte in them (`unterminated-string` otherwise). */
+WEAVEC_RT_API void
+__weavec_rt_convert_string(uintptr_t address, uintptr_t hi,
+                           const struct __weavec_rt_site *site);
+/* RFC 0042 section 9: called by each typed unit's constructor; the
+ * program records no heap stacks unless WEAVEC_RT_HEAP_STACKS says so. */
+WEAVEC_RT_API void __weavec_rt_typed_program(void);
 /* RFC 0041 section 5: a safe function's escaping parameter must not point
  * into the calling thread's stack (`stack-escape`). */
 WEAVEC_RT_API void
@@ -777,7 +791,7 @@ void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
 /* The library's interface version (libweavec_rt.so.<abi>,
  * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
  * encoding or a site record changes. */
-#define WEAVEC_RT_ABI 41
+#define WEAVEC_RT_ABI 42
 
 /*===-- Internal -----------------------------------------------------------===*/
 
@@ -819,6 +833,10 @@ int weavecRtAllocatorNested(void);
 int weavecRtPrepareMarks(void);
 void weavecRtMarkWords(uintptr_t low, uintptr_t high);
 void weavecRtMarkHeap(void);
+/* RFC 0042 section 9: clears the marked released blocks, in a program with
+ * typed code (weavecRtTypedProgram). */
+extern int weavecRtTypedProgram;
+void weavecRtClearReleased(void);
 /* RFC 0037 section 3: the live heap's marking in parts, for the mark
  * workers. weavecRtHeapWork calls `add` for runs of slots of about `chunk`
  * bytes; weavecRtMarkSlots marks from the live ones; weavecRtMarkHuge from

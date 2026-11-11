@@ -418,6 +418,55 @@ static void testSweepFollowsTheHeap(void) {
   free(first);
 }
 
+static void testReleaseKeepsBytes(void) {
+  /* RFC 0042 section 9: a release writes nothing in the block (its stack
+   * and size are kept beside it), so a typed function holding a pointer to
+   * it reads the program's bytes, and a report still names the release. */
+  uint64_t *volatile p = (uint64_t *)opaque(malloc(48));
+  unsigned i;
+  int same = 1;
+  for (i = 0; i < 6; ++i)
+    p[i] = 0x0123456789abcdefULL + i;
+  free((void *)p);
+  for (i = 0; i < 6; ++i)
+    same &= p[i] == 0x0123456789abcdefULL + i;
+  CHECK(same);
+  {
+    const struct weavecRtHeapObject object =
+        weavecRtHeapObjectAt((uintptr_t)p);
+    CHECK(object.found && !object.live);
+    CHECK(object.size == 48);
+  }
+}
+
+static void *volatile *releasedHolder;
+
+static void testSweepClearsReleasedBlocks(void) {
+  /* RFC 0042 section 9: in a program with typed code, a released block a
+   * pointer still refers to is kept and cleared at the sweep, and what it
+   * pointed to is reused. (A size class of its own.) */
+  void *volatile first = opaque(malloc(6100));
+  volatile uintptr_t inner = releasedBlock(6100);
+  const unsigned stacks = weavecRtHeapStacks;
+  __weavec_rt_typed_program();
+  releasedHolder = (void *volatile *)malloc(6100);
+  releasedHolder[5] = (void *)(inner ^ Hidden);
+  free((void *)releasedHolder);
+  scrubStack();
+  weavecRtSweep();
+  CHECK(releasedHolder[5] == NULL);
+  {
+    unsigned char *q = reuse(inner ^ Hidden, 6100);
+    CHECK(q != NULL);
+    CHECK((uintptr_t)q != (uintptr_t)releasedHolder);
+    free(q);
+  }
+  weavecRtTypedProgram = 0;
+  weavecRtHeapStacks = stacks;
+  releasedHolder = NULL;
+  free(first);
+}
+
 static void *volatile threadHeld;
 static volatile int threadRelease;
 
@@ -1672,6 +1721,8 @@ static const struct {
     {"sweep-recycles", testSweepRecycles},
     {"quarantine-holds", testQuarantineHolds},
     {"sweep-follows-the-heap", testSweepFollowsTheHeap},
+    {"release-keeps-bytes", testReleaseKeepsBytes},
+    {"sweep-clears-released-blocks", testSweepClearsReleasedBlocks},
     {"sweep-stops-threads", testSweepStopsThreads},
     {"sweep-stops-blocking-threads", testSweepStopsBlockingThreads},
     {"sweep-leaves-program-signals", testSweepLeavesProgramSignals},

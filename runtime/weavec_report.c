@@ -856,6 +856,13 @@ static void accessWhat(uintptr_t address, uint64_t width) {
       putUnsigned(&line, address, 10);
     }
     report.op = NULL;
+  } else if (strcmp(report.kind, "bounds-conversion") == 0) {
+    /* RFC 0042 section 6: what the pointer's destination needs. */
+    put(&line, "needs ");
+    putUnsigned(&line, width, 10);
+    put(&line, " bytes at ");
+    putHex(&line, address);
+    report.op = "convert";
   } else if (width == 0) {
     put(&line, "access at ");
     putHex(&line, address);

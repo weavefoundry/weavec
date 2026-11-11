@@ -60,7 +60,7 @@ RESOURCE_INCLUDE = ROOT / "resources" / "include"
 # ---------------------------------------------------------------------------
 
 # The `version` of the enforcement ledger this runner reads.
-LEDGER_VERSION = 4
+LEDGER_VERSION = 5
 # Run-time report kinds (runtime/weavec_report.c).
 KINDS = (
     "heap-buffer-overflow", "heap-use-after-free", "stack-buffer-overflow",
@@ -69,11 +69,12 @@ KINDS = (
     "index-out-of-bounds", "double-free", "invalid-free", "alloc-release-mismatch",
     "invalid-access", "overlapping-copy",
     "memory-fault", "stack-use-after-return", "container-overflow", "library-assertion",
-    "pointer-out-of-bounds", "stack-escape",
+    "pointer-out-of-bounds", "stack-escape", "bounds-conversion",
 )
 LEDGER_REASONS = {
-    "GUARDED": ("access", "range", "string", "checked-call", "loop-range"),
-    "PROVEN": ("in-bounds", "dominated", "merged", "optimized", "safe"),
+    "GUARDED": ("access", "range", "string", "checked-call", "loop-range",
+                "typed-unbounded"),
+    "PROVEN": ("in-bounds", "dominated", "merged", "optimized", "safe", "typed"),
     "UNGUARDED": ("unsafe",),
 }
 
@@ -348,7 +349,7 @@ def parse_markers(path: Path, text: str) -> SourceMarkers:
 # Cases
 # ---------------------------------------------------------------------------
 
-_MAIN = re.compile(r"^[ \t]*(?:(?:static|extern|inline)\s+)*(?:int|void)\s+main\s*\([^)]*\)\s*\{",
+_MAIN = re.compile(r"^[ \t]*(?:(?:static|extern|inline|WEAVEC_GUARDED|WEAVEC_UNSAFE)\s+)*(?:int|void)\s+main\s*\([^)]*\)\s*\{",
                    re.MULTILINE)
 
 

@@ -359,7 +359,7 @@ static void mergeInBlocks(llvm::Function &function,
 
 /// Whether the alloca's address can reach code other than this function's
 /// own accesses: stored, passed to a call, returned or converted.
-static bool escapes(const llvm::AllocaInst &alloca) {
+static bool escapes(const llvm::AllocaInst &alloca, bool typed) {
   llvm::SmallVector<const llvm::Value *, 8> work{&alloca};
   llvm::SmallPtrSet<const llvm::Value *, 16> seen{&alloca};
   while (!work.empty()) {
@@ -393,6 +393,12 @@ static bool escapes(const llvm::AllocaInst &alloca) {
       }
       if (const auto *call = llvm::dyn_cast<llvm::CallBase>(user)) {
         if (ModuleContext::markerOf(*call))
+          continue;
+        // RFC 0042 §8: a typed function's local passed to a typed body is
+        // borrowed by code that compares its accesses with its bounds.
+        if (typed && call->getCalledFunction() != nullptr &&
+            !call->isCallee(&use) &&
+            call->getCalledFunction()->getName().ends_with(".weavec.safe"))
           continue;
         if (const auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(call);
             intrinsic &&
@@ -942,7 +948,9 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
   for (llvm::BasicBlock &block : function)
     for (llvm::Instruction &instruction : block)
       if (auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(&instruction);
-          alloca && !tracked.contains(alloca) && escapes(*alloca))
+          alloca && !tracked.contains(alloca) &&
+          escapes(*alloca, isTyped(module, function) && !module.verify() &&
+                               !module.options.safe->full))
         tracked.insert(alloca);
 
   for (const Access &access : accesses)
