@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.22.0 (2026-11-11)
+
+### Features
+
+- Add safe C functions, checked when compiled and run
+  ([#65](https://github.com/weavefoundry/weavec/pull/65),
+  [`5d384b4`](https://github.com/weavefoundry/weavec/commit/5d384b4b43072c49b2afb1574fa6a5ad751a8961))
+
+
 ## v0.21.0 (2026-11-10)
 
 ### Features
