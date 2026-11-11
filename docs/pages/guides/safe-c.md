@@ -9,12 +9,12 @@ Safe C is plain C. Its annotations come from `weavec.h` and expand to nothing un
 
 ## Making functions safe
 
-| How                                                    | Effect                                                                                                 |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `WEAVEC_SAFE` before a function definition             | that function is safe                                                                                  |
-| `-fweavec-safe` on the command line                    | every function the unit defines outside system headers is safe                                         |
-| `WEAVEC_GUARDED` before a definition in such a unit    | that function stays guarded, as all code is without Safe C                                             |
-| `WEAVEC_UNSAFE`, `no_sanitize("address")`              | that function stays unsafe (unguarded), as before                                                      |
+| How                                                 | Effect                                                         |
+| --------------------------------------------------- | -------------------------------------------------------------- |
+| `WEAVEC_SAFE` before a function definition          | that function is safe                                          |
+| `-fweavec-safe` on the command line                 | every function the unit defines outside system headers is safe |
+| `WEAVEC_GUARDED` before a definition in such a unit | that function stays guarded, as all code is without Safe C     |
+| `WEAVEC_UNSAFE`, `no_sanitize("address")`           | that function stays unsafe (unguarded), as before              |
 
 A safe function may call guarded functions, and guarded code may call safe functions: convert a program one function at a time. The rules run whenever WeaveC does, under `-fsyntax-only` and `-fweavec-checks=none` too, so the loop is cheap:
 
@@ -30,15 +30,15 @@ list.c:14:12: note: give its declaration a bound: 'T *WEAVEC_COUNTED_BY(n) p' (o
 
 A pointer in a safe function points to **one object** unless its declaration says how many. The annotations go after the `*` of a pointer type, on parameters, results, fields and globals:
 
-| Annotation                                     | The pointer points to                                     |
-| ---------------------------------------------- | --------------------------------------------------------- |
-| none                                           | one object of its type                                    |
-| `WEAVEC_COUNTED_BY(n)`                         | `n` elements; `n` names an integer parameter, or is an integer constant or a macro that expands to one |
-| `WEAVEC_SIZED_BY(n)`                           | `n` bytes                                                 |
-| `WEAVEC_ENDED_BY(e)`                           | the elements before `e`, another pointer parameter        |
-| `WEAVEC_NULL_TERMINATED`                       | a string, up to and with its NUL                          |
-| `WEAVEC_NULL_TERMINATED_OR_NULL`               | a string, or null                                         |
-| `WEAVEC_COUNTED_BY_OR_NULL(n)`, `WEAVEC_SIZED_BY_OR_NULL(n)` | as above, or null whatever `n` is           |
+| Annotation                                                   | The pointer points to                                                                                  |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| none                                                         | one object of its type                                                                                 |
+| `WEAVEC_COUNTED_BY(n)`                                       | `n` elements; `n` names an integer parameter, or is an integer constant or a macro that expands to one |
+| `WEAVEC_SIZED_BY(n)`                                         | `n` bytes                                                                                              |
+| `WEAVEC_ENDED_BY(e)`                                         | the elements before `e`, another pointer parameter                                                     |
+| `WEAVEC_NULL_TERMINATED`                                     | a string, up to and with its NUL                                                                       |
+| `WEAVEC_NULL_TERMINATED_OR_NULL`                             | a string, or null                                                                                      |
+| `WEAVEC_COUNTED_BY_OR_NULL(n)`, `WEAVEC_SIZED_BY_OR_NULL(n)` | as above, or null whatever `n` is                                                                      |
 
 Clang's own `counted_by`, `sized_by` and their `_or_null` forms on struct fields (the Linux kernel's `__counted_by`) count as the WeaveC forms.
 
@@ -67,20 +67,20 @@ WEAVEC_SAFE size_t length(const char *WEAVEC_NULL_TERMINATED s) {
 
 Each error ends with the rule's identifier.
 
-| Rule             | Rejects                                                                                                                         | Write instead                                                                                     |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `index-single`   | indexing or offsetting a pointer to one object: `p[1]`, `p + 2`, `p++` (`p[0]` is `*p`, and is fine)                             | a bound on its declaration, an array, or an allocation                                            |
-| `int-to-pointer` | an integer converted to a pointer (`(int *)addr`), other than the constant null                                                  | keep the pointer itself                                                                           |
-| `pointer-cast`   | a pointer converted to a type that holds pointers from another type (`(struct node *)bytes`, `(struct node *)ctx`), and function pointer conversions | convert only between types without pointers, or from an allocation's result (`struct node *n = malloc(sizeof *n)`) |
-| `pointer-bytes`  | a writable byte view of an object that holds pointers: `(char *)node`, `memset(node, 1, …)`, `memcpy(node, other_type, …)`       | `*d = *s`, `memcpy` between two objects of the same type, `memset(…, 0, …)`; passing the object to a function that is not safe is fine |
-| `union-pointer`  | reading a union member that holds a pointer                                                                                     | a tag beside the union and a struct per variant                                                   |
-| `escape`         | storing a pointer parameter where it outlives the call (a field, a global, an array), returning it, or passing it to an escaping parameter | `WEAVEC_ESCAPES` after the parameter's `*` if the function keeps it; `WEAVEC_LIFETIMEBOUND` after its name if the function returns it; a `WEAVEC_BORROWED` field of a local struct to carry it down |
-| `call-args`      | passing a pointer to one object for a parameter that has a bound                                                                | pass a pointer with bounds                                                                        |
-| `variadic`       | calling a variadic function the [library table](https://github.com/weavefoundry/weavec/blob/main/lib/Core/LibrarySpec.txt) does not describe (`printf` is described), `va_start`, and `va_arg` of a type that holds pointers | take the arguments by type                                                                        |
-| `no-asm`         | inline assembly (an empty `asm volatile("" ::: "memory")` barrier is fine), `setjmp`, `longjmp`, `__builtin_frame_address`, computed `goto`                                                | a guarded helper function                                                                         |
-| `unsafe-block`   | a `WEAVEC_UNSAFE` block inside a safe function                                                                                  | move the block into a guarded or unsafe function                                                  |
-| `bad-annotation` | a bound naming no parameter of the right type                                                                                   | name an integer parameter (or a pointer, for `WEAVEC_ENDED_BY`)                                   |
-| `cxx`            | a safe function in C++                                                                                                          | Safe C is C only for now                                                                          |
+| Rule             | Rejects                                                                                                                                                                                                                      | Write instead                                                                                                                                                                                       |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index-single`   | indexing or offsetting a pointer to one object: `p[1]`, `p + 2`, `p++` (`p[0]` is `*p`, and is fine)                                                                                                                         | a bound on its declaration, an array, or an allocation                                                                                                                                              |
+| `int-to-pointer` | an integer converted to a pointer (`(int *)addr`), other than the constant null                                                                                                                                              | keep the pointer itself                                                                                                                                                                             |
+| `pointer-cast`   | a pointer converted to a type that holds pointers from another type (`(struct node *)bytes`, `(struct node *)ctx`), and function pointer conversions                                                                         | convert only between types without pointers, or from an allocation's result (`struct node *n = malloc(sizeof *n)`)                                                                                  |
+| `pointer-bytes`  | a writable byte view of an object that holds pointers: `(char *)node`, `memset(node, 1, …)`, `memcpy(node, other_type, …)`                                                                                                   | `*d = *s`, `memcpy` between two objects of the same type, `memset(…, 0, …)`; passing the object to a function that is not safe is fine                                                              |
+| `union-pointer`  | reading a union member that holds a pointer                                                                                                                                                                                  | a tag beside the union and a struct per variant                                                                                                                                                     |
+| `escape`         | storing a pointer parameter where it outlives the call (a field, a global, an array), returning it, or passing it to an escaping parameter                                                                                   | `WEAVEC_ESCAPES` after the parameter's `*` if the function keeps it; `WEAVEC_LIFETIMEBOUND` after its name if the function returns it; a `WEAVEC_BORROWED` field of a local struct to carry it down |
+| `call-args`      | passing a pointer to one object for a parameter that has a bound                                                                                                                                                             | pass a pointer with bounds                                                                                                                                                                          |
+| `variadic`       | calling a variadic function the [library table](https://github.com/weavefoundry/weavec/blob/main/lib/Core/LibrarySpec.txt) does not describe (`printf` is described), `va_start`, and `va_arg` of a type that holds pointers | take the arguments by type                                                                                                                                                                          |
+| `no-asm`         | inline assembly (an empty `asm volatile("" ::: "memory")` barrier is fine), `setjmp`, `longjmp`, `__builtin_frame_address`, computed `goto`                                                                                  | a guarded helper function                                                                                                                                                                           |
+| `unsafe-block`   | a `WEAVEC_UNSAFE` block inside a safe function                                                                                                                                                                               | move the block into a guarded or unsafe function                                                                                                                                                    |
+| `bad-annotation` | a bound naming no parameter of the right type                                                                                                                                                                                | name an integer parameter (or a pointer, for `WEAVEC_ENDED_BY`)                                                                                                                                     |
+| `cxx`            | a safe function in C++                                                                                                                                                                                                       | Safe C is C only for now                                                                                                                                                                            |
 
 A rule never tries to prove something about the code: it rejects a construct. When code needs something the rules reject, keep that piece in a small `WEAVEC_GUARDED` helper function and call it; the helper's own accesses stay guarded.
 
