@@ -91,5 +91,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0039](0039-cxx.md) | C++ | Accepted |
 | [0040](0040-actionable-reports.md) | Reports you can act on | Accepted |
 | [0041](0041-safe-c.md) | Safe C | Accepted |
+| [0042](0042-typed-memory.md) | Typed memory | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

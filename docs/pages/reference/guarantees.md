@@ -33,6 +33,33 @@ A function marked `WEAVEC_SAFE`, or defined in a unit compiled with `-fweavec-sa
 
 They assume, beside A1–A9: the bounds a declaration of a function that is not safe gives its result are within one object (they are checked against the shadow, S-A1); code not built by `weavec-cc` keeps no pointer it was passed beyond the call unless the parameter is `WEAVEC_ESCAPES` (S-A2); no data race on a pointer and the count that bounds it (S-A3); a pointer passed for a `WEAVEC_ESCAPES` parameter does not point into another thread's stack, which the check does not test (S-A5).
 
+## Typed functions
+
+A safe function in a unit compiled with `-fweavec-typed` ([RFC 0042](/rfcs/0042-typed-memory/), [the guide](/guides/safe-c/#typed-c-safe-at-full-speed)) is **typed**. It relies on **typed memory**: every pointer in memory that typed code reads through a declaration that bounds it (a struct field, a parameter, a result) is null or satisfies that bound:
+
+- **(W1) Single.** An unannotated `T *` points to the `sizeof(T)` bytes of one object.
+- **(W2) Counted.** A `WEAVEC_COUNTED_BY(n)` or `WEAVEC_SIZED_BY(n)` pointer has the bytes its count gives, the count read where the annotation names it, in one object.
+- **(W3) Terminated.** A `WEAVEC_NULL_TERMINATED` pointer has a zero byte at or after it, within its object or on the byte after a heap block.
+- **(W4) Typed pointees.** The bytes (W1) and (W2) describe hold, where their type has a pointer, values that satisfy this too.
+
+"One object" is a live object, a released heap block not yet reused, or a local in its scope. Under the precondition of [the guarantee](#the-guarantee) and the assumptions T-A1 to T-A4 below:
+
+- **(M1) Typed memory is kept.** Every store, argument and result of a typed function into a place that declares a bound satisfies it, or a comparison stops the program (`bounds-conversion`, `unterminated-string`), or the function did not compile.
+- **(M2) Accesses.** An access of a typed function lies inside its pointer's object: at a constant offset inside one object; inside a counted pointer's bounds by a comparison (`pointer-out-of-bounds`); at a string's current byte, which is at or before its terminator. An access through a pointer whose bound is unknown keeps its guard and (A).
+- **(M3) Heap lifetime.** A pointer to a released block reaches that block's bytes, which stay as the program left them, and no block a referenced released block refers to is reused either.
+- **(M4) Entry.** A pointer that code which is not typed passes to a typed function, or returns to one, satisfies its declared bound when it arrives (a check against the shadow).
+
+What gets weaker for typed functions: their guarantee is conditional on T-A1, a use after free in them is not reported, and colors and redzones do not apply to their accesses (the comparisons replace both, and are exact inside an object). `-fweavec-safe-checks=full` keeps every guard in typed functions, and `-fweavec-checks=verify` keeps each guard they dropped as a monitor.
+
+|          | Assumption                                                                                                                                                                                                                                                                                                                                                                                         |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **T-A1** | Code that is not typed (guarded and unsafe functions, safe functions outside a typed unit, code WeaveC did not compile) keeps memory typed wherever typed code reads it: it stores a pointer where a declaration bounds it only when the pointer satisfies the bound, changes a count only with its pointer, and writes no other bytes over a pointer. `weavec-cc --weavec-audit` lists that code. |
+| **T-A2** | A declaration marked `WEAVEC_SAFE` in a typed unit names a function defined in a typed unit. A false one fails to link.                                                                                                                                                                                                                                                                            |
+| **T-A3** | A pointer inside a released block the program can still reach meets A6: the sweep reads referenced released blocks.                                                                                                                                                                                                                                                                                |
+| **T-A4** | No data race on a pointer typed code loads and a store that changes what it points to, nor on a pointer and its count (S-A3).                                                                                                                                                                                                                                                                      |
+
+Safe functions outside a typed unit keep (S1)–(S5), and guarded functions (A)–(P), unchanged. A guard a typed function drops is justified by typed memory, which each typed function keeps by rules checked inside it and which holds only if every writer keeps it: the one removal that is not local to a function, and `-fweavec-checks=verify` monitors it like the others.
+
 ## What is addressable
 
 A byte is addressable unless the runtime knows it is not:
@@ -100,7 +127,7 @@ The runtime's allocator also serves the C library's own allocations (`strdup`, `
 | **A8** | A pointer the function did not compute (a parameter, a loaded value, a call's result) points into the object it is meant to: (C) checks arithmetic from it, not the pointer itself.                                                                                                                                                                          |
 | **A9** | Every unit that instantiates a standard container and changes its size is compiled with the same container annotations (`weavec-c++`, or ASan); `WEAVEC_RT_CONTAINERS=0` turns (K) off for a program that links one that is not.                                                                                                                             |
 
-No guard is removed because of what another function does, so nothing is assumed about callers, callees or the rest of the heap. The rules that remove guards are local to a function (an access inside a local or global at a known offset, an access a dominating guard on the same pointer covered with nothing between that may free, guards merged in a block, a loop whose whole range was found addressable before it ran), and `-fweavec-checks=verify` monitors them: it keeps every removed guard as a monitor that reports `weavec.proven` if it would have failed.
+Outside typed functions, no guard is removed because of what another function does, so nothing is assumed about callers, callees or the rest of the heap. The rules that remove guards are local to a function (an access inside a local or global at a known offset, an access a dominating guard on the same pointer covered with nothing between that may free, guards merged in a block, a loop whose whole range was found addressable before it ran), and `-fweavec-checks=verify` monitors them: it keeps every removed guard as a monitor that reports `weavec.proven` if it would have failed.
 
 ## False traps
 

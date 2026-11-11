@@ -18,6 +18,8 @@ __weavec_rt_atoll
 __weavec_rt_basename_r
 __weavec_rt_bounds_fail
 __weavec_rt_color_ok
+__weavec_rt_convert_fail
+__weavec_rt_convert_string
 __weavec_rt_delete_array_at
 __weavec_rt_delete_array_sized_at
 __weavec_rt_delete_at
@@ -101,6 +103,7 @@ __weavec_rt_strtoumax
 __weavec_rt_sysctl
 __weavec_rt_sysctlbyname
 __weavec_rt_trapping
+__weavec_rt_typed_program
 __weavec_rt_uname
 __weavec_rt_unpoison_stack
 __weavec_rt_vasprintf

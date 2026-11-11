@@ -19,6 +19,7 @@
 #define WEAVEC_LIB_FRONTEND_GUARDPASSIMPL_H
 
 #include "weavec/Frontend/GuardPass.h"
+#include "weavec/Frontend/SafeCheck.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -77,6 +78,9 @@ inline constexpr unsigned MarkerAlignShift = 8;
 /// A guard the loop ranges of rule 6.4 keep (the guarded copy of a
 /// versioned loop's).
 inline constexpr unsigned MarkerKeep = 1U << 16U;
+/// RFC 0042 §8: a range a library call scanned (RFC 0038 §2), which a
+/// search of a string stops within.
+inline constexpr unsigned MarkerScan = 1U << 17U;
 
 /// The redzone between a frame's objects and after a global (section 3.2,
 /// section 4): at least 16 bytes, one eighth of the object up to 4 KiB, so
@@ -108,6 +112,27 @@ private:
   llvm::DenseMap<const llvm::AllocaInst *,
                  llvm::DenseSet<const llvm::BasicBlock *>>
       deadAtEntry;
+};
+
+/// RFC 0042 §5: what a typed unit's field annotations said, by the address
+/// of the field each annotated access computed, and what the typed
+/// functions' preparation added: the count each counted access reads, and
+/// the store that a count's or a pointer's store is paired with (§6).
+struct TypedField {
+  /// A `weavec.count` field (`counts`), else a pointer field (`field`).
+  bool count = false;
+  FieldBounds field;
+  llvm::SmallVector<CountBounds, 1> counts;
+};
+struct TypedState {
+  llvm::DenseMap<const llvm::Value *, TypedField> fields;
+  /// A counted pointer's load or store: the count read with it.
+  llvm::DenseMap<const llvm::Instruction *, llvm::Value *> countAt;
+  /// A count's store: its old value, read before it.
+  llvm::DenseMap<const llvm::Instruction *, llvm::Value *> oldCount;
+  /// Each store of a pair: the other; and the pairs' second stores.
+  llvm::DenseMap<const llvm::Instruction *, llvm::Instruction *> pairs;
+  llvm::DenseSet<const llvm::Instruction *> seconds;
 };
 
 /// What the passes need of the module: types, the markers, the runtime's
@@ -182,6 +207,17 @@ public:
   llvm::FunctionCallee boundsFailFunction();
   /// RFC 0041 §5: an escaping parameter must not point into the stack.
   llvm::FunctionCallee escapeCheckFunction();
+  /// RFC 0042 §6: a pointer stored, passed or returned whose bounds do not
+  /// cover its destination's (`bounds-conversion`); a string with no zero
+  /// byte in its bounds (`unterminated-string`).
+  llvm::FunctionCallee convertFailFunction();
+  llvm::FunctionCallee convertStringFunction();
+
+  /// RFC 0042: whether the unit is typed, and its annotations' state.
+  [[nodiscard]] bool typed() const {
+    return options.safe != nullptr && options.safe->typed;
+  }
+  TypedState typedState;
 
   /// `__weavec_rt_shadow`.
   llvm::GlobalVariable *shadowDescriptor();
@@ -209,6 +245,8 @@ public:
                LedgerRow::Outcome outcome, llvm::StringRef reason);
   /// A copy of `row`'s guard stays, or a rule removed it with `reason`.
   void copy(unsigned row, bool stays, llvm::StringRef reason);
+  /// RFC 0042 §10: why `row`'s guard stays (`typed-unbounded`).
+  void reason(unsigned row, llvm::StringRef reason);
 
   /// Whether `name` is the runtime's or a guard's own function.
   [[nodiscard]] static bool isRuntimeName(llvm::StringRef name);
@@ -270,6 +308,28 @@ inline void appendRun(ShadowRuns &runs, std::uint64_t count,
                           const llvm::Function &function);
 void prepareSafe(ModuleContext &module, llvm::Function &function);
 void boundSafe(ModuleContext &module, llvm::Function &function);
+
+/// RFC 0042 (GuardTyped.cpp). Reads the field annotations of the module's
+/// functions into `module.typedState` (those of typed functions) and
+/// removes them all.
+void readTypedFields(ModuleContext &module, llvm::Module &ir);
+/// Before GuardInsert, in a typed function: the counts its counted
+/// accesses read, the old values of counts stored alone, the pairs of
+/// stores (§6), and pointer-holding locals zeroed (§2).
+void prepareTyped(ModuleContext &module, llvm::Function &function);
+/// The field annotation that the address `address` may be, through phis,
+/// selects and a zero offset, and an element of an annotated array field;
+/// null when none or when they differ.
+const TypedField *typedFieldOf(const ModuleContext &module,
+                               const llvm::Value *address);
+/// Every field annotation `address` may be, and whether it may be
+/// something else too.
+void typedFieldsOf(const ModuleContext &module, const llvm::Value *address,
+                   llvm::SmallVectorImpl<const TypedField *> &found,
+                   bool &other);
+/// Whether `function` is typed: safe, in a typed unit.
+[[nodiscard]] bool isTyped(const ModuleContext &module,
+                           const llvm::Function &function);
 
 /// RFC 0037 §10: the size of the array field of a struct `pointer` names
 /// by its getelementptr, unless the field is the struct's last (a flexible

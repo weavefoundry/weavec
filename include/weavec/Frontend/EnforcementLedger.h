@@ -18,6 +18,7 @@
 #ifndef WEAVEC_FRONTEND_ENFORCEMENTLEDGER_H
 #define WEAVEC_FRONTEND_ENFORCEMENTLEDGER_H
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
@@ -27,7 +28,7 @@
 namespace weavec::frontend {
 
 /// The version of the `weavec-ledger` JSON this writes.
-inline constexpr unsigned EnforcementLedgerVersion = 4;
+inline constexpr unsigned EnforcementLedgerVersion = 5;
 
 /// What the pass decided for one access.
 struct LedgerRow {
@@ -42,9 +43,19 @@ struct LedgerRow {
   /// The bytes it accesses; 0 when they are computed at run time.
   std::uint64_t bytes = 0;
   Outcome outcome = Outcome::Guarded;
-  /// `access`, `range`, `string`, `checked-call`, `loop-range`; `in-bounds`,
-  /// `dominated`, `merged`; `unsafe`.
+  /// `access`, `range`, `string`, `checked-call`, `loop-range`,
+  /// `typed-unbounded`; `in-bounds`, `dominated`, `merged`, `safe`,
+  /// `typed`; `unsafe`.
   std::string reason;
+};
+
+/// RFC 0042 §10: a function the unit defines, and its tier: `typed`,
+/// `safe`, `guarded` or `unsafe`.
+struct LedgerFunction {
+  std::string function;
+  std::string tier;
+  std::string file;
+  unsigned line = 0;
 };
 
 /// The rows of one unit, and their counts by outcome. The pass adds a row
@@ -55,6 +66,7 @@ struct LedgerRow {
 /// stays, proven otherwise.
 struct EnforcementLedger {
   std::vector<LedgerRow> rows;
+  std::vector<LedgerFunction> functions;
   std::uint64_t guarded = 0;
   std::uint64_t proven = 0;
   std::uint64_t unguarded = 0;
@@ -63,6 +75,11 @@ struct EnforcementLedger {
   unsigned add(LedgerRow row);
   /// A copy of row `index`'s guard stays, or was removed with `reason`.
   void copy(unsigned index, bool stays, llvm::StringRef reason);
+  /// RFC 0042 §10: row `index`'s guard stays for `reason`.
+  void setReason(unsigned index, llvm::StringRef reason) {
+    if (index < rows.size())
+      rows[index].reason = reason.str();
+  }
   /// Settles the outcomes of the rows whose guards were inserted, and
   /// counts them.
   void finish();
@@ -105,9 +122,16 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                             std::string &error);
 
 /// The summary line: `weavec: <source>: <n> accesses: <p> proven, <g>
-/// guarded, <n> unguarded`.
+/// guarded, <n> unguarded`, and in a unit with typed functions `; <t> of
+/// <f> functions typed`.
 [[nodiscard]] std::string enforcementSummary(const EnforcementLedger &ledger,
                                              llvm::StringRef source);
+
+/// RFC 0042 §10: `weavec-cc --weavec-audit [--format=json] <ledger>...`:
+/// what a program's typed functions trust, from its ledgers (files, or
+/// directories searched for `*.ledger.json`). The exit status is 0, or 1
+/// when a ledger cannot be read.
+int runAudit(llvm::ArrayRef<const char *> operands);
 
 } // namespace weavec::frontend
 

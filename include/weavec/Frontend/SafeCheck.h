@@ -15,6 +15,13 @@
 // bounds that every function's declaration gives its pointer parameters and
 // result (§2), whether a parameter escapes or is `lifetimebound` (§5).
 //
+// RFC 0042: in a typed unit (`-fweavec-typed`) the checker adds rules (§3)
+// and gives each pointer field of the unit's structs an implicit
+// `annotate("weavec.field", ...)` attribute, and each field that counts one
+// an `annotate("weavec.count", ...)`, which Clang emits at every access to
+// the field (`llvm.ptr.annotation`), so that the guard passes know a loaded
+// pointer's bound (§5).
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef WEAVEC_FRONTEND_SAFECHECK_H
@@ -25,6 +32,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace clang {
@@ -51,6 +59,50 @@ inline constexpr llvm::StringLiteral NullTerminatedOrNullAnnotation =
     "weavec.null_terminated_or_null";
 inline constexpr llvm::StringLiteral EscapesAnnotation = "weavec.escapes";
 inline constexpr llvm::StringLiteral BorrowedAnnotation = "weavec.borrowed";
+/// RFC 0042 §5: the compiler's own field annotations (not spellings a
+/// program writes).
+inline constexpr llvm::StringLiteral FieldAnnotation = "weavec.field";
+inline constexpr llvm::StringLiteral CountAnnotation = "weavec.count";
+
+/// What a `weavec.field` annotation says of a pointer field, in its six
+/// integer arguments, in order.
+struct FieldBounds {
+  enum class Kind : std::uint8_t {
+    /// One object of `elementSize` bytes (0: a size the unit does not know).
+    Single = 1,
+    /// `count` elements of `elementSize` bytes; the count is the integer of
+    /// `countWidth` bytes at `countOffset` from the field, or, when
+    /// `countWidth` is 0, `countOffset` itself.
+    Counted = 2,
+    /// A string.
+    NullTerminated = 3,
+  };
+  static constexpr std::uint64_t OrNull = 1;
+  static constexpr std::uint64_t CountSigned = 2;
+  /// The field is an array of such pointers.
+  static constexpr std::uint64_t Array = 4;
+
+  Kind kind = Kind::Single;
+  std::int64_t elementSize = 0;
+  std::int64_t countOffset = 0;
+  std::int64_t countWidth = 0;
+  std::uint64_t flags = 0;
+  /// A single pointer to a type incomplete where the field was declared: an
+  /// index into SafeUnit::pointeeSizes, whose size the end of the unit gives.
+  std::int64_t pointee = 0;
+
+  bool operator==(const FieldBounds &) const = default;
+};
+
+/// What a `weavec.count` annotation says of a field that counts a pointer
+/// field, in its three integer arguments: the pointer field's offset from
+/// the count, the pointer's element size, and FieldBounds' flags.
+struct CountBounds {
+  std::int64_t pointerOffset = 0;
+  std::int64_t elementSize = 1;
+  std::uint64_t flags = 0;
+  bool operator==(const CountBounds &) const = default;
+};
 
 /// What a declaration says about one pointer (§2).
 struct PointerBounds {
@@ -74,6 +126,9 @@ struct PointerBounds {
   std::uint64_t constant = 0;
   /// Counted: the bytes of one element (1 for `WEAVEC_SIZED_BY`).
   std::uint64_t elementSize = 1;
+  /// Single, in a typed unit: the pointee's size, 0 when the unit does not
+  /// know it (`void`, an incomplete type, a function).
+  std::uint64_t pointeeSize = 0;
   /// Ended: the parameter that is the end.
   int end = -1;
   /// The pointer may be null whatever its count (`_OR_NULL`).
@@ -95,6 +150,9 @@ struct FunctionBounds {
   std::vector<PointerBounds> parameters;
   PointerBounds result;
   bool safe = false;
+  /// RFC 0042 §6: a declaration in a typed unit carries `WEAVEC_SAFE`, so
+  /// the function is defined typed and its body is external.
+  bool declaredTyped = false;
 
   /// Whether `other` gives the same bounds (whatever it says of safety).
   [[nodiscard]] bool sameBounds(const FunctionBounds &other) const {
@@ -109,6 +167,19 @@ struct SafeUnit {
   llvm::StringMap<FunctionBounds> functions;
   /// `-fweavec-safe-checks=full` (§7): safe functions keep their guards.
   bool full = false;
+  /// RFC 0042: `-fweavec-typed`; the unit's safe functions are typed.
+  bool typed = false;
+  /// RFC 0042 §10: each function the unit defines outside system headers,
+  /// its tier (`typed`, `safe`, `guarded`, `unsafe`), file and line.
+  struct Definition {
+    std::string name;
+    std::string tier;
+    std::string file;
+    unsigned line = 0;
+  };
+  std::vector<Definition> definitions;
+  /// FieldBounds::pointee's sizes (0: still incomplete), by index - 1.
+  std::vector<std::uint64_t> pointeeSizes;
 
   /// Whether `name` is a safe function defined in the unit.
   [[nodiscard]] bool isSafe(llvm::StringRef name) const {
@@ -124,7 +195,8 @@ struct SafeUnit {
 
 /// The checker: a consumer to run before code generation. With `unitSafe`
 /// (`-fweavec-safe`) every function the unit defines outside system headers
-/// is safe unless marked `WEAVEC_GUARDED` or unsafe.
+/// is safe unless marked `WEAVEC_GUARDED` or unsafe; with `out->typed`
+/// (`-fweavec-typed`) those are typed (RFC 0042).
 [[nodiscard]] std::unique_ptr<clang::ASTConsumer>
 createSafeChecker(clang::CompilerInstance &compiler,
                   std::shared_ptr<SafeUnit> out, bool unitSafe);

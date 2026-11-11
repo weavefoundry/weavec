@@ -4,13 +4,40 @@ Rough ordering of the major pieces of work. This page is the one-screen view;
 the design detail and the reasoning live in the [RFCs](rfcs/README.md) each
 milestone links to. Everything here is subject to change as we learn.
 
-The design today is [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
+The design today is [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for typed and safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
 sweep and colors of [RFC 0037](rfcs/0037-complete-sweep-and-colors.md), the
 reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
 and the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
 milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
+
+## Now: RFC 0042 — Typed memory
+
+Design: [RFC 0042 — Typed memory](rfcs/0042-typed-memory.md) (Accepted,
+built). A unit compiled with `-fweavec-typed` relies on typed memory, as
+safe Rust relies on its types' invariants: every pointer in memory
+satisfies its declared bound, the rules make every store of a typed
+function keep that true, and loads are believed. Code that is not typed is
+trusted to keep it, listed by `weavec-cc --weavec-audit`, and checked under
+`-fweavec-safe-checks=full` and `verify`. Measured: the six conversions
+run at 1.45 times the reference build (geometric mean; Safe C 1.82), zlib
+and tinyexpr within 1.15; a port of Go's `compress/lzw` runs within 1.18
+times its Rust port. The stages:
+
+- [x] **S0**: jsmn's comparison cost explained (the saturating form).
+- [x] **S1 The checker**: `-fweavec-typed`, the added rules, field
+      annotations.
+- [x] **S2 Loads** believed, with `verify`'s monitors and the ledger.
+- [x] **S3 Stores and calls** that keep memory typed.
+- [x] **S4 Strings and library calls.**
+- [x] **S5 The comparison's form**; frames of typed locals untracked.
+- [x] **S6 The runtime**: release records out of the block, referenced
+      released blocks cleared at sweeps.
+- [x] **S7 Conversions, two held-out projects, a port into typed C and
+      into Rust**; gates T6 (cost) and T2 (lines) not fully met.
+- [ ] **Next**: comparisons as loop ranges, typed callbacks and `void *`,
+      the allocator's cost.
 
 ## Now: RFC 0041 — Safe C
 
@@ -206,7 +233,7 @@ deletes the analysis and marks the RFCs that specified it (0001–0017, 0031) Su
 | 5 Precision                           | [RFC 0006](rfcs/0006-precision.md)                                                                                    | Non-lexical loans, condition facts, element places, outcome-conditional summaries      | Superseded by RFC 0036                                                                                       |
 | 6 Resource lifecycle                  | [RFC 0007](rfcs/0007-resource-lifecycle.md)                                                                           | Leaks, release families, owned fields                                                  | Superseded by RFC 0036                                                                                       |
 | 7 Pointer validity                    | [RFC 0008](rfcs/0008-pointer-validity.md)                                                                             | Null dereferences, uninitialized pointers, invalid releases, replaced values           | Superseded by RFC 0036                                                                                       |
-| 8 Value-conditional behavior         | [RFC 0009](rfcs/0009-value-conditional-behaviour.md)                                                                  | Scalar facts, guarded effects, inferred `noreturn`                                     | Superseded by RFC 0036                                                                                       |
+| 8 Value-conditional behavior          | [RFC 0009](rfcs/0009-value-conditional-behaviour.md)                                                                  | Scalar facts, guarded effects, inferred `noreturn`                                     | Superseded by RFC 0036                                                                                       |
 | 9 Shared ownership                    | [RFC 0010](rfcs/0010-shared-ownership.md)                                                                             | Reference counts, ownership by outcome                                                 | Superseded by RFC 0036                                                                                       |
 | 10–11 Spatial safety                  | [RFC 0011](rfcs/0011-spatial-safety.md), [RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)                   | Derived pointers, extents, strings, sized fields, assumptions                          | Superseded by RFC 0036                                                                                       |
 | 12 Interprocedural heap state         | [RFC 0013](rfcs/0013-interprocedural-heap-state.md)                                                                   | Heap postconditions, value snapshots                                                   | Superseded by RFC 0036                                                                                       |
@@ -220,7 +247,7 @@ deletes the analysis and marks the RFCs that specified it (0001–0017, 0031) Su
 | 30 Runtime enforcement                | [RFC 0032](rfcs/0032-runtime-enforcement.md)                                                                          | The runtime's allocator and quarantine, guards                                         | Implemented; guards and registration superseded by RFC 0035, the quarantine's reuse by RFC 0036              |
 | 31 Drop-in by default                 | [RFC 0033](rfcs/0033-drop-in-by-default.md)                                                                           | Correct untuned projects build and run; one runtime per process                        | Implemented; link modes and records superseded by RFC 0035                                                   |
 | 32 Fast enforcement                   | [RFC 0034](rfcs/0034-fast-enforcement.md)                                                                             | Shadow memory, confirmed errors, the work budget                                       | Implemented; guard lowering superseded by RFC 0035                                                           |
-| 33 Guard by default                   | [RFC 0035](rfcs/0035-guard-by-default.md)                                                                             | Every access guarded in LLVM IR, local removal rules, redzones, the advisory analysis  | Implemented; the quarantine's budget and the analysis superseded by RFC 0036, the frame layout amended         |
+| 33 Guard by default                   | [RFC 0035](rfcs/0035-guard-by-default.md)                                                                             | Every access guarded in LLVM IR, local removal rules, redzones, the advisory analysis  | Implemented; the quarantine's budget and the analysis superseded by RFC 0036, the frame layout amended       |
 
 RFCs 0030–0034 made the analysis decide what the build enforced. Measured
 after RFC 0034, the runtime did the catching and the analysis caused the
