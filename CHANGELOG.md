@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.23.0 (2026-11-11)
+
+### Features
+
+- Add typed C that trusts declared pointer bounds
+  ([#66](https://github.com/weavefoundry/weavec/pull/66),
+  [`442ac74`](https://github.com/weavefoundry/weavec/commit/442ac74fc3f201df86d937abf21a5507c43eaafb))
+
+
 ## v0.22.0 (2026-11-11)
 
 ### Features
