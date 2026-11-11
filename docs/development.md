@@ -223,8 +223,8 @@ benchmarks on an idle machine.
 compared outside `lib/Core/LibrarySpec.txt`, no corpus project named under
 `lib/`, no Clang or LLVM header in Core, the runtime's includes, every
 runtime entry point the passes name declared in `runtime/weavec_rt.h`) and
-the line budgets of the libraries (`lib/`, `include/` and `tools/`, 9,500)
-and of the runtime (9,800, counted apart, because it is linked into
+the line budgets of the libraries (`lib/`, `include/` and `tools/`, 11,500)
+and of the runtime (10,000, counted apart, because it is linked into
 compiled programs, not into the compiler); `--help` lists each check and
 its limit. It runs in the Linux
 Release CI job.

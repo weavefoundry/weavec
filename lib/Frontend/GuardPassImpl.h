@@ -178,6 +178,10 @@ public:
   llvm::FunctionCallee strlenFunction();
   /// RFC 0036 §6: a fortified call writes more than its object size.
   llvm::FunctionCallee limitFailFunction();
+  /// RFC 0041 §4: an access of a safe function outside its pointer's bounds.
+  llvm::FunctionCallee boundsFailFunction();
+  /// RFC 0041 §5: an escaping parameter must not point into the stack.
+  llvm::FunctionCallee escapeCheckFunction();
 
   /// `__weavec_rt_shadow`.
   llvm::GlobalVariable *shadowDescriptor();
@@ -256,6 +260,16 @@ inline void appendRun(ShadowRuns &runs, std::uint64_t count,
   else
     runs.push_back({.count = count, .value = value});
 }
+
+/// RFC 0041: whether `function` is safe; before GuardInsert, its locals
+/// promoted, its address arithmetic without `inbounds` and the locals whose
+/// address may outlive their scope placed on the heap; after GuardInsert,
+/// its parameters validated and its guards replaced by bounds checks where
+/// its pointers' roots have bounds (GuardSafe.cpp).
+[[nodiscard]] bool isSafe(const ModuleContext &module,
+                          const llvm::Function &function);
+void prepareSafe(ModuleContext &module, llvm::Function &function);
+void boundSafe(ModuleContext &module, llvm::Function &function);
 
 /// RFC 0037 §10: the size of the array field of a struct `pointer` names
 /// by its getelementptr, unless the field is the struct's last (a flexible

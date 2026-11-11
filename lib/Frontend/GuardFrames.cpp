@@ -46,7 +46,8 @@ static constexpr std::uint8_t ShadowReturned = 0xF5;
 /// RFC 0040 §5.3: the first word of a frame's left redzone, with the
 /// runtime's interface version (runtime/weavec_rt.h, WeavecRtFrameMagic).
 static constexpr std::uint64_t FrameMagic = 0x5745415645430000ULL;
-static constexpr std::uint64_t AbiVersion = 40;
+// The build reads it from runtime/weavec_rt.h (WEAVEC_RUNTIME_ABI).
+static constexpr std::uint64_t AbiVersion = WEAVEC_RUNTIME_ABI;
 
 /// The alignment of every object in a frame, and its left redzone: wider
 /// than the redzones between objects, for the negative indexes that reach

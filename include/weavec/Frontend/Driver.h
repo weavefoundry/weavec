@@ -48,6 +48,12 @@ struct DriverOptions {
   /// `-f[no-]weavec-colors` (RFC 0037 §8): check arithmetic from a pointer
   /// against its object's color.
   bool colors = true;
+  /// `-f[no-]weavec-safe` (RFC 0041 §10): every function the unit defines
+  /// outside system headers is safe unless marked otherwise.
+  bool safe = false;
+  /// `-fweavec-safe-checks=bounds|full` (RFC 0041 §7): whether safe
+  /// functions keep their guards beside their bounds checks.
+  bool safeFull = false;
   /// `-fweavec-ledger=<path>` (RFC 0035 §9).
   std::string ledger;
   /// `-f[no-]weavec-summary`; unset means on exactly when a ledger is

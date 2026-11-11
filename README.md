@@ -18,16 +18,17 @@ WeaveC is a drop-in C and C++ compiler, `weavec-cc` and `weavec-c++`, that makes
 - **Freed memory is reused only after a sweep.** A released heap block waits until a sweep of the program's stacks, registers, writable data and live heap finds no pointer to it. A use after free or a double free traps, however much the program allocated since.
 - **Fortified sizes are kept.** A fortified library call never writes more than the size it was given: with Darwin's headers, a `strcpy` that would run from an 8-byte field into the next one traps.
 - **C++ too.** `new` and `delete` are checked against each other, a `std::vector`'s storage past its elements is not addressable, the C++ library's own bounds checks report through WeaveC, and an exception leaves the live frames' redzones in place.
+- **Safe C, when you want it.** A C function marked `WEAVEC_SAFE` (or every function, with `-fweavec-safe`) is also checked when it compiles: a few local rules reject what could forge a pointer or let a borrowed one escape, each error saying what to write instead, and its accesses are checked against the bounds its pointers' declarations give.
 
 WeaveC is built on Clang and LLVM, which provide parsing, code generation and platform support. WeaveC adds LLVM passes that guard the code, and a runtime in C.
 
 > [!NOTE]
-> WeaveC is early, v0.x software: flags, report formats and the ledger can change between minor versions. The design is [RFC 0040, *Reports you can act on*](docs/rfcs/0040-actionable-reports.md), which gives every report its stacks and names its object, over [RFC 0039, *C++*](docs/rfcs/0039-cxx.md), which guards C++ as C, [RFC 0038, *Drop-in everywhere*](docs/rfcs/0038-drop-in-everywhere.md), which makes one shared runtime serve every image on every platform and ships self-contained toolchains, the sweep and colors of [RFC 0037](docs/rfcs/0037-complete-sweep-and-colors.md), the reuse after a sweep of [RFC 0036](docs/rfcs/0036-deterministic-heap-reuse.md) and the guards of [RFC 0035](docs/rfcs/0035-guard-by-default.md). The [roadmap](docs/roadmap.md) tracks progress.
+> WeaveC is early, v0.x software: flags, report formats and the ledger can change between minor versions. The design is [RFC 0041, *Safe C*](docs/rfcs/0041-safe-c.md), which adds safe functions checked when they compile and against their pointers' bounds when they run, over [RFC 0040, *Reports you can act on*](docs/rfcs/0040-actionable-reports.md), which gives every report its stacks and names its object, [RFC 0039, *C++*](docs/rfcs/0039-cxx.md), which guards C++ as C, [RFC 0038, *Drop-in everywhere*](docs/rfcs/0038-drop-in-everywhere.md), which makes one shared runtime serve every image on every platform and ships self-contained toolchains, the sweep and colors of [RFC 0037](docs/rfcs/0037-complete-sweep-and-colors.md), the reuse after a sweep of [RFC 0036](docs/rfcs/0036-deterministic-heap-reuse.md) and the guards of [RFC 0035](docs/rfcs/0035-guard-by-default.md). The [roadmap](docs/roadmap.md) tracks progress.
 
 ## Highlights
 
 - **A drop-in compiler.** `weavec-cc` is Clang's driver with WeaveC inside: point a build at it with `CC=weavec-cc CXX=weavec-c++` and it compiles as `clang` and `clang++` would. A correct program built with the default flags compiles, links and runs as it does with Clang, apart from run time; a false trap is a WeaveC bug.
-- **Nothing to annotate.** Existing code builds unchanged. The only annotation, `WEAVEC_UNSAFE` from `weavec.h`, leaves a function or a block unguarded, for code that reads past an object on purpose.
+- **Nothing to annotate.** Existing code builds unchanged and every access is guarded. `WEAVEC_UNSAFE` from `weavec.h` leaves a function or a block unguarded, for code that reads past an object on purpose; the other annotations are for [safe functions](docs/pages/guides/safe-c.md), which code opts into.
 - **Reports you can act on.** A failed guard prints the kind of failure, the source location and the address, the stack of the access, and where the address lies: for the heap, the block and the stacks that allocated and released it; for a local or a global, its name. Release builds keep the line tables this needs, and `WEAVEC_RT_REPORT_FORMAT=json` writes each report as one line of JSON.
 - **No ABI changes.** Pointers keep their representation and calling conventions are unchanged; objects from other compilers link in.
 - **Compatible with AddressSanitizer's contract.** Code compiled by `weavec-cc` sees `__SANITIZE_ADDRESS__` and `__has_feature(address_sanitizer)`, and the runtime implements ASan's poisoning interface, so code written to be ASan-clean is WeaveC-clean, and a pool that poisons its free space for ASan is checked by WeaveC too.
@@ -195,6 +196,7 @@ Other presets are `dev-asan`, `dev-tidy`, `release` and `relwithdebinfo`; see [`
 | Installation, first check, guides | [weavec.com](https://weavec.com) |
 | Command-line reference | [docs/pages/reference/cli.md](docs/pages/reference/cli.md) |
 | Guarantees and scope | [docs/pages/reference/guarantees.md](docs/pages/reference/guarantees.md) |
+| Safe C | [docs/pages/guides/safe-c.md](docs/pages/guides/safe-c.md) |
 | Unsafe regions | [docs/pages/guides/unsafe.md](docs/pages/guides/unsafe.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
 | Design decisions (RFCs) | [docs/rfcs/](docs/rfcs/) |
@@ -206,13 +208,15 @@ Other presets are `dev-asan`, `dev-tidy`, `release` and `relwithdebinfo`; see [`
 ```
 include/weavec/   Public C++ headers
   Core/           The library table's interface (no Clang/LLVM)
-  Frontend/       The guard passes, unsafe regions, the enforcement ledger, the compiler driver
+  Frontend/       The guard passes, Safe C's checker, unsafe regions, the enforcement ledger,
+                  the compiler driver
 lib/              Implementations, mirroring include/ (lib/Core/LibrarySpec.txt is the library table)
 runtime/          The C runtime: the shadow memory, the arena allocator and its sweep, the guards'
                   slow paths, frames and globals, checked library calls, ASan's interface, reports
                   with their stacks and symbolizer
 tools/weavec-cc/  The drop-in compiler driver (Clang's driver with WeaveC inside; weavec-c++ links to it)
-resources/        weavec.h, the C-facing header with WEAVEC_UNSAFE (installed to lib/weavec/include)
+resources/        weavec.h, the C-facing header with WEAVEC_UNSAFE and Safe C's annotations
+                  (installed to lib/weavec/include)
 unittests/        GoogleTest unit tests
 test/             lit + FileCheck integration tests (test/Guards pins the passes and the runtime)
   cases/          Executable C cases by feature, with markers, run by scripts/run-cases.py

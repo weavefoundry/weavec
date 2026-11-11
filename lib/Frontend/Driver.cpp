@@ -12,6 +12,7 @@
 #include "weavec/Frontend/EnforcementLedger.h"
 #include "weavec/Frontend/GuardPass.h"
 #include "weavec/Frontend/ResourceDir.h"
+#include "weavec/Frontend/SafeCheck.h"
 #include "weavec/Frontend/UnsafeRegions.h"
 
 #include "clang/AST/ASTConsumer.h"
@@ -88,8 +89,8 @@ static std::string invalidValue(llvm::StringRef arg, llvm::StringRef value,
 /// then says what is wrong with it, if anything.
 static bool consumeValueFlag(DriverOptions &options, llvm::StringRef arg,
                              std::string &error) {
-  static constexpr std::array<llvm::StringLiteral, 2> Names{"-fweavec-checks",
-                                                            "-fweavec-ledger"};
+  static constexpr std::array<llvm::StringLiteral, 3> Names{
+      "-fweavec-checks", "-fweavec-ledger", "-fweavec-safe-checks"};
   const auto [flag, value] = arg.split('=');
   if (!llvm::is_contained(Names, flag))
     return false;
@@ -108,6 +109,11 @@ static bool consumeValueFlag(DriverOptions &options, llvm::StringRef arg,
       options.checks = DriverOptions::Checks::None;
     else
       error = invalidValue(arg, value, "trap, report, verify or none");
+  } else if (flag == "-fweavec-safe-checks") {
+    if (value == "bounds" || value == "full")
+      options.safeFull = value == "full";
+    else
+      error = invalidValue(arg, value, "bounds or full");
   } else {
     options.ledger = value.str();
   }
@@ -144,6 +150,8 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
     colors = value;
   } else if (name == "weavec-zero-init") {
     zeroInit = value;
+  } else if (name == "weavec-safe") {
+    safe = value;
   } else if (name == "weavec-summary") {
     summary = value;
   } else {
@@ -157,7 +165,7 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
 }
 
 llvm::StringRef driverFlagsHelp() {
-  return R"(WeaveC flags of weavec-cc (RFC 0037, RFC 0040); every other flag is Clang's.
+  return R"(WeaveC flags of weavec-cc (RFC 0037, RFC 0040, RFC 0041); every other flag is Clang's.
 
   -fweavec, -fno-weavec
       Guard memory accesses (the default), or compile as plain Clang.
@@ -179,6 +187,15 @@ llvm::StringRef driverFlagsHelp() {
   -fweavec-colors, -fno-weavec-colors
       Check an access computed from a pointer against the color of the
       pointer's object, so that a jump into a neighbor traps (default: on).
+  -fweavec-safe, -fno-weavec-safe
+      Make every function the unit defines outside system headers safe
+      (RFC 0041): checked against Safe C's rules when compiled, its
+      accesses checked against its pointers' bounds. WEAVEC_GUARDED keeps
+      a function guarded. Without the flag, WEAVEC_SAFE marks one function.
+  -fweavec-safe-checks=bounds|full
+      Safe functions' accesses are checked against their bounds (bounds,
+      the default), or keep their guards as well, so that a use after free
+      in safe code is reported as in guarded code (full).
   -fweavec-rpath=<dir>, -fno-weavec-rpath
       Where a linked image finds the runtime's library (libweavec_rt):
       <dir> ($ORIGIN, @loader_path or an installation path) instead of the
@@ -308,9 +325,11 @@ private:
 class WeaveCWrapperAction final : public clang::WrapperFrontendAction {
 public:
   WeaveCWrapperAction(std::unique_ptr<clang::FrontendAction> wrapped,
-                      std::shared_ptr<UnsafeRegions> unsafe, bool asanCompat)
+                      std::shared_ptr<UnsafeRegions> unsafe,
+                      std::shared_ptr<SafeUnit> safe, bool unitSafe,
+                      bool asanCompat)
       : WrapperFrontendAction(std::move(wrapped)), unsafe(std::move(unsafe)),
-        asanCompat(asanCompat) {}
+        safe(std::move(safe)), unitSafe(unitSafe), asanCompat(asanCompat) {}
 
 protected:
   std::unique_ptr<clang::ASTConsumer>
@@ -319,6 +338,10 @@ protected:
     std::vector<std::unique_ptr<clang::ASTConsumer>> consumers;
     if (unsafe)
       consumers.push_back(createUnsafeRegionCollector(compiler, unsafe));
+    // RFC 0041: the rules, and the table the passes read at the end of the
+    // unit.
+    if (safe)
+      consumers.push_back(createSafeChecker(compiler, safe, unitSafe));
     if (asanCompat)
       consumers.push_back(
           std::make_unique<AsanOptionsReset>(compiler.getLangOpts()));
@@ -334,6 +357,8 @@ protected:
 
 private:
   std::shared_ptr<UnsafeRegions> unsafe;
+  std::shared_ptr<SafeUnit> safe;
+  bool unitSafe;
   bool asanCompat;
 };
 
@@ -385,7 +410,8 @@ static constexpr unsigned ZeroInitMaxSize = 4096;
 static std::shared_ptr<EnforcementLedger>
 configureEnforcement(clang::CompilerInstance &compiler,
                      const DriverOptions &weavec,
-                     std::shared_ptr<const UnsafeRegions> unsafe) {
+                     std::shared_ptr<const UnsafeRegions> unsafe,
+                     std::shared_ptr<const SafeUnit> safe) {
   clang::LangOptions &lang = compiler.getLangOpts();
   clang::CodeGenOptions &codegen = compiler.getCodeGenOpts();
   if (weavec.zeroInitializes()) {
@@ -415,6 +441,7 @@ configureEnforcement(clang::CompilerInstance &compiler,
                                             .unsafe = std::move(unsafe),
                                             .ledger = ledger,
                                             .colors = weavec.colors,
+                                            .safe = std::move(safe),
                                             .cheapMarkers = lang.CPlusPlus});
   return ledger;
 }
@@ -546,15 +573,20 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
       isCodeGenAction(compiler->getFrontendOpts().ProgramAction);
   std::shared_ptr<UnsafeRegions> unsafe;
   std::shared_ptr<EnforcementLedger> ledger;
+  // RFC 0041 §10: the rules run whenever WeaveC does, without the runtime
+  // too, so that an agent can iterate on them with -fsyntax-only.
+  auto safe = std::make_shared<SafeUnit>();
+  safe->full = weavec.safeFull;
   if (weavec.enforces() && codegen) {
     unsafe = std::make_shared<UnsafeRegions>();
-    ledger = configureEnforcement(*compiler, weavec, unsafe);
+    ledger = configureEnforcement(*compiler, weavec, unsafe, safe);
   }
   // Only code generation takes ASan out at the end of the unit: a
   // precompiled header or module keeps it in its options, as the compiles
   // that read it have it.
   const bool asanCompat = applyAsanCompat(*compiler, weavec) && codegen;
-  WeaveCWrapperAction action(std::move(inner), unsafe, asanCompat);
+  WeaveCWrapperAction action(std::move(inner), unsafe, safe, weavec.safe,
+                             asanCompat);
   success = compiler->ExecuteAction(action);
   if (success && ledger)
     success = emitEnforcementLedger(*compiler, weavec, *ledger);

@@ -16,6 +16,7 @@ __weavec_rt_atoi
 __weavec_rt_atol
 __weavec_rt_atoll
 __weavec_rt_basename_r
+__weavec_rt_bounds_fail
 __weavec_rt_color_ok
 __weavec_rt_delete_array_at
 __weavec_rt_delete_array_sized_at
@@ -23,6 +24,7 @@ __weavec_rt_delete_at
 __weavec_rt_delete_sized_at
 __weavec_rt_dirname_r
 __weavec_rt_dprintf
+__weavec_rt_escape_check
 __weavec_rt_fprintf
 __weavec_rt_frame_shadow
 __weavec_rt_free

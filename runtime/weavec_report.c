@@ -931,9 +931,10 @@ void weavecRtFail(const char *kind, uintptr_t address, uint64_t width,
   stop(site);
 }
 
-/* RFC 0036 section 6: the destination [lo, hi) of a fortified call. */
-void weavecRtFailObject(const char *kind, uintptr_t address, uint64_t width,
-                        uintptr_t lo, uintptr_t hi,
+/* RFC 0036 section 6: the destination [lo, hi) of a fortified call;
+ * RFC 0041 section 4: a safe function's pointer's bounds. */
+void weavecRtFailObject(const char *kind, const char *what, uintptr_t address,
+                        uint64_t width, uintptr_t lo, uintptr_t hi,
                         const struct __weavec_rt_site *site) {
   if (reportsOnce(site) && seenSite(kind, site))
     return;
@@ -949,7 +950,9 @@ void weavecRtFailObject(const char *kind, uintptr_t address, uint64_t width,
     putPlace(&line, address, lo, hi);
     put(&line, "the ");
     putUnsigned(&line, hi - lo, 10);
-    put(&line, "-byte destination at ");
+    put(&line, "-byte ");
+    put(&line, what);
+    put(&line, " at ");
     putHex(&line, lo);
     *line.at = 0;
     finish();

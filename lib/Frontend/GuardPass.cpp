@@ -408,6 +408,20 @@ llvm::FunctionCallee ModuleContext::limitFailFunction() {
   return callee;
 }
 
+llvm::FunctionCallee ModuleContext::boundsFailFunction() {
+  llvm::FunctionCallee callee = runtime(
+      "bounds_fail", llvm::FunctionType::get(llvm::Type::getVoidTy(context),
+                                             {i64, i64, i64, i64, ptr}, false));
+  slowPath(callee, module);
+  return callee;
+}
+
+llvm::FunctionCallee ModuleContext::escapeCheckFunction() {
+  return runtime("escape_check",
+                 llvm::FunctionType::get(llvm::Type::getVoidTy(context),
+                                         {i64, ptr}, false));
+}
+
 llvm::GlobalVariable *ModuleContext::shadowDescriptor() {
   if (descriptor != nullptr)
     return descriptor;
@@ -1076,9 +1090,19 @@ llvm::PreservedAnalyses GuardInsertPass::run(llvm::Module &module,
     return llvm::PreservedAnalyses::all();
   guard::ModuleContext context(module, options);
   guard::thunkLibraryAddresses(context, module);
+  // RFC 0041: safe functions first, which may split one into an entry and
+  // its body (amendment 18), so that every caller sees the split.
+  std::vector<llvm::Function *> safe;
+  for (llvm::Function &function : module)
+    if (!guard::skips(function) && guard::isSafe(context, function))
+      safe.push_back(&function);
+  for (llvm::Function *function : safe)
+    guard::prepareSafe(context, *function);
   for (llvm::Function &function : module)
     if (!guard::skips(function)) {
       guard::insertGuards(context, function);
+      if (guard::isSafe(context, function))
+        guard::boundSafe(context, function);
       guard::verified(function);
     }
   return llvm::PreservedAnalyses::none();

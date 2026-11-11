@@ -1,9 +1,10 @@
 # The weavec.h header
 
-`weavec.h` declares the one annotation WeaveC has: `WEAVEC_UNSAFE`.
+`weavec.h` declares `WEAVEC_UNSAFE` and the annotations of
+[safe functions](pages/guides/safe-c.md) ([RFC 0041](rfcs/0041-safe-c.md)).
 `weavec-cc` puts the header on the system include path
 (`#include <weavec.h>`) and defines `__WEAVEC__` to `1` in every unit it
-compiles with WeaveC enabled. The header is at version 1.0
+compiles with WeaveC enabled. The header is at version 2.0
 (`WEAVEC_H_VERSION_MAJOR`, `WEAVEC_H_VERSION_MINOR`).
 
 `WEAVEC_UNSAFE` expands to `__attribute__((annotate("weavec.unsafe")))`
@@ -51,10 +52,35 @@ A function kept from AddressSanitizer (`__attribute__((no_sanitize("address")))`
 `no_sanitize_address` or `disable_sanitizer_instrumentation`) is an unsafe
 region too, with no source change.
 
-Every other annotation of earlier versions (`WEAVEC_OWNED`,
-`WEAVEC_BORROWED`, `WEAVEC_COUNTED_BY`, `WEAVEC_ASSUME` and the rest) was
-deleted with the ownership analysis that read it
+## Safe functions
+
+| Form | Placement | Meaning |
+| ---- | --------- | ------- |
+| `WEAVEC_SAFE` | before a function definition | The function is safe: checked against Safe C's rules when it compiles, its accesses checked against its pointers' bounds. |
+| `WEAVEC_GUARDED` | before a function definition | In a unit compiled with `-fweavec-safe`, the function stays guarded. |
+| `T *WEAVEC_COUNTED_BY(n) p` | after a pointer type's `*` | `p` points to `n` elements; `n` is an integer parameter or field by name, or a constant. |
+| `T *WEAVEC_COUNTED_BY_OR_NULL(n) p` | the same | As above, or null. |
+| `void *WEAVEC_SIZED_BY(n) p`, `WEAVEC_SIZED_BY_OR_NULL(n)` | the same | `p` points to `n` bytes (or is null). |
+| `T *WEAVEC_ENDED_BY(e) p` | the same | `p` points to the elements before the pointer parameter `e`. |
+| `char *WEAVEC_NULL_TERMINATED s` | the same | `s` points to a string, up to and with its NUL. |
+| `char *WEAVEC_NULL_TERMINATED_OR_NULL s` | the same | As above, or null. |
+| `T *WEAVEC_ESCAPES p` | after a parameter type's `*` | The function may keep `p` after it returns; callers must not pass a stack address. |
+| `T *WEAVEC_BORROWED f` | after a field type's `*` | The field may hold a borrowed pointer when its struct is a local variable; a pointer loaded from it is borrowed. |
+| `T *p WEAVEC_LIFETIMEBOUND` | after a parameter's name | The function's result may point into `p` (Clang's `lifetimebound`). |
+
+The `WEAVEC_SAFE` and `WEAVEC_GUARDED` forms expand to `annotate`
+attributes as `WEAVEC_UNSAFE` does. The pointer annotations expand to
+`[[clang::annotate_type("weavec.…", "n")]]` under Clang (in every C mode;
+`-pedantic` warns that `[[…]]` is a C23 extension before C23) and to
+nothing under other compilers. Clang's own `counted_by`, `sized_by`,
+`counted_by_or_null` and `sized_by_or_null` on struct fields count as the
+WeaveC forms.
+
+The ownership annotations of earlier versions (`WEAVEC_OWNED`,
+`WEAVEC_BORROWED`, `WEAVEC_ASSUME` and the rest) were deleted with the
+ownership analysis that read them
 ([RFC 0036](rfcs/0036-deterministic-heap-reuse.md)); a program that still
-uses one fails to compile until it stops. `annotate` payloads that do not
+uses one fails to compile until it stops. `WEAVEC_COUNTED_BY` returned
+with RFC 0041, with the meaning above. `annotate` payloads that do not
 start with `weavec.` are ignored. The [unsafe boundaries
 guide](pages/guides/unsafe.md) says when a region is the right tool.

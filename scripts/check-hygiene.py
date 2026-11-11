@@ -43,15 +43,15 @@ Eight checks, the rules of AGENTS.md that a script can hold the tree to:
                      only is a violation, and so is a missing list when such
                      declarations exist.
   library-lines      the code under lib/, include/ and tools/ totals at most
-                     9,500 lines (RFC 0040 section 9; the headers and the
+                     11,500 lines (RFC 0041; the headers and the
                      driver's tool count too). lib/Core/LibrarySpec.txt does
                      not count: it is a declarative table, and its growth is
                      coverage, not sprawl. The limit is a ratchet: it is
                      lowered as code is deleted, and raised only by an RFC
                      amendment that records the measurement.
   runtime-lines      the C runtime (runtime/, its tests under runtime/test/
-                     and its export list excluded) totals at most 9,800 lines
-                     (RFC 0037 gate H1; the list is declarative, as the
+                     and its export list excluded) totals at most 10,000 lines
+                     (RFC 0041; the list is declarative, as the
                      library table is).
                      It is counted apart from the libraries: it is linked
                      into compiled programs, not into the compiler.
@@ -103,8 +103,8 @@ ROOT = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 
 # Recorded by RFC 0037 gate H1 and RFC 0032 gate H1 (see the module docstring).
-LIBRARY_LINE_LIMIT = 9_500
-RUNTIME_LINE_LIMIT = 9_800
+LIBRARY_LINE_LIMIT = 11_500
+RUNTIME_LINE_LIMIT = 10_000
 
 # library-name-test
 LIBRARY_SPEC = "lib/Core/LibrarySpec.txt"

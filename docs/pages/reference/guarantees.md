@@ -21,6 +21,18 @@ For a program whose every unit is compiled by `weavec-cc` or `weavec-c++` in an 
 
 A function excluded from AddressSanitizer (`__attribute__((no_sanitize("address")))`, `no_sanitize_address`, `disable_sanitizer_instrumentation`) is treated as an unsafe region. Code inlined from an unsafe region stays unguarded wherever it lands.
 
+## Safe functions
+
+A function marked `WEAVEC_SAFE`, or defined in a unit compiled with `-fweavec-safe` ([RFC 0041](/rfcs/0041-safe-c/), [the guide](/guides/safe-c/)), compiles only if it keeps Safe C's rules, and then, under the same precondition as above:
+
+- **(S1) Bounds.** An access through a pointer whose bounds are known (a bounded parameter, a local, a global the unit defines, an allocation, a call whose result has a bound, and pointers computed from them) lies within those bounds, or the program traps (`pointer-out-of-bounds`). Every other access keeps its guard and (A).
+- **(S2) Entry.** A counted, sized or ended parameter's bytes are addressable when the function is entered (a range guard), and a bounded result of a function that is not safe when it returns. A `WEAVEC_NULL_TERMINATED` parameter's accesses keep their guards.
+- **(S3) Heap lifetime.** A pointer into a heap block reaches only that block's bytes, released or not: (T) keeps a released block from reuse while the pointer exists. A use after free in a safe function is therefore not reported, unless `-fweavec-safe-checks=full` keeps its guards.
+- **(S4) Stack lifetime.** A local whose address may outlive its scope is allocated from the heap for the scope; a pointer parameter is stored or returned only when declared `WEAVEC_ESCAPES` or `lifetimebound`; an escaping parameter does not point into the stack (`stack-escape`).
+- **(S5) No forged pointers.** No pointer is made from an integer, from the bytes of another type, or from a union member that may hold another.
+
+They assume, beside A1–A9: the bounds a declaration of a function that is not safe gives its result are within one object (they are checked against the shadow, S-A1); code not built by `weavec-cc` keeps no pointer it was passed beyond the call unless the parameter is `WEAVEC_ESCAPES` (S-A2); no data race on a pointer and the count that bounds it (S-A3); a pointer passed for a `WEAVEC_ESCAPES` parameter does not point into another thread's stack, which the check does not test (S-A5).
+
 ## What is addressable
 
 A byte is addressable unless the runtime knows it is not:

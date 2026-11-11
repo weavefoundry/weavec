@@ -34,7 +34,7 @@ Some things are deliberately out of reach: an index that jumps over a redzone in
 
 `weavec-cc` compiles as AddressSanitizer would for the source: the code sees `__SANITIZE_ADDRESS__` and `__has_feature(address_sanitizer)`, and the runtime implements ASan's poisoning interface. Code written to be ASan-clean, such as an allocator that poisons its free space or a scan that reads past an object only when it is not built for ASan, is WeaveC-clean, and a pool that poisons its free space for ASan is checked by WeaveC too.
 
-Code that reads past an object on purpose and is not written for ASan can be marked with `WEAVEC_UNSAFE` from `weavec.h`, which leaves a function or a block unguarded. It is the only annotation, and it expands to nothing on other compilers. See [unsafe regions](/guides/unsafe/).
+Code that reads past an object on purpose and is not written for ASan can be marked with `WEAVEC_UNSAFE` from `weavec.h`, which leaves a function or a block unguarded. It is the only annotation guarded code needs, and it expands to nothing on other compilers. See [unsafe regions](/guides/unsafe/). Code can also opt into [Safe C](/guides/safe-c/): functions checked against a few rules when they compile, and against their pointers' bounds when they run.
 
 ## Where to go next
 

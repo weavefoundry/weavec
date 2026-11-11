@@ -13,6 +13,9 @@ weavec_add_library(
           GuardInsert.cpp
           GuardLibrary.cpp
           GuardPass.cpp
+          # RFC 0041: Safe C's rules and its bounds in the passes.
+          GuardSafe.cpp
+          SafeCheck.cpp
           # RFC 0040 §4.2: weavec-cc --weavec-symbolize.
           Symbolizer.cpp
           UnsafeRegions.cpp
