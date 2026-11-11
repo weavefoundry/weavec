@@ -283,6 +283,11 @@ public:
         continue;
       }
       if (parameter < 0) {
+        if (ambiguousMacro(annotation.argument)) {
+          reportAmbiguous(at, annotation.argument);
+          bounds.kind = PointerBounds::Kind::Single;
+          continue;
+        }
         if (const auto value = macroConstant(annotation.argument)) {
           bounds.constant = *value;
           continue;
@@ -315,31 +320,46 @@ public:
   /// literal, perhaps in parentheses (`#define SIZE 21`).
   [[nodiscard]] std::optional<std::uint64_t>
   macroConstant(llvm::StringRef name) const {
-    if (preprocessor == nullptr || name.empty())
+    if (ambiguousMacro(name))
       return std::nullopt;
-    const clang::IdentifierInfo *identifier =
-        preprocessor->getIdentifierInfo(name);
+    const clang::IdentifierInfo *identifier = identifierOf(name);
     const clang::MacroInfo *macro =
         identifier == nullptr ? nullptr
                               : preprocessor->getMacroInfo(identifier);
-    if (macro == nullptr || macro->isFunctionLike())
-      return std::nullopt;
-    // Exactly one integer literal, perhaps in parentheses: an expression
-    // (`(2*30+1)`) is not read, so a bound is never a part of one.
-    std::optional<std::uint64_t> found;
-    for (const clang::Token &token : macro->tokens()) {
-      if (token.isOneOf(clang::tok::l_paren, clang::tok::r_paren))
+    return macro == nullptr ? std::nullopt : literalOf(*macro);
+  }
+
+  /// Whether `name` is a macro the unit undefines, or defines to more than
+  /// one value: the rules run at the end of the unit, where the value may
+  /// not be the one the bound was written with.
+  [[nodiscard]] bool ambiguousMacro(llvm::StringRef name) const {
+    const clang::IdentifierInfo *identifier = identifierOf(name);
+    if (identifier == nullptr)
+      return false;
+    std::optional<std::optional<std::uint64_t>> first;
+    for (const clang::MacroDirective *directive =
+             preprocessor->getLocalMacroDirectiveHistory(identifier);
+         directive != nullptr; directive = directive->getPrevious()) {
+      if (directive->getKind() == clang::MacroDirective::MD_Undefine)
+        return true;
+      const auto *definition =
+          llvm::dyn_cast<clang::DefMacroDirective>(directive);
+      if (definition == nullptr)
         continue;
-      if (!token.is(clang::tok::numeric_constant) || found.has_value())
-        return std::nullopt;
-      llvm::StringRef spelled(token.getLiteralData(), token.getLength());
-      spelled = spelled.rtrim("uUlL");
-      unsigned long long value = 0;
-      if (spelled.getAsInteger(0, value))
-        return std::nullopt;
-      found = value;
+      const auto value = literalOf(*definition->getInfo());
+      if (first.has_value() && *first != value)
+        return true;
+      first = value;
     }
-    return found;
+    return false;
+  }
+
+  void reportAmbiguous(clang::SourceLocation at, llvm::StringRef name) {
+    report(at, rule::BadAnnotation,
+           "the macro '" + name.str() +
+               "' in the bound is undefined or redefined in this unit, so "
+               "its value where the bound is written is not known",
+           "give the bound as an integer literal, or as a macro defined once");
   }
 
   /// A struct's bounds name its own fields, a literal or a macro that
@@ -355,17 +375,15 @@ public:
             name == NullTerminatedOrNullAnnotation)
           continue;
         unsigned long long literal = 0;
-        if (!llvm::StringRef(annotation.argument).getAsInteger(0, literal) ||
-            macroConstant(annotation.argument).has_value())
+        if (!llvm::StringRef(annotation.argument).getAsInteger(0, literal))
           continue;
         const bool named =
-            llvm::any_of(record.fields(), [&](const clang::FieldDecl *other) {
-              return other->getName() == annotation.argument &&
-                     (name == EndedByAnnotation
-                          ? other->getType()->isPointerType()
-                          : other->getType()->isIntegerType());
-            });
-        if (!named)
+            namesField(record, annotation.argument, name == EndedByAnnotation);
+        if (!named && ambiguousMacro(annotation.argument)) {
+          reportAmbiguous(field->getLocation(), annotation.argument);
+          continue;
+        }
+        if (!named && !macroConstant(annotation.argument).has_value())
           report(field->getLocation(), rule::BadAnnotation,
                  "'" + annotation.argument + "' in the bound of field '" +
                      field->getName().str() + "' names no field of the struct",
@@ -395,6 +413,49 @@ private:
   std::function<void(clang::SourceLocation, llvm::StringRef, llvm::StringRef,
                      llvm::StringRef)>
       report;
+
+  [[nodiscard]] const clang::IdentifierInfo *
+  identifierOf(llvm::StringRef name) const {
+    if (preprocessor == nullptr || name.empty())
+      return nullptr;
+    return preprocessor->getIdentifierInfo(name);
+  }
+
+  /// Exactly one integer literal, perhaps in parentheses: an expression
+  /// (`(2*30+1)`) is not read, so a bound is never a part of one.
+  static std::optional<std::uint64_t> literalOf(const clang::MacroInfo &macro) {
+    if (macro.isFunctionLike())
+      return std::nullopt;
+    std::optional<std::uint64_t> found;
+    for (const clang::Token &token : macro.tokens()) {
+      if (token.isOneOf(clang::tok::l_paren, clang::tok::r_paren))
+        continue;
+      if (!token.is(clang::tok::numeric_constant) || found.has_value())
+        return std::nullopt;
+      llvm::StringRef spelled(token.getLiteralData(), token.getLength());
+      spelled = spelled.rtrim("uUlL");
+      unsigned long long value = 0;
+      if (spelled.getAsInteger(0, value))
+        return std::nullopt;
+      found = value;
+    }
+    return found;
+  }
+
+  /// Whether `record`, or an anonymous struct or union in it, has a field
+  /// `name` of the kind a bound needs (a pointer for WEAVEC_ENDED_BY).
+  static bool namesField(const clang::RecordDecl &record, llvm::StringRef name,
+                         bool pointer) {
+    return llvm::any_of(record.fields(), [&](const clang::FieldDecl *field) {
+      if (field->isAnonymousStructOrUnion())
+        if (const clang::RecordDecl *inner =
+                field->getType()->getAsRecordDecl())
+          return namesField(*inner, name, pointer);
+      return field->getName() == name &&
+             (pointer ? field->getType()->isPointerType()
+                      : field->getType()->isIntegerType());
+    });
+  }
 
   static int parameterNamed(const clang::FunctionDecl &function,
                             llvm::StringRef name) {
@@ -1252,7 +1313,13 @@ public:
         compiler.hasPreprocessor() ? &compiler.getPreprocessor() : nullptr,
         report);
     std::vector<const clang::FunctionDecl *> safe;
-    collect(ast.getTranslationUnitDecl(), ast, declarations, safe);
+    std::vector<const clang::RecordDecl *> records;
+    collect(ast.getTranslationUnitDecl(), ast, declarations, safe, records);
+    // A struct's bounds matter to safe code only: a guarded unit keeps
+    // compiling whatever its structs say (Clang checks its own counted_by).
+    if (!safe.empty())
+      for (const clang::RecordDecl *record : records)
+        declarations.checkRecord(*record);
     for (const clang::FunctionDecl *function : safe)
       out->functions[function->getName()].safe = true;
     for (const clang::FunctionDecl *function : safe)
@@ -1300,17 +1367,18 @@ private:
 
   void collect(const clang::DeclContext *context, clang::ASTContext &ast,
                Declarations &declarations,
-               std::vector<const clang::FunctionDecl *> &safe) {
+               std::vector<const clang::FunctionDecl *> &safe,
+               std::vector<const clang::RecordDecl *> &records) {
     for (const clang::Decl *declaration : context->decls()) {
       if (const auto *inner =
               llvm::dyn_cast<clang::LinkageSpecDecl>(declaration)) {
-        collect(inner, ast, declarations, safe);
+        collect(inner, ast, declarations, safe, records);
         continue;
       }
       if (const auto *record = llvm::dyn_cast<clang::RecordDecl>(declaration);
           record != nullptr && record->isThisDeclarationADefinition() &&
           !ast.getSourceManager().isInSystemHeader(record->getLocation()))
-        declarations.checkRecord(*record);
+        records.push_back(record);
       const auto *function = llvm::dyn_cast<clang::FunctionDecl>(declaration);
       if (function == nullptr || function->getName().empty())
         continue;
@@ -1320,20 +1388,50 @@ private:
           llvm::any_of(table.parameters, [](const PointerBounds &p) {
             return p.bounded() || p.escapes || p.lifetimeBound;
           });
-      if (annotated) {
+      const bool definesSafe = function->doesThisDeclarationHaveABody() &&
+                               isSafe(*function, ast.getSourceManager());
+      const auto earlier = annotatedAt.find(function->getName());
+      if (earlier != annotatedAt.end()) {
+        // Every declaration with bounds, and a safe definition, says what
+        // the first said: the table, the entry's checks and the body's
+        // rules would otherwise each read a different one.
+        if ((annotated || definesSafe) &&
+            !out->functions[function->getName()].sameBounds(table))
+          reportMismatch(*function, earlier->second);
+      } else if (annotated) {
         FunctionBounds &entry = out->functions[function->getName()];
         const bool wasSafe = entry.safe;
         entry = table;
         entry.safe = wasSafe;
+        annotatedAt[function->getName()] = function->getLocation();
+      } else if (definesSafe) {
+        out->functions[function->getName()] = table;
       }
-      if (function->doesThisDeclarationHaveABody() &&
-          isSafe(*function, ast.getSourceManager())) {
-        if (!annotated)
-          out->functions[function->getName()] = table;
+      if (definesSafe)
         safe.push_back(function);
-      }
     }
   }
+
+  void reportMismatch(const clang::FunctionDecl &function,
+                      clang::SourceLocation earlier) {
+    clang::DiagnosticsEngine &diagnostics = compiler.getDiagnostics();
+    const std::string name = function.getName().str();
+    diagnostics.Report(
+        function.getLocation(),
+        diagnostics.getCustomDiagID(clang::DiagnosticsEngine::Error,
+                                    "%0 [weavec-safe:%1]"))
+        << "this declaration of '" + name +
+               "' gives its pointers other bounds than an earlier one"
+        << rule::BadAnnotation;
+    diagnostics.Report(earlier, diagnostics.getCustomDiagID(
+                                    clang::DiagnosticsEngine::Note, "%0"))
+        << "write the same bounds (WEAVEC_COUNTED_BY, WEAVEC_ESCAPES, "
+           "WEAVEC_LIFETIMEBOUND and the rest) on every declaration of '" +
+               name + "', as here";
+  }
+
+  /// Where each function's first declaration with bounds is.
+  llvm::StringMap<clang::SourceLocation> annotatedAt;
 };
 
 } // namespace

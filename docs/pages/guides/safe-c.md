@@ -42,6 +42,8 @@ A pointer in a safe function points to **one object** unless its declaration say
 
 Clang's own `counted_by`, `sized_by` and their `_or_null` forms on struct fields (the Linux kernel's `__counted_by`) count as the WeaveC forms.
 
+Write the same bounds on every declaration of a function (its header's and its safe definition's), and give a bound's macro one value in the file: a macro that is redefined or `#undef`'d is a `bad-annotation` error.
+
 Arrays, string literals, the address of a variable, and the result of an allocation (`malloc`, `calloc`, `realloc` and any function declared `alloc_size`) have bounds. A local pointer variable has bounds when everything assigned to it does.
 
 ```c

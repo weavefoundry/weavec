@@ -87,6 +87,7 @@ struct PointerBounds {
     return kind == Kind::Counted || kind == Kind::Ended ||
            kind == Kind::NullTerminated;
   }
+  bool operator==(const PointerBounds &) const = default;
 };
 
 /// What a function's declarations say, and whether its definition is safe.
@@ -94,6 +95,11 @@ struct FunctionBounds {
   std::vector<PointerBounds> parameters;
   PointerBounds result;
   bool safe = false;
+
+  /// Whether `other` gives the same bounds (whatever it says of safety).
+  [[nodiscard]] bool sameBounds(const FunctionBounds &other) const {
+    return parameters == other.parameters && result == other.result;
+  }
 };
 
 /// The unit's table (§8), filled at the end of the unit, before the guard

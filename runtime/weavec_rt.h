@@ -707,14 +707,15 @@ __weavec_rt_delete_array_sized_at(void *p, size_t size,
  * the site asks for a report, which is printed once per site. */
 void weavecRtFail(const char *kind, uintptr_t address, uint64_t width,
                   const struct __weavec_rt_site *site);
-/* As weavecRtFail, with a second line that places `address` relative to
- * the destination [lo, hi) (RFC 0036 section 6). */
 /* RFC 0037 section 8.3: a report whose second line names the root the
  * access was computed from, in another object. */
 void weavecRtFailJump(const char *kind, uintptr_t address, uint64_t width,
                       uintptr_t root, const struct __weavec_rt_site *site);
-void weavecRtFailObject(const char *kind, uintptr_t address, uint64_t width,
-                        uintptr_t lo, uintptr_t hi,
+/* As weavecRtFail, with a second line that places `address` relative to
+ * [lo, hi), which `what` names ("destination": RFC 0036 section 6; "bounds
+ * of the pointer": RFC 0041 section 4). */
+void weavecRtFailObject(const char *kind, const char *what, uintptr_t address,
+                        uint64_t width, uintptr_t lo, uintptr_t hi,
                         const struct __weavec_rt_site *site);
 /* A report whose first line ends in `message` (library-assertion). */
 void weavecRtFailMessage(const char *kind, const char *message,

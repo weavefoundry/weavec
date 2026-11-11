@@ -133,6 +133,14 @@ static llvm::DebugLoc functionLocation(const llvm::Function &function) {
   return {};
 }
 
+/// The first instruction at or after `at` that is not an alloca: code
+/// inserted there keeps a block's allocas together and follows them all.
+static llvm::Instruction *afterAllocas(llvm::Instruction *at) {
+  while (llvm::isa<llvm::AllocaInst>(at))
+    at = at->getNextNode();
+  return at;
+}
+
 //===----------------------------------------------------------------------===//
 // Locals placed on the heap (§6)
 //===----------------------------------------------------------------------===//
@@ -233,7 +241,9 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
   llvm::IRBuilder<> entry(&*function.getEntryBlock().getFirstInsertionPt());
   llvm::AllocaInst *slot =
       entry.CreateAlloca(module.ptr, nullptr, alloca.getName() + ".heap");
-  entry.SetInsertPoint(alloca.getNextNode());
+  // Null from the function's start, after its allocas: every return
+  // releases the slot, and a path may return without reaching the local.
+  entry.SetInsertPoint(afterAllocas(slot));
   entry.CreateStore(llvm::ConstantPointerNull::get(module.ptr), slot);
 
   // The bytes, computed where the block is allocated.
@@ -286,8 +296,16 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
   const bool scoped = llvm::any_of(lifetimes, [](llvm::IntrinsicInst *i) {
     return i->getIntrinsicID() == llvm::Intrinsic::lifetime_start;
   });
-  if (!scoped)
+  if (!scoped && alloca.isStaticAlloca()) {
     allocateAt(entry);
+  } else if (!scoped) {
+    // A dynamic local (an array of variable length) has no lifetime
+    // markers: its block lives until the local is allocated again (a loop's
+    // next iteration) or the function returns.
+    llvm::IRBuilder<> builder(alloca.getNextNode());
+    releaseAt(builder);
+    allocateAt(builder);
+  }
   for (llvm::IntrinsicInst *lifetime : lifetimes) {
     llvm::IRBuilder<> builder(lifetime);
     if (lifetime->getIntrinsicID() == llvm::Intrinsic::lifetime_start)
@@ -470,11 +488,7 @@ private:
   llvm::DenseMap<const llvm::Value *, bool> rootable;
 
   llvm::Instruction *entryPoint() {
-    llvm::BasicBlock &entry = function.getEntryBlock();
-    llvm::BasicBlock::iterator at = entry.getFirstInsertionPt();
-    while (llvm::isa<llvm::AllocaInst>(*at))
-      ++at;
-    return &*at;
+    return afterAllocas(&*function.getEntryBlock().getFirstInsertionPt());
   }
 
   llvm::Value *bytesOf(const PointerBounds &bounds, llvm::Value *pointer,
@@ -535,38 +549,79 @@ private:
     return size.getAllocSizeArgs();
   }
 
-  /// Whether `value` derives from roots with bounds (computed once).
+  /// Whether `value` has bounds of its own: a validated parameter, a local,
+  /// a global the unit defines, an allocation, or a call whose result the
+  /// table bounds. A call's bounds are computed after it, which an invoke has
+  /// no place for in its block.
+  bool isRoot(const llvm::Value *value) {
+    if (known.contains(value) || llvm::isa<llvm::ConstantPointerNull>(value))
+      return true;
+    if (const auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(value))
+      return alloca->getAllocatedType()->isSized();
+    if (llvm::isa<llvm::GlobalVariable>(value))
+      return exactSize(value, module.layout).has_value();
+    if (const auto *call = llvm::dyn_cast<llvm::CallInst>(value)) {
+      const FunctionBounds *callee = calleeBounds(module, *call);
+      return allocationSize(*call).has_value() ||
+             (callee != nullptr &&
+              callee->result.kind == PointerBounds::Kind::Counted);
+    }
+    return false;
+  }
+
+  /// What `value` derives from through arithmetic, phis and selects; empty
+  /// for anything else.
+  static llvm::SmallVector<const llvm::Value *, 4>
+  derivedFrom(const llvm::Value *value) {
+    llvm::SmallVector<const llvm::Value *, 4> from;
+    if (const auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(value))
+      from.push_back(gep->getPointerOperand());
+    else if (const auto *phi = llvm::dyn_cast<llvm::PHINode>(value))
+      from.append(phi->value_op_begin(), phi->value_op_end());
+    else if (const auto *select = llvm::dyn_cast<llvm::SelectInst>(value))
+      from.append({select->getTrueValue(), select->getFalseValue()});
+    return from;
+  }
+
+  static bool isDerived(const llvm::Value *value) {
+    return llvm::isa<llvm::GetElementPtrInst, llvm::PHINode, llvm::SelectInst>(
+        value);
+  }
+
+  /// Whether `value` derives only from roots (isRoot). Decided for all the
+  /// values it derives from at once, as the greatest fixpoint over their
+  /// cycles, so that no answer rests on an assumption another refutes.
   bool rooted(const llvm::Value *value) {
     if (const auto found = rootable.find(value); found != rootable.end())
       return found->second;
-    rootable[value] = true; // a cycle through phis assumes, then checks
-    bool result = false;
-    if (known.contains(value) || llvm::isa<llvm::ConstantPointerNull>(value)) {
-      result = true;
-    } else if (const auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(value)) {
-      result = alloca->getAllocatedType()->isSized();
-    } else if (llvm::isa<llvm::GlobalVariable>(value)) {
-      result = exactSize(value, module.layout).has_value();
-    } else if (const auto *gep =
-                   llvm::dyn_cast<llvm::GetElementPtrInst>(value)) {
-      result = rooted(gep->getPointerOperand());
-    } else if (const auto *phi = llvm::dyn_cast<llvm::PHINode>(value)) {
-      result = llvm::all_of(phi->incoming_values(),
-                            [&](const llvm::Value *v) { return rooted(v); });
-    } else if (const auto *select = llvm::dyn_cast<llvm::SelectInst>(value)) {
-      result =
-          rooted(select->getTrueValue()) && rooted(select->getFalseValue());
-    } else if (const auto *call = llvm::dyn_cast<llvm::CallBase>(value)) {
-      const FunctionBounds *callee = calleeBounds(module, *call);
-      result = allocationSize(*call).has_value() ||
-               (callee != nullptr &&
-                callee->result.kind == PointerBounds::Kind::Counted);
+    llvm::SmallVector<const llvm::Value *, 16> closure;
+    llvm::SmallVector<const llvm::Value *, 16> work{value};
+    llvm::SmallPtrSet<const llvm::Value *, 16> seen{value};
+    while (!work.empty()) {
+      const llvm::Value *next = work.pop_back_val();
+      closure.push_back(next);
+      for (const llvm::Value *from : derivedFrom(next))
+        if (!rootable.contains(from) && seen.insert(from).second)
+          work.push_back(from);
     }
-    rootable[value] = result;
-    return result;
+    for (const llvm::Value *member : closure)
+      rootable[member] = isDerived(member) || isRoot(member);
+    for (bool changed = true; changed;) {
+      changed = false;
+      for (const llvm::Value *member : closure)
+        if (rootable.lookup(member) && isDerived(member) &&
+            !llvm::all_of(derivedFrom(member), [&](const llvm::Value *from) {
+              return rootable.lookup(from);
+            })) {
+          rootable[member] = false;
+          changed = true;
+        }
+    }
+    return rootable.lookup(value);
   }
 
-  /// The bounds of `value`, which `rooted` accepted.
+  /// The bounds of `value`, which `rooted` accepted: built from the roots
+  /// (isRoot) through what it derives from.
   Bounds boundsOf(llvm::Value *value) {
     if (const auto found = known.find(value); found != known.end())
       return found->second;
@@ -581,9 +636,8 @@ private:
       return known[value] = bounds;
     }
     if (auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(value)) {
-      llvm::IRBuilder<> builder(alloca->getNextNode());
-      if (alloca->isStaticAlloca())
-        builder.SetInsertPoint(entryPoint());
+      // After the run of allocas it is in, so that they stay together.
+      llvm::IRBuilder<> builder(afterAllocas(alloca->getNextNode()));
       const std::uint64_t element =
           module.layout.getTypeAllocSize(alloca->getAllocatedType())
               .getFixedValue();
@@ -618,7 +672,7 @@ private:
                              .hi = builder.CreateSelect(select->getCondition(),
                                                         yes.hi, no.hi)};
     }
-    auto *call = llvm::cast<llvm::CallBase>(value);
+    auto *call = llvm::cast<llvm::CallInst>(value);
     llvm::IRBuilder<> builder(call->getNextNode());
     llvm::SmallVector<llvm::Value *, 8> arguments(call->args());
     llvm::Value *bytes = nullptr;

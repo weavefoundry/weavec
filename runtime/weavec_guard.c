@@ -632,8 +632,8 @@ int weavecRtFrameKnown(const struct __weavec_rt_frame *frame) {
 WEAVEC_RT_SLOW void __weavec_rt_limit_fail(uintptr_t address, uint64_t width,
                                            uint64_t limit,
                                            const struct __weavec_rt_site *site) {
-  weavecRtFailObject("intra-object-overflow", address, width, address,
-                     address + limit, site);
+  weavecRtFailObject("intra-object-overflow", "destination", address, width,
+                     address, address + limit, site);
 }
 
 /*===-- Safe functions (RFC 0041 sections 4 and 5) -------------------------===*/
@@ -641,7 +641,8 @@ WEAVEC_RT_SLOW void __weavec_rt_limit_fail(uintptr_t address, uint64_t width,
 WEAVEC_RT_SLOW void __weavec_rt_bounds_fail(uintptr_t address, uint64_t width,
                                             uintptr_t lo, uintptr_t hi,
                                             const struct __weavec_rt_site *site) {
-  weavecRtFailObject("pointer-out-of-bounds", address, width, lo, hi, site);
+  weavecRtFailObject("pointer-out-of-bounds", "bounds of the pointer", address,
+                     width, lo, hi, site);
 }
 
 void __weavec_rt_escape_check(uintptr_t address,

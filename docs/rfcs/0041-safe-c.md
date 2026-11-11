@@ -267,6 +267,7 @@ The existing assumptions A1–A9 hold. Safe functions add:
 | **S-A2** | Code not compiled by `weavec-cc` does not write a borrowed pointer into memory that outlives the call, and does not keep a pointer it was passed beyond the call unless its declaration says `WEAVEC_ESCAPES`. |
 | **S-A3** | No data race on a pointer and the count or end that bounds it. |
 | **S-A4** | The pointers that keep a heap block alive meet A6 (the sweep sees them). |
+| **S-A5** | A pointer passed for a `WEAVEC_ESCAPES` parameter does not point into another thread's stack, or into a stack the thread switched to (a signal or coroutine stack): the check of §5 tests the calling thread's own stack (amendment 19). |
 
 ## Detailed design
 
@@ -1033,6 +1034,44 @@ They override the body.
     inlined a failed validation is reported at the caller's line, the code
     that overstated the count. Safe callers in another unit pay the entry's
     validation.
+19. **What the review of the implementation corrected.** Six defects, each
+    with a test (`test/Guards/safe-roots.c`, `test/Safe/declarations.c`,
+    `test/cases/safe/heap-vla.c`):
+    - Whether a pointer has bounds is decided for every value it derives
+      from at once, as the greatest fixpoint over the cycles of its phis.
+      The walk had cached a value inside a cycle as bounded on an
+      assumption that a later operand refuted, and building its bounds then
+      reached a pointer loaded from memory and crashed the compiler.
+    - The roots are decided in one place that both the decision and the
+      building read. A call that may throw (an invoke) is not a root,
+      since its bounds have no place after it in its block; its accesses
+      keep their guards.
+    - A framed local's bounds are computed after the run of allocas it is
+      in, not before the first instruction that is not one. A local placed
+      on the heap had put a store there, and an array declared after it got
+      bounds that used it before its definition.
+    - A local placed on the heap is null from the function's start, so
+      that a path that never reaches it releases nothing at return. An
+      array of variable length has no lifetime markers: its block is
+      released when the local is allocated again (a loop's next iteration)
+      or the function returns. It had been released only at return, from
+      a slot no path but its own had set.
+    - A struct's bounds are checked only in a unit with safe functions, and
+      may name a field of an anonymous struct or union in it. A guarded
+      unit whose struct used Clang's `counted_by` that way had failed to
+      compile.
+    - A bound's macro must have one value in the unit (amendment 16): the
+      rules run at its end, where a macro redefined or undefined after the
+      bound has another value or none. Every declaration of a function with
+      bounds, and its safe definition, must give the same bounds
+      (`bad-annotation`); the last declaration had replaced the table.
+      A guarded definition need not repeat them.
+
+    The `stack-escape` check of §5 tests the calling thread's own stack
+    only. Testing every thread's would take the runtime's thread list on
+    each call of such a function; a pointer into another stack that safe
+    code keeps is still checked as guarded code checks it when it is used
+    (a returned frame's shadow). It is assumption S-A5.
 
 ## Measured gates
 
