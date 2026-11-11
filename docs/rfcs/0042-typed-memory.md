@@ -954,10 +954,13 @@ bytes at <address>` (the destination is not named); its object line is
     longer places a local on the heap: a safe function cannot turn the
     integer back into a pointer. A checker error is reported once per place
     in the file, not once per macro expansion of its argument.
-15. **Flexible array members.** An element of a struct's flexible array
-    member lies past the struct's size, so a pointer to the struct does not
-    bound it: the access keeps its guard (`typed-unbounded`). tinyexpr's
-    `te_expr.parameters[]` trapped on every expression before this.
+15. **Flexible array members.** An element of a struct's last field that is
+    an array of at most one element (`T data[]`, `T data[0]`, or the struct
+    hack's `T data[1]`, as Clang's `-fstrict-flex-arrays=1` reads them) may
+    lie past the struct's size, so a pointer to the struct does not bound
+    it: the access keeps its guard (`typed-unbounded`). A last field of more
+    elements is bounded by the struct. tinyexpr's `te_expr.parameters[]`
+    trapped on every expression before this.
 16. **`call-args` in typed functions (§3).** A pointer to one object stored
     in a field, or returned as a result, whose declaration has a bound is
     rejected when the function compiles, as an argument for a bounded
@@ -984,7 +987,7 @@ bytes at <address>` (the destination is not named); its object line is
     splits a block. `weavec-cc` given several sources compiles each of them
     after one fails, as Clang's driver does, so one round shows every
     file's errors.
-20. **Budgets (H1).** The library is 14,128 lines, over the 13,500 the
+20. **Budgets (H1).** The library is 14,200 lines (after the review's fixes), over the 13,500 the
     body expected: the typed rules (about 800 lines of the checker), the
     pass's typed bounds, conversions, strings and pairs (about 1,200), the
     audit and the ledger's functions (about 200). Its limit is 14,200; the
@@ -1009,6 +1012,13 @@ bytes at <address>` (the destination is not named); its object line is
     at a constant offset inside the element is compared by its index too;
     jsmn's backward loop over its tokens went from 1.49 to 1.30 times the
     reference with it.
+
+23. **Found in review.** A null `_OR_NULL` pointer's count, and a counted
+    result's (a typed callee may return null with any count), is empty for
+    the index form as it was for the byte form: `i < n` let a null pointer
+    with a large count reach an absolute address. A count that bounds two
+    pointers and grows alone is checked against the shadow for each of
+    them, not only the first.
 
 ## Measured gates
 
@@ -1060,7 +1070,7 @@ the Rust port.
 | T7 The port            | **Pass on the numbers it sets**: 100% of the library typed, tests pass in all three modes with no report and no compiler problem found, and typed C runs within 1.25 times Rust (1.18). Rust took fewer rounds (1 against 3) and about half the time.                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | T8 No change elsewhere | **Pass**: `corpus-gate.py --quick` passes, every config guarding and proving the same accesses as on main; R's objects run at the same speed on this runtime and on main's (A against A0), including the sweeps.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | T9 Verify              | **Pass**: no `weavec.proven` in any conversion's tests, nor in the port's.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| H1 Hygiene             | **Pass with amendment 20**: library 14,128 of 14,200 lines, runtime 9,940 of 10,500.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| H1 Hygiene             | **Pass with amendment 20**: library 14,200 of 14,200 lines, runtime 9,938 of 10,500.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 What the gates say about the goal: an agent moves C to typed C in one to
 three rounds of compile errors, and writes new typed C from another

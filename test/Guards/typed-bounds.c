@@ -15,6 +15,8 @@
 // RUN: not --crash %t single 2>&1 | FileCheck %s --check-prefix=SINGLE
 // RUN: not --crash %t grow 2>&1 | FileCheck %s --check-prefix=GROW
 // RUN: not --crash %t string 2>&1 | FileCheck %s --check-prefix=STRING
+// RUN: not --crash %t ornull 2>&1 | FileCheck %s --check-prefix=ORNULL
+// RUN: not --crash %t two 2>&1 | FileCheck %s --check-prefix=TWO
 // RUN: %t lie
 // RUN: %weavec_cc -O2 -g -fweavec-typed -fweavec-safe-checks=full %s -o %t.full
 // RUN: not --crash %t.full lie 2>&1 | FileCheck %s --check-prefix=FULL
@@ -75,6 +77,20 @@ size_t length(const struct holder *h) {
   return n;
 }
 
+// A null `_OR_NULL` pointer has no elements, whatever its count says.
+int element(const int *WEAVEC_COUNTED_BY_OR_NULL(n) v, size_t n, size_t i) {
+  // ORNULL: weavec: pointer-out-of-bounds at {{.*}}typed-bounds.c:[[@LINE+1]]:{{[0-9]+}}: read of 4 bytes
+  return v[i];
+}
+
+// A count that bounds two pointers, grown alone: each pointer's object must
+// have the bytes.
+struct both { int *WEAVEC_COUNTED_BY(n) a; int *WEAVEC_COUNTED_BY(n) b; size_t n; };
+void widen(struct both *s) {
+  // TWO: weavec: heap-buffer-overflow at {{.*}}typed-bounds.c:[[@LINE+1]]:{{[0-9]+}}
+  s->n += 4;
+}
+
 // Code that is not typed is trusted to keep the bounds it stores.
 WEAVEC_GUARDED void lie(struct vec *v) { v->cap = 12; }
 
@@ -102,6 +118,12 @@ WEAVEC_GUARDED int main(int argc, char **argv) {
     stretch(&v);
   if (!strcmp(mode, "string"))
     label(&h, text, 3);
+  if (!strcmp(mode, "ornull"))
+    return element(NULL, (size_t)1 << 20, 5000);
+  if (!strcmp(mode, "two")) {
+    struct both s = {calloc(16, sizeof(int)), calloc(4, sizeof(int)), 4};
+    widen(&s);
+  }
   if (!strcmp(mode, "lie")) {
     lie(&v);
     // Believed: the read lands past the block, unreported. Under full

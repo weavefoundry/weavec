@@ -691,9 +691,15 @@ private:
       llvm::Value *bytes = bytesOf(bounds, pointer, builder, arguments);
       if (bytes == nullptr)
         continue;
+      // A null `_OR_NULL` pointer may come with any count: its count is
+      // empty for the index form too. (Another counted parameter is never
+      // null with a nonzero count: its entry and its typed callers check.)
       if (typed)
         if (llvm::Value *count = boundCount(module, bounds, builder, arguments))
-          counts[pointer] = {.count = count, .elementSize = bounds.elementSize};
+          counts[pointer] = {.count = bounds.orNull
+                                          ? emptyIfNull(builder, pointer, count)
+                                          : count,
+                             .elementSize = bounds.elementSize};
       // A body's callers checked its parameters (its entry, or a safe
       // caller at the call).
       if (body) {
@@ -708,6 +714,13 @@ private:
       known[pointer] = {.lo = pointer,
                         .hi = builder.CreateGEP(module.i8, pointer, bytes)};
     }
+  }
+
+  /// `value` (an i64 size or count), or 0 when `pointer` is null.
+  llvm::Value *emptyIfNull(llvm::IRBuilder<> &builder, llvm::Value *pointer,
+                           llvm::Value *value) const {
+    return builder.CreateSelect(builder.CreateIsNull(pointer),
+                                llvm::ConstantInt::get(module.i64, 0), value);
   }
 
   /// The bounds of a single pointer to `size` bytes, which may be null: a
@@ -807,16 +820,46 @@ private:
     return from;
   }
 
+  /// An array of at most one element (-fstrict-flex-arrays=1's flexible).
+  static bool flexible(const llvm::Type *type) {
+    const auto *array = llvm::dyn_cast<llvm::ArrayType>(type);
+    return array != nullptr && array->getNumElements() <= 1;
+  }
+
+  /// Whether a step of `gep` selects a struct's last field that is a
+  /// flexible array, followed by another step (`last`: as its last step).
+  static bool trailing(const llvm::GEPOperator &gep, bool last) {
+    for (auto step = llvm::gep_type_begin(gep); step != llvm::gep_type_end(gep);
+         ++step) {
+      const llvm::StructType *outer = step.getStructTypeOrNull();
+      const auto *index = llvm::dyn_cast<llvm::ConstantInt>(step.getOperand());
+      if (outer != nullptr && index != nullptr &&
+          index->getZExtValue() + 1 == outer->getNumElements() &&
+          flexible(outer->getElementType(
+              static_cast<unsigned>(index->getZExtValue()))) &&
+          (std::next(step) == llvm::gep_type_end(gep)) == last)
+        return true;
+    }
+    return false;
+  }
+
   static bool isDerived(const llvm::Value *value) {
-    // An element of a flexible array member lies past its struct's size:
-    // the struct's bounds do not cover it (it keeps its guard).
-    if (const auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(value))
+    // A struct's flexible last field (`T data[]`, `T data[1]`) may run past
+    // the struct: its elements keep their guards.
+    if (const auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(value)) {
+      const auto *field =
+          llvm::dyn_cast<llvm::GEPOperator>(gep->getPointerOperand());
+      if (trailing(*llvm::cast<llvm::GEPOperator>(gep), false) ||
+          (field != nullptr && flexible(gep->getSourceElementType()) &&
+           trailing(*field, true)))
+        return false;
       for (auto type = llvm::gep_type_begin(gep);
            type != llvm::gep_type_end(gep); ++type)
         if (const auto *array =
                 llvm::dyn_cast<llvm::ArrayType>(type.getIndexedType());
             array != nullptr && array->getNumElements() == 0)
           return false;
+    }
     return llvm::isa<llvm::GetElementPtrInst, llvm::PHINode, llvm::SelectInst>(
         value);
   }
@@ -958,11 +1001,15 @@ private:
       bytes = bytesOf(callee->result, call, builder, arguments);
       if (bytes == nullptr)
         bytes = llvm::ConstantInt::get(module.i64, 0);
-      if (typed)
+      // A typed callee may return null with any count (its return's check
+      // allows null): a null result's bounds are empty.
+      if (typed) {
+        bytes = emptyIfNull(builder, call, bytes);
         if (llvm::Value *count =
                 boundCount(module, callee->result, builder, arguments))
-          counts[value] = {.count = count,
+          counts[value] = {.count = emptyIfNull(builder, call, count),
                            .elementSize = callee->result.elementSize};
+      }
       // A declared result bound is checked against the shadow, a safe
       // callee's too: no rule makes a function return what it declares
       // (a typed callee's return is checked, RFC 0042 §6).
@@ -1570,40 +1617,40 @@ private:
         llvm::Value *old = state.oldCount.lookup(&store);
         if (old == nullptr)
           continue;
-        const CountBounds &count = field->counts.front();
-        llvm::Value *now =
-            countBytes(builder, value, count.elementSize, count.flags);
-        const bool signedCount = (count.flags & FieldBounds::CountSigned) != 0;
-        if (signedCount)
-          old = builder.CreateBinaryIntrinsic(
-              llvm::Intrinsic::smax, old,
-              llvm::ConstantInt::get(module.i64, 0));
-        llvm::Value *was =
-            timesElement(module, builder, old,
-                         static_cast<std::uint64_t>(count.elementSize));
-        // A count that grows alone: its pointer's object must have the
-        // bytes, which the shadow says (amendment 2); one that shrinks
-        // needs nothing more.
-        llvm::Instruction *then = llvm::SplitBlockAndInsertIfThen(
-            builder.CreateICmpUGT(now, was), store.getIterator(),
-            /*Unreachable=*/false,
-            llvm::MDBuilder(module.context).createUnlikelyBranchWeights());
-        llvm::IRBuilder<> grow(then);
-        grow.SetCurrentDebugLocation(store.getDebugLoc());
-        llvm::Value *current = grow.CreateLoad(
-            module.ptr,
-            grow.CreateGEP(
-                module.i8, store.getPointerOperand(),
-                llvm::ConstantInt::get(module.i64, static_cast<std::uint64_t>(
-                                                       count.pointerOffset))));
-        const unsigned row =
-            module.row(function, store.getDebugLoc(), "convert", 0,
-                       LedgerRow::Outcome::Guarded, "typed-unbounded");
-        module.insertRange(
-            then, current,
-            grow.CreateSelect(grow.CreateIsNull(current),
-                              llvm::ConstantInt::get(module.i64, 0), now),
-            0, row);
+        // A count that grows alone: each pointer it bounds must have the
+        // bytes in its object, which the shadow says (amendment 2); one that
+        // shrinks needs nothing more.
+        for (const CountBounds &count : field->counts) {
+          llvm::IRBuilder<> at(&store);
+          at.SetCurrentDebugLocation(store.getDebugLoc());
+          llvm::Value *now =
+              countBytes(at, value, count.elementSize, count.flags);
+          llvm::Value *before = old;
+          if ((count.flags & FieldBounds::CountSigned) != 0)
+            before =
+                at.CreateBinaryIntrinsic(llvm::Intrinsic::smax, before,
+                                         llvm::ConstantInt::get(module.i64, 0));
+          llvm::Value *was =
+              timesElement(module, at, before,
+                           static_cast<std::uint64_t>(count.elementSize));
+          llvm::Instruction *then = llvm::SplitBlockAndInsertIfThen(
+              at.CreateICmpUGT(now, was), store.getIterator(),
+              /*Unreachable=*/false,
+              llvm::MDBuilder(module.context).createUnlikelyBranchWeights());
+          llvm::IRBuilder<> grow(then);
+          grow.SetCurrentDebugLocation(store.getDebugLoc());
+          llvm::Value *current = grow.CreateLoad(
+              module.ptr,
+              grow.CreateGEP(module.i8, store.getPointerOperand(),
+                             llvm::ConstantInt::get(module.i64,
+                                                    static_cast<std::uint64_t>(
+                                                        count.pointerOffset))));
+          const unsigned row =
+              module.row(function, store.getDebugLoc(), "convert", 0,
+                         LedgerRow::Outcome::Guarded, "typed-unbounded");
+          module.insertRange(then, current, emptyIfNull(grow, current, now), 0,
+                             row);
+        }
         continue;
       }
       if (!value->getType()->isPointerTy())
