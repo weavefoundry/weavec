@@ -434,7 +434,8 @@ are guarded if `weavec-cc` built it (assumption A2).
 
 `WEAVEC_UNSAFE` on a function definition or a compound statement makes its
 source range unsafe (RFC 0035 §2.6). It is the only annotation `weavec.h`
-defines; its spelling, `annotate("weavec.unsafe")`, is `UnsafeAnnotation`
+defines that weakens a check (the others are Safe C's, RFC 0041); its
+spelling, `annotate("weavec.unsafe")`, is `UnsafeAnnotation`
 in `include/weavec/Frontend/UnsafeRegions.h`. `UnsafeRegions` collects the
 ranges by file over the AST before code generation, only when the unit
 expanded the macro or spelled the annotation, and also records as unsafe

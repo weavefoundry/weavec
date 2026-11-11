@@ -16,7 +16,10 @@ redzones and colors, check fortified and field-bounded calls against their
 sizes, and expand each remaining guard into an inline check of the runtime's
 shadow memory (an access computed from a pointer also against the color of
 the pointer's object); the program traps at the first bad access with a
-report. `runtime/` is the C
+report. A C function marked `WEAVEC_SAFE` (or every one, under
+`-fweavec-safe`) is also checked when it compiles, against a few local
+rules (`lib/Frontend/SafeCheck.cpp`), and its guards on pointers with known
+bounds become bounds checks (`lib/Frontend/GuardSafe.cpp`). `runtime/` is the C
 runtime every enforcing link carries: the shadow, the arena allocator (with
 per-thread caches) whose quarantine reuses a released block only after a
 *sweep* (marked in parallel by worker threads) finds no pointer to it, the
@@ -26,11 +29,16 @@ library (`libweavec_rt.so.<abi>`, `libweavec_rt.dylib`) that every image
 `weavec-cc` links depends on, so a process has one runtime (and
 `libweavec_rt.a` for `-static` Linux programs). Two C++ libraries: `weavec::Core` (only the library
 table, `LibrarySpec`; **no Clang/LLVM includes allowed**) and
-`weavec::Frontend` (the guard passes, unsafe regions, the enforcement
-ledger, the compiler driver). `tools/weavec-cc` is Clang's driver with
-WeaveC inside; there is no other tool and no static analysis. Full
+`weavec::Frontend` (the guard passes, Safe C's checker, unsafe regions, the
+enforcement ledger, the compiler driver). `tools/weavec-cc` is Clang's
+driver with WeaveC inside; there is no other tool, and no analysis beyond
+Safe C's rules, each decided inside one function. Full
 picture: `docs/architecture.md`. Design and the reasoning behind it:
-`docs/rfcs/`. Read `0039-cxx.md` first, the current design (C++ guarded as
+`docs/rfcs/`. Read `0041-safe-c.md` first, the current design (safe
+functions, their rules and annotations, bounds checks in place of guards,
+the split entry point, locals placed on the heap), then
+`0040-actionable-reports.md` (the reports' stacks, the objects they name,
+the symbolizer, JSON), then `0039-cxx.md` (C++ guarded as
 C: `weavec-c++`, invokes, exceptions marking only the frames they unwind,
 `new`/`delete` forms, container annotations, the C++ library's checks as
 `library-assertion`, mangled rows of the library table), then
@@ -102,15 +110,18 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 
 1. Never add `clang/` or `llvm/` includes under `include/weavec/Core` or
    `lib/Core`.
-2. WeaveC has no compile-time diagnostics of its own. A new run-time report
+2. WeaveC's only compile-time diagnostics are Safe C's errors (RFC 0041),
+   each ending in `[weavec-safe:<rule>]` with a note, and each pinned by a
+   `test/Safe/` test. A new run-time report
    kind gets a `test/Guards/` test that pins its exact report line, and an
    entry in the command-line reference's list of kinds
    (`docs/pages/reference/cli.md`); the case runner's list of kinds
    (`scripts/run-cases.py`) must know it too.
-3. `WEAVEC_UNSAFE` is the only annotation. Its spelling
-   (`annotate("weavec.unsafe")`) lives in exactly two places that must
-   agree: `UnsafeAnnotation` in `include/weavec/Frontend/UnsafeRegions.h`
-   and `resources/include/weavec.h`.
+3. The annotations are `WEAVEC_UNSAFE` and Safe C's (RFC 0041). Each
+   spelling lives in exactly two places that must agree:
+   `resources/include/weavec.h`, and `UnsafeAnnotation` in
+   `include/weavec/Frontend/UnsafeRegions.h` (`annotate("weavec.unsafe")`)
+   or the `*Annotation` constants in `include/weavec/Frontend/SafeCheck.h`.
 4. Warnings are errors in CI (`WEAVEC_WARNINGS_AS_ERRORS=ON`). Do not add
    suppressions without a comment.
 5. Follow the existing file header block and naming (`CamelCase` types and
@@ -174,6 +185,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Debug the passes                     | `weavec-cc -O2 -S -emit-llvm file.c -o -` (the expanded guards and the frame layout); `-mllvm -print-after-all` (the markers through the pipeline; the passes print as `weavec::frontend::GuardInsertPass` and so on); `-fweavec-checks=verify` (removed guards kept as monitors) |
 | Add or run a test case               | `test/cases/README.md`, `scripts/run-cases.py`         |
 | Measure on real code                 | `scripts/corpus-gate.py`, `test/corpus/` (README, manifest with per-platform forms, expected ratchet, triage, prerequisites, the programs tier) |
-| Add an annotation                    | Don't, without an RFC: `WEAVEC_UNSAFE` is the only one (`UnsafeRegions.h`, `weavec.h`, `docs/annotations.md`) |
+| Change Safe C (its rules, annotations, bounds checks, entry points, heap-placed locals) | `lib/Frontend/SafeCheck.cpp` (the rules and the table, `include/weavec/Frontend/SafeCheck.h`), `lib/Frontend/GuardSafe.cpp` (bounds, entries, heap placement), `resources/include/weavec.h` (RFC 0041); tests `test/Safe/`, `test/Guards/safe-*.c`, `ir-safe.c`, cases `test/cases/safe/`; the guide `docs/pages/guides/safe-c.md` |
+| Add an annotation                    | Don't, without an RFC: `WEAVEC_UNSAFE` and Safe C's are the only ones (`UnsafeRegions.h`, `SafeCheck.h`, `weavec.h`, `docs/annotations.md`) |
 | Change build flags / warnings        | `cmake/WeaveCWarnings.cmake`, `cmake/WeaveCLLVM.cmake` |
 | Add a CI job                         | `.github/workflows/ci.yml`                             |
