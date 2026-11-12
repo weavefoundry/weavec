@@ -1167,3 +1167,57 @@ conversion agents reported (S7). They override the body.
     2,600 (the body estimated 2,200), the pass's test, the ledger, the
     audit and `--weavec-explain` about 300, and the tier merge deleted less
     than the body expected (amendment 1). The runtime stays within 10,500.
+
+## Measured gates
+
+Measured on darwin-arm64 (Homebrew LLVM 23.1, `dev` preset) on 2026-11-11.
+The conversions were made by Claude subagents (the session's model), each
+given a brief, the rules page and the RFC, starting from RFC 0042's typed
+conversions; they used a copy of the compiler frozen at their start, and
+the compiler changed after them (amendments 5 to 9, from what they
+reported). Every result below is the final compiler's: each library was
+compiled again with it (one more round where it reported something: zlib,
+bzip2, cJSON, the `lzw` port and the C port), and every project's tests
+were rebuilt and run with it in the three modes (D default, F
+`-fweavec-safe-checks=full`, V `-fweavec-checks=verify`). Rounds count whole
+compiles of the library with `-fsyntax-only -fweavec-safe`. Lines changed
+are added plus removed lines of the library against RFC 0042's typed
+version, as a share of the original's lines. The working copies, records
+and logs are in `build/rfc43/` (not committed).
+
+| Project | Functions safe (guarded): RFC 0042 → 0043 | Lines vs typed | Rounds to zero (first annotated round's errors) | Tests, D/F/V | First-round errors that were real defects |
+| --- | --- | --- | --- | --- | --- |
+| jsmn | 6/6 → 6/6 (0) | 0 | 0 (0) | pass | none (no pointer fields) |
+| http-parser | 18/18 → 18/18 (0) | 0 | 0 (0) | pass | none (4 reference fields) |
+| sds | 48/53 → 47/54 (7) | 14.0% | 2 (38) | 46/46 | 3, all upstream: failure paths that lose the string (`s = sdsMakeRoomFor(s, …)`, `sdscatvprintf`, `sdssplitargs`' `vector = s_realloc(vector, …)`) |
+| cJSON | 116/122 → 115/129 (14) | 22.5% | 4 (127) | 17/18, as RFC 0042 (`stack-escape` in `misc_tests`) | 1, upstream: `cJSON_AddItemReferenceToObject` leaks the reference when `strdup` fails |
+| zlib | 153/170 → 155/172 (17) | 2.6% | 6 (120) | pass | none |
+| tinyexpr | 47/51 → 47/51 (4) | 12.6% | 3 | pass | none |
+| inih | 11/14 → 11/15 (4) | 6.4% | 2 | 15/15 configurations | none |
+| bzip2 (held out by RFC 0042) | 61/73 → 64/78 (14) | 6.5% | 4 (48) | 12/12 | none |
+| `lzw` port | 19/19 → 19/20 (1) | 2.8% | 2 | 971/971 | its benchmark driver's leaks on error returns (the port's, not Go's); one more found by the final compiler |
+
+The port (G5): an LRU cache specified in `build/rfc43/g5/BRIEF.md` (a
+doubly linked list and a hash map written by hand, eleven operations,
+property tests against a model, a fixed benchmark), written by two agents
+started at the same moment, one in Safe C and one in safe Rust.
+
+| | Rounds to a clean build | Rounds to tests passing | Wall time | Library lines | Functions safe | Benchmark (×R, 20 runs, best of 3) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Safe C | 2 (8 errors: `owner-path` 4, `escape` 2, `owner-leak` 2), and 1 with the final compiler (1 `owner-leak`) | 2 | 4 min 31 s | 337 | 22/22, no guarded helper; 1 owner field, 4 reference fields | 1.81 (1.71 without reference tests) |
+| Rust (no `unsafe`) | 1 (0) | 2 | 1 min 31 s | 349 (286 without comments and blanks) | — | 1.32 |
+
+R is the Safe C sources with `clang -O2`; both print the same line.
+
+| Gate | Result |
+| --- | --- |
+| G1 Rules | **Pass**: `test/Safe/ownership.c` has accepted and rejected forms of every rule, each error a note; `resources/safe-c/rules.md` gives each rule a rejected and an accepted example, which `docs/scripts/check-examples.py` compiles. |
+| G2 Seeded bugs | **Pass, on mechanical seeds.** `build/rfc43/g2/seed.py` seeds, at every release in a safe function of the nine conversions and the C port, a removed release, a duplicated one, a use right after it and a borrow read after it, and duplicates each allocation (372 mutants; 6 of them, a second call of zlib's `WEAVEC_DROPS` destructor and reads after it, are not bugs). Of the 366 bugs, 347 (94.8%) stop the compile with the expected rule and none with another. The 19 that compile: releases through cJSON's hooks after a call that leaves an owner unknown, tinyexpr's `te_free_parameters` (a helper that releases a fixed array of owners, which is not checked, amendment 14), and zlib's `deflateEnd` in two error paths (owners below a borrowed parameter are the caller's). The agent-written plausible bugs the body asked for were not made. Today: none stops the compile. |
+| G3 Conversion | **Partly met.** Every project compiles and passes its tests in the three modes. The 90% of functions safe holds for jsmn, http-parser, zlib, tinyexpr and the port; not for cJSON (89.1%), sds (87.0%), inih and bzip2 (73% and 82%, as under RFC 0042). The 5 points of lines hold for jsmn, http-parser, zlib and the port; not for sds, cJSON, tinyexpr and inih, whose ownership by flag, by outcome and through an interior pointer (S0's M3 to M5, not built) was rewritten into safe code or guarded helpers. |
+| G4 Held-out | **Not run.** The two held-out projects chosen (parson and c-algorithms) were fetched, but this session's permission check refused to have an agent convert freshly downloaded code; the owner decides. |
+| G5 The port | **Partly met**: 100% of the C library safe with no helper, tests pass in the three modes, the same output. Safe C runs at 1.37 times the Rust port, over the 1.25 the gate sets; the reference tests are 0.10 of R of it, the allocator and the checks the rest. Rust took 1 round and 1.5 minutes, Safe C 2 rounds (3 with the final compiler) and 4.5. The C design needed 4 reference fields where the Rust one used indices into a vector. |
+| G6 Defects found | Five defects in the original code, all leaks on failure paths: sds's three and cJSON's one above, and bzip2's `BZ2_bzclose` (when its second close fails), found while reading for the conversion. One use after free found at run time: zlib's `deflateReset` leaves `gzhead` pointing at a header the caller may free; a safe function's load of that reference stops with `heap-use-after-free`, and AddressSanitizer reports the same read in the original zlib (`build/rfc43/s7/zlib/probes/own/gzhead-uaf.c`). The leaks were not reproduced under a leak checker. |
+| G7 Cost | **Run time, of the reference tests: pass** (each program with and without them, same sources and compiler: cJSON, http-parser, jsmn, `lzw`, sds 1.00; inih, tinyexpr 1.01; zlib 1.01; the C port 1.06). **Against RFC 0042's T: not met for sds and cJSON**: 2.09 and 2.11 times R against 1.69 and 1.90. RFC 0042's typed sources built with the final compiler run at 1.69 and 1.88, so the difference is in the conversions' rewrites (sds's guarded rebase helper, whose results are checked against the shadow; cJSON's list edits that now walk from the parent, and its helpers), not in the compiler. The others are within run-to-run noise of T (jsmn 1.26, zlib 1.15, inih 1.71, tinyexpr 1.16, http-parser 1.17, `lzw` 1.13). **Compile time: not met**: `-fsyntax-only` takes 1.36 to 1.54 times as long with the rules as without (`-mllvm -weavec-ownership-rules=0`) on zlib's `deflate.c` and `inflate.c`, `cJSON.c` and bzip2's files, 20 to 35 ms more per file. |
+| G8 Verify | **Pass for the tests**: no `weavec.proven` in any conversion's tests in V (sds's probe of the upstream `sdscatsds(s, s)` use after free, outside its tests, reports it). The seeded bugs that compile were not run under V. |
+| G9 No change elsewhere | See the corpus gate below. |
+| H1 Hygiene | **Pass with amendment 15**: library 17,397 of 17,500 lines, runtime 9,976 of 10,500. |
