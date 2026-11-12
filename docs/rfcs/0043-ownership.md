@@ -1163,7 +1163,7 @@ conversion agents reported (S7). They override the body.
     conversions a guarded helper where they meet it; each is _Future work_.
     Owners in a fixed array inside a struct are not checked when the struct
     is released.
-15. **Budgets (H1).** The library's limit is 17,400 lines (17,292 used): the checker is about
+15. **Budgets (H1).** The library's limit is 17,500 lines (17,397 used): the checker is about
     2,600 (the body estimated 2,200), the pass's test, the ledger, the
     audit and `--weavec-explain` about 300, and the tier merge deleted less
     than the body expected (amendment 1). The runtime stays within 10,500.
