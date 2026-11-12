@@ -623,6 +623,11 @@ __weavec_rt_bounds_fail(uintptr_t address, uint64_t width, uintptr_t lo,
 WEAVEC_RT_API WEAVEC_RT_SLOW void
 __weavec_rt_convert_fail(uintptr_t address, uint64_t width, uintptr_t lo,
                          uintptr_t hi, const struct __weavec_rt_site *site);
+/* RFC 0043 section 7: a safe function loaded a reference from a field that
+ * points into a released heap block (`heap-use-after-free`). */
+WEAVEC_RT_API WEAVEC_RT_SLOW void
+__weavec_rt_reference_fail(uintptr_t address,
+                           const struct __weavec_rt_site *site);
 /* RFC 0042 section 6: a pointer with bounds [address, hi) converted to a
  * string has a zero byte in them (`unterminated-string` otherwise). */
 WEAVEC_RT_API void
@@ -728,6 +733,10 @@ void weavecRtFailJump(const char *kind, uintptr_t address, uint64_t width,
 /* As weavecRtFail, with a second line that places `address` relative to
  * [lo, hi), which `what` names ("destination": RFC 0036 section 6; "bounds
  * of the pointer": RFC 0041 section 4). */
+/* RFC 0043 section 7: a reference loaded from a field, into a released
+ * block. */
+void weavecRtFailReference(uintptr_t address,
+                           const struct __weavec_rt_site *site);
 void weavecRtFailObject(const char *kind, const char *what, uintptr_t address,
                         uint64_t width, uintptr_t lo, uintptr_t hi,
                         const struct __weavec_rt_site *site);
@@ -791,7 +800,7 @@ void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
 /* The library's interface version (libweavec_rt.so.<abi>,
  * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
  * encoding or a site record changes. */
-#define WEAVEC_RT_ABI 42
+#define WEAVEC_RT_ABI 43
 
 /*===-- Internal -----------------------------------------------------------===*/
 

@@ -938,6 +938,29 @@ void weavecRtFail(const char *kind, uintptr_t address, uint64_t width,
   stop(site);
 }
 
+/* RFC 0043 section 7: the first line says what was loaded, not an access;
+ * the paragraph is the released block's. */
+void weavecRtFailReference(uintptr_t address,
+                           const struct __weavec_rt_site *site) {
+  static const char kind[] = "heap-use-after-free";
+  if (reportsOnce(site) && seenSite(kind, site))
+    return;
+  if (begin(kind, site)) {
+    struct Line line = {report.what, report.what + sizeof report.what - 1};
+    report.address = address;
+    report.width = 0;
+    report.op = "load";
+    put(&line, "reference to ");
+    putHex(&line, address);
+    put(&line, " loaded from a field");
+    *line.at = 0;
+    captureAccess();
+    describe(address);
+    finish();
+  }
+  stop(site);
+}
+
 /* RFC 0036 section 6: the destination [lo, hi) of a fortified call;
  * RFC 0041 section 4: a safe function's pointer's bounds. */
 void weavecRtFailObject(const char *kind, const char *what, uintptr_t address,

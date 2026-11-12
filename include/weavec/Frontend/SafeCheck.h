@@ -15,8 +15,8 @@
 // bounds that every function's declaration gives its pointer parameters and
 // result (§2), whether a parameter escapes or is `lifetimebound` (§5).
 //
-// RFC 0042: in a typed unit (`-fweavec-typed`) the checker adds rules (§3)
-// and gives each pointer field of the unit's structs an implicit
+// RFC 0042: the checker adds typed memory's rules (§3) to safe functions,
+// and gives each pointer field of a C unit's structs an implicit
 // `annotate("weavec.field", ...)` attribute, and each field that counts one
 // an `annotate("weavec.count", ...)`, which Clang emits at every access to
 // the field (`llvm.ptr.annotation`), so that the guard passes know a loaded
@@ -27,6 +27,7 @@
 #ifndef WEAVEC_FRONTEND_SAFECHECK_H
 #define WEAVEC_FRONTEND_SAFECHECK_H
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 
@@ -59,6 +60,8 @@ inline constexpr llvm::StringLiteral NullTerminatedOrNullAnnotation =
     "weavec.null_terminated_or_null";
 inline constexpr llvm::StringLiteral EscapesAnnotation = "weavec.escapes";
 inline constexpr llvm::StringLiteral BorrowedAnnotation = "weavec.borrowed";
+/// RFC 0043 §2: the one pointer responsible for releasing its block.
+inline constexpr llvm::StringLiteral OwnedAnnotation = "weavec.owned";
 /// RFC 0042 §5: the compiler's own field annotations (not spellings a
 /// program writes).
 inline constexpr llvm::StringLiteral FieldAnnotation = "weavec.field";
@@ -81,6 +84,10 @@ struct FieldBounds {
   static constexpr std::uint64_t CountSigned = 2;
   /// The field is an array of such pointers.
   static constexpr std::uint64_t Array = 4;
+  /// RFC 0043 §7: the field is `WEAVEC_OWNED`; one that is neither this nor
+  /// `Borrowed` is a reference, tested when a safe function loads it.
+  static constexpr std::uint64_t Owner = 8;
+  static constexpr std::uint64_t Borrowed = 16;
 
   Kind kind = Kind::Single;
   std::int64_t elementSize = 0;
@@ -126,7 +133,7 @@ struct PointerBounds {
   std::uint64_t constant = 0;
   /// Counted: the bytes of one element (1 for `WEAVEC_SIZED_BY`).
   std::uint64_t elementSize = 1;
-  /// Single, in a typed unit: the pointee's size, 0 when the unit does not
+  /// Single: the pointee's size, 0 when the unit does not
   /// know it (`void`, an incomplete type, a function).
   std::uint64_t pointeeSize = 0;
   /// Ended: the parameter that is the end.
@@ -137,6 +144,9 @@ struct PointerBounds {
   bool escapes = false;
   /// A parameter: `lifetimebound`.
   bool lifetimeBound = false;
+  /// RFC 0043 §2: `WEAVEC_OWNED` (a parameter that takes its block, a
+  /// result that gives one).
+  bool owned = false;
 
   [[nodiscard]] bool bounded() const {
     return kind == Kind::Counted || kind == Kind::Ended ||
@@ -150,8 +160,8 @@ struct FunctionBounds {
   std::vector<PointerBounds> parameters;
   PointerBounds result;
   bool safe = false;
-  /// RFC 0042 §6: a declaration in a typed unit carries `WEAVEC_SAFE`, so
-  /// the function is defined typed and its body is external.
+  /// RFC 0042 §6: a declaration carries `WEAVEC_SAFE`, so the function is
+  /// defined safe and its body is external.
   bool declaredTyped = false;
 
   /// Whether `other` gives the same bounds (whatever it says of safety).
@@ -167,17 +177,36 @@ struct SafeUnit {
   llvm::StringMap<FunctionBounds> functions;
   /// `-fweavec-safe-checks=full` (§7): safe functions keep their guards.
   bool full = false;
-  /// RFC 0042: `-fweavec-typed`; the unit's safe functions are typed.
-  bool typed = false;
   /// RFC 0042 §10: each function the unit defines outside system headers,
-  /// its tier (`typed`, `safe`, `guarded`, `unsafe`), file and line.
+  /// its tier (`safe`, `guarded`, `unsafe`), file and line.
   struct Definition {
     std::string name;
     std::string tier;
     std::string file;
     unsigned line = 0;
+    /// RFC 0043 §11: a parameter or the result is `WEAVEC_OWNED`.
+    bool owns = false;
   };
   std::vector<Definition> definitions;
+  /// RFC 0043 §11: each pointer field of the structs the unit defines
+  /// outside system headers, and its kind: `owner`, `reference` or
+  /// `borrowed`.
+  struct Field {
+    std::string record;
+    std::string field;
+    std::string kind;
+    std::string file;
+    unsigned line = 0;
+  };
+  std::vector<Field> fields;
+  /// RFC 0043 §9: a global owner that a safe function reads in place.
+  struct InPlace {
+    std::string function;
+    std::string global;
+    std::string file;
+    unsigned line = 0;
+  };
+  std::vector<InPlace> inPlace;
   /// FieldBounds::pointee's sizes (0: still incomplete), by index - 1.
   std::vector<std::uint64_t> pointeeSizes;
 
@@ -195,11 +224,15 @@ struct SafeUnit {
 
 /// The checker: a consumer to run before code generation. With `unitSafe`
 /// (`-fweavec-safe`) every function the unit defines outside system headers
-/// is safe unless marked `WEAVEC_GUARDED` or unsafe; with `out->typed`
-/// (`-fweavec-typed`) those are typed (RFC 0042).
+/// is safe unless marked `WEAVEC_GUARDED` or unsafe (RFC 0041, RFC 0042,
+/// RFC 0043).
 [[nodiscard]] std::unique_ptr<clang::ASTConsumer>
 createSafeChecker(clang::CompilerInstance &compiler,
                   std::shared_ptr<SafeUnit> out, bool unitSafe);
+
+/// RFC 0043 §12: `weavec-cc --weavec-explain [<rule>... | all]`: the
+/// rules' explanations (resources/safe-c/rules.md); alone, their list.
+int runExplain(llvm::ArrayRef<const char *> operands);
 
 } // namespace weavec::frontend
 

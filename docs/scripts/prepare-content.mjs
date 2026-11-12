@@ -91,6 +91,8 @@ const stale = new Set(
 );
 
 await whole('docs/annotations.md', 'reference/annotations');
+// RFC 0043 §12: the rules' explanations, which weavec-cc --weavec-explain prints.
+await whole('resources/safe-c/rules.md', 'reference/rules');
 
 await whole('docs/development.md', 'contributing/development');
 await whole('docs/roadmap.md', 'project/roadmap');

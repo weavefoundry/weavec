@@ -1,6 +1,6 @@
 // RFC 0042 §4: an index past an array field stops at the field, inside its
 // object, where the shadow sees only the block.
-// FLAGS: -O2 -fweavec-typed
+// FLAGS: -O2 -fweavec-safe
 #include <weavec.h>
 #include <stdlib.h>
 

@@ -1,8 +1,8 @@
-// RFC 0042 §6: the typed unit that defines what typed-units.c calls.
+// RFC 0042 §6: the safe unit that defines what typed-units.c calls.
 #include <weavec.h>
 #include <stddef.h>
 
-struct vec { int *WEAVEC_COUNTED_BY(cap) data; size_t cap; };
+struct vec { int *WEAVEC_OWNED WEAVEC_COUNTED_BY(cap) data; size_t cap; };
 
 int sum(const struct vec *v) {
   int s = 0;

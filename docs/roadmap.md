@@ -12,6 +12,37 @@ milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
+## Next: RFC 0043 — Ownership
+
+Design: [RFC 0043 — Ownership](rfcs/0043-ownership.md) (Accepted, not
+yet built). Safe C
+checks where a pointer may point and what it may be converted to, and
+says nothing when a function reads a block it released, releases it
+twice, never releases it, or keeps a pointer into an array across the
+call that reallocates it: the runtime confines each, and none is an error
+an agent can read and fix. RFC 0043 makes ownership part of Safe C. A
+pointer declared `WEAVEC_OWNED` is the one responsible for its block; the
+checker follows it through the function that holds it and rejects a use
+after a move or a release, a leak on any path, and a pointer used after
+what it pointed into was released or replaced. A pointer field that is
+not an owner is a reference, tested when it is loaded. Nothing the
+runtime does is removed on the rules' strength. With it, the safe and
+typed tiers become one (`-fweavec-safe`), and `weavec-cc
+--weavec-explain <rule>` prints each rule with its rewrite. The stages:
+
+- [ ] **S0 The rules on paper** against cJSON, sds, zlib and the `lzw`
+      port; the seeded bugs, the held-out projects and the port frozen.
+- [ ] **S1 One safe tier**: `-fweavec-typed` removed, RFC 0041's guarded
+      loads deleted.
+- [ ] **S2 Owners**: the annotation, the table's flags, `owner-moved`,
+      `owner-leak`, `owner-source`, `realloc`.
+- [ ] **S3 Fields and slots**: `owner-slot`, `owner-path`, globals.
+- [ ] **S4 Borrows**: `stale-borrow`, `call-alias`.
+- [ ] **S5 References** tested when loaded; the ledger and the audit.
+- [ ] **S6 Explanations and the guide.**
+- [ ] **S7 Conversions, held-out projects, a port against Rust, seeded
+      bugs**; the gates on three platforms.
+
 ## Now: RFC 0042 — Typed memory
 
 Design: [RFC 0042 — Typed memory](rfcs/0042-typed-memory.md) (Accepted,

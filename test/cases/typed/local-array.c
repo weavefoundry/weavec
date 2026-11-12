@@ -1,6 +1,6 @@
 // RFC 0042 §4: a local array's index is checked against its declared length
 // ((B)) before any comparison with the local's bounds.
-// FLAGS: -O2 -fweavec-typed
+// FLAGS: -O2 -fweavec-safe
 #include <weavec.h>
 #include <stddef.h>
 

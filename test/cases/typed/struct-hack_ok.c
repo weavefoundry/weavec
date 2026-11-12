@@ -4,7 +4,7 @@
 // guard instead of a comparison with the struct's size, and a valid program
 // runs.
 // CLEAN
-// FLAGS: -O2 -fweavec-typed
+// FLAGS: -O2 -fweavec-safe
 #include <weavec.h>
 #include <stdlib.h>
 #include <string.h>

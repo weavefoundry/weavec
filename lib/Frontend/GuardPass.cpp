@@ -425,6 +425,14 @@ llvm::FunctionCallee ModuleContext::convertFailFunction() {
   return callee;
 }
 
+llvm::FunctionCallee ModuleContext::referenceFailFunction() {
+  llvm::FunctionCallee callee = runtime(
+      "reference_fail", llvm::FunctionType::get(llvm::Type::getVoidTy(context),
+                                                {i64, ptr}, false));
+  slowPath(callee, module);
+  return callee;
+}
+
 llvm::FunctionCallee ModuleContext::convertStringFunction() {
   return runtime("convert_string",
                  llvm::FunctionType::get(llvm::Type::getVoidTy(context),

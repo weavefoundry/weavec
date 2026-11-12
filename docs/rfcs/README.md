@@ -92,5 +92,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0040](0040-actionable-reports.md) | Reports you can act on | Accepted |
 | [0041](0041-safe-c.md) | Safe C | Accepted |
 | [0042](0042-typed-memory.md) | Typed memory | Accepted |
+| [0043](0043-ownership.md) | Ownership | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

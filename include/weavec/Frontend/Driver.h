@@ -51,8 +51,6 @@ struct DriverOptions {
   /// `-f[no-]weavec-safe` (RFC 0041 §10): every function the unit defines
   /// outside system headers is safe unless marked otherwise.
   bool safe = false;
-  /// `-f[no-]weavec-typed` (RFC 0042 §1): the unit is typed; implies `safe`.
-  bool typed = false;
   /// `-fweavec-safe-checks=bounds|full` (RFC 0041 §7): whether safe
   /// functions keep their guards beside their bounds checks.
   bool safeFull = false;

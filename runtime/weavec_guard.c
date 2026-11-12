@@ -652,6 +652,12 @@ __weavec_rt_convert_fail(uintptr_t address, uint64_t width, uintptr_t lo,
                      width, lo, hi, site);
 }
 
+WEAVEC_RT_SLOW void
+__weavec_rt_reference_fail(uintptr_t address,
+                           const struct __weavec_rt_site *site) {
+  weavecRtFailReference(address, site);
+}
+
 void __weavec_rt_convert_string(uintptr_t address, uintptr_t hi,
                                 const struct __weavec_rt_site *site) {
   if (address == 0)

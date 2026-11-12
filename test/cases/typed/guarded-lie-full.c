@@ -1,7 +1,7 @@
 // RFC 0042 T-A1: a typed function trusts what a guarded one stored; with
 // -fweavec-safe-checks=full it keeps its guards, and the read past the block
 // that the guarded function's count let it make is reported.
-// FLAGS: -O2 -fweavec-typed -fweavec-safe-checks=full
+// FLAGS: -O2 -fweavec-safe -fweavec-safe-checks=full
 #include <weavec.h>
 #include <stdlib.h>
 

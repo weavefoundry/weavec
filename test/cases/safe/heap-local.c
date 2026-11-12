@@ -18,8 +18,8 @@ WEAVEC_SAFE int build(int count) {
     struct node local = {0, i};
     push(&local);
     total += head->v;
+    head = 0; // `local` ends here: so does the list
   }
-  head = 0;
   return total;
 }
 

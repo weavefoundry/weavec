@@ -162,6 +162,9 @@ struct LibraryParam {
   /// `release`, `realloc`: the allocator validates the pointer.
   enum class Effect : std::uint8_t { Borrow, Release, Realloc };
   Effect effect = Effect::Borrow;
+  /// `owner` (RFC 0043 §2): the pointer points to a place the call stores
+  /// an owner in (`asprintf`'s first argument).
+  bool owner = false;
 
   friend bool operator==(const LibraryParam &, const LibraryParam &) = default;
 };
@@ -193,6 +196,9 @@ struct LibraryEntry {
   /// The result: none, a non-pointer, or a pointer.
   enum class Result : std::uint8_t { Void, Int, Pointer };
   Result result = Result::Void;
+  /// `ptr:owned` (RFC 0043 §2): the caller owns the block the result
+  /// points to.
+  bool owned = false;
   /// `value(t)` (Int): the result equals `t` (`strlen` is `strlen(a0)`).
   std::optional<LibTerm> value;
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default

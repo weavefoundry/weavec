@@ -1,16 +1,17 @@
-// RFC 0042 §4, §5, §7: a typed body reads no shadow. A counted field's
+// RFC 0042 §4, §5, §7: a typed body reads no shadow through owners (RFC
+// 0043 §7: a reference field is tested where it is loaded). A counted field's
 // element is compared by its index with the count loaded beside the
 // pointer; a single field's member at a constant offset is not checked at
 // all; a string is walked under the loop's own test. The field annotations
 // the checker added are gone before the optimizer runs; the body of an
 // external typed function is external, and a typed unit registers its
 // program's defaults.
-// RUN: %weavec_cc -O2 -fweavec-typed -S -emit-llvm %s -o - | FileCheck %s
+// RUN: %weavec_cc -O2 -fweavec-safe -S -emit-llvm %s -o - | FileCheck %s
 #include <weavec.h>
 #include <stddef.h>
 
-struct vec { int *WEAVEC_COUNTED_BY(cap) data; size_t cap; };
-struct node { struct node *next; int value; };
+struct vec { int *WEAVEC_OWNED WEAVEC_COUNTED_BY(cap) data; size_t cap; };
+struct node { struct node *WEAVEC_OWNED next; int value; };
 
 // CHECK-NOT: llvm.ptr.annotation
 // CHECK: @llvm.global_ctors = {{.*}}@weavec.typed

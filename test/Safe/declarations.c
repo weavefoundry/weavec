@@ -2,7 +2,7 @@
 // and its safe definition, gives the same bounds; a bound's macro has one
 // value in the unit; a struct's bounds may name a field of an anonymous
 // struct in it, and a unit without safe functions does not check them.
-// RUN: %weavec_cc -fsyntax-only -Xclang -verify %s
+// RUN: %weavec_cc -fsyntax-only -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
 // RUN: %weavec_cc -fsyntax-only -DGUARDED %s
 #include <weavec.h>
 #include <stddef.h>

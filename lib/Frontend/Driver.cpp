@@ -153,7 +153,11 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
   } else if (name == "weavec-safe") {
     safe = value;
   } else if (name == "weavec-typed") {
-    typed = value;
+    // RFC 0043 §1: one safe tier.
+    error = "'" + arg.str() +
+            "' was removed: -fweavec-safe makes a unit safe, with typed "
+            "memory and ownership (RFC 0043)";
+    return true;
   } else if (name == "weavec-summary") {
     summary = value;
   } else {
@@ -191,14 +195,12 @@ llvm::StringRef driverFlagsHelp() {
       pointer's object, so that a jump into a neighbor traps (default: on).
   -fweavec-safe, -fno-weavec-safe
       Make every function the unit defines outside system headers safe
-      (RFC 0041): checked against Safe C's rules when compiled, its
-      accesses checked against its pointers' bounds. WEAVEC_GUARDED keeps
-      a function guarded. Without the flag, WEAVEC_SAFE marks one function.
-  -fweavec-typed, -fno-weavec-typed
-      Make the unit typed (RFC 0042): -fweavec-safe, with typed memory's
-      rules, and its safe functions trust the bounds that pointers in memory
-      declare instead of checking them against the shadow. Code that is not
-      typed is trusted to keep those bounds; the ledger lists it.
+      (RFC 0041, RFC 0042, RFC 0043): checked when compiled against Safe C's
+      rules, typed memory's and ownership's; its accesses checked against
+      the bounds its pointers declare, which it believes of pointers loaded
+      from memory. Code that is not safe is trusted to keep those bounds and
+      owners; the audit lists it. WEAVEC_GUARDED keeps a function guarded.
+      Without the flag, WEAVEC_SAFE marks one function.
   -fweavec-safe-checks=bounds|full
       Safe functions' accesses are checked against their bounds (bounds,
       the default), or keep their guards as well, so that a use after free
@@ -208,10 +210,14 @@ llvm::StringRef driverFlagsHelp() {
       <dir> ($ORIGIN, @loader_path or an installation path) instead of the
       toolchain's runtime directory, or no rpath at all.
   --weavec-audit [--format=json] <ledger>...
-      What a program's typed functions trust (RFC 0042): from its ledgers
-      (-fweavec-ledger=<dir>/; files or directories), the functions that
-      are not typed, the accesses of typed functions that kept a guard and
-      why, and the library calls that kept a checked wrapper.
+      What a program's safe functions trust (RFC 0042, RFC 0043): from its
+      ledgers (-fweavec-ledger=<dir>/; files or directories), the functions
+      that are not safe, the accesses of safe functions that kept a guard
+      and why, the library calls that kept a checked wrapper, and the
+      reference fields.
+  --weavec-explain [<rule>... | all]
+      Safe C's rules (RFC 0041, RFC 0042, RFC 0043): what each rejects, why,
+      a rejected example and its accepted rewrite; alone, the list of rules.
   --weavec-symbolize [<log>...]
       The runtime's symbolizer: answer `CODE <module> <address>` lines on
       standard input with each address's functions and lines; with a saved
@@ -589,7 +595,6 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   // too, so that an agent can iterate on them with -fsyntax-only.
   auto safe = std::make_shared<SafeUnit>();
   safe->full = weavec.safeFull;
-  safe->typed = weavec.typed;
   if (weavec.enforces() && codegen) {
     unsafe = std::make_shared<UnsafeRegions>();
     ledger = configureEnforcement(*compiler, weavec, unsafe, safe);
@@ -599,14 +604,27 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   // that read it have it.
   const bool asanCompat = applyAsanCompat(*compiler, weavec) && codegen;
   WeaveCWrapperAction action(std::move(inner), unsafe, safe,
-                             weavec.safe || weavec.typed, asanCompat);
+                             weavec.safe, asanCompat);
   success = compiler->ExecuteAction(action);
   if (success && ledger) {
     for (const SafeUnit::Definition &definition : safe->definitions)
       ledger->functions.push_back({.function = definition.name,
                                    .tier = definition.tier,
                                    .file = definition.file,
-                                   .line = definition.line});
+                                   .line = definition.line,
+                                   .owns = definition.owns});
+    for (const SafeUnit::Field &field : safe->fields)
+      ledger->fields.push_back({.record = field.record,
+                                .field = field.field,
+                                .kind = field.kind,
+                                .file = field.file,
+                                .line = field.line});
+    for (const SafeUnit::InPlace &global : safe->inPlace)
+      ledger->fields.push_back({.record = global.function,
+                                .field = global.global,
+                                .kind = "global",
+                                .file = global.file,
+                                .line = global.line});
     success = emitEnforcementLedger(*compiler, weavec, *ledger);
   }
   return success ? 0 : 1;
@@ -1146,6 +1164,8 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
       return runSymbolizer(argv.drop_front(2));
     if (mode == "--weavec-audit")
       return runAudit(argv.drop_front(2));
+    if (mode == "--weavec-explain")
+      return runExplain(argv.drop_front(2));
     if (mode.starts_with("-cc1")) {
       llvm::errs() << "weavec-cc: error: '" << mode
                    << "' is Clang's tool, which weavec-cc does not include; "

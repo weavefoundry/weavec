@@ -57,6 +57,9 @@ inline constexpr unsigned SiteNullOk = 8;
 /// `base`, when not null, is tested for null (section 2.4); `row` is the
 /// access's ledger row.
 inline constexpr llvm::StringLiteral MarkerGuard = "__weavec.guard";
+/// The shadow byte of a released heap block's granules
+/// (`WeavecRtShadowHeapFreed` in runtime/weavec_rt.h).
+inline constexpr std::uint8_t ShadowHeapReleased = 0xFD;
 inline constexpr llvm::StringLiteral MarkerRange = "__weavec.range";
 inline constexpr llvm::StringLiteral MarkerString = "__weavec.strlen";
 /// `void __weavec.disjoint(ptr destination, ptr source, i64 length)`: a
@@ -211,12 +214,12 @@ public:
   /// cover its destination's (`bounds-conversion`); a string with no zero
   /// byte in its bounds (`unterminated-string`).
   llvm::FunctionCallee convertFailFunction();
+  /// RFC 0043 §7: a reference loaded from a field points into a released
+  /// heap block (`heap-use-after-free`).
+  llvm::FunctionCallee referenceFailFunction();
   llvm::FunctionCallee convertStringFunction();
 
-  /// RFC 0042: whether the unit is typed, and its annotations' state.
-  [[nodiscard]] bool typed() const {
-    return options.safe != nullptr && options.safe->typed;
-  }
+  /// RFC 0042: the field annotations' state.
   TypedState typedState;
 
   /// `__weavec_rt_shadow`.
@@ -327,9 +330,6 @@ const TypedField *typedFieldOf(const ModuleContext &module,
 void typedFieldsOf(const ModuleContext &module, const llvm::Value *address,
                    llvm::SmallVectorImpl<const TypedField *> &found,
                    bool &other);
-/// Whether `function` is typed: safe, in a typed unit.
-[[nodiscard]] bool isTyped(const ModuleContext &module,
-                           const llvm::Function &function);
 
 /// RFC 0037 §10: the size of the array field of a struct `pointer` names
 /// by its getelementptr, unless the field is the struct's last (a flexible

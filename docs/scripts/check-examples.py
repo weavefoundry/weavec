@@ -3,11 +3,15 @@
 
 Every example in docs/examples must compile. `weavec-cc` must compile
 lookup.c, record the guarded load of `table[i]` in the enforcement ledger
-(`weavec-ledger` version 5, RFC 0035 section 9, RFC 0039 section 8, RFC 0042 section 10), link it, run it, and stop
+(`weavec-ledger` version 6, RFC 0035 section 9, RFC 0039 section 8, RFC 0042 section 10, RFC 0043 section 11), link it, run it, and stop
 a negative index with an `index-out-of-bounds` report; and it must build
 vec.c and stop a read past its heap block with a `heap-buffer-overflow`
 report, its stack and its summary line (RFC 0035 section 5.3, RFC 0040
 section 5; the default `-fweavec-checks=trap`).
+
+Every example of resources/safe-c/rules.md (RFC 0043 section 12) tagged
+`c accepted` compiles under -fweavec-safe, and every one tagged `c rejected`
+fails with the error of the rule whose section holds it.
 """
 
 import argparse
@@ -61,7 +65,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert enforcement_summary(compiled.stderr, "lookup.c"), "no summary line:\n" + compiled.stderr
 
     ledger = json.loads((ledgers / "lookup.o.ledger.json").read_text())
-    assert ledger["schema"] == "weavec-ledger" and ledger["version"] == 5, ledger
+    assert ledger["schema"] == "weavec-ledger" and ledger["version"] == 6, ledger
     rows = [row for unit in ledger["units"] for row in unit["rows"]
             if row["function"] == "lookup" and row["line"] == 8 and row["operation"] == "load"]
     assert rows, "no ledger row for the load of table[i]"
@@ -89,5 +93,24 @@ with tempfile.TemporaryDirectory() as temp:
     assert re.search(r"^weavec: summary: heap-buffer-overflow at \S*vec\.c:9:\d+ in get \(thread T0\)$",
                      past.stderr, re.M), "no summary line:\n" + past.stderr
 
+    # RFC 0043 section 12: the rules' examples.
+    rules = examples.parent.parent / "resources" / "safe-c" / "rules.md"
+    prelude = "".join(f"#include <{h}>\n" for h in
+                      ("weavec.h", "stddef.h", "stdio.h", "stdlib.h", "string.h"))
+    checked = 0
+    for section in rules.read_text().split("\n## ")[1:]:
+        rule = section.split("\n", 1)[0]
+        for number, match in enumerate(re.finditer(r"```c (accepted|rejected)\n(.*?)```", section, re.S)):
+            source = temp / f"rule-{rule}-{number}.c"
+            source.write_text(prelude + match.group(2))
+            compiled = run([weavec_cc, "-fsyntax-only", "-fweavec-safe", source])
+            if match.group(1) == "accepted":
+                assert compiled.returncode == 0, f"{rule} accepted example {number}:\n{compiled.stderr}"
+            else:
+                assert compiled.returncode != 0 and f"[weavec-safe:{rule}]" in compiled.stderr, \
+                    f"{rule} rejected example {number}:\n{compiled.stderr}"
+            checked += 1
+    assert checked >= 30, checked
+
 print("Documentation examples passed: every example compiles, the guarded load "
-      "in the ledger, and the index and heap reports.")
+      "in the ledger, the index and heap reports, and the rules' examples.")

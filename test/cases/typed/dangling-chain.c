@@ -5,7 +5,7 @@
 // reaches a block reused meanwhile, however many sweeps reuse blocks of the
 // same size (each written -1).
 // CLEAN
-// FLAGS: -O1 -fweavec-typed
+// FLAGS: -O1 -fweavec-safe
 #include <weavec.h>
 #include <stdlib.h>
 
