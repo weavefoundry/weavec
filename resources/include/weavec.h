@@ -131,5 +131,12 @@
  * reference, which safe code may keep but not release through.
  */
 #define WEAVEC_OWNED WEAVEC_TYPE_ANNOTATE_("weavec.owned")
+/**
+ * After the `*` of a parameter: the function releases every owner below
+ * what the parameter points to and leaves them null (a destructor of a struct
+ * the caller keeps, `void vec_free(struct vec *WEAVEC_DROPS v)`). After any
+ * other call given such a pointer, its owners may hold blocks.
+ */
+#define WEAVEC_DROPS WEAVEC_TYPE_ANNOTATE_("weavec.drops")
 
 #endif /* WEAVEC_H */

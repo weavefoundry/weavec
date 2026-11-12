@@ -130,6 +130,7 @@ bool hasAnnotation(llvm::ArrayRef<TypeAnnotation> annotations,
 static bool boundedBy(llvm::ArrayRef<TypeAnnotation> annotations) {
   return llvm::any_of(annotations, [](const TypeAnnotation &annotation) {
     return annotation.name != EscapesAnnotation &&
+           annotation.name != DropsAnnotation &&
            annotation.name != BorrowedAnnotation &&
            annotation.name != OwnedAnnotation;
   });
@@ -313,6 +314,8 @@ public:
         bounds.escapes = true;
         continue;
       }
+      if (name == DropsAnnotation)
+        continue;
       // RFC 0043 §2: an owner is a heap block: not a stack address either.
       if (name == OwnedAnnotation) {
         bounds.owned = true;
@@ -451,7 +454,8 @@ public:
            annotationsOf(field->getType(), ast)) {
         const llvm::StringRef name = annotation.name;
         if (name == EscapesAnnotation || name == BorrowedAnnotation ||
-            name == OwnedAnnotation || name == NullTerminatedAnnotation ||
+            name == OwnedAnnotation || name == DropsAnnotation ||
+            name == NullTerminatedAnnotation ||
             name == NullTerminatedOrNullAnnotation)
           continue;
         unsigned long long literal = 0;
@@ -536,7 +540,7 @@ public:
         if (name == BorrowedAnnotation)
           bounds.flags |= FieldBounds::Borrowed;
         if (name == EscapesAnnotation || name == BorrowedAnnotation ||
-            name == OwnedAnnotation)
+            name == OwnedAnnotation || name == DropsAnnotation)
           continue;
         if (name == NullTerminatedAnnotation ||
             name == NullTerminatedOrNullAnnotation) {
@@ -2166,7 +2170,13 @@ private:
     // place in the file.
     const clang::SourceLocation file =
         at.isValid() ? compiler.getSourceManager().getFileLoc(at) : at;
-    if (!reported.emplace(file.getRawEncoding(), rule.str()).second)
+    // Ownership's errors at one place (two owners leaked at one return)
+    // are each reported.
+    if (!reported
+             .emplace(file.getRawEncoding(),
+                      rule.str() + (rule.starts_with("owner") ? message.str()
+                                                               : std::string()))
+             .second)
       return;
     clang::DiagnosticsEngine &diagnostics = compiler.getDiagnostics();
     diagnostics.Report(

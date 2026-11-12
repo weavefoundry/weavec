@@ -314,6 +314,8 @@ private:
   /// and owners (`owner-path` may go through them).
   llvm::DenseSet<const clang::VarDecl *> pathLocals;
   bool emit = false;
+  /// The branch being refined cannot be taken.
+  bool infeasible = false;
   std::set<std::pair<clang::SourceLocation::UIntTy, std::string>> reported;
   llvm::DenseSet<const clang::VarDecl *> recordedGlobals;
 
@@ -588,7 +590,7 @@ private:
       return;
     const clang::SourceLocation file =
         at.isValid() ? sources.getFileLoc(at) : at;
-    if (!reported.emplace(file.getRawEncoding(), rule.str()).second)
+    if (!reported.emplace(file.getRawEncoding(), rule.str() + message).second)
       return;
     report(at, rule, message, noteAt, note);
   }
@@ -911,13 +913,23 @@ private:
         if (!pathLocals.contains(variable))
           continue;
         for (const clang::Expr *value : assigned[variable])
-          if (!onPath(classify(value))) {
+          if (!onPathExpr(value)) {
             pathLocals.erase(variable);
             changed = true;
             break;
           }
       }
     }
+  }
+
+  /// `c ? &a->p : &b->q` is on a path when both arms are.
+  [[nodiscard]] bool onPathExpr(const clang::Expr *expression) const {
+    if (const auto *conditional =
+            llvm::dyn_cast<clang::AbstractConditionalOperator>(
+                stripCasts(expression)))
+      return onPathExpr(conditional->getTrueExpr()) &&
+             onPathExpr(conditional->getFalseExpr());
+    return onPath(classify(expression));
   }
 
   [[nodiscard]] bool onPath(const Value &value) const {
@@ -1132,6 +1144,10 @@ private:
                         : Anchor{.place = Place{.root = place.place.root},
                                  .below = true});
       }
+      // A pointer read from a reference field is a reference: nothing the
+      // function does to its own owners ends it.
+      if (!place.owner && !place.place.path.empty())
+        return borrow;
       if (place.barrier == Barrier::None && place.place.root != nullptr &&
           place.place.root->hasLocalStorage())
         borrow.roots.push_back(place.place.root);
@@ -2003,7 +2019,8 @@ private:
                   "or declare the parameter 'const' if '" + calleeName(call) +
                       "' changes no owner");
           endReach(flow, argument, expression, call);
-          leaveToCallee(flow, argument.value);
+          leaveToCallee(flow, argument.value,
+                        isDrops(parameterType(call, i)), call);
         }
         break;
       }
@@ -2048,7 +2065,8 @@ private:
   /// Amendment: the owners below what a call may change are the callee's
   /// to leave (its exit check leaves none moved); the caller does not check
   /// them for leaks after it.
-  void leaveToCallee(Flow &flow, const Value &value) {
+  void leaveToCallee(Flow &flow, const Value &value, bool drops,
+                     const clang::CallExpr &call) {
     Place target;
     clang::QualType type;
     if (value.kind == Value::Kind::Address && value.place.named) {
@@ -2065,7 +2083,14 @@ private:
     llvm::SmallVector<Place, 8> fields;
     ownerFields(type, target, fields);
     for (const Place &field : fields)
-      flow.owners[field] = OwnerState{.bits = StateNull};
+      flow.owners[field] =
+          drops ? OwnerState{.bits = StateNull}
+                : OwnerState{.bits = StateHolds | StateNull, .since = &call};
+  }
+
+  [[nodiscard]] bool isDrops(clang::QualType type) const {
+    return !type.isNull() && type->isPointerType() &&
+           hasAnnotation(annotationsOf(type, ast), DropsAnnotation);
   }
 
   /// The local a call's result is assigned to (`d = realloc(p, n)`).
@@ -2376,6 +2401,24 @@ private:
                   "', return it as a 'WEAVEC_OWNED' result, or store it in an "
                   "owner before this");
       }
+      // A WEAVEC_DROPS parameter's owners are all null when it returns.
+      if (!isDrops(parameter->getType()))
+        continue;
+      llvm::SmallVector<Place, 8> dropped;
+      ownerFields(parameter->getType()->getPointeeType(),
+                  root.with(StepDeref), dropped);
+      for (const Place &place : dropped) {
+        const OwnerState state = stateOf(flow, place);
+        if ((state.bits & (StateHolds | StatePending)) == 0)
+          continue;
+        const std::string name = text(place);
+        error(at, rule::OwnerLeak,
+              "returning while '" + name + "' may still own its block, and '" +
+                  parameter->getName().str() + "' is WEAVEC_DROPS",
+              {},
+              "release '" + name + "' and assign it null ('free(" + name +
+                  "); " + name + " = NULL;') before this");
+      }
     }
     for (const auto &[place, state] : flow.owners) {
       if (place.path.empty() || (state.bits & StateMoved) == 0 ||
@@ -2449,6 +2492,11 @@ private:
     if (located.owner) {
       OwnerState state = stateOf(flow, located.place);
       if ((state.bits & (StateMoved | StatePending)) == 0) {
+        // A test the state already decides the other way: the edge is
+        // never taken.
+        if ((nonNull && state.bits == StateNull) ||
+            (!nonNull && state.bits == StateHolds))
+          infeasible = true;
         state.bits = nonNull ? StateHolds : StateNull;
         flow.owners[located.place] = state;
         if (!nonNull)
@@ -2508,8 +2556,11 @@ private:
     const clang::Stmt *terminator = block.getTerminatorStmt();
     if (terminator == nullptr || llvm::isa<clang::SwitchStmt>(terminator))
       return flow;
+    infeasible = false;
     if (const clang::Expr *condition = block.getLastCondition())
       refine(flow, condition, successor == 0);
+    if (infeasible)
+      flow.reached = false;
     return flow;
   }
 
@@ -2574,6 +2625,8 @@ private:
         continue;
       // A loop's test that leaves the function refines what it tested.
       flow = along(*block, flow, toExit);
+      if (!flow.reached)
+        continue;
       clang::SourceLocation at;
       for (const clang::CFGElement &element : *block)
         if (const auto statement = element.getAs<clang::CFGStmt>())

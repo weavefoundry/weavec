@@ -62,6 +62,9 @@ inline constexpr llvm::StringLiteral EscapesAnnotation = "weavec.escapes";
 inline constexpr llvm::StringLiteral BorrowedAnnotation = "weavec.borrowed";
 /// RFC 0043 §2: the one pointer responsible for releasing its block.
 inline constexpr llvm::StringLiteral OwnedAnnotation = "weavec.owned";
+/// RFC 0043 amendment: the function leaves every owner below the parameter
+/// null (a destructor of a struct the caller keeps).
+inline constexpr llvm::StringLiteral DropsAnnotation = "weavec.drops";
 /// RFC 0042 §5: the compiler's own field annotations (not spellings a
 /// program writes).
 inline constexpr llvm::StringLiteral FieldAnnotation = "weavec.field";

@@ -66,7 +66,7 @@ static int remove_named(struct list *l, char first) {
   return 0;
 }
 
-static void clear(struct list *l) {
+static void clear(struct list *WEAVEC_DROPS l) {
   struct node *WEAVEC_OWNED n = l->head;
   l->head = NULL;
   while (n != NULL) {
