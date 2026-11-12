@@ -279,18 +279,23 @@ static bool join(Flow &into, const Flow &from,
       mine.since = theirs.since;
     changed = changed || !(mine == was);
   };
+  // What `into` has not recorded is read before its records change: a
+  // field's absent state follows its struct's (`fresh`).
+  llvm::SmallVector<std::pair<Place, OwnerState>, 8> added;
+  for (const auto &[place, state] : from.owners)
+    if (!into.owners.contains(place)) {
+      OwnerState mine = absentInto(place);
+      merge(mine, state);
+      added.emplace_back(place, mine);
+    }
   for (auto &[place, state] : into.owners)
     if (const auto found = from.owners.find(place); found != from.owners.end())
       merge(state, found->second);
     else
       merge(state, absentFrom(place));
-  for (const auto &[place, state] : from.owners)
-    if (!into.owners.contains(place)) {
-      OwnerState mine = absentInto(place);
-      merge(mine, state);
-      into.owners.emplace(place, mine);
-      changed = true;
-    }
+  for (auto &[place, state] : added)
+    into.owners.emplace(std::move(place), state);
+  changed = changed || !added.empty();
   for (const auto &[variable, state] : from.borrows) {
     auto [found, inserted] = into.borrows.try_emplace(variable);
     BorrowState &mine = found->second;
@@ -361,6 +366,9 @@ private:
   /// Borrow locals that only ever hold pointers reached from parameters
   /// and owners (`owner-path` may go through them).
   llvm::DenseSet<const clang::VarDecl *> pathLocals;
+  /// Pointer parameters the body assigns: borrows that start as the
+  /// caller's pointer, not the caller's pointer throughout.
+  llvm::DenseSet<const clang::VarDecl *> reassigned;
   bool emit = false;
   /// Caches of the two type questions asked most.
   mutable llvm::DenseMap<const void *, bool> ownerTypes;
@@ -749,8 +757,9 @@ private:
       located.owner = isOwnerType(located.type);
       const bool rootVariable = holder.place.path.empty();
       const auto *root = holder.place.root;
-      const bool parameter =
-          rootVariable && llvm::isa<clang::ParmVarDecl>(root);
+      const bool parameter = rootVariable &&
+                             llvm::isa<clang::ParmVarDecl>(root) &&
+                             !reassigned.contains(root);
       const bool global = rootVariable && !root->hasLocalStorage();
       const bool borrow = rootVariable && borrowLocals.contains(root);
       located.storageVia = nullptr;
@@ -1001,6 +1010,17 @@ private:
                   llvm::dyn_cast<clang::CallExpr>(stripCasts(assign->getRHS()));
               call != nullptr && returnsOwner(*call) && !startsBorrowed)
             ownerLocals.insert(variable);
+        } else if (const auto *reference = llvm::dyn_cast<clang::DeclRefExpr>(
+                       assign->getLHS()->IgnoreParenImpCasts())) {
+          // A pointer parameter given another value (`node = node->parent`)
+          // is a borrow from there on: it is not the caller's pointer.
+          if (const auto *parameter =
+                  llvm::dyn_cast<clang::ParmVarDecl>(reference->getDecl());
+              parameter != nullptr && parameter->getType()->isPointerType() &&
+              !isOwnerType(parameter->getType())) {
+            reassigned.insert(parameter);
+            assigned[parameter].push_back(assign->getRHS());
+          }
         }
         return;
       }
@@ -1020,6 +1040,8 @@ private:
     for (const clang::VarDecl *variable : pointers)
       if (!ownerLocals.contains(variable))
         borrowLocals.insert(variable);
+    for (const clang::VarDecl *parameter : reassigned)
+      borrowLocals.insert(parameter);
     // The borrows reached only from parameters and owners.
     pathLocals = borrowLocals;
     for (bool changed = true; changed;) {
@@ -2381,7 +2403,7 @@ private:
     const auto *list =
         llvm::dyn_cast<clang::InitListExpr>(init->IgnoreParens());
     if (list == nullptr) {
-      record.fresh = false;
+      // A declaration drops nothing: its owners take the value's.
       flow.owners[located.place] = record;
       clang::DeclRefExpr reference(
           // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
@@ -2684,6 +2706,9 @@ private:
       if (isOwnerType(parameter->getType()))
         flow.owners[Place{.root = parameter}] =
             OwnerState{.bits = StateHolds | StateNull};
+    // A reassigned parameter starts as the caller's pointer.
+    for (const clang::VarDecl *parameter : reassigned)
+      flow.borrows[parameter].roots.push_back(parameter);
     return flow;
   }
 

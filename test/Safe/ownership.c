@@ -177,6 +177,42 @@ void unlinkPrev(struct node *n) {
   node_drop(next);
 }
 
+// A struct declared from a call takes its owners; one reused in a loop
+// holds nothing at the next assignment once its owner moved.
+struct item item_value(int v);
+void item_take(char *WEAVEC_OWNED name);
+
+void declaredFromCall(void) {
+  struct item it = item_value(1);
+  item_take(it.name);
+}
+
+int reusedInLoop(int n) {
+  struct item it;
+  while (n--) {
+    it = item_value(n);
+    if (!it.name)
+      return -1;
+    item_take(it.name);
+  }
+  return 0;
+}
+
+// A parameter given another value is a borrow from there on, like a local.
+void dropAfterNext(struct node *n) {
+  n = n->next;
+  if (n) {
+    node_drop(n->next);
+    n->next = NULL;
+  }
+}
+
+void dropAfterPrev(struct node *n) {
+  n = n->prev;
+  node_drop(n->next); // expected-error {{'n->next' is reached through the reference 'n' and cannot be moved or released from here [weavec-safe:owner-path]}}
+  n->next = NULL; // expected-error {{[weavec-safe:owner-path]}}
+}
+
 void throughConst(const struct item *it) {
   free(it->name); // expected-error {{'it->name' is reached through a pointer to const ('it') and cannot be moved or released [weavec-safe:owner-path]}}
 }
