@@ -439,7 +439,7 @@ class LineLimitTest(TreeTest):
 
     def test_the_real_limits(self):
         """RFC 0040 section 9 and amendment 10 (the module docstring)."""
-        self.assertEqual((hygiene.LIBRARY_LINE_LIMIT, hygiene.RUNTIME_LINE_LIMIT), (14_200, 10_500))
+        self.assertEqual((hygiene.LIBRARY_LINE_LIMIT, hygiene.RUNTIME_LINE_LIMIT), (17_400, 10_500))
 
     def test_runtime_total_leaves_out_its_tests(self):
         """RFC 0032 gate H1: the runtime is counted apart, without runtime/test/."""

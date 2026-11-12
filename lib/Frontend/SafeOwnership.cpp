@@ -58,10 +58,27 @@ namespace weavec::frontend {
 
 // RFC 0043 G7: measures the rules' compile time (`-mllvm
 // -weavec-ownership-rules=0`); not a user's switch.
-// NOLINTNEXTLINE(cert-err58-cpp,fuchsia-statically-constructed-objects)
-static llvm::cl::opt<bool> OwnershipRules("weavec-ownership-rules",
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+static llvm::cl::opt<bool> ownershipRules("weavec-ownership-rules",
                                           llvm::cl::init(true),
                                           llvm::cl::Hidden);
+
+static std::uintptr_t stepOf(const clang::FieldDecl *field) {
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+  return reinterpret_cast<std::uintptr_t>(field);
+}
+
+static const clang::FieldDecl *fieldOf(std::uintptr_t step) {
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
+  return reinterpret_cast<const clang::FieldDecl *>(step);
+}
+
+/// Concatenates strings without temporaries.
+template <typename... Parts> static std::string cat(const Parts &...parts) {
+  std::string out;
+  ((out += parts), ...);
+  return out;
+}
 
 namespace {
 
@@ -91,8 +108,7 @@ struct Place {
   bool operator<(const Place &other) const {
     if (root != other.root)
       return std::less<>()(root, other.root);
-    return std::lexicographical_compare(path.begin(), path.end(),
-                                        other.path.begin(), other.path.end());
+    return std::ranges::lexicographical_compare(path, other.path);
   }
   bool operator==(const Place &other) const {
     return root == other.root && path == other.path;
@@ -163,12 +179,10 @@ struct Value {
   Kind inner = Kind::Other;
 };
 
-enum : std::uint8_t {
-  StateNull = 1,
-  StateHolds = 2,
-  StateMoved = 4,
-  StatePending = 8,
-};
+constexpr unsigned StateNull = 1U;
+constexpr unsigned StateHolds = 2U;
+constexpr unsigned StateMoved = 4U;
+constexpr unsigned StatePending = 8U;
 
 /// How an owner stopped holding its block, or how a borrow ended.
 enum class How : std::uint8_t {
@@ -183,7 +197,7 @@ enum class How : std::uint8_t {
 };
 
 struct OwnerState {
-  std::uint8_t bits = 0;
+  unsigned bits = 0;
   /// The owners below this one are null (a fresh allocation, a zeroed
   /// local).
   bool fresh = false;
@@ -230,6 +244,8 @@ struct Flow {
            borrows == other.borrows;
   }
 };
+
+} // namespace
 
 template <typename T> static void addUnique(llvm::SmallVectorImpl<T> &to,
                                             const T &value) {
@@ -283,6 +299,8 @@ static void join(Flow &into, const Flow &from,
   }
 }
 
+namespace {
+
 /// The checker for one function.
 class Ownership {
 public:
@@ -290,6 +308,8 @@ public:
             SafeUnit &unit, const RuleReport &report)
       : ast(ast), function(function), unit(unit), report(report),
         sources(ast.getSourceManager()),
+        // ParentMap and the CFG take a mutable body; neither changes it.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
         parents(const_cast<clang::Stmt *>(function.getBody())) {}
 
   void run() {
@@ -301,6 +321,7 @@ public:
     options.setAllAlwaysAdd();
     options.AddLifetime = true;
     std::unique_ptr<clang::CFG> cfg = clang::CFG::buildCFG(
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
         &function, const_cast<clang::Stmt *>(body), &ast, options);
     if (!cfg)
       return;
@@ -375,7 +396,7 @@ private:
       return;
     for (const clang::FieldDecl *field : record->getDefinition()->fields()) {
       const Place place =
-          prefix.with(reinterpret_cast<std::uintptr_t>(field));
+          prefix.with(stepOf(field));
       if (isOwnerType(field->getType()))
         out.push_back(place);
       else if (field->getType()->isRecordType())
@@ -401,8 +422,8 @@ private:
         .value_or(core::LibraryMatch{});
   }
 
-  [[nodiscard]] const clang::FunctionProtoType *
-  prototypeOf(const clang::CallExpr &call) const {
+  [[nodiscard]] static const clang::FunctionProtoType *
+  prototypeOf(const clang::CallExpr &call) {
     if (const clang::FunctionDecl *callee = call.getDirectCallee())
       return callee->getType()->getAs<clang::FunctionProtoType>();
     clang::QualType type = call.getCallee()->IgnoreParenImpCasts()->getType();
@@ -413,8 +434,8 @@ private:
 
   /// The declared type of parameter `index` of the called function, or
   /// null for a variadic argument.
-  [[nodiscard]] clang::QualType parameterType(const clang::CallExpr &call,
-                                              unsigned index) const {
+  [[nodiscard]] static clang::QualType parameterType(const clang::CallExpr &call,
+                                              unsigned index) {
     if (const clang::FunctionDecl *callee = call.getDirectCallee();
         callee != nullptr && index < callee->getNumParams())
       return callee->getParamDecl(index)->getType();
@@ -528,7 +549,7 @@ private:
     for (const std::uintptr_t step : place.path) {
       if (step == StepDeref) {
         if (deref)
-          out = "(*" + out + ")";
+          out = cat("(*", out, ")");
         deref = true;
         continue;
       }
@@ -538,7 +559,7 @@ private:
         continue;
       }
       out += deref ? "->" : ".";
-      out += reinterpret_cast<const clang::FieldDecl *>(step)->getName().str();
+      out += fieldOf(step)->getName().str();
       deref = false;
     }
     if (deref)
@@ -647,7 +668,7 @@ private:
                                           : placeOf(member->getBase());
       if (!located.known)
         return {};
-      located.place.path.push_back(reinterpret_cast<std::uintptr_t>(field));
+      located.place.path.push_back(stepOf(field));
       located.type = field->getType();
       located.owner = isOwnerType(field->getType());
       if (fieldCount(located.place) > MaxFields)
@@ -1018,8 +1039,8 @@ private:
                           place.path.begin() +
                               static_cast<std::ptrdiff_t>(container)}};
     bool fresh = false;
-    if (container == 0 &&
-        !(place.path[0] == StepDeref || place.path[0] == StepIndex)) {
+    if (container == 0 && place.path[0] != StepDeref &&
+        place.path[0] != StepIndex) {
       // A field of a local struct: zeroed, unless it was copied from
       // somewhere (recorded at its root); a parameter's is the caller's.
       const auto found = flow.owners.find(Place{.root = place.root});
@@ -1054,7 +1075,7 @@ private:
   // Borrows (§5)
   //===--------------------------------------------------------------------===//
 
-  void endBorrow(BorrowState &borrow, How how, const clang::Stmt *by,
+  static void endBorrow(BorrowState &borrow, How how, const clang::Stmt *by,
                  const Place &at) {
     if (borrow.ended)
       return;
@@ -1066,7 +1087,7 @@ private:
 
   /// §5 rule 1: an owner the function names was moved, released or
   /// replaced.
-  void endBelow(Flow &flow, const Place &place, How how,
+  static void endBelow(Flow &flow, const Place &place, How how,
                 const clang::Stmt *by) {
     for (auto &[variable, borrow] : flow.borrows)
       for (const Anchor &anchor : borrow.anchors)
@@ -1079,7 +1100,7 @@ private:
 
   /// §5 rule 2: an owner the function does not name exactly: every borrow
   /// below the same root ends but those it was reached through.
-  void endUnnamed(Flow &flow, const Located &located, How how,
+  static void endUnnamed(Flow &flow, const Located &located, How how,
                   const clang::Stmt *by) {
     llvm::SmallVector<const clang::VarDecl *, 4> roots{located.place.root};
     for (const clang::VarDecl *via : located.through)
@@ -1195,12 +1216,13 @@ private:
             stripCasts(expression));
         const auto *unary = llvm::dyn_cast<clang::UnaryOperator>(
             stripCasts(expression));
-        const clang::Expr *base =
-            binary != nullptr
-                ? (binary->getLHS()->getType()->isPointerType()
-                       ? binary->getLHS()
-                       : binary->getRHS())
-                : (unary != nullptr ? unary->getSubExpr() : nullptr);
+        const clang::Expr *base = nullptr;
+        if (binary != nullptr)
+          base = binary->getLHS()->getType()->isPointerType()
+                     ? binary->getLHS()
+                     : binary->getRHS();
+        else if (unary != nullptr)
+          base = unary->getSubExpr();
         if (base != nullptr)
           return borrowOf(flow, base);
       }
@@ -1227,8 +1249,8 @@ private:
     }
   }
 
-  void addVia(const Flow &flow, const clang::VarDecl *via,
-              BorrowState &borrow) const {
+  static void addVia(const Flow &flow, const clang::VarDecl *via,
+                     BorrowState &borrow) {
     const auto found = flow.borrows.find(via);
     if (found == flow.borrows.end())
       return;
@@ -1245,8 +1267,8 @@ private:
   }
 
   /// A pointer to a place: below the owner whose block holds the place.
-  [[nodiscard]] BorrowState storageBorrow(const Flow &flow,
-                                          const Located &place) const {
+  [[nodiscard]] static BorrowState storageBorrow(const Flow &flow,
+                                          const Located &place) {
     BorrowState borrow;
     if (!place.known)
       return borrow;
@@ -1376,9 +1398,9 @@ private:
           continue;
         const std::string inner = text(field);
         error(expr->getExprLoc(), rule::OwnerLeak,
-              "'" + inner + "' may still own its block when '" + name +
-                  "' is released",
-              {}, "release '" + inner + "' first: 'free(" + inner + ");'");
+              cat("'", inner, "' may still own its block when '", name,
+                  "' is released"),
+              {}, cat("release '", inner, "' first: 'free(", inner, ");'"));
       }
     } else {
       checkWhole(flow, located.place, expr,
@@ -1405,10 +1427,10 @@ private:
         continue;
       const std::string name = text(inner);
       error(at->getExprLoc(), rule::OwnerMoved,
-            what + " while '" + name + "' was moved out of it and not assigned",
+            cat(what, " while '", name, "' was moved out of it and not assigned"),
             locationOf(state.cause),
-            "'" + name + "' was moved here; assign it ('" + name +
-                " = NULL;') before");
+            cat("'", name, "' was moved here; assign it ('", name,
+                " = NULL;') before"));
       return;
     }
   }
@@ -1850,11 +1872,11 @@ private:
       }
     }
     struct Argument {
-      Effect effect;
+      Effect effect = Effect::Borrow;
       Value value;
       llvm::SmallVector<Anchor, 2> reach;
-      bool changing;
-      bool owners;
+      bool changing = false;
+      bool owners = false;
     };
     llvm::SmallVector<Argument, 6> arguments;
     for (unsigned i = 0; i < call.getNumArgs(); ++i) {
@@ -1960,7 +1982,7 @@ private:
     }
     const clang::VarDecl *result = resultLocal(call);
     for (unsigned i = 0; i < call.getNumArgs(); ++i) {
-      Argument &argument = arguments[i];
+      const Argument &argument = arguments[i];
       const clang::Expr *expression = call.getArg(i);
       switch (argument.effect) {
       case Effect::Consume:
@@ -1971,9 +1993,11 @@ private:
             value.kind == Value::Kind::OwnedCall)
           break;
         if (value.kind == Value::Kind::Load && value.place.owner) {
-          const How how = argument.effect == Effect::Release ? How::Released
-                          : argument.effect == Effect::Realloc ? How::Realloc
-                                                               : How::Moved;
+          How how = How::Moved;
+          if (argument.effect == Effect::Release)
+            how = How::Released;
+          else if (argument.effect == Effect::Realloc)
+            how = How::Realloc;
           moveOut(flow, value.place, stripCasts(expression), how, &call,
                   result);
           if (how == How::Realloc && result == nullptr && value.place.named &&
@@ -2254,7 +2278,9 @@ private:
       eraseBelow(flow, located.place);
       if (init != nullptr) {
         clang::DeclRefExpr reference(
-            ast, const_cast<clang::VarDecl *>(&variable), false,
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+          ast, const_cast<clang::VarDecl *>(&variable), false,
             variable.getType(), clang::VK_LValue, variable.getLocation());
         storeOwner(flow, located, &reference, init, by, /*drop=*/false);
       }
@@ -2280,6 +2306,7 @@ private:
       record.fresh = false;
       flow.owners[located.place] = record;
       clang::DeclRefExpr reference(
+          // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
           ast, const_cast<clang::VarDecl *>(&variable), false,
           variable.getType(), clang::VK_LValue, variable.getLocation());
       copyRecord(flow, located, &reference, init, by);
@@ -2305,7 +2332,7 @@ private:
         break;
       const clang::Expr *element = list.getInit(index++);
       Located inner = located;
-      inner.place.path.push_back(reinterpret_cast<std::uintptr_t>(field));
+      inner.place.path.push_back(stepOf(field));
       inner.type = field->getType();
       inner.owner = isOwnerType(field->getType());
       if (inner.owner) {
@@ -2446,11 +2473,11 @@ private:
           continue;
         const std::string name = text(place);
         error(at, rule::OwnerLeak,
-              "returning while '" + name + "' may still own its block, and '" +
-                  parameter->getName().str() + "' is WEAVEC_DROPS",
+              cat("returning while '", name, "' may still own its block, and '",
+                  parameter->getName().str(), "' is WEAVEC_DROPS"),
               {},
-              "release '" + name + "' and assign it null ('free(" + name +
-                  "); " + name + " = NULL;') before this");
+              cat("release '", name, "' and assign it null ('free(", name,
+                  "); ", name, " = NULL;') before this"));
       }
     }
     for (const auto &[place, state] : flow.owners) {
@@ -2679,7 +2706,7 @@ private:
 
 void checkOwnership(clang::ASTContext &ast, const clang::FunctionDecl &function,
                     SafeUnit &unit, const RuleReport &report) {
-  if (!OwnershipRules)
+  if (!ownershipRules)
     return;
   Ownership(ast, function, unit, report).run();
 }

@@ -52,8 +52,8 @@ namespace weavec::frontend::guard {
 
 // RFC 0043 G7: measures what the reference tests cost (`-mllvm
 // -weavec-reference-tests=0`); not a user's switch.
-// NOLINTNEXTLINE(cert-err58-cpp,fuchsia-statically-constructed-objects)
-static llvm::cl::opt<bool> ReferenceTests("weavec-reference-tests",
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+static llvm::cl::opt<bool> referenceTests("weavec-reference-tests",
                                           llvm::cl::init(true),
                                           llvm::cl::Hidden);
 
@@ -1542,7 +1542,7 @@ private:
   /// block is not reused while something refers to it, so the test is
   /// exact for the heap.
   void testReferences() {
-    if (!ReferenceTests)
+    if (!referenceTests)
       return;
     std::vector<llvm::LoadInst *> loads;
     for (llvm::Instruction &instruction : llvm::instructions(function)) {
