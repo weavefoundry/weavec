@@ -45,6 +45,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/Support/CommandLine.h"
 
 #include <algorithm>
 #include <map>
@@ -54,6 +55,13 @@
 #include <utility>
 
 namespace weavec::frontend {
+
+// RFC 0043 G7: measures the rules' compile time (`-mllvm
+// -weavec-ownership-rules=0`); not a user's switch.
+// NOLINTNEXTLINE(cert-err58-cpp,fuchsia-statically-constructed-objects)
+static llvm::cl::opt<bool> OwnershipRules("weavec-ownership-rules",
+                                          llvm::cl::init(true),
+                                          llvm::cl::Hidden);
 
 namespace {
 
@@ -2646,6 +2654,8 @@ private:
 
 void checkOwnership(clang::ASTContext &ast, const clang::FunctionDecl &function,
                     SafeUnit &unit, const RuleReport &report) {
+  if (!OwnershipRules)
+    return;
   Ownership(ast, function, unit, report).run();
 }
 
