@@ -32,6 +32,7 @@
 #include "weavec/Core/LibrarySpec.h"
 
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ParentMap.h"
@@ -423,8 +424,20 @@ private:
     return prototype != nullptr && isOwnerType(prototype->getReturnType());
   }
 
-  /// §2: a fresh block's owners are null (the runtime zeroes it).
-  [[nodiscard]] static bool freshAllocation(const clang::CallExpr &call) {
+  /// §2: a fresh block's owners are null (the runtime zeroes it). So are
+  /// those of a block from an allocator of the program's (its owned result
+  /// is a `void *`): it has no type to hold owners in.
+  [[nodiscard]] bool freshAllocation(const clang::CallExpr &call) const {
+    // A function declared `__attribute__((malloc))` says the same of its
+    // owned result (amendment: S0's M15).
+    if (const clang::FunctionDecl *callee = call.getDirectCallee();
+        callee != nullptr && callee->hasAttr<clang::RestrictAttr>() &&
+        isOwnerType(callee->getReturnType()))
+      return true;
+    if (const auto *prototype = prototypeOf(call);
+        prototype != nullptr && isOwnerType(prototype->getReturnType()) &&
+        prototype->getReturnType()->getPointeeType()->isVoidType())
+      return true;
     const core::LibraryMatch row = rowOf(call);
     if (row.entry == nullptr || !row.entry->owned)
       return false;
@@ -792,6 +805,10 @@ private:
       value.kind = Value::Kind::Literal;
       return value;
     }
+    // `a = b = NULL`: the value of an assignment is its right-hand side's.
+    if (const auto *assign = llvm::dyn_cast<clang::BinaryOperator>(e);
+        assign != nullptr && assign->getOpcode() == clang::BO_Assign)
+      return classify(assign->getRHS());
     if (llvm::isa<clang::AbstractConditionalOperator>(e))
       value.kind = Value::Kind::Conditional;
     return value;
@@ -2136,6 +2153,9 @@ private:
     for (const Place &field : fields)
       dropCheck(flow, field, target, "is assigned over");
     const Value value = classify(source);
+    if (value.kind == Value::Kind::Load && value.place.known &&
+        !checkPath(value.place, source, How::Moved))
+      return;
     if (value.kind == Value::Kind::Load && value.place.known &&
         value.place.named) {
       llvm::SmallVector<Place, 8> moved;

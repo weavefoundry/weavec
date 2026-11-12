@@ -269,3 +269,33 @@ int startsBorrowed(int big) {
     buf = malloc(64); // expected-error {{'malloc' returns an owner and 'buf' is a borrow (it started as one): the block would have no owner [weavec-safe:owner-leak]}}
   return buf[0];
 }
+
+// Found by the conversions, accepted: a program's allocator's owned `void *`
+// result and a `malloc`-attributed owned result have null owners; a chained
+// assignment of null; a null test of an owned parameter before releasing it.
+void *WEAVEC_OWNED raw(size_t n);
+struct item *WEAVEC_OWNED blank(void) __attribute__((malloc));
+struct item *WEAVEC_OWNED made(void) {
+  struct item *it = raw(sizeof *it);
+  if (it == NULL)
+    return NULL;
+  it->name = strdup("x");
+  return it;
+}
+void named(void) {
+  struct item *it = blank();
+  if (it == NULL)
+    return;
+  it->name = strdup("y");
+  item_free(it);
+}
+struct pair { struct item *WEAVEC_OWNED a, *WEAVEC_OWNED b; };
+void cleared(struct pair *p) {
+  item_free(p->a);
+  item_free(p->b);
+  p->a = p->b = NULL;
+}
+void maybe(char *WEAVEC_OWNED s) {
+  if (s != NULL)
+    free(s);
+}
