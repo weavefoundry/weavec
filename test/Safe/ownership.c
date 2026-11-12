@@ -273,7 +273,7 @@ int startsBorrowed(int big) {
 // Found by the conversions, accepted: a program's allocator's owned `void *`
 // result and a `malloc`-attributed owned result have null owners; a chained
 // assignment of null; a null test of an owned parameter before releasing it.
-void *WEAVEC_OWNED raw(size_t n);
+void *WEAVEC_OWNED raw(size_t n) __attribute__((alloc_size(1)));
 struct item *WEAVEC_OWNED blank(void) __attribute__((malloc));
 struct item *WEAVEC_OWNED made(void) {
   struct item *it = raw(sizeof *it);
