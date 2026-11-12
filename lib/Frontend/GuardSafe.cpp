@@ -1004,9 +1004,8 @@ private:
     llvm::Value *bytes = nullptr;
     const FunctionBounds *callee = calleeBounds(module, *call);
     const llvm::SmallVector<llvm::Value *, 8> arguments =
-        callee != nullptr
-            ? sourceArguments(*call, callee->parameters.size())
-            : llvm::SmallVector<llvm::Value *, 8>{};
+        callee != nullptr ? sourceArguments(*call, callee->parameters.size())
+                          : llvm::SmallVector<llvm::Value *, 8>{};
     const bool trusted = call->getCalledFunction() != nullptr &&
                          typedCallee(*call->getCalledFunction());
     if (const auto size = allocationSize(*call)) {
