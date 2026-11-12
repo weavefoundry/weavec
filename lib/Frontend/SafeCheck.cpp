@@ -715,7 +715,8 @@ public:
     if (base->getType()->isPointerType() && !isZero(subscript->getIdx()) &&
         !bounded(base))
       single(subscript->getExprLoc(), base);
-    if (base->getType()->isPointerType() && nullTerminated(base) && !forwardConstant(subscript->getIdx(), false))
+    if (base->getType()->isPointerType() && nullTerminated(base) &&
+        !forwardConstant(subscript->getIdx(), false))
       stringIndex(subscript->getExprLoc(), base);
     return true;
   }
@@ -822,7 +823,7 @@ public:
 
   bool VisitCallExpr(clang::CallExpr *call) {
     for (const clang::Expr *argument : call->arguments())
-        leavesWithFieldAddress(*argument);
+      leavesWithFieldAddress(*argument);
     const clang::FunctionDecl *callee = call->getDirectCallee();
     if (callee == nullptr)
       return true;
@@ -1023,16 +1024,16 @@ private:
       changed = false;
       for (auto &[variable, values] : assigned) {
         for (const clang::Expr *value : values) {
-            if (!localStrings.contains(variable) && nullTerminated(value)) {
-              localStrings.insert(variable);
-              changed = true;
-            }
-            if (!localFieldAddresses.contains(variable) &&
-                carriesFieldAddress(*value)) {
-              localFieldAddresses.insert(variable);
-              changed = true;
-            }
+          if (!localStrings.contains(variable) && nullTerminated(value)) {
+            localStrings.insert(variable);
+            changed = true;
           }
+          if (!localFieldAddresses.contains(variable) &&
+              carriesFieldAddress(*value)) {
+            localFieldAddresses.insert(variable);
+            changed = true;
+          }
+        }
         if (addressed.contains(variable))
           continue;
         bool isBounded = true;
@@ -1962,8 +1963,7 @@ private:
       clang::Expr::EvalResult value;
       return call->getNumArgs() > 1 &&
              call->getArg(1)->EvaluateAsInt(value, ast) &&
-             value.Val.getInt().isZero() &&
-             wholeObjects(call->getArg(2), from);
+             value.Val.getInt().isZero() && wholeObjects(call->getArg(2), from);
     }
     if (builtin == clang::Builtin::BIbzero ||
         builtin == clang::Builtin::BI__builtin_bzero)
@@ -2039,8 +2039,7 @@ public:
   /// is complete, before the code of any function that uses it is made.
   void HandleTagDeclDefinition(clang::TagDecl *tag) override {
     auto *record = llvm::dyn_cast<clang::RecordDecl>(tag);
-    if (record == nullptr ||
-        tag->getASTContext().getLangOpts().CPlusPlus ||
+    if (record == nullptr || tag->getASTContext().getLangOpts().CPlusPlus ||
         tag->getASTContext().getSourceManager().isInSystemHeader(
             tag->getLocation()))
       return;
@@ -2175,7 +2174,7 @@ private:
     if (!reported
              .emplace(file.getRawEncoding(),
                       rule.str() + (rule.starts_with("owner") ? message.str()
-                                                               : std::string()))
+                                                              : std::string()))
              .second)
       return;
     clang::DiagnosticsEngine &diagnostics = compiler.getDiagnostics();
@@ -2364,7 +2363,8 @@ int runExplain(llvm::ArrayRef<const char *> operands) {
   llvm::StringMap<llvm::StringRef> rules;
   llvm::SmallVector<llvm::StringRef, 32> order;
   for (const llvm::StringRef part : llvm::ArrayRef(parts).drop_front()) {
-    const llvm::StringRef id = part.take_until([](char c) { return c == '\n'; });
+    const llvm::StringRef id =
+        part.take_until([](char c) { return c == '\n'; });
     rules[id] = part;
     order.push_back(id);
   }

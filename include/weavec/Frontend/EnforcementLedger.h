@@ -143,9 +143,9 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                                              llvm::StringRef source);
 
 /// RFC 0042 §10, RFC 0043 §11: `weavec-cc --weavec-audit [--format=json]
-/// <ledger>...`: what a program's safe functions trust, from its ledgers (files, or
-/// directories searched for `*.ledger.json`). The exit status is 0, or 1
-/// when a ledger cannot be read.
+/// <ledger>...`: what a program's safe functions trust, from its ledgers
+/// (files, or directories searched for `*.ledger.json`). The exit status is 0,
+/// or 1 when a ledger cannot be read.
 int runAudit(llvm::ArrayRef<const char *> operands);
 
 } // namespace weavec::frontend

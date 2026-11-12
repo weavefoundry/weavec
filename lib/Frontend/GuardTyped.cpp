@@ -114,9 +114,10 @@ void readTypedFields(ModuleContext &module, llvm::Module &ir) {
     call->eraseFromParent();
   }
   // §9: a program with a safe function records no heap stacks by default.
-  if (llvm::any_of(ir, [&](const llvm::Function &function) {
-        return isSafe(module, function);
-      }) &&
+  if (llvm::any_of(ir,
+                   [&](const llvm::Function &function) {
+                     return isSafe(module, function);
+                   }) &&
       ir.getFunction("weavec.typed") == nullptr) {
     auto *constructor = llvm::Function::Create(
         llvm::FunctionType::get(llvm::Type::getVoidTy(module.context), false),

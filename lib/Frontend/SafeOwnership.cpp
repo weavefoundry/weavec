@@ -28,7 +28,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "SafeCheckImpl.h"
-
 #include "weavec/Core/LibrarySpec.h"
 
 #include "clang/AST/ASTContext.h"
@@ -74,7 +73,8 @@ static const clang::FieldDecl *fieldOf(std::uintptr_t step) {
 }
 
 /// Concatenates strings without temporaries.
-template <typename... Parts> static std::string cat(const Parts &...parts) {
+template <typename... Parts>
+static std::string cat(const Parts &...parts) {
   std::string out;
   ((out += parts), ...);
   return out;
@@ -247,8 +247,8 @@ struct Flow {
 
 } // namespace
 
-template <typename T> static void addUnique(llvm::SmallVectorImpl<T> &to,
-                                            const T &value) {
+template <typename T>
+static void addUnique(llvm::SmallVectorImpl<T> &to, const T &value) {
   if (llvm::find(to, value) == to.end())
     to.push_back(value);
 }
@@ -395,8 +395,7 @@ private:
         record->getDefinition() == nullptr)
       return;
     for (const clang::FieldDecl *field : record->getDefinition()->fields()) {
-      const Place place =
-          prefix.with(stepOf(field));
+      const Place place = prefix.with(stepOf(field));
       if (isOwnerType(field->getType()))
         out.push_back(place);
       else if (field->getType()->isRecordType())
@@ -412,8 +411,7 @@ private:
   }
 
   /// The library table's row for a direct call.
-  [[nodiscard]] static core::LibraryMatch
-  rowOf(const clang::CallExpr &call) {
+  [[nodiscard]] static core::LibraryMatch rowOf(const clang::CallExpr &call) {
     const clang::FunctionDecl *callee = call.getDirectCallee();
     if (callee == nullptr || callee->getIdentifier() == nullptr)
       return {};
@@ -434,8 +432,8 @@ private:
 
   /// The declared type of parameter `index` of the called function, or
   /// null for a variadic argument.
-  [[nodiscard]] static clang::QualType parameterType(const clang::CallExpr &call,
-                                              unsigned index) {
+  [[nodiscard]] static clang::QualType
+  parameterType(const clang::CallExpr &call, unsigned index) {
     if (const clang::FunctionDecl *callee = call.getDirectCallee();
         callee != nullptr && index < callee->getNumParams())
       return callee->getParamDecl(index)->getType();
@@ -567,14 +565,12 @@ private:
     return out;
   }
 
-  [[nodiscard]] std::string described(How how,
-                                      const clang::Stmt *cause) const {
+  [[nodiscard]] std::string described(How how, const clang::Stmt *cause) const {
     const auto *call = llvm::dyn_cast_or_null<clang::CallExpr>(cause);
     switch (how) {
     case How::Released:
-      return "released" +
-             (call != nullptr ? " by '" + calleeName(*call) + "'"
-                              : std::string());
+      return "released" + (call != nullptr ? " by '" + calleeName(*call) + "'"
+                                           : std::string());
     case How::Realloc:
       return "released by '" +
              (call != nullptr ? calleeName(*call) : std::string("realloc")) +
@@ -648,7 +644,8 @@ private:
         cast != nullptr && cast->getCastKind() == clang::CK_NoOp)
       return placeOf(cast->getSubExpr());
     if (const auto *reference = llvm::dyn_cast<clang::DeclRefExpr>(e)) {
-      const auto *variable = llvm::dyn_cast<clang::VarDecl>(reference->getDecl());
+      const auto *variable =
+          llvm::dyn_cast<clang::VarDecl>(reference->getDecl());
       if (variable == nullptr)
         return {};
       Located located;
@@ -722,8 +719,7 @@ private:
       const bool borrow = rootVariable && borrowLocals.contains(root);
       located.storageVia = nullptr;
       if (holder.owner) {
-        located.storage =
-            Anchor{.place = holder.place, .below = !holder.named};
+        located.storage = Anchor{.place = holder.place, .below = !holder.named};
         if (!holder.named)
           located.storage->place.path.clear();
       } else {
@@ -798,8 +794,8 @@ private:
     Value value;
     const clang::Expr *e = expression->IgnoreParens();
     while (true) {
-      if (e->isNullPointerConstant(
-              ast, clang::Expr::NPC_ValueDependentIsNotNull)) {
+      if (e->isNullPointerConstant(ast,
+                                   clang::Expr::NPC_ValueDependentIsNotNull)) {
         value.kind = Value::Kind::Null;
         return value;
       }
@@ -831,8 +827,8 @@ private:
     if (const auto *unary = llvm::dyn_cast<clang::UnaryOperator>(e)) {
       if (unary->getOpcode() == clang::UO_AddrOf) {
         value.place = placeOf(unary->getSubExpr());
-        value.kind = value.place.known ? Value::Kind::Address
-                                       : Value::Kind::Other;
+        value.kind =
+            value.place.known ? Value::Kind::Address : Value::Kind::Other;
         return value;
       }
       if (unary->isIncrementDecrementOp()) {
@@ -873,8 +869,9 @@ private:
   // Locals (§2, §5)
   //===--------------------------------------------------------------------===//
 
-  static void forEachStatement(const clang::Stmt *statement,
-                               const std::function<void(const clang::Stmt *)> &visit) {
+  static void
+  forEachStatement(const clang::Stmt *statement,
+                   const std::function<void(const clang::Stmt *)> &visit) {
     if (statement == nullptr)
       return;
     visit(statement);
@@ -916,8 +913,8 @@ private:
               ownerLocals.insert(variable);
             if (const clang::Expr *init = variable->getInit()) {
               assigned[variable].push_back(init);
-              if (const auto *call = llvm::dyn_cast<clang::CallExpr>(
-                      stripCasts(init));
+              if (const auto *call =
+                      llvm::dyn_cast<clang::CallExpr>(stripCasts(init));
                   call != nullptr && returnsOwner(*call))
                 ownerLocals.insert(variable);
             }
@@ -934,8 +931,8 @@ private:
           const bool startsBorrowed =
               init != nullptr && classify(init).kind != Value::Kind::Null &&
               classify(init).kind != Value::Kind::OwnedCall;
-          if (const auto *call = llvm::dyn_cast<clang::CallExpr>(
-                  stripCasts(assign->getRHS()));
+          if (const auto *call =
+                  llvm::dyn_cast<clang::CallExpr>(stripCasts(assign->getRHS()));
               call != nullptr && returnsOwner(*call) && !startsBorrowed)
             ownerLocals.insert(variable);
         }
@@ -949,8 +946,7 @@ private:
           if (const auto *address = llvm::dyn_cast<clang::UnaryOperator>(
                   stripCasts(call->getArg(i)));
               address != nullptr && address->getOpcode() == clang::UO_AddrOf)
-            if (const clang::VarDecl *variable =
-                    localOf(address->getSubExpr());
+            if (const clang::VarDecl *variable = localOf(address->getSubExpr());
                 variable != nullptr && variable->getType()->isPointerType())
               ownerLocals.insert(variable);
         }
@@ -994,8 +990,7 @@ private:
       const Located &place = value.place;
       if (place.barrier != Barrier::None)
         return false;
-      if (place.place.path.empty() &&
-          !place.place.root->hasLocalStorage())
+      if (place.place.path.empty() && !place.place.root->hasLocalStorage())
         return false;
       if (value.kind == Value::Kind::Load && !place.owner &&
           !place.place.path.empty())
@@ -1034,10 +1029,10 @@ private:
         container = i;
         break;
       }
-    Place holder{.root = place.root,
-                 .path = {place.path.begin(),
-                          place.path.begin() +
-                              static_cast<std::ptrdiff_t>(container)}};
+    Place holder{
+        .root = place.root,
+        .path = {place.path.begin(),
+                 place.path.begin() + static_cast<std::ptrdiff_t>(container)}};
     bool fresh = false;
     if (container == 0 && place.path[0] != StepDeref &&
         place.path[0] != StepIndex) {
@@ -1076,7 +1071,7 @@ private:
   //===--------------------------------------------------------------------===//
 
   static void endBorrow(BorrowState &borrow, How how, const clang::Stmt *by,
-                 const Place &at) {
+                        const Place &at) {
     if (borrow.ended)
       return;
     borrow.ended = true;
@@ -1088,7 +1083,7 @@ private:
   /// §5 rule 1: an owner the function names was moved, released or
   /// replaced.
   static void endBelow(Flow &flow, const Place &place, How how,
-                const clang::Stmt *by) {
+                       const clang::Stmt *by) {
     for (auto &[variable, borrow] : flow.borrows)
       for (const Anchor &anchor : borrow.anchors)
         if (place.covers(anchor.place) ||
@@ -1101,7 +1096,7 @@ private:
   /// §5 rule 2: an owner the function does not name exactly: every borrow
   /// below the same root ends but those it was reached through.
   static void endUnnamed(Flow &flow, const Located &located, How how,
-                  const clang::Stmt *by) {
+                         const clang::Stmt *by) {
     llvm::SmallVector<const clang::VarDecl *, 4> roots{located.place.root};
     for (const clang::VarDecl *via : located.through)
       if (const auto found = flow.borrows.find(via);
@@ -1111,14 +1106,13 @@ private:
     for (auto &[variable, borrow] : flow.borrows) {
       if (llvm::is_contained(located.through, variable))
         continue;
-      const bool hit =
-          llvm::any_of(borrow.roots,
-                       [&](const clang::VarDecl *root) {
-                         return llvm::is_contained(roots, root);
-                       }) ||
-          llvm::any_of(borrow.anchors, [&](const Anchor &anchor) {
-            return llvm::is_contained(roots, anchor.place.root);
-          });
+      const bool hit = llvm::any_of(borrow.roots,
+                                    [&](const clang::VarDecl *root) {
+                                      return llvm::is_contained(roots, root);
+                                    }) ||
+                       llvm::any_of(borrow.anchors, [&](const Anchor &anchor) {
+                         return llvm::is_contained(roots, anchor.place.root);
+                       });
       if (hit)
         endBorrow(borrow, how, by, located.place);
     }
@@ -1144,18 +1138,17 @@ private:
       }
       if (place.barrier != Barrier::None || !place.known)
         return reach;
-      reach.push_back(
-          {.place = place.named ? place.place.with(StepDeref)
-                                : Place{.root = place.place.root},
-           .below = true});
+      reach.push_back({.place = place.named ? place.place.with(StepDeref)
+                                            : Place{.root = place.place.root},
+                       .below = true});
       return reach;
     }
     case Value::Kind::Address:
       if (value.place.known && value.place.barrier == Barrier::None)
-        reach.push_back(
-            {.place = value.place.named ? value.place.place
-                                        : Place{.root = value.place.place.root},
-             .below = true});
+        reach.push_back({.place = value.place.named
+                                      ? value.place.place
+                                      : Place{.root = value.place.place.root},
+                         .below = true});
       return reach;
     case Value::Kind::Arithmetic: {
       Value inner;
@@ -1211,11 +1204,12 @@ private:
     case Value::Kind::Address:
       return storageBorrow(flow, value.place);
     case Value::Kind::Arithmetic: {
-      if (value.inner == Value::Kind::Load || value.inner == Value::Kind::Address) {
-        const auto *binary = llvm::dyn_cast<clang::BinaryOperator>(
-            stripCasts(expression));
-        const auto *unary = llvm::dyn_cast<clang::UnaryOperator>(
-            stripCasts(expression));
+      if (value.inner == Value::Kind::Load ||
+          value.inner == Value::Kind::Address) {
+        const auto *binary =
+            llvm::dyn_cast<clang::BinaryOperator>(stripCasts(expression));
+        const auto *unary =
+            llvm::dyn_cast<clang::UnaryOperator>(stripCasts(expression));
         const clang::Expr *base = nullptr;
         if (binary != nullptr)
           base = binary->getLHS()->getType()->isPointerType()
@@ -1268,7 +1262,7 @@ private:
 
   /// A pointer to a place: below the owner whose block holds the place.
   [[nodiscard]] static BorrowState storageBorrow(const Flow &flow,
-                                          const Located &place) {
+                                                 const Located &place) {
     BorrowState borrow;
     if (!place.known)
       return borrow;
@@ -1321,10 +1315,11 @@ private:
              "' again after the call, or declare the parameter 'const' if '" +
              calleeName(*call) + "' changes no owner";
     } else {
-      message = "'" + name + "' points into what '" + owner + "' owned before " +
-                (borrow.how == How::Replaced ? std::string("it was replaced")
-                                             : "it was " + described(borrow.how,
-                                                                     borrow.endedBy));
+      message = "'" + name + "' points into what '" + owner +
+                "' owned before " +
+                (borrow.how == How::Replaced
+                     ? std::string("it was replaced")
+                     : "it was " + described(borrow.how, borrow.endedBy));
       note = "the block was given up here; take '" + name +
              "' again afterwards, or use it before";
     }
@@ -1345,9 +1340,9 @@ private:
       state = absent(flow, located.place);
     const std::string name = text(located.place);
     if ((state.bits & StatePending) != 0) {
-      const std::string result =
-          state.pending != nullptr ? state.pending->getName().str()
-                                   : std::string("its result");
+      const std::string result = state.pending != nullptr
+                                     ? state.pending->getName().str()
+                                     : std::string("its result");
       error(at->getExprLoc(), rule::OwnerMoved,
             "'" + name + "' is used before '" + result +
                 "', the result of 'realloc', was tested: the call released '" +
@@ -1358,7 +1353,8 @@ private:
     } else if ((state.bits & StateMoved) != 0) {
       const bool maybe = (state.bits & (StateHolds | StateNull)) != 0;
       error(at->getExprLoc(), rule::OwnerMoved,
-            "'" + name + "' is used after it " + (maybe ? "may have been " : "was ") +
+            "'" + name + "' is used after it " +
+                (maybe ? "may have been " : "was ") +
                 described(state.how, state.cause),
             locationOf(state.cause),
             std::string(state.how == How::Released ? "released" : "moved") +
@@ -1385,12 +1381,11 @@ private:
     }
     const std::string name = text(located.place);
     // A null owner releases nothing.
-    if (how == How::Released &&
-        (stateOf(flow, located.place).bits & (StateHolds | StatePending)) != 0) {
+    if (how == How::Released && (stateOf(flow, located.place).bits &
+                                 (StateHolds | StatePending)) != 0) {
       llvm::SmallVector<Place, 8> fields;
-      ownerFields(located.type->isPointerType()
-                      ? located.type->getPointeeType()
-                      : located.type,
+      ownerFields(located.type->isPointerType() ? located.type->getPointeeType()
+                                                : located.type,
                   located.place.with(StepDeref), fields);
       for (const Place &field : fields) {
         const OwnerState state = stateOf(flow, field);
@@ -1426,11 +1421,12 @@ private:
           (state.bits & StateMoved) == 0 || releasedAbove(flow, inner, place))
         continue;
       const std::string name = text(inner);
-      error(at->getExprLoc(), rule::OwnerMoved,
-            cat(what, " while '", name, "' was moved out of it and not assigned"),
-            locationOf(state.cause),
-            cat("'", name, "' was moved here; assign it ('", name,
-                " = NULL;') before"));
+      error(
+          at->getExprLoc(), rule::OwnerMoved,
+          cat(what, " while '", name, "' was moved out of it and not assigned"),
+          locationOf(state.cause),
+          cat("'", name, "' was moved here; assign it ('", name,
+              " = NULL;') before"));
       return;
     }
   }
@@ -1441,13 +1437,12 @@ private:
                                           const Place &top) {
     for (std::size_t length = top.path.size() + 1; length < inner.path.size();
          ++length) {
-      Place prefix{.root = inner.root,
-                   .path = {inner.path.begin(),
-                            inner.path.begin() +
-                                static_cast<std::ptrdiff_t>(length)}};
+      Place prefix{
+          .root = inner.root,
+          .path = {inner.path.begin(),
+                   inner.path.begin() + static_cast<std::ptrdiff_t>(length)}};
       if (const auto found = flow.owners.find(prefix);
-          found != flow.owners.end() &&
-          (found->second.bits & StateMoved) != 0)
+          found != flow.owners.end() && (found->second.bits & StateMoved) != 0)
         return true;
     }
     return false;
@@ -1476,8 +1471,9 @@ private:
       error(expr->getExprLoc(), rule::OwnerPath,
             "'" + name + "' is reached through a pointer to const ('" + base +
                 "') and cannot be " + verb,
-            {}, "take the parameter without 'const' if the function changes "
-                "its owners");
+            {},
+            "take the parameter without 'const' if the function changes "
+            "its owners");
       return false;
     case Barrier::Global:
       error(expr->getExprLoc(), rule::OwnerPath,
@@ -1510,7 +1506,8 @@ private:
 
   /// Whether two lvalues name one slot: the same expression, `--n` or
   /// `n++` in the first standing for `n` in the second.
-  [[nodiscard]] bool sameSlot(const clang::Expr *a, const clang::Expr *b) const {
+  [[nodiscard]] bool sameSlot(const clang::Expr *a,
+                              const clang::Expr *b) const {
     a = a->IgnoreParenImpCasts();
     b = b->IgnoreParenImpCasts();
     if (const auto *step = llvm::dyn_cast<clang::UnaryOperator>(a);
@@ -1523,7 +1520,8 @@ private:
     if (const auto *x = llvm::dyn_cast<clang::MemberExpr>(a)) {
       const auto *y = llvm::cast<clang::MemberExpr>(b);
       return x->getMemberDecl() == y->getMemberDecl() &&
-             x->isArrow() == y->isArrow() && sameSlot(x->getBase(), y->getBase());
+             x->isArrow() == y->isArrow() &&
+             sameSlot(x->getBase(), y->getBase());
     }
     if (const auto *x = llvm::dyn_cast<clang::ArraySubscriptExpr>(a)) {
       const auto *y = llvm::cast<clang::ArraySubscriptExpr>(b);
@@ -1591,7 +1589,8 @@ private:
           (state.bits & StatePending) != 0
               ? "on failure 'realloc' returns null and '" + name +
                     "' still owns its block: assign the result to a new local, "
-                    "test it, then assign '" + name + "'"
+                    "test it, then assign '" +
+                    name + "'"
               : "'" + name +
                     "' owns a block since here; release it first ('free(" +
                     name + ");'), or move it into another owner");
@@ -1622,7 +1621,8 @@ private:
       }
       break;
     case Value::Kind::Address:
-      why = "'" + from + "' is the address of an object, not a block to release";
+      why =
+          "'" + from + "' is the address of an object, not a block to release";
       note = "allocate the object ('malloc') to give it an owner";
       break;
     case Value::Kind::Literal:
@@ -1750,11 +1750,10 @@ private:
         !recordedGlobals.insert(located.place.root).second)
       return;
     const clang::PresumedLoc where = sources.getPresumedLoc(at->getExprLoc());
-    unit.inPlace.push_back(
-        {.function = function.getName().str(),
-         .global = located.place.root->getName().str(),
-         .file = where.isValid() ? where.getFilename() : "",
-         .line = where.isValid() ? where.getLine() : 0});
+    unit.inPlace.push_back({.function = function.getName().str(),
+                            .global = located.place.root->getName().str(),
+                            .file = where.isValid() ? where.getFilename() : "",
+                            .line = where.isValid() ? where.getLine() : 0});
   }
 
   void arithmetic(const clang::Expr *lvalue) {
@@ -1764,7 +1763,8 @@ private:
     const std::string name = text(lvalue);
     error(lvalue->getExprLoc(), rule::OwnerSource,
           "'" + name +
-              "' is an owner: arithmetic would leave it pointing inside its block",
+              "' is an owner: arithmetic would leave it pointing inside its "
+              "block",
           {},
           "keep the owner as it is and step a borrow: 'T *q = " + name +
               "; q++;'");
@@ -1849,12 +1849,14 @@ private:
             destination->getType()->isPointerType()
                 ? destination->getType()->getPointeeType()
                 : clang::QualType();
-        if (!pointee.isNull() && (holdsOwners(pointee) || isOwnerType(pointee))) {
+        if (!pointee.isNull() &&
+            (holdsOwners(pointee) || isOwnerType(pointee))) {
           if (copy) {
             error(call.getExprLoc(), rule::OwnerSource,
                   "copying '" + pointee.getAsString() +
                       "' as bytes would leave two owners of its blocks",
-                  {}, "assign it as a struct ('*a = *b'), which moves its owners");
+                  {},
+                  "assign it as a struct ('*a = *b'), which moves its owners");
           } else {
             const Located target = pointeeOf(call.getArg(0));
             if (target.known && target.named) {
@@ -1891,8 +1893,9 @@ private:
           type->isPointerType() ? type->getPointeeType() : clang::QualType();
       // Through a `void *`, what the argument is.
       clang::QualType actual = call.getArg(i)->IgnoreParenCasts()->getType();
-      const clang::QualType actualPointee =
-          actual->isPointerType() ? actual->getPointeeType() : clang::QualType();
+      const clang::QualType actualPointee = actual->isPointerType()
+                                                ? actual->getPointeeType()
+                                                : clang::QualType();
       argument.owners =
           !actualPointee.isNull() &&
           (holdsOwners(actualPointee) || isOwnerType(actualPointee));
@@ -1918,8 +1921,9 @@ private:
                   "' overlap, and '" + calleeName(call) +
                   "' may change owners through argument " +
                   std::to_string(i + 1),
-              {}, "pass only the pointer the callee changes, or make the other "
-                  "parameter 'const'");
+              {},
+              "pass only the pointer the callee changes, or make the other "
+              "parameter 'const'");
         aliased = true;
         break;
       }
@@ -1965,8 +1969,7 @@ private:
       else if (member != nullptr)
         source = member->getMemberDecl()->getType();
       if (parameter.isNull() || !parameter->isPointerType() ||
-          !source->isPointerType() ||
-          !isOwnerType(source->getPointeeType()))
+          !source->isPointerType() || !isOwnerType(source->getPointeeType()))
         continue;
       const clang::QualType pointee = parameter->getPointeeType();
       if (isOwnerType(pointee) || pointee.isConstQualified() ||
@@ -2073,11 +2076,11 @@ private:
                       "' may change the owners below what it points to",
                   {},
                   "pass the pointer that owns it (a parameter or an owner), "
-                  "or declare the parameter 'const' if '" + calleeName(call) +
-                      "' changes no owner");
+                  "or declare the parameter 'const' if '" +
+                      calleeName(call) + "' changes no owner");
           endReach(flow, argument, expression, call);
-          leaveToCallee(flow, argument.value,
-                        isDrops(parameterType(call, i)), call);
+          leaveToCallee(flow, argument.value, isDrops(parameterType(call, i)),
+                        call);
         }
         break;
       }
@@ -2092,8 +2095,7 @@ private:
         argument.value.place.place.path.empty())
       self = argument.value.place.place.root;
     Place at = argument.reach.empty() ? Place{} : argument.reach.front().place;
-    if (argument.value.kind == Value::Kind::Load &&
-        argument.value.place.known)
+    if (argument.value.kind == Value::Kind::Load && argument.value.place.known)
       at = argument.value.place.place;
     (void)expression;
     for (auto &[variable, borrow] : flow.borrows) {
@@ -2154,7 +2156,8 @@ private:
   [[nodiscard]] const clang::VarDecl *
   resultLocal(const clang::CallExpr &call) const {
     const clang::Stmt *parent = parents.getParentIgnoreParenCasts(&call);
-    if (const auto *assign = llvm::dyn_cast_or_null<clang::BinaryOperator>(parent);
+    if (const auto *assign =
+            llvm::dyn_cast_or_null<clang::BinaryOperator>(parent);
         assign != nullptr && assign->getOpcode() == clang::BO_Assign) {
       const auto *reference = llvm::dyn_cast<clang::DeclRefExpr>(
           assign->getLHS()->IgnoreParenImpCasts());
@@ -2162,7 +2165,8 @@ private:
                  ? llvm::dyn_cast<clang::VarDecl>(reference->getDecl())
                  : nullptr;
     }
-    if (const auto *declaration = llvm::dyn_cast_or_null<clang::DeclStmt>(parent);
+    if (const auto *declaration =
+            llvm::dyn_cast_or_null<clang::DeclStmt>(parent);
         declaration != nullptr && declaration->isSingleDecl())
       return llvm::dyn_cast<clang::VarDecl>(declaration->getSingleDecl());
     return nullptr;
@@ -2254,8 +2258,8 @@ private:
     }
     if (destination.known && destination.named) {
       for (const Place &field : fields) {
-        flow.owners[field] = OwnerState{.bits = StateHolds | StateNull,
-                                        .since = by};
+        flow.owners[field] =
+            OwnerState{.bits = StateHolds | StateNull, .since = by};
         eraseBelow(flow, field);
       }
       flow.owners[destination.place].fresh = false;
@@ -2280,7 +2284,7 @@ private:
         clang::DeclRefExpr reference(
             // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
             // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-          ast, const_cast<clang::VarDecl *>(&variable), false,
+            ast, const_cast<clang::VarDecl *>(&variable), false,
             variable.getType(), clang::VK_LValue, variable.getLocation());
         storeOwner(flow, located, &reference, init, by, /*drop=*/false);
       }
@@ -2291,8 +2295,7 @@ private:
           init != nullptr ? borrowOf(flow, init) : BorrowState{};
       return;
     }
-    if (!variable.getType()->isRecordType() ||
-        !holdsOwners(variable.getType()))
+    if (!variable.getType()->isRecordType() || !holdsOwners(variable.getType()))
       return;
     eraseBelow(flow, located.place);
     OwnerState record;
@@ -2301,7 +2304,8 @@ private:
       flow.owners[located.place] = record;
       return;
     }
-    const auto *list = llvm::dyn_cast<clang::InitListExpr>(init->IgnoreParens());
+    const auto *list =
+        llvm::dyn_cast<clang::InitListExpr>(init->IgnoreParens());
     if (list == nullptr) {
       record.fresh = false;
       flow.owners[located.place] = record;
@@ -2339,8 +2343,8 @@ private:
         if (llvm::isa<clang::ImplicitValueInitExpr>(element))
           continue;
         storeOwner(flow, inner, element, element, by, /*drop=*/false);
-      } else if (const auto *nested =
-                     llvm::dyn_cast<clang::InitListExpr>(element->IgnoreParens())) {
+      } else if (const auto *nested = llvm::dyn_cast<clang::InitListExpr>(
+                     element->IgnoreParens())) {
         initRecord(flow, inner, *nested, by);
       }
     }
@@ -2359,8 +2363,8 @@ private:
         moveOut(flow, classified.place, stripCasts(value), How::Returned, &ret);
         return;
       }
-      ownerSource(classified, value, "the result of '" +
-                                         function.getName().str() + "'");
+      ownerSource(classified, value,
+                  "the result of '" + function.getName().str() + "'");
       return;
     }
     // An owner returned where the result is not one: say so here, not
@@ -2400,7 +2404,8 @@ private:
                    const clang::Stmt *trigger) {
     const bool returning = llvm::isa_and_nonnull<clang::ReturnStmt>(trigger);
     clang::SourceLocation at;
-    if (const auto *compound = llvm::dyn_cast_or_null<clang::CompoundStmt>(trigger))
+    if (const auto *compound =
+            llvm::dyn_cast_or_null<clang::CompoundStmt>(trigger))
       at = compound->getRBracLoc();
     else
       at = locationOf(trigger);
@@ -2418,9 +2423,10 @@ private:
         continue;
       const std::string name = text(place);
       error(at, rule::OwnerLeak,
-            returning ? "returning while '" + name + "' may still own its block"
-                      : "'" + name +
-                            "' goes out of scope while it may still own its block",
+            returning
+                ? "returning while '" + name + "' may still own its block"
+                : "'" + name +
+                      "' goes out of scope while it may still own its block",
             state.copied != nullptr ? locationOf(state.copied)
                                     : locationOf(state.since),
             state.copied != nullptr
@@ -2465,8 +2471,8 @@ private:
       if (!isDrops(parameter->getType()))
         continue;
       llvm::SmallVector<Place, 8> dropped;
-      ownerFields(parameter->getType()->getPointeeType(),
-                  root.with(StepDeref), dropped);
+      ownerFields(parameter->getType()->getPointeeType(), root.with(StepDeref),
+                  dropped);
       for (const Place &place : dropped) {
         const OwnerState state = stateOf(flow, place);
         if ((state.bits & (StateHolds | StatePending)) == 0)

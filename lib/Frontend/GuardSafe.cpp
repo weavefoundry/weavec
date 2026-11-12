@@ -36,7 +36,6 @@
 #include "weavec/Frontend/SafeCheck.h"
 
 #include "llvm/Analysis/TargetLibraryInfo.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Dominators.h"
@@ -45,6 +44,7 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Operator.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/PromoteMemToReg.h"
 
@@ -463,8 +463,7 @@ static void splitEntry(ModuleContext &module, llvm::Function &function) {
   for (std::size_t i = 0; i < table->parameters.size() && i < arguments.size();
        ++i) {
     const PointerBounds &parameter = table->parameters[i];
-    if (!typedValidated(parameter) ||
-        !arguments[i]->getType()->isPointerTy())
+    if (!typedValidated(parameter) || !arguments[i]->getType()->isPointerTy())
       continue;
     // RFC 0042 §6: a string is scanned against the shadow once, at the
     // entry from code that is not typed.
@@ -1573,12 +1572,12 @@ private:
       llvm::Value *probe = builder.CreateSelect(
           nonNull, address,
           builder.CreatePtrToInt(load->getPointerOperand(), module.i64));
-      llvm::Value *shadow = builder.CreateLoad(
-          module.i8, context.shadowAddress(builder, probe));
+      llvm::Value *shadow =
+          builder.CreateLoad(module.i8, context.shadowAddress(builder, probe));
       llvm::Value *released = builder.CreateAnd(
-          nonNull, builder.CreateICmpEQ(
-                       shadow, llvm::ConstantInt::get(module.i8,
-                                                      ShadowHeapReleased)));
+          nonNull,
+          builder.CreateICmpEQ(
+              shadow, llvm::ConstantInt::get(module.i8, ShadowHeapReleased)));
       llvm::Instruction *then = llvm::SplitBlockAndInsertIfThen(
           released, builder.GetInsertPoint(), /*Unreachable=*/trap,
           llvm::MDBuilder(module.context).createUnlikelyBranchWeights());
@@ -1864,8 +1863,7 @@ private:
                                     flags.getZExtValue() | MarkerProven));
       return;
     }
-    module.copy(static_cast<unsigned>(row.getZExtValue()), false,
-                "typed");
+    module.copy(static_cast<unsigned>(row.getZExtValue()), false, "typed");
     marker.eraseFromParent();
   }
 };

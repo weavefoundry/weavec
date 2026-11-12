@@ -224,12 +224,11 @@ std::string enforcementSummary(const EnforcementLedger &ledger,
   });
   if (safe == 0)
     return text;
-  os << "; " << safe << " of " << ledger.functions.size()
-     << " functions safe";
+  os << "; " << safe << " of " << ledger.functions.size() << " functions safe";
   // RFC 0043 §11.
   const auto kind = [&](llvm::StringRef name) {
-    return llvm::count_if(ledger.fields,
-                          [&](const auto &field) { return field.kind == name; });
+    return llvm::count_if(
+        ledger.fields, [&](const auto &field) { return field.kind == name; });
   };
   os << "; " << kind("owner") << " owner and " << kind("reference")
      << " reference fields";
@@ -412,8 +411,8 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
        "operation", "reason");
   list("library calls of safe functions that keep a checked wrapper",
        audit.wrapped, "operation", "");
-  list("reference fields (tested where safe code loads them)",
-       audit.references, "field", "");
+  list("reference fields (tested where safe code loads them)", audit.references,
+       "field", "");
   list("global owners read in place (in the function named)", audit.globals,
        "field", "");
   return ok ? 0 : 1;

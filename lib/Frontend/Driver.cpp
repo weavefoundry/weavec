@@ -603,8 +603,8 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   // precompiled header or module keeps it in its options, as the compiles
   // that read it have it.
   const bool asanCompat = applyAsanCompat(*compiler, weavec) && codegen;
-  WeaveCWrapperAction action(std::move(inner), unsafe, safe,
-                             weavec.safe, asanCompat);
+  WeaveCWrapperAction action(std::move(inner), unsafe, safe, weavec.safe,
+                             asanCompat);
   success = compiler->ExecuteAction(action);
   if (success && ledger) {
     for (const SafeUnit::Definition &definition : safe->definitions)

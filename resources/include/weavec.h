@@ -59,8 +59,8 @@
  * struct fields are believed where pointers are loaded and checked where
  * they are stored (RFC 0042), and the owners a function holds are followed
  * through it: a use after a release, a second release and a leak are errors
- * (RFC 0043). The guide is docs/pages/guides/safe-c.md. The spellings below must
- * match weavec::frontend::SafeAnnotation and its neighbors
+ * (RFC 0043). The guide is docs/pages/guides/safe-c.md. The spellings below
+ * must match weavec::frontend::SafeAnnotation and its neighbors
  * (include/weavec/Frontend/SafeCheck.h). Under a compiler other than Clang
  * they expand to nothing, so safe C is plain C.
  *
