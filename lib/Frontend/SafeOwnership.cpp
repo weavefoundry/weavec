@@ -253,50 +253,64 @@ static void addUnique(llvm::SmallVectorImpl<T> &to, const T &value) {
     to.push_back(value);
 }
 
-static void join(Flow &into, const Flow &from,
+/// Joins `from` into `into`; whether `into` changed. `absentInto` and
+/// `absentFrom` give the state of a place a side has not recorded.
+static bool join(Flow &into, const Flow &from,
                  const std::function<OwnerState(const Place &)> &absentInto,
                  const std::function<OwnerState(const Place &)> &absentFrom) {
   if (!from.reached)
-    return;
+    return false;
   if (!into.reached) {
     into = from;
-    return;
+    return true;
   }
-  for (const auto &[place, state] : from.owners) {
-    auto found = into.owners.find(place);
-    OwnerState mine =
-        found != into.owners.end() ? found->second : absentInto(place);
-    mine.bits |= state.bits;
-    mine.fresh = mine.fresh && state.fresh;
-    if ((state.bits & StatePending) != 0 && mine.pending == nullptr)
-      mine.pending = state.pending;
+  bool changed = false;
+  const auto merge = [&](OwnerState &mine, const OwnerState &theirs) {
+    const OwnerState was = mine;
+    mine.bits |= theirs.bits;
+    mine.fresh = mine.fresh && theirs.fresh;
+    if ((theirs.bits & StatePending) != 0 && mine.pending == nullptr)
+      mine.pending = theirs.pending;
     if (mine.cause == nullptr) {
-      mine.cause = state.cause;
-      mine.how = state.how;
+      mine.cause = theirs.cause;
+      mine.how = theirs.how;
     }
     if (mine.since == nullptr)
-      mine.since = state.since;
-    into.owners[place] = mine;
-  }
+      mine.since = theirs.since;
+    changed = changed || !(mine == was);
+  };
   for (auto &[place, state] : into.owners)
-    if (!from.owners.contains(place)) {
-      const OwnerState theirs = absentFrom(place);
-      state.bits |= theirs.bits;
-      state.fresh = state.fresh && theirs.fresh;
+    if (const auto found = from.owners.find(place); found != from.owners.end())
+      merge(state, found->second);
+    else
+      merge(state, absentFrom(place));
+  for (const auto &[place, state] : from.owners)
+    if (!into.owners.contains(place)) {
+      OwnerState mine = absentInto(place);
+      merge(mine, state);
+      into.owners.emplace(place, mine);
+      changed = true;
     }
   for (const auto &[variable, state] : from.borrows) {
-    BorrowState &mine = into.borrows[variable];
+    auto [found, inserted] = into.borrows.try_emplace(variable);
+    BorrowState &mine = found->second;
+    const std::size_t anchors = mine.anchors.size();
+    const std::size_t roots = mine.roots.size();
     for (const Anchor &anchor : state.anchors)
       addUnique(mine.anchors, anchor);
     for (const clang::VarDecl *root : state.roots)
       addUnique(mine.roots, root);
+    changed = changed || inserted || mine.anchors.size() != anchors ||
+              mine.roots.size() != roots;
     if (state.ended && !mine.ended) {
       mine.ended = true;
       mine.how = state.how;
       mine.endedBy = state.endedBy;
       mine.endedAt = state.endedAt;
+      changed = true;
     }
   }
+  return changed;
 }
 
 namespace {
@@ -317,6 +331,10 @@ public:
     if (body == nullptr)
       return;
     classifyLocals(body);
+    // A function that names no owner, makes or takes none and holds no
+    // struct with owners has nothing for the rules to follow.
+    if (!relevant)
+      return;
     clang::CFG::BuildOptions options;
     options.setAllAlwaysAdd();
     options.AddLifetime = true;
@@ -344,6 +362,11 @@ private:
   /// and owners (`owner-path` may go through them).
   llvm::DenseSet<const clang::VarDecl *> pathLocals;
   bool emit = false;
+  /// Caches of the two type questions asked most.
+  mutable llvm::DenseMap<const void *, bool> ownerTypes;
+  mutable llvm::DenseMap<const void *, bool> holding;
+  /// The function names an owner, or makes, takes or holds one.
+  bool relevant = false;
   /// The branch being refined cannot be taken.
   bool infeasible = false;
   std::set<std::pair<clang::SourceLocation::UIntTy, std::string>> reported;
@@ -354,8 +377,13 @@ private:
   //===--------------------------------------------------------------------===//
 
   [[nodiscard]] bool isOwnerType(clang::QualType type) const {
-    return !type.isNull() && type->isPointerType() &&
-           hasAnnotation(annotationsOf(type, ast), OwnedAnnotation);
+    if (type.isNull() || !type->isPointerType())
+      return false;
+    const auto [found, inserted] =
+        ownerTypes.try_emplace(type.getAsOpaquePtr(), false);
+    if (inserted)
+      found->second = hasAnnotation(annotationsOf(type, ast), OwnedAnnotation);
+    return found->second;
   }
 
   [[nodiscard]] bool isOwnerVariable(const clang::VarDecl &variable) const {
@@ -370,6 +398,14 @@ private:
                                  unsigned depth = 0) const {
     if (depth > 8)
       return false;
+    if (depth == 0) {
+      const void *key = type.getCanonicalType().getAsOpaquePtr();
+      if (const auto found = holding.find(key); found != holding.end())
+        return found->second;
+      const bool holds = holdsOwners(type, 1);
+      holding[key] = holds;
+      return holds;
+    }
     if (const auto *array = ast.getAsArrayType(type))
       return isOwnerType(array->getElementType()) ||
              holdsOwners(array->getElementType(), depth + 1);
@@ -901,7 +937,37 @@ private:
     llvm::DenseMap<const clang::VarDecl *,
                    llvm::SmallVector<const clang::Expr *, 2>>
         assigned;
+    for (const clang::ParmVarDecl *parameter : function.parameters())
+      if (isOwnerType(parameter->getType()) ||
+          hasAnnotation(annotationsOf(parameter->getType(), ast),
+                        DropsAnnotation) ||
+          (parameter->getType()->isRecordType() &&
+           holdsOwners(parameter->getType())))
+        relevant = true;
     forEachStatement(body, [&](const clang::Stmt *statement) {
+      if (!relevant) {
+        if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(statement))
+          relevant = isOwnerType(member->getMemberDecl()->getType());
+        else if (const auto *reference =
+                     llvm::dyn_cast<clang::DeclRefExpr>(statement)) {
+          const clang::QualType type = reference->getDecl()->getType();
+          relevant =
+              isOwnerType(type) ||
+              (type->isRecordType() && holdsOwners(type)) ||
+              (type->isPointerType() &&
+               (isOwnerType(type->getPointeeType()) ||
+                holdsOwners(type->getPointeeType())) &&
+               llvm::isa_and_nonnull<clang::CallExpr>(
+                   parents.getParentIgnoreParenImpCasts(
+                       // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+                       const_cast<clang::DeclRefExpr *>(reference))));
+        } else if (const auto *call =
+                       llvm::dyn_cast<clang::CallExpr>(statement)) {
+          relevant = returnsOwner(*call);
+          for (unsigned i = 0; i < call->getNumArgs() && !relevant; ++i)
+            relevant = effectOf(*call, i) != Effect::Borrow;
+        }
+      }
       if (const auto *declaration =
               llvm::dyn_cast<clang::DeclStmt>(statement)) {
         for (const clang::Decl *decl : declaration->decls())
@@ -1379,10 +1445,11 @@ private:
       endUnnamed(flow, located, how, by);
       return;
     }
-    const std::string name = text(located.place);
     // A null owner releases nothing.
-    if (how == How::Released && (stateOf(flow, located.place).bits &
-                                 (StateHolds | StatePending)) != 0) {
+    if (emit && how == How::Released &&
+        (stateOf(flow, located.place).bits & (StateHolds | StatePending)) !=
+            0) {
+      const std::string name = text(located.place);
       llvm::SmallVector<Place, 8> fields;
       ownerFields(located.type->isPointerType() ? located.type->getPointeeType()
                                                 : located.type,
@@ -1398,8 +1465,9 @@ private:
               {}, cat("release '", inner, "' first: 'free(", inner, ");'"));
       }
     } else {
-      checkWhole(flow, located.place, expr,
-                 "'" + name + "' is " + described(how, by));
+      checkWhole(flow, located.place, expr, [&] {
+        return cat("'", text(located.place), "' is ", described(how, by));
+      });
     }
     OwnerState &state = flow.owners[located.place];
     state.bits = StateMoved;
@@ -1415,7 +1483,9 @@ private:
 
   /// A struct is not moved, passed or left while an owner in it is moved.
   void checkWhole(const Flow &flow, const Place &place, const clang::Expr *at,
-                  const std::string &what) {
+                  const std::function<std::string()> &what) {
+    if (!emit)
+      return;
     for (const auto &[inner, state] : flow.owners) {
       if (!place.covers(inner) || inner == place ||
           (state.bits & StateMoved) == 0 || releasedAbove(flow, inner, place))
@@ -1423,7 +1493,7 @@ private:
       const std::string name = text(inner);
       error(
           at->getExprLoc(), rule::OwnerMoved,
-          cat(what, " while '", name, "' was moved out of it and not assigned"),
+          cat(what(), " while '", name, "' was moved out of it and not assigned"),
           locationOf(state.cause),
           cat("'", name, "' was moved here; assign it ('", name,
               " = NULL;') before"));
@@ -1547,6 +1617,8 @@ private:
   /// `owner-slot`: an owner the function does not name is moved out of only
   /// in a statement followed at once by an assignment to the same place.
   void checkSlot(const clang::Expr *slot, const clang::Stmt *by) {
+    if (!emit)
+      return;
     const auto [compound, statement] = statementOf(by);
     bool assigned = false;
     if (compound != nullptr) {
@@ -2053,15 +2125,17 @@ private:
         if (argument.owners && argument.value.kind == Value::Kind::Load &&
             argument.value.place.named)
           checkWhole(flow, argument.value.place.place.with(StepDeref),
-                     expression,
-                     "'" + text(expression) + "' is passed to '" +
-                         calleeName(call) + "'");
+                     expression, [&] {
+                       return cat("'", text(expression), "' is passed to '",
+                                  calleeName(call), "'");
+                     });
         else if (argument.owners &&
                  argument.value.kind == Value::Kind::Address &&
                  argument.value.place.named)
-          checkWhole(flow, argument.value.place.place, expression,
-                     "'" + text(expression) + "' is passed to '" +
-                         calleeName(call) + "'");
+          checkWhole(flow, argument.value.place.place, expression, [&] {
+            return cat("'", text(expression), "' is passed to '",
+                       calleeName(call), "'");
+          });
         if (argument.changing) {
           // M6: a callee given a reference cannot change owners through it.
           if (argument.value.kind == Value::Kind::Load &&
@@ -2664,9 +2738,7 @@ private:
           continue;
         const Flow edge = along(*block, out, successor);
         Flow &target = in[next->getBlockID()];
-        const Flow before = target;
-        join(target, edge, absentOf(before), absentOf(edge));
-        if (!(target == before))
+        if (join(target, edge, absentOf(target), absentOf(edge)))
           work.insert(rank[next->getBlockID()]);
       }
     }
