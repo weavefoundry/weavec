@@ -246,7 +246,7 @@ int takenAgain(struct list *l) {
 
 // call-alias
 void alias(struct list *l) {
-  list_put(l, l->items[0]); // expected-error {{'l->items[0]' points into 'l', which 'list_put' may change through its argument 1 [weavec-safe:call-alias]}}
+  list_put(l, l->items[0]); // expected-error {{'l->items[0]' and 'l' overlap, and 'list_put' may change owners through argument 1 [weavec-safe:call-alias]}}
 }
 
 // Found by the conversions: an owner moved to a call and passed to it again;

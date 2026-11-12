@@ -496,10 +496,10 @@ private:
     return Effect::Borrow;
   }
 
-  [[nodiscard]] static std::string calleeName(const clang::CallExpr &call) {
+  [[nodiscard]] std::string calleeName(const clang::CallExpr &call) const {
     if (const clang::FunctionDecl *callee = call.getDirectCallee())
       return callee->getName().str();
-    return "the function";
+    return text(call.getCallee()->IgnoreParenImpCasts());
   }
 
   //===--------------------------------------------------------------------===//
@@ -734,6 +734,29 @@ private:
     if (const auto *unary = llvm::dyn_cast<clang::UnaryOperator>(e);
         unary != nullptr && unary->getOpcode() == clang::UO_AddrOf)
       return placeOf(unary->getSubExpr());
+    // §5: what a call returns through a `lifetimebound` parameter is
+    // somewhere below that argument's pointee: reached through it.
+    if (const auto *call = llvm::dyn_cast<clang::CallExpr>(e)) {
+      const clang::FunctionDecl *callee = call->getDirectCallee();
+      if (callee == nullptr)
+        return {};
+      for (unsigned i = 0; i < call->getNumArgs() && i < callee->getNumParams();
+           ++i) {
+        if (!callee->getParamDecl(i)->hasAttr<clang::LifetimeBoundAttr>())
+          continue;
+        Located located = pointeeOf(call->getArg(i));
+        if (!located.known)
+          return {};
+        located.place.path.push_back(StepIndex);
+        located.named = false;
+        located.type = call->getType()->isPointerType()
+                           ? call->getType()->getPointeeType()
+                           : call->getType();
+        located.owner = isOwnerType(located.type);
+        return located;
+      }
+      return {};
+    }
     if (const auto *binary = llvm::dyn_cast<clang::BinaryOperator>(e);
         binary != nullptr && binary->isAdditiveOp()) {
       const clang::Expr *base = binary->getLHS()->getType()->isPointerType()
@@ -1868,9 +1891,10 @@ private:
         const clang::Expr *other = call.getArg(static_cast<unsigned>(j));
         const clang::Expr *changed = call.getArg(static_cast<unsigned>(i));
         error(other->getExprLoc(), rule::CallAlias,
-              "'" + text(other) + "' points into '" + text(changed) +
-                  "', which '" + calleeName(call) +
-                  "' may change through its argument " + std::to_string(i + 1),
+              "'" + text(other) + "' and '" + text(changed) +
+                  "' overlap, and '" + calleeName(call) +
+                  "' may change owners through argument " +
+                  std::to_string(i + 1),
               {}, "pass only the pointer the callee changes, or make the other "
                   "parameter 'const'");
         aliased = true;
