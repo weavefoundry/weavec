@@ -85,7 +85,8 @@ constexpr unsigned MaxFields = 4;
 /// A place in memory: a variable and a path from it.
 struct Place {
   const clang::VarDecl *root = nullptr;
-  llvm::SmallVector<std::uintptr_t, 6> path;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  llvm::SmallVector<std::uintptr_t, 6> path = {};
 
   bool operator<(const Place &other) const {
     if (root != other.root)
@@ -195,7 +196,7 @@ struct OwnerState {
   /// It took its block from `from` at `took`: a test that finds it null
   /// finds that the place held null.
   const clang::Stmt *took = nullptr;
-  std::optional<Place> from;
+  std::optional<Place> from = std::nullopt;
   /// Its value was last stored where it is a reference, here.
   const clang::Stmt *copied = nullptr;
 
