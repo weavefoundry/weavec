@@ -2262,7 +2262,7 @@ private:
     // where the local's scope ends.
     if (const Value classified = classify(value);
         classified.kind == Value::Kind::Load && classified.place.owner &&
-        classified.place.named &&
+        classified.place.named && classified.place.place.path.empty() &&
         (stateOf(flow, classified.place.place).bits &
          (StateHolds | StatePending)) != 0) {
       error(value->getExprLoc(), rule::OwnerLeak,
@@ -2541,12 +2541,19 @@ private:
       if (!flow.reached)
         continue;
       transferBlock(*block, flow);
-      const bool toExit = llvm::any_of(
-          block->succs(), [&](const clang::CFGBlock::AdjacentBlock &adjacent) {
-            return adjacent.getReachableBlock() == &exit;
-          });
-      if (!toExit || block->hasNoReturnElement() || block == &exit)
+      unsigned toExit = 0;
+      bool exits = false;
+      for (const clang::CFGBlock::AdjacentBlock &adjacent : block->succs()) {
+        if (adjacent.getReachableBlock() == &exit) {
+          exits = true;
+          break;
+        }
+        ++toExit;
+      }
+      if (!exits || block->hasNoReturnElement() || block == &exit)
         continue;
+      // A loop's test that leaves the function refines what it tested.
+      flow = along(*block, flow, toExit);
       clang::SourceLocation at;
       for (const clang::CFGElement &element : *block)
         if (const auto statement = element.getAs<clang::CFGStmt>())
