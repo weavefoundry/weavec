@@ -17,16 +17,21 @@ sizes, and expand each remaining guard into an inline check of the runtime's
 shadow memory (an access computed from a pointer also against the color of
 the pointer's object); the program traps at the first bad access with a
 report. A C function marked `WEAVEC_SAFE` (or every one, under
-`-fweavec-safe`) is also checked when it compiles, against a few local
-rules (`lib/Frontend/SafeCheck.cpp`), and its guards on pointers with known
-bounds become bounds checks (`lib/Frontend/GuardSafe.cpp`). In a unit
-compiled with `-fweavec-typed` those functions are *typed*: a few more
-rules keep every pointer in memory within the bound its declaration
-states, so a pointer loaded from a field is believed and its accesses are
-compared with that bound instead of guarded (`lib/Frontend/GuardTyped.cpp`
-reads the fields' implicit annotations); code that is not typed is trusted
-to keep those bounds, and the ledger and `weavec-cc --weavec-audit` list
-it. `runtime/` is the C
+`-fweavec-safe`) is *safe*: it is also checked when it compiles, against a
+few local rules (`lib/Frontend/SafeCheck.cpp`), and its guards become
+bounds checks (`lib/Frontend/GuardSafe.cpp`). The rules keep every pointer
+in memory within the bound its declaration states (*typed memory*), so a
+pointer loaded from a field is believed and its accesses are compared with
+that bound instead of guarded (`lib/Frontend/GuardTyped.cpp` reads the
+fields' implicit annotations), and they follow ownership: a
+`WEAVEC_OWNED` pointer is released once and not used afterwards, no owner
+is leaked, and no borrow outlives what owns its block
+(`lib/Frontend/SafeOwnership.cpp`, a dataflow over Clang's CFG). A pointer
+field that is not an owner is a *reference*, tested against the shadow
+when a safe function loads it. Code that is not safe is trusted to keep
+the bounds and the owners, and the ledger and `weavec-cc --weavec-audit`
+list it; `weavec-cc --weavec-explain <rule>` prints a rule's page
+(`resources/safe-c/rules.md`). `runtime/` is the C
 runtime every enforcing link carries: the shadow, the arena allocator (with
 per-thread caches) whose quarantine reuses a released block only after a
 *sweep* (marked in parallel by worker threads) finds no pointer to it, the
@@ -41,10 +46,12 @@ enforcement ledger, the compiler driver). `tools/weavec-cc` is Clang's
 driver with WeaveC inside; there is no other tool, and no analysis beyond
 Safe C's rules, each decided inside one function. Full
 picture: `docs/architecture.md`. Design and the reasoning behind it:
-`docs/rfcs/`. Read `0042-typed-memory.md` first, the current design
-(typed units: typed memory and what keeps it, bounds from fields, the
-comparisons, the sweep through released blocks, the audit), then
-`0041-safe-c.md` (safe
+`docs/rfcs/`. Read `0043-ownership.md` first, the current design (one
+safe tier; owners, borrows and references; the ownership rules and the
+dataflow that checks them; the reference test; `--weavec-explain`; the
+ledger's fields and the audit's references), then `0042-typed-memory.md`
+(typed memory and what keeps it, bounds from fields, the comparisons, the
+sweep through released blocks, the audit), then `0041-safe-c.md` (safe
 functions, their rules and annotations, bounds checks in place of guards,
 the split entry point, locals placed on the heap), then
 `0040-actionable-reports.md` (the reports' stacks, the objects they name,
@@ -83,8 +90,9 @@ Accepted RFC, or contradicts one, stop and write or amend an RFC first
 not encode a new design decision in code alone. Bug fixes that bring code
 in line with an RFC need no RFC. A rule that removes a guard must be local
 to a function and monitored by `verify` mode (RFC 0035 §6); the one other
-justification is typed memory, in a typed function (RFC 0042 §10), and it
-is monitored the same way.
+justification is typed memory, in a safe function (RFC 0042 §10), and it
+is monitored the same way. Ownership's rules (RFC 0043) remove nothing at
+run time.
 
 ## Build and test
 
@@ -185,7 +193,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Change stack frames, shared frame space, scopes, dynamic allocas, non-local exits | `lib/Frontend/GuardFrames.cpp` (RFC 0035 §3, amendment 5; RFC 0036 §2: `StackLifetime`); tests `test/Guards/ir-frames.c`, `shared-frame.c`, `stack-overflow.c`, `use-after-scope*.c`, `vla-overflow.c`, `alloca-entry.c`, `longjmp.c`, `ir-noreturn.c`; case `test/cases/determinism/shared-frame_ok.c` |
 | Change global redzones and registration | `lib/Frontend/GuardGlobals.cpp`; `__weavec_rt_globals_register` in `runtime/weavec_guard.c` (RFC 0035 §4, RFC 0036 §4); tests `test/Guards/ir-globals.c`, `global-overflow.c`, `test/Driver/image-globals.c` |
 | Change unsafe regions                | `lib/Frontend/UnsafeRegions.cpp` (the AST collector; `no_sanitize("address")` functions too; RFC 0035 §2.6, amendment 8) |
-| Change the enforcement ledger or the summary line | `lib/Frontend/EnforcementLedger.cpp` (`weavec-ledger` version 5, `EnforcementLedgerVersion`; RFC 0035 §9, amendment 10; RFC 0042 §10: the `functions` list and `runAudit`); test `test/Guards/ledger.c` |
+| Change the enforcement ledger or the summary line | `lib/Frontend/EnforcementLedger.cpp` (`weavec-ledger` version 6, `EnforcementLedgerVersion`; RFC 0035 §9, amendment 10; RFC 0042 §10: the `functions` list and `runAudit`; RFC 0043 §11: `owns`, the `fields` list, the `reference` reason, `weavec-audit` version 2); test `test/Guards/ledger.c` |
 | Change the allocator, the quarantine or when to sweep | `runtime/weavec_alloc.c` (arena, slot words, quarantine, huge blocks, the heap's shadow; the soft and hard budgets and the pacing, `overBudget`; recycling in address order; RFC 0036 §3; thread caches, spare regions for full classes, the 64 MiB default, RFC 0037 §2), `weavec_malloc.c` (the `malloc` family); `rt_test` tests `pacing`, `sweep-*`, `thread-caches` |
 | Change the sweep                     | `runtime/weavec_sweep.c` (stopping threads: Darwin `thread_suspend`, Linux signals; the roots: registers and vector registers, stacks, thread-specific data, readable mappings, the image table for the dyld shared cache; the conservative mark and its workers; RFC 0036 §3.4, RFC 0037 §1, §3); `rt_test` tests `sweep-*`, `*-is-scanned`, `vector-registers-are-scanned`, `signals-during-sweeps` |
 | Change ASan's interface              | `runtime/weavec_asan.c` (RFC 0036 §5); test `test/Guards/use-after-poison.c`, case `test/cases/determinism/asan-pool_*.c` |
@@ -197,8 +205,9 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Debug the passes                     | `weavec-cc -O2 -S -emit-llvm file.c -o -` (the expanded guards and the frame layout); `-mllvm -print-after-all` (the markers through the pipeline; the passes print as `weavec::frontend::GuardInsertPass` and so on); `-fweavec-checks=verify` (removed guards kept as monitors) |
 | Add or run a test case               | `test/cases/README.md`, `scripts/run-cases.py`         |
 | Measure on real code                 | `scripts/corpus-gate.py`, `test/corpus/` (README, manifest with per-platform forms, expected ratchet, triage, prerequisites, the programs tier) |
-| Change typed units (field annotations, bounds of loaded pointers, the comparisons' form, conversions at stores, calls and returns, store pairs, strings, the audit) | the typed rules and `annotateFields` in `lib/Frontend/SafeCheck.cpp`; `lib/Frontend/GuardTyped.cpp` (reading the annotations, count reads, store pairs, zeroed locals); `SafeBounds` in `lib/Frontend/GuardSafe.cpp` (`boundedField`, `outside`, `convert*`, `findStrings`); `weavecRtMarkReleased` and the release records in `runtime/weavec_alloc.c`, `__weavec_rt_convert_fail` in `weavec_guard.c` (RFC 0042); tests `test/Safe/typed-rules.c`, `test/Guards/typed-*.c`, `ir-typed.c`, `test/Driver/typed-units.c`, cases `test/cases/typed/`, `rt_test` `release-keeps-bytes` and `sweep-follows-released-blocks`; the guide's "Typed C" section |
-| Change Safe C (its rules, annotations, bounds checks, entry points, heap-placed locals) | `lib/Frontend/SafeCheck.cpp` (the rules and the table, `include/weavec/Frontend/SafeCheck.h`), `lib/Frontend/GuardSafe.cpp` (bounds, entries, heap placement), `resources/include/weavec.h` (RFC 0041); tests `test/Safe/`, `test/Guards/safe-*.c`, `ir-safe.c`, cases `test/cases/safe/`; the guide `docs/pages/guides/safe-c.md` |
+| Change typed memory in safe functions (field annotations, bounds of loaded pointers, the comparisons' form, conversions at stores, calls and returns, store pairs, strings, the audit) | the typed rules and `annotateFields` in `lib/Frontend/SafeCheck.cpp`; `lib/Frontend/GuardTyped.cpp` (reading the annotations, count reads, store pairs, zeroed locals); `SafeBounds` in `lib/Frontend/GuardSafe.cpp` (`boundedField`, `outside`, `convert*`, `findStrings`); `weavecRtMarkReleased` and the release records in `runtime/weavec_alloc.c`, `__weavec_rt_convert_fail` in `weavec_guard.c` (RFC 0042); tests `test/Safe/typed-rules.c`, `test/Guards/typed-*.c`, `ir-typed.c`, `test/Driver/typed-units.c`, cases `test/cases/typed/`, `rt_test` `release-keeps-bytes` and `sweep-follows-released-blocks`; the guide's "Typed memory" section |
+| Change Safe C (the one safe tier, its rules, annotations, bounds checks, entry points, heap-placed locals, `--weavec-explain`) | `lib/Frontend/SafeCheck.cpp` (the rules and the table, `runExplain`, `include/weavec/Frontend/SafeCheck.h`), `lib/Frontend/GuardSafe.cpp` (bounds, entries, heap placement), `resources/include/weavec.h`, the rules' pages `resources/safe-c/rules.md` (one section per rule, embedded for `--weavec-explain`, rendered as the site's rules reference, examples compiled by `docs/scripts/check-examples.py`) (RFC 0041, RFC 0043 §1, §12); tests `test/Safe/`, `test/Guards/safe-*.c`, `ir-safe.c`, cases `test/cases/safe/`; the guide `docs/pages/guides/safe-c.md` |
+| Change ownership (`WEAVEC_OWNED`, owners, borrows and references, the rules `owner-*`, `stale-borrow`, `call-alias`, the table's `ptr:owned` results and `owner` arguments, the reference test) | `lib/Frontend/SafeOwnership.cpp` (the dataflow over Clang's CFG and its errors), `OwnedAnnotation` in `include/weavec/Frontend/SafeCheck.h`; the `owned`, `owner` and `release` clauses in `lib/Core/LibrarySpec.txt`; `testReferences` in `lib/Frontend/GuardSafe.cpp` and `__weavec_rt_reference_fail` in `runtime/weavec_guard.c` (RFC 0043); tests `test/Safe/ownership.c`, `test/Guards/reference-load.c`; the guide's "Ownership" section, `docs/pages/reference/guarantees.md` (W5), (O1)–(O5) |
 | Add an annotation                    | Don't, without an RFC: `WEAVEC_UNSAFE` and Safe C's are the only ones (`UnsafeRegions.h`, `SafeCheck.h`, `weavec.h`, `docs/annotations.md`) |
 | Change build flags / warnings        | `cmake/WeaveCWarnings.cmake`, `cmake/WeaveCLLVM.cmake` |
 | Add a CI job                         | `.github/workflows/ci.yml`                             |

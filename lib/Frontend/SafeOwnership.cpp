@@ -856,9 +856,15 @@ private:
           assign != nullptr && assign->getOpcode() == clang::BO_Assign) {
         if (const clang::VarDecl *variable = localOf(assign->getLHS())) {
           assigned[variable].push_back(assign->getRHS());
+          // §2: a local that starts as something else (`char *b =
+          // stack_buffer;`) is a borrow whatever it is given later.
+          const clang::Expr *init = variable->getInit();
+          const bool startsBorrowed =
+              init != nullptr && classify(init).kind != Value::Kind::Null &&
+              classify(init).kind != Value::Kind::OwnedCall;
           if (const auto *call = llvm::dyn_cast<clang::CallExpr>(
                   stripCasts(assign->getRHS()));
-              call != nullptr && returnsOwner(*call))
+              call != nullptr && returnsOwner(*call) && !startsBorrowed)
             ownerLocals.insert(variable);
         }
         return;
@@ -1830,6 +1836,62 @@ private:
         break;
       }
     }
+    // An owner consumed by the call is not passed to it again.
+    bool twice = false;
+    for (unsigned i = 0; i < call.getNumArgs() && !twice; ++i) {
+      const Argument &consumed = arguments[i];
+      if ((consumed.effect != Effect::Consume &&
+           consumed.effect != Effect::Release &&
+           consumed.effect != Effect::Realloc) ||
+          consumed.value.kind != Value::Kind::Load ||
+          !consumed.value.place.owner || !consumed.value.place.named)
+        continue;
+      for (unsigned j = 0; j < call.getNumArgs(); ++j) {
+        const Value &other = arguments[j].value;
+        if (i == j || !other.place.known ||
+            !consumed.value.place.place.covers(other.place.place))
+          continue;
+        error(call.getArg(j)->getExprLoc(), rule::OwnerMoved,
+              "'" + text(call.getArg(i)) + "' is moved to '" +
+                  calleeName(call) + "' (argument " + std::to_string(i + 1) +
+                  ") and passed to it again (argument " +
+                  std::to_string(j + 1) + ")",
+              {},
+              "pass a copy, or call it with distinct objects: the callee may "
+              "release the first before it reads the second");
+        twice = true;
+        break;
+      }
+    }
+    // A pointer to owners goes only where the parameter says so, or where
+    // it is read only (`T *const *`).
+    for (unsigned i = 0; i < call.getNumArgs(); ++i) {
+      const clang::QualType parameter = parameterType(call, i);
+      const clang::Expr *argument = call.getArg(i)->IgnoreParenImpCasts();
+      const clang::QualType given = argument->getType();
+      const auto *declared = llvm::dyn_cast<clang::DeclRefExpr>(argument);
+      const auto *member = llvm::dyn_cast<clang::MemberExpr>(argument);
+      clang::QualType source = given;
+      if (declared != nullptr)
+        source = declared->getDecl()->getType();
+      else if (member != nullptr)
+        source = member->getMemberDecl()->getType();
+      if (parameter.isNull() || !parameter->isPointerType() ||
+          !source->isPointerType() ||
+          !isOwnerType(source->getPointeeType()))
+        continue;
+      const clang::QualType pointee = parameter->getPointeeType();
+      if (isOwnerType(pointee) || pointee.isConstQualified() ||
+          pointee->isVoidType())
+        continue;
+      error(argument->getExprLoc(), rule::OwnerSource,
+            "'" + text(argument) + "' points to owners and parameter " +
+                std::to_string(i + 1) + " of '" + calleeName(call) +
+                "' does not say so: the callee could overwrite one",
+            {},
+            "declare the parameter 'T *WEAVEC_OWNED *', or 'T *const *' if "
+            "it only reads them");
+    }
     const clang::VarDecl *result = resultLocal(call);
     for (unsigned i = 0; i < call.getNumArgs(); ++i) {
       Argument &argument = arguments[i];
@@ -2023,6 +2085,16 @@ private:
     }
     if (destination.place.path.empty() &&
         borrowLocals.contains(destination.place.root)) {
+      if (const Value value = classify(source);
+          value.kind == Value::Kind::OwnedCall)
+        error(value.call->getExprLoc(), rule::OwnerLeak,
+              "'" + calleeName(*value.call) + "' returns an owner and '" +
+                  text(target) +
+                  "' is a borrow (it started as one): the block would have "
+                  "no owner",
+              {},
+              "keep the block in an owner local of its own and point '" +
+                  text(target) + "' at it");
       flow.borrows[destination.place.root] = borrowOf(flow, source);
       return;
     }

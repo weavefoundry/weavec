@@ -3,14 +3,15 @@
 // In a program with typed code the sweep clears a released block that
 // something still refers to, so its pointers read null: the chain never
 // reaches a block reused meanwhile, however many sweeps reuse blocks of the
-// same size (each written -1).
+// same size (each written -1). (Through owners, which are believed: a
+// reference would be tested where it is loaded, RFC 0043 §7.)
 // CLEAN
 // FLAGS: -O1 -fweavec-safe
 #include <weavec.h>
 #include <stdlib.h>
 
-struct node { struct node *next; long value; };
-struct anchor { struct node *head; };
+struct node { struct node *WEAVEC_OWNED next; long value; };
+struct anchor { struct node *WEAVEC_OWNED head; };
 
 static struct anchor kept;
 

@@ -434,7 +434,8 @@ are guarded if `weavec-cc` built it (assumption A2).
 
 `WEAVEC_UNSAFE` on a function definition or a compound statement makes its
 source range unsafe (RFC 0035 §2.6). It is the only annotation `weavec.h`
-defines that weakens a check (the others are Safe C's, RFC 0041); its
+defines that weakens a check (the others are Safe C's, RFC 0041 to RFC
+0043); its
 spelling, `annotate("weavec.unsafe")`, is `UnsafeAnnotation`
 in `include/weavec/Frontend/UnsafeRegions.h`. `UnsafeRegions` collects the
 ranges by file over the AST before code generation, only when the unit
@@ -448,6 +449,38 @@ leaves each access whose instruction's location lies in a region unguarded
 `array-bounds` checks are removed. An access inlined from an unsafe
 function keeps the location of its source, and so stays unguarded.
 
+## Safe functions
+
+A function marked `WEAVEC_SAFE`, or every function of a unit compiled with
+`-fweavec-safe`, is *safe* (RFC 0041, RFC 0042, RFC 0043; there is one
+safe tier, and `-fweavec-typed` is removed). `createSafeChecker`
+(`lib/Frontend/SafeCheck.cpp`) adds an AST consumer that checks each safe
+function, before code generation and under `-fsyntax-only` too, against
+Safe C's rules: bounds (RFC 0041), typed memory (RFC 0042), and, through
+`checkOwnership` in `lib/Frontend/SafeOwnership.cpp`, ownership (RFC
+0043): one forward dataflow over Clang's CFG (`clangAnalysis`) per
+function, which follows each owner the function names (null, holds, moved,
+partly moved) and the owners each local borrow is below, and reports
+`owner-moved`, `owner-leak`, `owner-source`, `owner-path`, `owner-slot`,
+`stale-borrow` and `call-alias`. Each error ends in
+`[weavec-safe:<rule>]`; the first of a compile notes
+`weavec-cc --weavec-explain <rule>`, which prints the rule's section of
+`resources/safe-c/rules.md`, embedded in the compiler. The checker also
+annotates the unit's pointer fields with their bounds and kinds (owner,
+reference, borrowed) for the passes and the ledger.
+
+Nothing the ownership rules decide removes a check. The guard passes see
+safe functions through those annotations and the bounds table:
+`lib/Frontend/GuardSafe.cpp` turns their guards into comparisons with the
+bounds their pointers declare, gives each an entry for callers that are not
+safe (which checks pointer arguments against the shadow, and escaping and
+owned ones against the stack), places on the heap the locals whose address
+may outlive their scope, and tests each reference a safe function loads
+from a field and uses against the shadow (`__weavec_rt_reference_fail`, a
+`heap-use-after-free` report); `lib/Frontend/GuardTyped.cpp` reads the
+fields' annotations, count reads and store pairs. Accesses whose pointer has
+no known bound keep their guards (`typed-unbounded`).
+
 ## The enforcement ledger
 
 GuardInsert records each access it collected, before any rule removes its
@@ -460,16 +493,20 @@ reason:
 
 | Outcome | Reasons |
 | --- | --- |
-| `guarded` | `access`, `range`, `string`, `checked-call`, `loop-range` |
-| `proven` | `in-bounds`, `dominated`, `merged`, `optimized` (the optimizer removed every copy of the access) |
+| `guarded` | `access`, `range`, `string`, `checked-call`, `loop-range`, `typed-unbounded` and `reference` (a safe function's, RFC 0042 §10, RFC 0043 §7) |
+| `proven` | `in-bounds`, `dominated`, `merged`, `optimized` (the optimizer removed every copy of the access), `typed` (a safe function's comparison with its pointer's bounds) |
 | `unguarded` | `unsafe` |
 
-`-fweavec-ledger=<path>` writes the rows as JSON, `weavec-ledger` version 4
+`-fweavec-ledger=<path>` writes the rows as JSON, `weavec-ledger` version 6
 (`EnforcementLedgerVersion`; each row's `display` is its function's name
 demangled, RFC 0039 §8): an object with `schema`, `version`,
 `producer` and `units`, each unit with its `source`, `object`, `target`,
 `config` (`checks`, `zeroInit`), `summary` (`accesses`, `proven`,
-`guarded`, `unguarded`) and `rows`. A path ending in `/`, or an existing
+`guarded`, `unguarded`), `functions` (each with its tier, `safe`,
+`guarded` or `unsafe`, and `owns`), `fields` (each pointer field with its
+kind, `owner`, `reference` or `borrowed`, and each global owner a safe
+function reads in place) and `rows`. `weavec-cc --weavec-audit` reads
+ledgers and lists what safe functions trust (`weavec-audit` version 2). A path ending in `/`, or an existing
 directory, receives `<object>.ledger.json` per unit; a file receives one
 ledger, and an invocation that would write more than one is an error. Files
 are written through a temporary renamed into place. `-fweavec-summary` (the
@@ -479,6 +516,9 @@ error:
 ```
 weavec: lookup.c: 3 accesses: 1 proven, 2 guarded, 0 unguarded
 ```
+
+A unit with safe functions adds `; <k> of <f> functions safe; <o> owner
+and <r> reference fields`.
 
 ## The runtime
 
@@ -831,7 +871,8 @@ goes in the table, never in a comparison of a callee's name.
 | Component | Role |
 | --- | --- |
 | `GuardPass` (`GuardPass.h`; `GuardPass.cpp`, `GuardPassImpl.h`, `GuardInsert.cpp`, `GuardLibrary.cpp`, `GuardLoops.cpp`, `GuardExpand.cpp`, `GuardFrames.cpp`, `GuardGlobals.cpp`) | The four passes of *Compile pipeline* and `registerGuardPasses`, which adds them through `CodeGenOptions::PassBuilderCallbacks` with the mode (trap, report, verify), the unit's unsafe regions and its enforcement ledger. |
-| `EnforcementLedger` | The rows the passes record, their rollup, the `weavec-ledger` version 4 JSON writer and the summary line. |
+| `EnforcementLedger` | The rows the passes record, their rollup, the `weavec-ledger` version 6 JSON writer, the summary line, and `--weavec-audit` (`runAudit`). |
+| `SafeCheck` (`SafeCheck.h`; `SafeCheck.cpp`, `SafeCheckImpl.h`, `SafeOwnership.cpp`) | Safe C's checker (see *Safe functions*): the rules, the ownership dataflow, the bounds table and the field annotations the passes read, the annotations' spellings, and `--weavec-explain` (`runExplain`). `GuardSafe.cpp` and `GuardTyped.cpp`, in `GuardPass`, apply them. |
 | `UnsafeRegions` | The `WEAVEC_UNSAFE` and `no_sanitize` ranges of a unit, by file, the AST consumer that collects them, and `UnsafeAnnotation`. |
 | `Driver` | `weavec-cc`: `DriverOptions` (WeaveC's flags, split from Clang's), the in-process `-cc1` jobs with the enforcement set-up (`configureEnforcement`), ASan's contract and fortification, the wrapper action that adds the unsafe-region collector, the runtime's link line (`addRuntimeLibraries`, `runtimeObstacle`, `allocatorDefinedBy`, `dropAllocatorIfDefined`), `--help-weavec`, and `--weavec-symbolize` (`Symbolizer.cpp`: the runtime's symbolizer over LLVM's `Symbolize` library, and the rewriter of a saved report's frames). |
 | `ResourceDir` | Locates `weavec.h`, the runtime's library and the Apple SDK. |
@@ -844,13 +885,17 @@ in Clang's `g++` mode. Its own flags,
 which `weavec-cc --help-weavec` lists, are `-f[no-]weavec`,
 `-fweavec-checks=trap|report|verify|none`, `-f[no-]weavec-zero-init`,
 `-fweavec-ledger=<path>`, `-f[no-]weavec-summary`,
-`-f[no-]weavec-asan-compat`, `-f[no-]weavec-colors` and
+`-f[no-]weavec-asan-compat`, `-f[no-]weavec-colors`,
+`-f[no-]weavec-safe`, `-fweavec-safe-checks=bounds|full` and
 `-fweavec-rpath=<dir>`/`-fno-weavec-rpath`; an unknown `-fweavec-*` flag is an error, and
 everything else is Clang's. `weavec-cc --weavec-symbolize [<log>...]`
 compiles nothing: without an operand it answers `CODE <module> 0x<offset>`
 lines on standard input as `llvm-symbolizer` does (the runtime's
 symbolizer on Linux), and with a saved report's path it prints the report
-with the frames the runtime named only by module and offset symbolized. When WeaveC is on, the driver defines
+with the frames the runtime named only by module and offset symbolized.
+`weavec-cc --weavec-audit <ledger>...` and `weavec-cc --weavec-explain
+[<rule>... | all]` compile nothing either: the first lists what safe
+functions trust, the second prints Safe C's rules. When WeaveC is on, the driver defines
 `__WEAVEC__=1` and adds `weavec.h`'s directory with `-isystem`.
 `--version` prints Clang's version block, then `weavec-cc version …`, the
 LLVM version, and the runtime's interface version and platform. The

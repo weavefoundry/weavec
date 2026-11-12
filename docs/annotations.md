@@ -1,12 +1,14 @@
 # The weavec.h header
 
 `weavec.h` declares `WEAVEC_UNSAFE` and the annotations of
-[safe functions](pages/guides/safe-c.md) ([RFC 0041](rfcs/0041-safe-c.md)).
+[safe functions](pages/guides/safe-c.md) ([RFC 0041](rfcs/0041-safe-c.md),
+[RFC 0042](rfcs/0042-typed-memory.md), [RFC 0043](rfcs/0043-ownership.md)).
 `weavec-cc` puts the header on the system include path
 (`#include <weavec.h>`) and defines `__WEAVEC__` to `1` in every unit it
-compiles with WeaveC enabled. The header is at version 2.1
-(`WEAVEC_H_VERSION_MAJOR`, `WEAVEC_H_VERSION_MINOR`): 2.1 gives two forms a
-meaning in typed units ([RFC 0042](rfcs/0042-typed-memory.md)), below.
+compiles with WeaveC enabled. The header is at version 3.0
+(`WEAVEC_H_VERSION_MAJOR`, `WEAVEC_H_VERSION_MINOR`): 3.0 adds
+`WEAVEC_OWNED` and makes `WEAVEC_SAFE` name the one safe tier
+([RFC 0043](rfcs/0043-ownership.md)), below.
 
 `WEAVEC_UNSAFE` expands to `__attribute__((annotate("weavec.unsafe")))`
 under compilers that understand Clang's `annotate` attribute and to nothing
@@ -58,7 +60,7 @@ region too, with no source change.
 | Form                                                       | Placement                                                               | Meaning                                                                                                                                                                           |
 | ---------------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `WEAVEC_SAFE`                                              | before a function definition                                            | The function is safe: checked against Safe C's rules when it compiles, its accesses checked against its pointers' bounds.                                                         |
-| `WEAVEC_SAFE`                                              | before a function declaration, in a unit compiled with `-fweavec-typed` | A typed unit defines the function: typed callers call its body, `<name>.weavec.safe`, and the link fails when no typed unit defines it. Elsewhere it is ignored on a declaration. |
+| `WEAVEC_SAFE`                                              | before a function declaration, in a unit with safe functions | The function is defined safe: safe callers call its body, `<name>.weavec.safe`, and the link fails when no unit defines it safe. Elsewhere it is ignored on a declaration. |
 | `WEAVEC_GUARDED`                                           | before a function definition                                            | In a unit compiled with `-fweavec-safe`, the function stays guarded.                                                                                                              |
 | `T *WEAVEC_COUNTED_BY(n) p`                                | after a pointer type's `*`                                              | `p` points to `n` elements; `n` is an integer parameter or field by name, or a constant.                                                                                          |
 | `T *WEAVEC_COUNTED_BY_OR_NULL(n) p`                        | the same                                                                | As above, or null.                                                                                                                                                                |
@@ -66,7 +68,8 @@ region too, with no source change.
 | `T *WEAVEC_ENDED_BY(e) p`                                  | the same                                                                | `p` points to the elements before the pointer parameter `e`.                                                                                                                      |
 | `char *WEAVEC_NULL_TERMINATED s`                           | the same                                                                | `s` points to a string, up to and with its NUL.                                                                                                                                   |
 | `char *WEAVEC_NULL_TERMINATED_OR_NULL s`                   | the same                                                                | As above, or null.                                                                                                                                                                |
-| `T *WEAVEC_ESCAPES p`                                      | after a parameter type's `*`                                            | The function may keep `p` after it returns; callers must not pass a stack address.                                                                                                |
+| `T *WEAVEC_OWNED p`                                        | after a pointer type's `*`: a field, a parameter, a result, a local, a global, an array's element, a function pointer's parameter or result | `p` is the one pointer responsible for releasing its block (an _owner_): a result gives the caller a block to release, a parameter takes the caller's block, a field must be released or moved out before its struct. A pointer field that is neither `WEAVEC_OWNED` nor `WEAVEC_BORROWED` is a _reference_. |
+| `T *WEAVEC_ESCAPES p`                                      | after a parameter type's `*`                                            | The function may keep `p` (as a reference) after it returns; callers must not pass a stack address.                                                                               |
 | `T *WEAVEC_BORROWED f`                                     | after a field type's `*`                                                | The field may hold a borrowed pointer when its struct is a local variable; a pointer loaded from it is borrowed.                                                                  |
 | `T *p WEAVEC_LIFETIMEBOUND`                                | after a parameter's name                                                | The function's result may point into `p` (Clang's `lifetimebound`).                                                                                                               |
 
@@ -76,18 +79,27 @@ attributes as `WEAVEC_UNSAFE` does. The pointer annotations expand to
 `-pedantic` warns that `[[…]]` is a C23 extension before C23) and to
 nothing under other compilers. Clang's own `counted_by`, `sized_by`,
 `counted_by_or_null` and `sized_by_or_null` on struct fields count as the
-WeaveC forms. In a typed unit the bounds of struct fields are used when the
-program runs: a pointer loaded from a field is believed to have the bytes
+WeaveC forms. In a safe function the bounds of struct fields are used when
+the program runs: a pointer loaded from a field is believed to have the bytes
 its declaration gives, and a pointer stored there is checked against them.
 The compiler adds implicit `annotate("weavec.field", …)` and
 `annotate("weavec.count", …)` attributes to such fields for that; they are
 not spellings a program writes.
 
+`WEAVEC_OWNED` expands to `[[clang::annotate_type("weavec.owned")]]`
+under Clang and to nothing under other compilers, so owned C is plain C;
+its spelling lives in `weavec.h` and as `OwnedAnnotation` in
+`include/weavec/Frontend/SafeCheck.h`. A local that receives the result of
+a call that returns an owner (`malloc`, a function whose result is
+`WEAVEC_OWNED`) is an owner without the annotation; a local that takes a
+block out of a place says `WEAVEC_OWNED` to move it, and borrows without.
+
 The ownership annotations of earlier versions (`WEAVEC_OWNED`,
 `WEAVEC_BORROWED`, `WEAVEC_ASSUME` and the rest) were deleted with the
 ownership analysis that read them
-([RFC 0036](rfcs/0036-deterministic-heap-reuse.md)); a program that still
-uses one fails to compile until it stops. `WEAVEC_COUNTED_BY` returned
-with RFC 0041, with the meaning above. `annotate` payloads that do not
+([RFC 0036](rfcs/0036-deterministic-heap-reuse.md)). `WEAVEC_COUNTED_BY`
+returned with RFC 0041, `WEAVEC_BORROWED` with RFC 0041 and
+`WEAVEC_OWNED` with RFC 0043, with the meanings above, which Safe C's
+rules check ([the rules](../resources/safe-c/rules.md)). `annotate` payloads that do not
 start with `weavec.` are ignored. The [unsafe boundaries
 guide](pages/guides/unsafe.md) says when a region is the right tool.

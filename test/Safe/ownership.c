@@ -248,3 +248,24 @@ int takenAgain(struct list *l) {
 void alias(struct list *l) {
   list_put(l, l->items[0]); // expected-error {{'l->items[0]' points into 'l', which 'list_put' may change through its argument 1 [weavec-safe:call-alias]}}
 }
+
+// Found by the conversions: an owner moved to a call and passed to it again;
+// a pointer to owners where the parameter does not say so; a local that
+// started as a borrow given an allocation.
+char *WEAVEC_OWNED append(char *WEAVEC_OWNED s, const char *t);
+void edit(char **v, size_t n);
+void look(char *const *v, size_t n);
+char *WEAVEC_OWNED self(char *WEAVEC_OWNED s) {
+  return append(s, s); // expected-error {{'s' is moved to 'append' (argument 1) and passed to it again (argument 2) [weavec-safe:owner-moved]}}
+}
+void strings(char *WEAVEC_OWNED *WEAVEC_COUNTED_BY(n) v, size_t n) {
+  look(v, n);
+  edit(v, n); // expected-error {{'v' points to owners and parameter 1 of 'edit' does not say so: the callee could overwrite one [weavec-safe:owner-source]}}
+}
+int startsBorrowed(int big) {
+  char stack[16] = {0};
+  char *buf = stack;
+  if (big)
+    buf = malloc(64); // expected-error {{'malloc' returns an owner and 'buf' is a borrow (it started as one): the block would have no owner [weavec-safe:owner-leak]}}
+  return buf[0];
+}
