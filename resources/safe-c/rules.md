@@ -285,7 +285,7 @@ int check(int c) {
 }
 ```
 
-A destructor releases each owner field before the struct (`free(it->name); free(it);`). A setter releases the old block before it stores the new one. `p = realloc(p, n)` loses the block when `realloc` fails: assign the result to a new local, test it, then assign `p`. A local that receives an allocation (`char *p = malloc(n)`) is an owner without being declared one; a function that returns one declares its result `WEAVEC_OWNED`.
+A destructor releases each owner field before the struct (`free(it->name); free(it);`). A struct the caller keeps (a local, a field) is released by a function whose parameter is `WEAVEC_DROPS` (`void vec_free(struct vec *WEAVEC_DROPS v)`): after any other call given a pointer to it, the struct's owners may hold blocks and its owner releases them before it goes out of scope; after that call they are null, and the function is checked to leave them so. A setter releases the old block before it stores the new one. `p = realloc(p, n)` loses the block when `realloc` fails: assign the result to a new local, test it, then assign `p`. A local that receives an allocation (`char *p = malloc(n)`) is an owner without being declared one; a function that returns one declares its result `WEAVEC_OWNED`.
 
 ## owner-source
 

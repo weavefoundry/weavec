@@ -297,7 +297,7 @@ void drop(struct item *WEAVEC_OWNED it) {
 
 int grow(struct list *l, struct item *WEAVEC_OWNED it) {
   struct item **first = &l->items[0];         /* a borrow below l->items */
-  struct item **bigger = realloc(l->items, (l->n + 1) * sizeof *bigger);
+  struct item *WEAVEC_OWNED *bigger = realloc(l->items, (l->n + 1) * sizeof *bigger);
   if (bigger == NULL) { item_free(it); return -1; }
   bigger[l->n] = it;
   l->items = bigger;
@@ -1069,3 +1069,101 @@ The test's slow path is a new runtime entry point
 - **Fix-its** for the notes that name the missing statement, and
   `defer` when C has it.
 - **Data races**, and the cost items RFC 0042 lists.
+
+## Implementation amendments
+
+These record where the implementation departs from the design above, from
+S0's paper review of cJSON, sds, zlib and the `lzw` port (its findings M1
+to M20, kept in `build/rfc43/s0/`), from building it, and from what the
+conversion agents reported (S7). They override the body.
+
+1. **One tier, as built (§1).** Every C unit the checker runs on gets RFC
+   0042's field annotations; they are removed before the optimizer runs, so
+   guarded code compiles as before (gate G9). A unit registers the program's
+   typed defaults (no allocation stacks) only when it defines a safe
+   function. The ledger's removal reason stays `typed`; there is no `safe`
+   reason any more. RFC 0041's tier was not a separate body of code: its
+   differences were branches on the unit's flag, which are gone.
+2. **Owner locals (§2).** A local is an owner when declared one, when a
+   call that returns an owner is assigned to it anywhere in the function
+   (`char *p = NULL; ... p = malloc(n);`, S0's M12), or when its address is
+   passed where a call stores an owner (`getline(&line, ...)`); but a local
+   whose initializer is something else (`char *b = stack_buffer;`) is a
+   borrow, and an allocation assigned to it later is `owner-leak` ("it
+   started as one").
+3. **The library table (§2).** The result flag is spelled `ptr:owned`. The
+   `owner` parameter flag distinguishes, by the parameter's access, a call
+   that replaces what was there (`w`: `asprintf`, which drops it) from one
+   that reallocates it (`rw`: `getline`).
+4. **Places through borrows (§4, §5).** A path through a local borrow is not
+   named: moving an owner out through one is `owner-slot`. Whether it may
+   change owners at all (`owner-path`) is decided by where the borrow comes
+   from: one assigned only from parameters, owners and addresses reached
+   through them (or a `?:` of such) may; one assigned a reference may not.
+   A pointer read from a reference field is a reference: nothing the
+   function does to its own owners ends it.
+5. **A call's argument (§5; S0's M2).** Owners below what a call may change
+   (a pointer to non-`const` memory that holds owners) may hold blocks after
+   it: the caller keeps answering for them. A new parameter annotation,
+   **`WEAVEC_DROPS`**, says the opposite of a destructor of a struct the
+   caller keeps (`void vec_free(struct vec *WEAVEC_DROPS v)`): after the call
+   those owners are null, and the function is checked to leave them null at
+   every return. An early design that forgot the owners after any such call
+   (S0's choice "unchecked") was built first and dropped: the conversions
+   showed every caller's missing destructor call compiling silently. A call
+   given a reference where it may change owners below it is `owner-path`
+   (S0's M6).
+6. **Fresh blocks (§2; S0's M15).** Besides the library's allocations, an
+   owned `void *` result (a program's allocator, an allocation hook) and an
+   owned result of a function declared `__attribute__((malloc))` have null
+   owners.
+7. **Null tests (§10).** A test of an owner that took a place's block, found
+   null, shows that the place held null (`n = l->head; if (!n) return;`). A
+   branch the owner's known state rules out is not taken. The exit is
+   reached along each edge, so a loop's test that leaves the function
+   refines what it tested.
+8. **More rejected forms, found by the conversions.** An owner moved to a
+   call and passed to it again (`s = sdscatsds(s, s)`, upstream's use after
+   free) is `owner-moved`; a pointer to owners passed where the parameter
+   says neither `T *WEAVEC_OWNED *` nor `T *const *` is `owner-source`
+   (S0's M9); a byte copy of memory that holds owners is `owner-source`, a
+   fill with zero assigns them null after checking them; a struct copied
+   from below a pointer to `const` is `owner-path`.
+9. **What a `lifetimebound` call returns (§5)** is reached through that
+   argument, for `owner-path` and `owner-slot`: an accessor that returns a
+   pointer into its argument (zlib's state of a stream) needs no guarded
+   helper. An owner field returned where the result is not an owner is a
+   borrow, not a leak; a local owner returned so is `owner-leak`, at the
+   return.
+10. **Errors.** One error per move: after reporting a use, the place is
+    quiet. Distinct ownership errors at one place (two owners leaked at one
+    return) are each reported; other rules keep one error per place. A leak
+    of an owner last stored where it is only a reference says so in its
+    note. `call-alias` is reported once per call.
+11. **References (§7).** The test exempts uses that are comparisons, copies
+    into memory, and the bounds the pass built and did not use; fields of
+    function pointers and of unsized `void` are not tested. A null
+    reference's own field is read in its place, so the shadow of null is
+    never read. The ledger row is `guarded` with the reason `reference`.
+12. **The CFG (§10).** Clang's CFG with every expression an element and the
+    ends of locals' lifetimes; a function whose dataflow does not settle in
+    64 visits per block is not checked (none in the conversions). Clang's
+    `clangAnalysis` library is linked.
+13. **Measurement switches.** `-mllvm -weavec-reference-tests=0` and
+    `-mllvm -weavec-ownership-rules=0` turn the tests and the rules off, for
+    gate G7 only; they are not documented for users.
+14. **Not built, from S0.** M1 (owners below a parameter that an init
+    function fills, unset on entry: `WEAVEC_INIT`), M3 (ownership by
+    outcome: a parameter taken only when the call succeeds), M4 (ownership
+    by flag: cJSON's `IsReference`), M5 (an owner that points inside its
+    block: sds's header), M7 (an unannotated pointer result below a
+    parameter's owner), M8 (tests of references loaded from arrays of
+    pointers), M10 (allocator families), M11 (annotations inherited from a
+    header declaration), M13 (an owners-only `const`). Each costs the
+    conversions a guarded helper where they meet it; each is _Future work_.
+    Owners in a fixed array inside a struct are not checked when the struct
+    is released.
+15. **Budgets (H1).** The library is 17,300 lines: the checker is about
+    2,600 (the body estimated 2,200), the pass's test, the ledger, the
+    audit and `--weavec-explain` about 300, and the tier merge deleted less
+    than the body expected (amendment 1). The runtime stays within 10,500.

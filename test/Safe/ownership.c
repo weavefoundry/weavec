@@ -299,3 +299,29 @@ void maybe(char *WEAVEC_OWNED s) {
   if (s != NULL)
     free(s);
 }
+
+// Amendment 5: after a call that may change a struct's owners they may hold
+// blocks, unless the parameter is WEAVEC_DROPS, which the callee keeps.
+struct vec { int *WEAVEC_OWNED WEAVEC_COUNTED_BY(cap) data; size_t cap; };
+int vec_grow(struct vec *v);
+void vec_free(struct vec *WEAVEC_DROPS v);
+int kept(void) {
+  struct vec v = {0};
+  if (vec_grow(&v))
+    return -1; // expected-error {{returning while 'v.data' may still own its block [weavec-safe:owner-leak]}}
+  vec_free(&v);
+  return 0;
+}
+int freed(void) {
+  struct vec v = {0};
+  int r = vec_grow(&v);
+  vec_free(&v);
+  return r;
+}
+void vec_drop(struct vec *WEAVEC_DROPS v) {
+  if (v->cap == 0)
+    return; // expected-error {{returning while 'v->data' may still own its block, and 'v' is WEAVEC_DROPS [weavec-safe:owner-leak]}}
+  free(v->data);
+  v->data = NULL;
+  v->cap = 0;
+}

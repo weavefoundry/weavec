@@ -163,7 +163,7 @@ In a safe function every pointer to heap memory is one of three things:
 
 ### A constructor and a destructor
 
-A constructor allocates into a local, fills it and returns it. On a failure halfway it releases what it built: since every owner at the label is null or holds its block, one `goto fail` covers every path. A destructor takes its argument `WEAVEC_OWNED` and releases each owner field before the struct; forgetting one is `owner-leak`.
+A constructor allocates into a local, fills it and returns it. On a failure halfway it releases what it built: since every owner at the label is null or holds its block, one `goto fail` covers every path. A destructor takes its argument `WEAVEC_OWNED` and releases each owner field before the struct; forgetting one is `owner-leak`. A struct the caller keeps by value (a local `struct vec v`, a field) has a destructor that takes it `WEAVEC_DROPS` instead: it releases the owners below its parameter and leaves them null, which the compiler checks at each of its returns. After a call that may change a struct's owners (one given a pointer to non-`const` memory that holds owners), they may hold blocks, so the caller must reach such a destructor on every path, error paths included; after the destructor they are null.
 
 ```c
 #include <weavec.h>
