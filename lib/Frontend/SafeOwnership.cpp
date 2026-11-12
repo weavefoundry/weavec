@@ -946,10 +946,10 @@ private:
         relevant = true;
     forEachStatement(body, [&](const clang::Stmt *statement) {
       if (!relevant) {
-        if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(statement))
+        if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(statement)) {
           relevant = isOwnerType(member->getMemberDecl()->getType());
-        else if (const auto *reference =
-                     llvm::dyn_cast<clang::DeclRefExpr>(statement)) {
+        } else if (const auto *reference =
+                       llvm::dyn_cast<clang::DeclRefExpr>(statement)) {
           const clang::QualType type = reference->getDecl()->getType();
           relevant =
               isOwnerType(type) ||
@@ -1491,12 +1491,12 @@ private:
           (state.bits & StateMoved) == 0 || releasedAbove(flow, inner, place))
         continue;
       const std::string name = text(inner);
-      error(
-          at->getExprLoc(), rule::OwnerMoved,
-          cat(what(), " while '", name, "' was moved out of it and not assigned"),
-          locationOf(state.cause),
-          cat("'", name, "' was moved here; assign it ('", name,
-              " = NULL;') before"));
+      error(at->getExprLoc(), rule::OwnerMoved,
+            cat(what(), " while '", name,
+                "' was moved out of it and not assigned"),
+            locationOf(state.cause),
+            cat("'", name, "' was moved here; assign it ('", name,
+                " = NULL;') before"));
       return;
     }
   }
