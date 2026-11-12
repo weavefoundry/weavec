@@ -138,9 +138,10 @@ static llvm::Value *boundCount(const ModuleContext &module,
                                llvm::ArrayRef<llvm::Value *> arguments) {
   if (bounds.kind != PointerBounds::Kind::Counted)
     return nullptr;
-  if (bounds.count < 0 ||
-      static_cast<std::size_t>(bounds.count) >= arguments.size())
+  if (bounds.count < 0)
     return llvm::ConstantInt::get(module.i64, bounds.constant);
+  if (static_cast<std::size_t>(bounds.count) >= arguments.size())
+    return nullptr;
   llvm::Value *value = arguments[static_cast<std::size_t>(bounds.count)];
   if (!value->getType()->isIntegerTy())
     return nullptr;
@@ -178,6 +179,33 @@ static llvm::Value *boundBytes(const ModuleContext &module,
     bytes = builder.CreateSelect(builder.CreateIsNull(pointer),
                                  llvm::ConstantInt::get(module.i64, 0), bytes);
   return bytes;
+}
+
+/// A function's arguments by the table's parameter index: a hidden result
+/// pointer (`sret`) is no parameter. Empty when the ABI split or merged a
+/// parameter (a 16-byte struct passed in two registers on x86-64): no
+/// argument is then checked or believed by its index.
+static llvm::SmallVector<llvm::Value *, 8>
+sourceArguments(llvm::Function &function, std::size_t count) {
+  llvm::SmallVector<llvm::Value *, 8> values;
+  for (llvm::Argument &argument : function.args())
+    if (!argument.hasStructRetAttr())
+      values.push_back(&argument);
+  if (values.size() != count)
+    values.clear();
+  return values;
+}
+
+/// A call's arguments by its callee's parameter index (as above).
+static llvm::SmallVector<llvm::Value *, 8>
+sourceArguments(const llvm::CallBase &call, std::size_t count) {
+  llvm::SmallVector<llvm::Value *, 8> values;
+  for (unsigned i = 0; i < call.arg_size(); ++i)
+    if (!call.paramHasAttr(i, llvm::Attribute::StructRet))
+      values.push_back(call.getArgOperand(i));
+  if (values.size() != count)
+    values.clear();
+  return values;
 }
 
 /// The location a function's own checks report: its first line.
@@ -263,9 +291,20 @@ static bool mayOutlive(const ModuleContext &module, llvm::AllocaInst &alloca,
         if (call->isCallee(&use))
           return true;
         const unsigned index = call->getArgOperandNo(&use);
+        // The callee writes its result there and keeps nothing.
+        if (call->paramHasAttr(index, llvm::Attribute::StructRet))
+          continue;
         const FunctionBounds *table = calleeBounds(module, *call);
-        if (table != nullptr && index < table->parameters.size()) {
-          const PointerBounds &parameter = table->parameters[index];
+        // An argument the table cannot place may escape.
+        if (table != nullptr && !table->parameters.empty() &&
+            sourceArguments(*call, table->parameters.size()).empty())
+          return true;
+        std::size_t source = index;
+        for (unsigned i = 0; i < index; ++i)
+          if (call->paramHasAttr(i, llvm::Attribute::StructRet))
+            --source;
+        if (table != nullptr && source < table->parameters.size()) {
+          const PointerBounds &parameter = table->parameters[source];
           if (parameter.escapes)
             return true;
           if (parameter.lifetimeBound)
@@ -460,8 +499,8 @@ static void splitEntry(ModuleContext &module, llvm::Function &function) {
   else
     builder.CreateRet(call);
   builder.SetInsertPoint(call);
-  for (std::size_t i = 0; i < table->parameters.size() && i < arguments.size();
-       ++i) {
+  arguments = sourceArguments(*entry, table->parameters.size());
+  for (std::size_t i = 0; i < arguments.size(); ++i) {
     const PointerBounds &parameter = table->parameters[i];
     if (!typedValidated(parameter) || !arguments[i]->getType()->isPointerTy())
       continue;
@@ -658,14 +697,12 @@ private:
   void validateParameters() {
     if (table == nullptr)
       return;
-    llvm::SmallVector<llvm::Value *, 8> arguments;
-    for (llvm::Argument &argument : function.args())
-      arguments.push_back(&argument);
+    const llvm::SmallVector<llvm::Value *, 8> arguments =
+        sourceArguments(function, table->parameters.size());
     llvm::IRBuilder<> builder(entryPoint());
     builder.SetCurrentDebugLocation(location);
     const bool body = function.hasFnAttribute(BodyAttribute);
-    for (std::size_t i = 0;
-         i < table->parameters.size() && i < arguments.size(); ++i) {
+    for (std::size_t i = 0; i < arguments.size(); ++i) {
       const PointerBounds &bounds = table->parameters[i];
       llvm::Value *pointer = arguments[i];
       if (!pointer->getType()->isPointerTy())
@@ -964,9 +1001,10 @@ private:
     }
     auto *call = llvm::cast<llvm::CallInst>(value);
     llvm::IRBuilder<> builder(call->getNextNode());
-    llvm::SmallVector<llvm::Value *, 8> arguments(call->args());
     llvm::Value *bytes = nullptr;
     const FunctionBounds *callee = calleeBounds(module, *call);
+    const llvm::SmallVector<llvm::Value *, 8> arguments =
+        sourceArguments(*call, callee->parameters.size());
     const bool trusted = call->getCalledFunction() != nullptr &&
                          typedCallee(*call->getCalledFunction());
     if (const auto size = allocationSize(*call)) {
@@ -1372,9 +1410,11 @@ private:
     }
     if (body == nullptr || bounds == nullptr)
       return;
-    llvm::SmallVector<llvm::Value *, 8> arguments(call.args());
-    for (std::size_t i = 0;
-         i < bounds->parameters.size() && i < arguments.size(); ++i) {
+    const llvm::SmallVector<llvm::Value *, 8> arguments =
+        sourceArguments(call, bounds->parameters.size());
+    if (arguments.empty() && !bounds->parameters.empty())
+      return;
+    for (std::size_t i = 0; i < arguments.size(); ++i) {
       const PointerBounds &parameter = bounds->parameters[i];
       const bool single = parameter.kind == PointerBounds::Kind::Single &&
                           parameter.pointeeSize != 0;
@@ -1386,8 +1426,7 @@ private:
       if (validated(parameter) && !rooted(arguments[i]))
         return;
     }
-    for (std::size_t i = 0;
-         i < bounds->parameters.size() && i < arguments.size(); ++i) {
+    for (std::size_t i = 0; i < arguments.size(); ++i) {
       const PointerBounds &parameter = bounds->parameters[i];
       llvm::Value *pointer = arguments[i];
       if (parameter.kind == PointerBounds::Kind::Single &&
@@ -1482,6 +1521,10 @@ private:
           builder.CreateSub(builder.CreatePtrToInt(bounds.hi, module.i64), lo);
       llvm::Value *at =
           builder.CreateSub(builder.CreatePtrToInt(pointer, module.i64), lo);
+      // No bytes (a null `_OR_NULL` argument, an empty range) lie inside
+      // when the pointer is at most the end.
+      if (w == 0)
+        return builder.CreateICmpUGT(at, size);
       if (w > 1)
         size = builder.CreateBinaryIntrinsic(
             llvm::Intrinsic::usub_sat, size,
@@ -1791,9 +1834,8 @@ private:
       convertString(ret, value);
       return;
     }
-    llvm::SmallVector<llvm::Value *, 8> arguments;
-    for (llvm::Argument &argument : function.args())
-      arguments.push_back(&argument);
+    const llvm::SmallVector<llvm::Value *, 8> arguments =
+        sourceArguments(function, table->parameters.size());
     llvm::IRBuilder<> builder(&ret);
     builder.SetCurrentDebugLocation(ret.getDebugLoc());
     if (llvm::Value *bytes = bytesOf(result, value, builder, arguments))
