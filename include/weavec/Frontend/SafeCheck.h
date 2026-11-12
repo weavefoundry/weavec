@@ -180,8 +180,11 @@ struct SafeUnit {
   llvm::StringMap<FunctionBounds> functions;
   /// `-fweavec-safe-checks=full` (§7): safe functions keep their guards.
   bool full = false;
+  /// RFC 0042 §5: the guard passes run, which read the fields' annotations.
+  bool annotates = false;
   /// RFC 0042 §10: each function the unit defines outside system headers,
-  /// its tier (`safe`, `guarded`, `unsafe`), file and line.
+  /// its tier (`safe`, `guarded`, `unsafe`; RFC 0043 amendment 17:
+  /// `unsettled`), file and line.
   struct Definition {
     std::string name;
     std::string tier;

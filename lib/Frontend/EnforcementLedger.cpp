@@ -21,6 +21,8 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <set>
+#include <string>
 #include <system_error>
 #include <tuple>
 
@@ -252,6 +254,7 @@ struct Audit {
   llvm::json::Array references;
   /// Global owners safe code reads in place.
   llvm::json::Array globals;
+  std::set<std::string> fields;
   unsigned safe = 0;
   unsigned functions = 0;
 };
@@ -313,7 +316,10 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
       }
     if (const llvm::json::Array *fields = unit->getArray("fields"))
       for (const llvm::json::Value &value : *fields)
-        if (const llvm::json::Object *field = value.getAsObject()) {
+        if (const llvm::json::Object *field = value.getAsObject();
+            field != nullptr &&
+            // A header's struct is listed by each unit that includes it.
+            audit.fields.insert(llvm::formatv("{0}", value).str()).second) {
           const auto kind = field->getString("kind");
           if (kind == "reference")
             audit.references.push_back(llvm::json::Object(*field));

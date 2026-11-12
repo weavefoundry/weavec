@@ -16,6 +16,8 @@
 // RUN: FileCheck %s --check-prefix=LEDGER < %t/ledger/caller.o.ledger.json
 // RUN: %weavec_cc --weavec-audit %t/ledger | FileCheck %s --check-prefix=AUDIT
 // RUN: %weavec_cc --weavec-audit --format=json %t/ledger | FileCheck %s --check-prefix=JSON
+// RUN: mkdir -p %t/twice && cp %t/ledger/caller.o.ledger.json %t/twice/a.o.ledger.json && cp %t/ledger/caller.o.ledger.json %t/twice/b.o.ledger.json
+// RUN: %weavec_cc --weavec-audit %t/twice | FileCheck %s --check-prefix=TWICE
 // RUN: not %weavec_cc -fsyntax-only -fweavec-typed %s 2>&1 | FileCheck %s --check-prefix=TYPED
 // RUN: not %weavec_cxx -fsyntax-only -fweavec-safe -x c++ %s 2>&1 | FileCheck %s --check-prefix=CXX
 #include <weavec.h>
@@ -56,6 +58,10 @@ int viewed(const struct view *w) { return total(w->of); }
 // AUDIT-NEXT: typed-units.c:{{[0-9]+}}: main (guarded)
 // AUDIT: reference fields (tested where safe code loads them):
 // AUDIT-NEXT: typed-units.c:{{[0-9]+}}: view.of
+// A header's struct, in two units' ledgers, is listed once.
+// TWICE: reference fields
+// TWICE-NEXT: view.of
+// TWICE-NOT: view.of
 // JSON-DAG: "schema": "weavec-audit"
 // JSON-DAG: "safe": 2
 // JSON-DAG: "version": 2

@@ -730,13 +730,13 @@ void weavecRtFail(const char *kind, uintptr_t address, uint64_t width,
  * access was computed from, in another object. */
 void weavecRtFailJump(const char *kind, uintptr_t address, uint64_t width,
                       uintptr_t root, const struct __weavec_rt_site *site);
-/* As weavecRtFail, with a second line that places `address` relative to
- * [lo, hi), which `what` names ("destination": RFC 0036 section 6; "bounds
- * of the pointer": RFC 0041 section 4). */
 /* RFC 0043 section 7: a reference loaded from a field, into a released
  * block. */
 void weavecRtFailReference(uintptr_t address,
                            const struct __weavec_rt_site *site);
+/* As weavecRtFail, with a second line that places `address` relative to
+ * [lo, hi), which `what` names ("destination": RFC 0036 section 6; "bounds
+ * of the pointer": RFC 0041 section 4). */
 void weavecRtFailObject(const char *kind, const char *what, uintptr_t address,
                         uint64_t width, uintptr_t lo, uintptr_t hi,
                         const struct __weavec_rt_site *site);

@@ -2039,7 +2039,11 @@ public:
   /// is complete, before the code of any function that uses it is made.
   void HandleTagDeclDefinition(clang::TagDecl *tag) override {
     auto *record = llvm::dyn_cast<clang::RecordDecl>(tag);
-    if (record == nullptr || tag->getASTContext().getLangOpts().CPlusPlus ||
+    // Only the guard passes, on a 64-bit target, remove the annotations.
+    if (record == nullptr || !out->annotates ||
+        tag->getASTContext().getTargetInfo().getPointerWidth(
+            clang::LangAS::Default) != 64 ||
+        tag->getASTContext().getLangOpts().CPlusPlus ||
         tag->getASTContext().getSourceManager().isInSystemHeader(
             tag->getLocation()))
       return;
@@ -2169,12 +2173,13 @@ private:
     // place in the file.
     const clang::SourceLocation file =
         at.isValid() ? compiler.getSourceManager().getFileLoc(at) : at;
-    // Ownership's errors at one place (two owners leaked at one return)
-    // are each reported.
+    // Ownership's different errors at one place (two owners leaked at one
+    // return) are each reported.
+    const bool ownership = rule.starts_with("owner") ||
+                           rule == "stale-borrow" || rule == "call-alias";
     if (!reported
              .emplace(file.getRawEncoding(),
-                      rule.str() + (rule.starts_with("owner") ? message.str()
-                                                              : std::string()))
+                      rule.str() + (ownership ? message.str() : ""))
              .second)
       return;
     clang::DiagnosticsEngine &diagnostics = compiler.getDiagnostics();
@@ -2359,7 +2364,6 @@ int runExplain(llvm::ArrayRef<const char *> operands) {
   const llvm::StringRef text(SafeRulesTextData, SafeRulesTextSize);
   llvm::SmallVector<llvm::StringRef, 32> parts;
   text.split(parts, "\n## ");
-  const llvm::StringRef intro = parts.front();
   llvm::StringMap<llvm::StringRef> rules;
   llvm::SmallVector<llvm::StringRef, 32> order;
   for (const llvm::StringRef part : llvm::ArrayRef(parts).drop_front()) {
@@ -2393,7 +2397,6 @@ int runExplain(llvm::ArrayRef<const char *> operands) {
     }
     out << "## " << found->second.rtrim() << "\n\n";
   }
-  (void)intro;
   return ok ? 0 : 1;
 }
 

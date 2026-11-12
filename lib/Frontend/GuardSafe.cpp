@@ -454,7 +454,9 @@ static void splitEntry(ModuleContext &module, llvm::Function &function) {
   const FunctionBounds *table = tableOf(module, function);
   if (table == nullptr || function.isVarArg() ||
       !(function.hasExternalLinkage() || function.hasLocalLinkage()) ||
-      !hasTypedBody(*table))
+      !hasTypedBody(*table) ||
+      sourceArguments(function, table->parameters.size()).size() !=
+          table->parameters.size())
     return;
   // RFC 0042 §6: a typed unit's body is external with its function, so
   // that typed callers in other units call it.
@@ -834,7 +836,10 @@ private:
       const FunctionBounds *callee = calleeBounds(module, *call);
       if (allocationSize(*call).has_value())
         return true;
-      if (callee == nullptr)
+      // A count no argument can be paired with gives no bounds.
+      if (callee == nullptr ||
+          sourceArguments(*call, callee->parameters.size()).size() !=
+              callee->parameters.size())
         return false;
       return callee->result.kind == PointerBounds::Kind::Counted ||
              (callee->result.kind == PointerBounds::Kind::Single &&

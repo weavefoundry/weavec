@@ -1147,8 +1147,9 @@ conversion agents reported (S7). They override the body.
     never read. The ledger row is `guarded` with the reason `reference`.
 12. **The CFG (§10).** Clang's CFG with every expression an element and the
     ends of locals' lifetimes; a function whose dataflow does not settle in
-    64 visits per block is not checked (none in the conversions). Clang's
-    `clangAnalysis` library is linked.
+    64 visits per block is not checked (none in the conversions); its
+    ledger tier is `unsettled` (amendment 17). Clang's `clangAnalysis`
+    library is linked.
 13. **Measurement switches.** `-mllvm -weavec-reference-tests=0` and
     `-mllvm -weavec-ownership-rules=0` turn the tests and the rules off, for
     gate G7 only; they are not documented for users.
@@ -1163,7 +1164,7 @@ conversion agents reported (S7). They override the body.
     conversions a guarded helper where they meet it; each is _Future work_.
     Owners in a fixed array inside a struct are not checked when the struct
     is released.
-15. **Budgets (H1).** The library's limit is 17,500 lines (17,464 used): the checker is about
+15. **Budgets (H1).** The library's limit is 17,500 lines (17,487 used): the checker is about
     2,600 (the body estimated 2,200), the pass's test, the ledger, the
     audit and `--weavec-explain` about 300, and the tier merge deleted less
     than the body expected (amendment 1). The runtime stays within 10,500.
@@ -1182,10 +1183,29 @@ conversion agents reported (S7). They override the body.
       function that returns a large struct; they are now paired by the
       source's parameters. Where the ABI splits a parameter into several
       (a 16-byte struct in two registers on x86-64), no argument is
-      paired: the body believes none, and the caller checks none.
+      paired (amendment 17).
     - A null `_OR_NULL` argument, or an empty range at the end of its
       object, was outside the caller's check when the count was the
       constant 0.
+17. **From the review of the implementation.**
+    - Where no argument can be paired with a parameter (amendment 16), a
+      result whose bound names a parameter had empty bounds, so every
+      access through it trapped. A call whose arguments cannot be paired
+      now gives its result no bounds (its accesses keep their guards), and
+      such a function is not split into an entry and a body. Pairing
+      compares counts only: an empty struct parameter, which the ABI drops,
+      beside a split one would pair wrongly; no conversion has one, and
+      pairing by Clang's own argument mapping is _Future work_.
+    - The fields' implicit annotations (RFC 0042 §5) are added only where
+      the guard passes run and remove them: a 64-bit unit whose checks are
+      not `none`. Before, every C unit got them, and a unit without the
+      passes kept them in its code.
+    - A function whose dataflow does not settle (amendment 12) is in the
+      ledger with the tier `unsettled`, so the audit lists it with the code
+      safe functions trust, instead of as safe.
+    - The audit lists a field once, however many units' ledgers name it,
+      and two different errors of ownership's rules at one place are both
+      reported (other rules still report one error per place).
 
 ## Measured gates
 
@@ -1239,4 +1259,4 @@ R is the Safe C sources with `clang -O2`; both print the same line.
 | G7 Cost | **Run time, of the reference tests: pass** (each program with and without them, same sources and compiler: cJSON, http-parser, jsmn, `lzw`, sds 1.00; inih, tinyexpr 1.01; zlib 1.01; the C port 1.06). **Against RFC 0042's T: not met for sds and cJSON**: 2.09 and 2.11 times R against 1.69 and 1.90. RFC 0042's typed sources built with the final compiler run at 1.69 and 1.88, so the difference is in the conversions' rewrites (sds's guarded rebase helper, whose results are checked against the shadow; cJSON's list edits that now walk from the parent, and its helpers), not in the compiler. The others are within run-to-run noise of T (jsmn 1.26, zlib 1.15, inih 1.71, tinyexpr 1.16, http-parser 1.17, `lzw` 1.13). **Compile time: not met**: `-fsyntax-only` takes 1.36 to 1.54 times as long with the rules as without (`-mllvm -weavec-ownership-rules=0`) on zlib's `deflate.c` and `inflate.c`, `cJSON.c` and bzip2's files, 20 to 35 ms more per file. |
 | G8 Verify | **Pass for the tests**: no `weavec.proven` in any conversion's tests in V (sds's probe of the upstream `sdscatsds(s, s)` use after free, outside its tests, reports it). The seeded bugs that compile were not run under V. |
 | G9 No change elsewhere | **Pass**: `corpus-gate.py --quick` passes, and every config of the quick set guards, proves and leaves unguarded exactly the accesses it did in RFC 0042's run (`build/corpus-quick-42.json` against `build/rfc43/corpus-quick-43.json`). The Linux build and tests (Docker, `ci-release`) pass, and so does `ci-tidy` over the new code. |
-| H1 Hygiene | **Pass with amendment 15**: library 17,464 of 17,500 lines, runtime 9,976 of 10,500. |
+| H1 Hygiene | **Pass with amendment 15**: library 17,487 of 17,500 lines, runtime 9,976 of 10,500. |

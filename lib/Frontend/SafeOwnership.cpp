@@ -346,10 +346,12 @@ public:
     std::unique_ptr<clang::CFG> cfg = clang::CFG::buildCFG(
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
         &function, const_cast<clang::Stmt *>(body), &ast, options);
-    if (!cfg)
-      return;
     graph = cfg.get();
-    solve();
+    if (graph == nullptr || !solve())
+      // Amendment 17: no claim is made, and the ledger says so.
+      for (SafeUnit::Definition &definition : unit.definitions)
+        if (definition.name == function.getName())
+          definition.tier = "unsettled";
   }
 
 private:
@@ -2729,7 +2731,8 @@ private:
     return flow;
   }
 
-  void solve() {
+  /// Whether the dataflow settled (and its errors were reported).
+  bool solve() {
     const unsigned count = graph->getNumBlockIDs();
     std::vector<Flow> in(count);
     std::vector<const clang::CFGBlock *> order;
@@ -2750,7 +2753,7 @@ private:
     };
     while (!work.empty()) {
       if (++steps > limit)
-        return; // Too large to settle: no claim made.
+        return false;
       const clang::CFGBlock *block = order[*work.begin()];
       work.erase(work.begin());
       Flow out = in[block->getBlockID()];
@@ -2802,6 +2805,7 @@ private:
           at = compound->getRBracLoc();
       exitChecks(flow, at);
     }
+    return true;
   }
 };
 

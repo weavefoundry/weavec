@@ -595,7 +595,8 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   // too, so that an agent can iterate on them with -fsyntax-only.
   auto safe = std::make_shared<SafeUnit>();
   safe->full = weavec.safeFull;
-  if (weavec.enforces() && codegen) {
+  safe->annotates = weavec.enforces() && codegen;
+  if (safe->annotates) {
     unsafe = std::make_shared<UnsafeRegions>();
     ledger = configureEnforcement(*compiler, weavec, unsafe, safe);
   }
