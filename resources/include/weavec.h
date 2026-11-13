@@ -28,7 +28,7 @@
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 3
-#define WEAVEC_H_VERSION_MINOR 0
+#define WEAVEC_H_VERSION_MINOR 1
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -74,9 +74,20 @@
 
 /** Makes a function definition safe (RFC 0041 §1, RFC 0043 §1). On a
  * declaration, says that a safe unit defines the function, whose safe
- * callers then call its body (RFC 0042 §6); the link fails if not. */
+ * callers then call its body (RFC 0042 §6); the link fails if not.
+ *
+ * In C++ (RFC 0044 §1) it makes a function safe, or, after `struct` or
+ * `class`, every member function the class defines: checked against Safe
+ * C++'s rules when it compiles, and compiled as a guarded function. Of the
+ * annotations below, safe C++ uses WEAVEC_ESCAPES (the callee keeps the
+ * pointer, or a copy of the callable), WEAVEC_BORROWED (a pointer member
+ * that is a borrow, which makes its class a view) and
+ * WEAVEC_LIFETIMEBOUND; a pointer with a count is a std::span and an owner
+ * a std::unique_ptr or a container. The guide is
+ * docs/pages/guides/safe-cxx.md. */
 #define WEAVEC_SAFE WEAVEC_ANNOTATE_("weavec.safe")
-/** In a unit compiled with -fweavec-safe: keeps a function guarded. */
+/** In a unit compiled with -fweavec-safe: keeps a function guarded (in C++,
+ * a class's member functions too). */
 #define WEAVEC_GUARDED WEAVEC_ANNOTATE_("weavec.guarded")
 
 /* A build that must not see `[[…]]` before C23 (-std=c99 -pedantic-errors)

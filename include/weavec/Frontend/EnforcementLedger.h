@@ -9,7 +9,7 @@
 // RFC 0035 §9. The guard pass records each access it collected, before it
 // removes any guard: where it is, what it does, and whether it is guarded,
 // proven (its guard removed by a rule of §6) or unguarded. `weavec-cc`
-// writes the rows of a unit as JSON (`weavec-ledger` version 6: RFC 0039
+// writes the rows of a unit as JSON (`weavec-ledger` version 7: RFC 0039
 // §8 adds each row's `display`, RFC 0042 §10 the functions' tiers, RFC 0043
 // §11 the pointer fields' kinds) under
 // `-fweavec-ledger` and prints the summary line under `-fweavec-summary`.
