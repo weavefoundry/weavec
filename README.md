@@ -18,12 +18,12 @@ WeaveC is a drop-in C and C++ compiler, `weavec-cc` and `weavec-c++`, that makes
 - **Freed memory is reused only after a sweep.** A released heap block waits until a sweep of the program's stacks, registers, writable data and live heap finds no pointer to it. A use after free or a double free traps, however much the program allocated since.
 - **Fortified sizes are kept.** A fortified library call never writes more than the size it was given: with Darwin's headers, a `strcpy` that would run from an 8-byte field into the next one traps.
 - **C++ too.** `new` and `delete` are checked against each other, a `std::vector`'s storage past its elements is not addressable, the C++ library's own bounds checks report through WeaveC, and an exception leaves the live frames' redzones in place.
-- **Safe C, when you want it.** A C function marked `WEAVEC_SAFE` (or every function, with `-fweavec-safe`) is also checked when it compiles: a few local rules reject what could forge a pointer or let a borrowed one escape, each error saying what to write instead, and its accesses are checked against the bounds its pointers' declarations give.
+- **Safe C, for code you write or rewrite.** A C function marked `WEAVEC_SAFE` (or every function, with `-fweavec-safe`) is also checked when it compiles. Local rules reject what could forge a pointer or let a borrowed one escape. Ownership's rules reject a leak, a double `free`, a use after `free` or after a move, and a borrow that outlives what owns its block. Each error names its rule and says what to write instead, and `weavec-cc --weavec-explain <rule>` prints the rule with an example. At run time, its accesses are checked against the bounds its pointers' declarations give, which it believes of pointers loaded from memory too. That is the compile, fix, recompile loop that makes rewrites into Rust work well for AI agents, in C.
 
 WeaveC is built on Clang and LLVM, which provide parsing, code generation and platform support. WeaveC adds LLVM passes that guard the code, and a runtime in C.
 
 > [!NOTE]
-> WeaveC is early, v0.x software: flags, report formats and the ledger can change between minor versions. The design is [RFC 0041, *Safe C*](docs/rfcs/0041-safe-c.md), which adds safe functions checked when they compile and against their pointers' bounds when they run, over [RFC 0040, *Reports you can act on*](docs/rfcs/0040-actionable-reports.md), which gives every report its stacks and names its object, [RFC 0039, *C++*](docs/rfcs/0039-cxx.md), which guards C++ as C, [RFC 0038, *Drop-in everywhere*](docs/rfcs/0038-drop-in-everywhere.md), which makes one shared runtime serve every image on every platform and ships self-contained toolchains, the sweep and colors of [RFC 0037](docs/rfcs/0037-complete-sweep-and-colors.md), the reuse after a sweep of [RFC 0036](docs/rfcs/0036-deterministic-heap-reuse.md) and the guards of [RFC 0035](docs/rfcs/0035-guard-by-default.md). The [roadmap](docs/roadmap.md) tracks progress.
+> WeaveC is early, v0.x software: flags, report formats and the ledger can change between minor versions. The design is [RFC 0043, *Ownership*](docs/rfcs/0043-ownership.md), which checks safe functions' owners, borrows and references when they compile, over [RFC 0042, *Typed memory*](docs/rfcs/0042-typed-memory.md), which lets safe functions believe the bounds that pointers in memory declare, [RFC 0041, *Safe C*](docs/rfcs/0041-safe-c.md), which adds safe functions checked when they compile and against their pointers' bounds when they run, [RFC 0040, *Reports you can act on*](docs/rfcs/0040-actionable-reports.md), which gives every report its stacks and names its object, [RFC 0039, *C++*](docs/rfcs/0039-cxx.md), which guards C++ as C, [RFC 0038, *Drop-in everywhere*](docs/rfcs/0038-drop-in-everywhere.md), which makes one shared runtime serve every image on every platform and ships self-contained toolchains, the sweep and colors of [RFC 0037](docs/rfcs/0037-complete-sweep-and-colors.md), the reuse after a sweep of [RFC 0036](docs/rfcs/0036-deterministic-heap-reuse.md) and the guards of [RFC 0035](docs/rfcs/0035-guard-by-default.md). The [roadmap](docs/roadmap.md) tracks progress.
 
 ## Highlights
 
@@ -32,7 +32,7 @@ WeaveC is built on Clang and LLVM, which provide parsing, code generation and pl
 - **Reports you can act on.** A failed guard prints the kind of failure, the source location and the address, the stack of the access, and where the address lies: for the heap, the block and the stacks that allocated and released it; for a local or a global, its name. Release builds keep the line tables this needs, and `WEAVEC_RT_REPORT_FORMAT=json` writes each report as one line of JSON.
 - **No ABI changes.** Pointers keep their representation and calling conventions are unchanged; objects from other compilers link in.
 - **Compatible with AddressSanitizer's contract.** Code compiled by `weavec-cc` sees `__SANITIZE_ADDRESS__` and `__has_feature(address_sanitizer)`, and the runtime implements ASan's poisoning interface, so code written to be ASan-clean is WeaveC-clean, and a pool that poisons its free space for ASan is checked by WeaveC too.
-- **An auditable ledger.** `-fweavec-ledger` lists every access the compiler saw, whether it kept its guard, and why not.
+- **An auditable ledger.** `-fweavec-ledger` lists every access the compiler saw, whether it kept its guard, and why not. `weavec-cc --weavec-audit` reads a program's ledgers and lists what its safe functions trust: the functions that are not safe, the accesses that kept a guard, and the reference fields.
 
 ## Quick look
 
@@ -86,6 +86,37 @@ weavec: summary: heap-use-after-free at stale.c:18:3 in main (thread T0)
 
 The same guards stop an overflow of a local or a global (`stack-buffer-overflow`, `global-buffer-overflow`), a use of a local after its scope (`stack-use-after-scope`), a fortified call that overruns a field (`intra-object-overflow`), an access to memory the program poisoned through ASan's interface (`use-after-poison`), an index past an array's declared bound (`index-out-of-bounds`), and a double or invalid `free` or `delete` (`double-free`, `invalid-free`, `alloc-release-mismatch`), each with its location and stacks.
 
+A safe function's ownership mistakes stop the compile instead. Freeing a list node before reading its `next`:
+
+```c
+struct node { struct node *WEAVEC_OWNED next; int value; };
+
+void drop(struct node *WEAVEC_OWNED head) {
+  while (head != NULL) {
+    free(head);
+    head = head->next;
+  }
+}
+```
+
+```console
+$ weavec-cc -fweavec-safe -c list.c
+list.c:8:10: error: 'head->next' may still own its block when 'head' is released [weavec-safe:owner-leak]
+    8 |     free(head);
+      |          ^
+list.c:8:10: note: release 'head->next' first: 'free(head->next);'
+list.c:8:10: note: 'weavec-cc --weavec-explain owner-leak' explains this rule
+list.c:9:12: error: 'head' is used after it was released by 'free' [weavec-safe:owner-moved]
+    9 |     head = head->next;
+      |            ^
+list.c:8:5: note: released here; use it before this, or keep what you need from it in a local first
+    8 |     free(head);
+      |     ^
+2 errors generated.
+```
+
+Taking the rest of the list into an owner first, `struct node *WEAVEC_OWNED next = head->next; free(head); head = next;`, compiles. See [Safe C](docs/pages/guides/safe-c.md) and [its rules](resources/safe-c/rules.md).
+
 ## How it works
 
 The runtime replaces the program's allocator and keeps one *shadow* byte for every 16 bytes of memory, saying which of them belong to a live object. Every heap object sits in a slot of an arena with at least one byte after it that belongs to no object. A released block waits in a quarantine until a *sweep*, which stops the program's threads and scans their stacks, registers, writable data and live heap conservatively, finds no pointer to it; only then is it reused. Sweeps are paced so that they take at most about a ninth of the run time; between them the quarantine grows, up to a ceiling. `weavec-cc` lays out the locals a guard can reach in one frame with *redzones* between them (locals whose lifetimes never overlap share space, as Clang's own frames do), gives the file's globals redzones, and zero-initializes locals.
@@ -120,6 +151,10 @@ Other useful flags and variables:
 | `-fno-weavec-zero-init` | Do not zero-initialize locals. |
 | `-fweavec-ledger=<dir>/`, `-fweavec-summary` | Write the enforcement ledger per unit; print `weavec: file.c: 812 accesses: 431 proven, 381 guarded, 0 unguarded`. |
 | `-fno-weavec-asan-compat` | Do not compile as AddressSanitizer would for the source. |
+| `-fweavec-safe` | Make every function the unit defines a [safe function](docs/pages/guides/safe-c.md); without it, `WEAVEC_SAFE` marks one. |
+| `-fweavec-safe-checks=full` | Safe functions keep their guards beside their bounds checks. |
+| `weavec-cc --weavec-explain <rule>` | Print a Safe C rule: what it rejects, why, and a rejected and an accepted example. |
+| `weavec-cc --weavec-audit <dir>` | List what a program's safe functions trust, from its ledgers. |
 | `WEAVEC_RT_STATS=1` | Print the runtime's counters (allocations, releases, sweeps and their pauses, recorded stacks, memory the runtime does not track) when the program exits. |
 | `WEAVEC_RT_REPORT_LOG=<path>` | Write reports to a file instead of stderr. |
 | `WEAVEC_RT_REPORT_FORMAT=json` | Write each report as one line of JSON. |
@@ -145,6 +180,8 @@ For a program whose every unit is compiled by `weavec-cc` (or `weavec-c++`) in a
 
 A byte is not addressable when it lies after a heap object in its slot, in a released block, in a redzone of a tracked local or global, in a local outside its scope or of a function that returned, or in the lowest 64 KiB. Each tracked object also carries one of 111 colors, and an access computed from a pointer traps when it lands in an object of another color, so an index that jumps over a redzone into a live neighbor stops; for objects that are not neighbors a collision is 1 in 111. So, deliberately, these pass: a jump into an object of the same color, from a pointer into the middle of a heap block, or through a pointer one function moved into another object and another function used; a use after return through a frame a later call reused; a pointer jump from one field of a struct into the next by arithmetic (a string or formatting call into a field is checked against it); an access through a pointer the program hid from the sweep (stored as a transformed integer, XOR-linked, held only by the kernel); accesses to memory the runtime does not track (other allocators that do not poison for ASan, `mmap`, string literals); and code that `weavec-cc` did not compile. The guarantee assumes that untracked memory is accessed correctly, that library functions access only what the library table says, that there are no data races between a guard and its access, and that the program does not write the runtime's shadow.
 
+A safe function adds to these. Its pointers keep the bounds their declarations state, in locals and in memory, and its accesses lie within them. By ownership's rules, checked when it compiles, it releases each block it owns once, uses no owner after moving or releasing it, drops no owner, and tests each reference it loads not to point into a released block. These hold so long as the code that is not safe keeps the same bounds and owners, which the audit lists. See [safe functions' guarantees](docs/pages/reference/guarantees.md#safe-functions).
+
 The full statement is in [the guarantees reference](docs/pages/reference/guarantees.md) and [RFC 0037, *Soundness*](docs/rfcs/0037-complete-sweep-and-colors.md#soundness).
 
 ## Status
@@ -156,6 +193,10 @@ RFC 0036 makes use after free and double free deterministic (reuse only after a 
 RFC 0037 makes the sweep read every pointer v0.17.0's missed (vector registers, coroutine stacks, thread-specific data, memory made read-only, file pages written back), closes holes in the guards (a loop range that wrapped, tagged pointers, large atomics) and in the library calls (58 of 84 probes stop, from 24), gives the allocator thread caches and marks in parallel, and catches jumps into a neighbor and uses after return. Measured on darwin-arm64 (its [measured gates](docs/rfcs/0037-complete-sweep-and-colors.md#measured-gates)): the corpus benchmarks run at 1.72× the reference compiler (1.05× v0.17.0); a sweep over 1 GiB of live heap pauses for at most 71 ms (289 before); allocation at 8 threads is 12 times v0.17.0's; Redis at ~1 GiB serves 0.86–0.88 of the reference's requests with its longest request at about 60 ms (150 before). Builds are up to 1.2× v0.17.0's.
 
 RFC 0038 makes the runtime one shared library per process, so shared libraries and plugins built with `weavec-cc` are checked on Linux as on macOS; checks search calls (`strchr`, `memchr`, `strcspn` and the like) over the bytes they actually read; and ships self-contained toolchains that need no LLVM installation. Measured on darwin-arm64 and on linux-aarch64 (its [measured gates](docs/rfcs/0038-drop-in-everywhere.md#measured-gates)): SQLite 3.50.4, CPython 3.13.7, PostgreSQL 17.6, git 2.51.0 and coreutils 9.5 build with `CC=weavec-cc` and fail only the tests that fail with the reference compiler, but for two coreutils tests on Linux that compare stderr under `ulimit -v`, where WeaveC runs unchecked and says so on stderr; five projects held back until the end (jq, tmux, nginx, libarchive, libssh2) build and pass their suites with no report; every corpus project passes in both modes on both platforms, zstd included; and the corpus benchmarks run at 0.99× v0.18.0's CPU time on darwin-arm64 (1.70× the reference compiler). linux-x86_64 is not yet measured.
+
+RFC 0039 guards C++ as C (`weavec-c++`, `new` and `delete` checked against each other, containers, the C++ library's own checks). Measured on darwin-arm64 and linux-aarch64 (its [measured gates](docs/rfcs/0039-cxx.md#measured-gates)): ninja, cppcheck, CMake and DuckDB, and the corpus's 13 C++ configurations, build and pass their tests; the C++ workloads run at 1.90× the reference compiler (ASan 2.59×); C runs as before. RFC 0040 gives every report its stacks and names its object: a heap block's allocation and release stacks with files and lines from `-O2` builds without `-g`, the local or the global an access left, a symbolized stack for a fault, and JSON for tools. Recording heap stacks costs about 8% CPU on the measured benchmarks; `WEAVEC_RT_HEAP_STACKS=0` turns it off.
+
+RFCs 0041 to 0043 add Safe C, checked when it compiles, for code written or rewritten to be safe. Their conversions (jsmn, linenoise, zlib, sds, cJSON, inih, tinyexpr, http-parser, bzip2, and a C port of a program also ported to Rust) were made by AI agents from the guide and the rules. Measured under RFC 0043 (its [measured gates](docs/rfcs/0043-ownership.md#measured-gates)): 347 of 366 seeded ownership bugs (94.8%; removed, duplicated and misplaced releases, uses after release) stop the compile with the expected rule; two libraries held back from the agents until the end, parson and c-algorithms, were converted from upstream with 96.6% and 80.9% of their functions safe and their tests passing; and the conversions found seven defects in the original code (five leaks on failure paths, a use after free in zlib, an over-read in c-algorithms). The cost is about guarded C's: the C port runs at 1.37× its Rust port, allocation-heavy programs pay the most, and ownership's rules add 20 to 35 ms to a large file's compile. What safe functions cannot yet express (ownership taken only when a call succeeds, ownership by a flag, a pointer into the middle of an owned block) goes into small guarded helpers, which the audit lists.
 
 ## Installing
 
@@ -196,7 +237,7 @@ Other presets are `dev-asan`, `dev-tidy`, `release` and `relwithdebinfo`; see [`
 | Installation, first check, guides | [weavec.com](https://weavec.com) |
 | Command-line reference | [docs/pages/reference/cli.md](docs/pages/reference/cli.md) |
 | Guarantees and scope | [docs/pages/reference/guarantees.md](docs/pages/reference/guarantees.md) |
-| Safe C | [docs/pages/guides/safe-c.md](docs/pages/guides/safe-c.md) |
+| Safe C | [docs/pages/guides/safe-c.md](docs/pages/guides/safe-c.md), [its rules](resources/safe-c/rules.md) |
 | Unsafe regions | [docs/pages/guides/unsafe.md](docs/pages/guides/unsafe.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
 | Design decisions (RFCs) | [docs/rfcs/](docs/rfcs/) |
@@ -216,7 +257,7 @@ runtime/          The C runtime: the shadow memory, the arena allocator and its 
                   with their stacks and symbolizer
 tools/weavec-cc/  The drop-in compiler driver (Clang's driver with WeaveC inside; weavec-c++ links to it)
 resources/        weavec.h, the C-facing header with WEAVEC_UNSAFE and Safe C's annotations
-                  (installed to lib/weavec/include)
+                  (installed to lib/weavec/include); safe-c/rules.md, the rules --weavec-explain prints
 unittests/        GoogleTest unit tests
 test/             lit + FileCheck integration tests (test/Guards pins the passes and the runtime)
   cases/          Executable C cases by feature, with markers, run by scripts/run-cases.py
