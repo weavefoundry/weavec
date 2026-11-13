@@ -157,9 +157,12 @@ public:
            record->hasAttr<clang::OwnerAttr>();
   }
 
-  /// A library owner that can be copied and gives `->`: a shared pointer.
+  /// A library class that gives `->`, can be copied, and is neither one of
+  /// Clang's owners (which own alone) nor a view: a shared pointer.
   [[nodiscard]] static bool shared(const clang::CXXRecordDecl *record) {
-    if (!libraryOwner(record) || !record->hasDefinition() ||
+    if (record == nullptr || !isLibrary(*record) || !record->hasDefinition() ||
+        record->hasAttr<clang::OwnerAttr>() ||
+        record->hasAttr<clang::PointerAttr>() ||
         llvm::none_of(record->ctors(),
                       [](const clang::CXXConstructorDecl *constructor) {
                         return constructor->isCopyConstructor() &&

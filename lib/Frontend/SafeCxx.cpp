@@ -179,7 +179,8 @@ public:
       error(call->getExprLoc(), rule::Variadic,
             "a safe function cannot read its variadic arguments",
             "take a parameter pack, a 'std::initializer_list' or a "
-            "'std::span'");
+            "'std::span'",
+            /*expanded=*/true);
       return true;
     default:
       break;
@@ -353,7 +354,8 @@ public:
     error(expression->getBeginLoc(), rule::Variadic,
           "a safe function cannot read its variadic arguments",
           "take a parameter pack, a 'std::initializer_list' or a "
-          "'std::span'");
+          "'std::span'",
+          /*expanded=*/true);
     return true;
   }
 
@@ -384,7 +386,8 @@ public:
         error(statement->getBeginLoc(), rule::UnsafeBlock,
               "a WEAVEC_UNSAFE block cannot be inside a safe function",
               "move the block into a WEAVEC_GUARDED or WEAVEC_UNSAFE "
-              "function that the safe one calls");
+              "function that the safe one calls",
+              /*expanded=*/true);
     return true;
   }
   // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
@@ -407,11 +410,17 @@ private:
            llvm::isa<clang::ParmVarDecl>(named->getDecl());
   }
 
+  /// `expanded`: the construct is a library macro's own (`va_start`,
+  /// WEAVEC_UNSAFE), reported where the function wrote the macro.
   void error(clang::SourceLocation at, llvm::StringRef id,
-             const std::string &message, const std::string &fix) {
-    // What a system header's macro expands to is the library's.
-    if (at.isInvalid() || sources.isInSystemHeader(sources.getSpellingLoc(at)) ||
-        sources.isInSystemMacro(at))
+             const std::string &message, const std::string &fix,
+             bool expanded = false) {
+    if (expanded)
+      at = sources.getExpansionLoc(at);
+    // What a system header's macro expands to is otherwise the library's.
+    if (at.isInvalid() ||
+        sources.isInSystemHeader(sources.getSpellingLoc(at)) ||
+        (!expanded && sources.isInSystemMacro(at)))
       return;
     report(at, id, message, at, fix + Helper.str());
   }

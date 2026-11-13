@@ -1653,18 +1653,31 @@ private:
       if (!flow.reached)
         continue;
       transferBlock(*block, flow);
-      if (block == &exit || block->hasNoReturnElement() ||
-          llvm::none_of(block->succs(),
-                        [&](const clang::CFGBlock::AdjacentBlock &adjacent) {
-                          return adjacent.getReachableBlock() == &exit;
-                        }))
+      if (block == &exit || block->hasNoReturnElement())
         continue;
+      // The function returns from a block that ends in a `return`, or
+      // whose every way on is the exit; a call that may throw has an edge
+      // to the exit too, which is not a return.
       clang::SourceLocation at = body.getEndLoc();
+      bool returns = false;
+      bool throws = false;
       for (const clang::CFGElement &element : *block)
-        if (const auto statement = element.getAs<clang::CFGStmt>())
+        if (const auto statement = element.getAs<clang::CFGStmt>()) {
           if (const auto *ret =
-                  llvm::dyn_cast<clang::ReturnStmt>(statement->getStmt()))
+                  llvm::dyn_cast<clang::ReturnStmt>(statement->getStmt())) {
             at = ret->getReturnLoc();
+            returns = true;
+          }
+          throws = llvm::isa<clang::CXXThrowExpr>(statement->getStmt());
+        }
+      const bool fallsOff =
+          !throws && block->succ_size() != 0 &&
+          llvm::all_of(block->succs(),
+                       [&](const clang::CFGBlock::AdjacentBlock &adjacent) {
+                         return adjacent.getReachableBlock() == &exit;
+                       });
+      if (!returns && !fallsOff)
+        continue;
       exitChecks(flow, at);
     }
     return true;
