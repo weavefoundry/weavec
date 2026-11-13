@@ -1340,7 +1340,8 @@ They override the body.
 ## Measured gates
 
 Measured on darwin-arm64 (Homebrew LLVM 23.1, the `dev` preset, a debug
-build of the compiler) on 2026-11-13. The sets and the ports were made by
+build of the compiler) on 2026-11-13, and checked on linux-aarch64 with
+libstdc++ (gate G9). The sets and the ports were made by
 Claude subagents (the session's model) that were told not to read the
 repository; the two that wrote the sets had no description of the rules
 (one reports that the project's notes for agents, which then described
@@ -1360,7 +1361,7 @@ The files are in `build/rfc44/` (not committed): `probe/`, `g2/`, `g3/`,
 | G6 Defects found | None claimed: no conversion was made. |
 | G7 Cost | **Pass.** A unit's object file is byte for byte the same with and without `-fweavec-safe` (`test/Driver/safe-cxx-units.cpp`). `-fsyntax-only` with the rules takes 1.02 times as long on the `json` port's library, 1.03 on the LRU's, and no measurable time more on a yaml-cpp file and a file of G3. |
 | G8 Holes | **Pass for the seeded bugs.** The 28 that compile, or stop only as their twin does, were built guarded and run: all 28 stop with a report (25 `heap-use-after-free`, and a `double-free`, a `stack-use-after-scope` and a `null-dereference`). Clang's lifetime analysis was not run over the set. |
-| G9 No change elsewhere | **Pass on darwin-arm64.** The `dev` preset's tests pass (the lit tests, the cases, the runtime, the unit tests); Safe C's tests are unchanged but for the removed rule `cxx`; the ledger's version is 7 and the audit's 3. The corpus gate and the Linux builds were not run for this RFC. |
+| G9 No change elsewhere | **Pass on darwin-arm64 and linux-aarch64.** The `dev` preset's tests pass on darwin (48 of 48: the lit tests, the cases, the runtime, the unit tests) and the `ci-release` preset's on linux-aarch64 in Docker (48 of 48, with libstdc++); Safe C's tests are unchanged but for the removed rule `cxx`; the ledger's version is 7 and the audit's 3. On linux-aarch64 the probe, G2, G3, the ports' sources and the documentation's examples give the numbers above exactly (16 of 20; 82 of 110 with 21 fixed twins rejected; 87 of 90; no error). The corpus gate and linux-x86_64 were not run for this RFC. |
 | H1 Hygiene | **Pass with amendment 18**: library 20,694 of 20,750 lines, runtime 9,976 of 10,500. |
 
 What the numbers say about the owner's goal: an agent that had never
