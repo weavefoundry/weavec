@@ -36,10 +36,6 @@
 
 namespace weavec::frontend::guard {
 
-bool isTyped(const ModuleContext &module, const llvm::Function &function) {
-  return module.typed() && isSafe(module, function);
-}
-
 /// The integers of an annotation's arguments (`@.args`, a constant struct).
 static llvm::SmallVector<std::int64_t, 5>
 annotationArguments(const llvm::IntrinsicInst &call) {
@@ -89,7 +85,7 @@ void readTypedFields(ModuleContext &module, llvm::Module &ir) {
       address = inner->getArgOperand(0);
     }
     const auto values = annotationArguments(*call);
-    if (isTyped(module, *call->getFunction())) {
+    if (isSafe(module, *call->getFunction())) {
       TypedField &field = module.typedState.fields[address];
       if (annotationName(*call) == FieldAnnotation && values.size() == 6) {
         field.field = {.kind = static_cast<FieldBounds::Kind>(values[0]),
@@ -117,8 +113,12 @@ void readTypedFields(ModuleContext &module, llvm::Module &ir) {
     call->replaceAllUsesWith(call->getArgOperand(0));
     call->eraseFromParent();
   }
-  // §9: a program with a typed unit records no heap stacks by default.
-  if (module.typed() && ir.getFunction("weavec.typed") == nullptr) {
+  // §9: a program with a safe function records no heap stacks by default.
+  if (llvm::any_of(ir,
+                   [&](const llvm::Function &function) {
+                     return isSafe(module, function);
+                   }) &&
+      ir.getFunction("weavec.typed") == nullptr) {
     auto *constructor = llvm::Function::Create(
         llvm::FunctionType::get(llvm::Type::getVoidTy(module.context), false),
         llvm::GlobalValue::InternalLinkage, "weavec.typed", ir);

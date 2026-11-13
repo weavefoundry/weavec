@@ -532,7 +532,7 @@ class JudgeRunsTest(Workspace):
 
 
 class JudgeLedgerTest(Workspace):
-    def ledger(self, path, rows, version=5, summary=None):
+    def ledger(self, path, rows, version=6, summary=None):
         return {"schema": "weavec-ledger", "version": version, "units": [{
             "source": str(path), "config": {"checks": "trap", "zeroInit": True},
             "summary": summary or {"accesses": len(rows), "proven": 0, "guarded": len(rows), "unguarded": 0},
@@ -563,7 +563,7 @@ class JudgeLedgerTest(Workspace):
         case = self.case("s/l.c", "int main(void) { return 0; } // GUARDED\n")
         self.assertEqual(self.judge(case, None), ["no enforcement ledger was written"])
         self.assertEqual(self.judge(case, self.ledger(case.path, [], version=2)),
-                         ["ledger version 2, expected 5"])
+                         ["ledger version 2, expected 6"])
         plain = self.case("s/p.c", "int main(void) { return 0; } // TRAP\n")
         self.assertEqual(self.judge(plain, None), [])  # no ledger marker, no ledger needed
 
@@ -644,7 +644,7 @@ class RunMarkersTest(Fakes):
 
     def test_ledger_is_requested_only_when_read(self):
         case = self.case("s/l.c", "int main(void) { return 0; } // GUARDED\n")
-        self.ledger = {"version": 5, "units": [{"rows": [{"file": str(case.path), "line": 1,
+        self.ledger = {"version": 6, "units": [{"rows": [{"file": str(case.path), "line": 1,
                                                           "outcome": "guarded", "reason": "access"}]}]}
         self.assertEqual(rc.run_case(case, self.config())["status"], "pass")
         self.assertEqual(self.builds, [("build", (), True)])

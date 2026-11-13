@@ -27,8 +27,8 @@
 #ifndef WEAVEC_H
 #define WEAVEC_H
 
-#define WEAVEC_H_VERSION_MAJOR 2
-#define WEAVEC_H_VERSION_MINOR 1
+#define WEAVEC_H_VERSION_MAJOR 3
+#define WEAVEC_H_VERSION_MINOR 0
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -53,12 +53,14 @@
 /*===-- Safe C (RFC 0041) -------------------------------------------------===*
  *
  * A safe function is checked against Safe C's rules when it is compiled and
- * rejected with an error naming the rule and the fix when it breaks one;
- * once accepted, its accesses are checked against the bounds its pointers
- * carry. In a typed unit (-fweavec-typed, RFC 0042) the bounds of struct
- * fields are believed where pointers are loaded and checked where they are
- * stored. The guide is docs/pages/guides/safe-c.md. The spellings below must
- * match weavec::frontend::SafeAnnotation and its neighbors
+ * rejected with an error naming the rule and the fix when it breaks one
+ * (`weavec-cc --weavec-explain <rule>` explains each); once accepted, its
+ * accesses are checked against the bounds its pointers carry. The bounds of
+ * struct fields are believed where pointers are loaded and checked where
+ * they are stored (RFC 0042), and the owners a function holds are followed
+ * through it: a use after a release, a second release and a leak are errors
+ * (RFC 0043). The guide is docs/pages/guides/safe-c.md. The spellings below
+ * must match weavec::frontend::SafeAnnotation and its neighbors
  * (include/weavec/Frontend/SafeCheck.h). Under a compiler other than Clang
  * they expand to nothing, so safe C is plain C.
  *
@@ -66,11 +68,13 @@
  *   WEAVEC_SAFE size_t length(const char *WEAVEC_NULL_TERMINATED s);
  *   WEAVEC_SAFE void push(struct list *l, struct node *WEAVEC_ESCAPES n);
  *   WEAVEC_SAFE char *find(char *s WEAVEC_LIFETIMEBOUND, char c);
+ *   WEAVEC_SAFE struct node *WEAVEC_OWNED node_new(int v);
+ *   WEAVEC_SAFE void node_free(struct node *WEAVEC_OWNED n);
  */
 
-/** Makes a function definition safe (RFC 0041 §1). On a declaration in a
- * typed unit (-fweavec-typed, RFC 0042 §6), says that a typed unit defines
- * the function, whose callers then call its body; the link fails if not. */
+/** Makes a function definition safe (RFC 0041 §1, RFC 0043 §1). On a
+ * declaration, says that a safe unit defines the function, whose safe
+ * callers then call its body (RFC 0042 §6); the link fails if not. */
 #define WEAVEC_SAFE WEAVEC_ANNOTATE_("weavec.safe")
 /** In a unit compiled with -fweavec-safe: keeps a function guarded. */
 #define WEAVEC_GUARDED WEAVEC_ANNOTATE_("weavec.guarded")
@@ -120,5 +124,19 @@
  * pointer loaded from it is borrowed.
  */
 #define WEAVEC_BORROWED WEAVEC_TYPE_ANNOTATE_("weavec.borrowed")
+/**
+ * After the `*` of a pointer type (a field, a parameter, a result, a local,
+ * a global, an array's element): the pointer is the one responsible for
+ * releasing its block (RFC 0043). A pointer field without it is a
+ * reference, which safe code may keep but not release through.
+ */
+#define WEAVEC_OWNED WEAVEC_TYPE_ANNOTATE_("weavec.owned")
+/**
+ * After the `*` of a parameter: the function releases every owner below
+ * what the parameter points to and leaves them null (a destructor of a struct
+ * the caller keeps, `void vec_free(struct vec *WEAVEC_DROPS v)`). After any
+ * other call given such a pointer, its owners may hold blocks.
+ */
+#define WEAVEC_DROPS WEAVEC_TYPE_ANNOTATE_("weavec.drops")
 
 #endif /* WEAVEC_H */

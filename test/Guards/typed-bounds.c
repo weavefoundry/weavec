@@ -6,7 +6,7 @@
 // its zero byte (`unterminated-string`). A guarded function that breaks
 // typed memory is trusted (T-A1), and reported under
 // -fweavec-safe-checks=full.
-// RUN: %weavec_cc -O2 -g -fweavec-typed %s -o %t
+// RUN: %weavec_cc -O2 -g -fweavec-safe %s -o %t
 // RUN: %t
 // RUN: not --crash %t index 2>&1 | FileCheck %s --check-prefix=INDEX
 // RUN: not --crash %t inside 2>&1 | FileCheck %s --check-prefix=INSIDE
@@ -18,7 +18,7 @@
 // RUN: not --crash %t ornull 2>&1 | FileCheck %s --check-prefix=ORNULL
 // RUN: not --crash %t two 2>&1 | FileCheck %s --check-prefix=TWO
 // RUN: %t lie
-// RUN: %weavec_cc -O2 -g -fweavec-typed -fweavec-safe-checks=full %s -o %t.full
+// RUN: %weavec_cc -O2 -g -fweavec-safe -fweavec-safe-checks=full %s -o %t.full
 // RUN: not --crash %t.full lie 2>&1 | FileCheck %s --check-prefix=FULL
 #include <weavec.h>
 #include <stdlib.h>

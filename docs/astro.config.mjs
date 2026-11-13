@@ -74,6 +74,7 @@ export default defineConfig({
             item('Command line', 'reference/cli'),
             item('Safety guarantees', 'reference/guarantees'),
             item('The weavec.h header', 'reference/annotations'),
+            item('Safe C rules', 'reference/rules'),
             item('Compatibility', 'reference/compatibility'),
             item('Troubleshooting', 'reference/troubleshooting'),
           ],

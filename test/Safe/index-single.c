@@ -35,8 +35,10 @@ WEAVEC_SAFE int ended(const char *WEAVEC_ENDED_BY(e) b, const char *e) {
 
 WEAVEC_SAFE size_t string(const char *WEAVEC_NULL_TERMINATED s) {
   size_t i = 0;
-  while (s[i])
+  while (*s) {
+    s++;
     i++;
+  }
   return i;
 }
 

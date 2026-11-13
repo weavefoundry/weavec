@@ -9,8 +9,9 @@
 // RFC 0035 §9. The guard pass records each access it collected, before it
 // removes any guard: where it is, what it does, and whether it is guarded,
 // proven (its guard removed by a rule of §6) or unguarded. `weavec-cc`
-// writes the rows of a unit as JSON (`weavec-ledger` version 4: RFC 0039
-// §8 adds each row's `display`, its function's demangled name) under
+// writes the rows of a unit as JSON (`weavec-ledger` version 6: RFC 0039
+// §8 adds each row's `display`, RFC 0042 §10 the functions' tiers, RFC 0043
+// §11 the pointer fields' kinds) under
 // `-fweavec-ledger` and prints the summary line under `-fweavec-summary`.
 //
 //===----------------------------------------------------------------------===//
@@ -28,7 +29,7 @@
 namespace weavec::frontend {
 
 /// The version of the `weavec-ledger` JSON this writes.
-inline constexpr unsigned EnforcementLedgerVersion = 5;
+inline constexpr unsigned EnforcementLedgerVersion = 6;
 
 /// What the pass decided for one access.
 struct LedgerRow {
@@ -44,16 +45,29 @@ struct LedgerRow {
   std::uint64_t bytes = 0;
   Outcome outcome = Outcome::Guarded;
   /// `access`, `range`, `string`, `checked-call`, `loop-range`,
-  /// `typed-unbounded`; `in-bounds`, `dominated`, `merged`, `safe`,
+  /// `typed-unbounded`, `reference`; `in-bounds`, `dominated`, `merged`,
   /// `typed`; `unsafe`.
   std::string reason;
 };
 
-/// RFC 0042 §10: a function the unit defines, and its tier: `typed`,
-/// `safe`, `guarded` or `unsafe`.
+/// RFC 0042 §10: a function the unit defines, and its tier: `safe`,
+/// `guarded` or `unsafe` (RFC 0043 §1); whether a parameter or its result
+/// is `WEAVEC_OWNED`.
 struct LedgerFunction {
   std::string function;
   std::string tier;
+  std::string file;
+  unsigned line = 0;
+  bool owns = false;
+};
+
+/// RFC 0043 §11: a pointer field of a struct the unit defines, and its
+/// kind: `owner`, `reference` or `borrowed`; or (`kind` `global`) a global
+/// owner a safe function reads in place.
+struct LedgerField {
+  std::string record;
+  std::string field;
+  std::string kind;
   std::string file;
   unsigned line = 0;
 };
@@ -67,6 +81,7 @@ struct LedgerFunction {
 struct EnforcementLedger {
   std::vector<LedgerRow> rows;
   std::vector<LedgerFunction> functions;
+  std::vector<LedgerField> fields;
   std::uint64_t guarded = 0;
   std::uint64_t proven = 0;
   std::uint64_t unguarded = 0;
@@ -122,15 +137,15 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                             std::string &error);
 
 /// The summary line: `weavec: <source>: <n> accesses: <p> proven, <g>
-/// guarded, <n> unguarded`, and in a unit with typed functions `; <t> of
-/// <f> functions typed`.
+/// guarded, <n> unguarded`, and in a unit with safe functions `; <k> of
+/// <f> functions safe; <o> owner and <r> reference fields` (RFC 0043 §11).
 [[nodiscard]] std::string enforcementSummary(const EnforcementLedger &ledger,
                                              llvm::StringRef source);
 
-/// RFC 0042 §10: `weavec-cc --weavec-audit [--format=json] <ledger>...`:
-/// what a program's typed functions trust, from its ledgers (files, or
-/// directories searched for `*.ledger.json`). The exit status is 0, or 1
-/// when a ledger cannot be read.
+/// RFC 0042 §10, RFC 0043 §11: `weavec-cc --weavec-audit [--format=json]
+/// <ledger>...`: what a program's safe functions trust, from its ledgers
+/// (files, or directories searched for `*.ledger.json`). The exit status is 0,
+/// or 1 when a ledger cannot be read.
 int runAudit(llvm::ArrayRef<const char *> operands);
 
 } // namespace weavec::frontend

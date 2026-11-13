@@ -44,10 +44,18 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Operator.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/PromoteMemToReg.h"
 
 namespace weavec::frontend::guard {
+
+// RFC 0043 G7: measures what the reference tests cost (`-mllvm
+// -weavec-reference-tests=0`); not a user's switch.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+static llvm::cl::opt<bool> referenceTests("weavec-reference-tests",
+                                          llvm::cl::init(true),
+                                          llvm::cl::Hidden);
 
 /// Amendment 18: a safe function with validated parameters is split into
 /// its body (internal, `weavec-safe-body` naming the public symbol) and an
@@ -113,7 +121,7 @@ static llvm::Value *timesElement(const ModuleContext &module,
                                  llvm::IRBuilder<> &builder, llvm::Value *count,
                                  std::uint64_t element) {
   llvm::Value *size = llvm::ConstantInt::get(module.i64, element);
-  if (!module.typed() || element == 1)
+  if (element == 1)
     return builder.CreateMul(count, size);
   llvm::Value *product = builder.CreateBinaryIntrinsic(
       llvm::Intrinsic::umul_with_overflow, count, size);
@@ -130,9 +138,10 @@ static llvm::Value *boundCount(const ModuleContext &module,
                                llvm::ArrayRef<llvm::Value *> arguments) {
   if (bounds.kind != PointerBounds::Kind::Counted)
     return nullptr;
-  if (bounds.count < 0 ||
-      static_cast<std::size_t>(bounds.count) >= arguments.size())
+  if (bounds.count < 0)
     return llvm::ConstantInt::get(module.i64, bounds.constant);
+  if (static_cast<std::size_t>(bounds.count) >= arguments.size())
+    return nullptr;
   llvm::Value *value = arguments[static_cast<std::size_t>(bounds.count)];
   if (!value->getType()->isIntegerTy())
     return nullptr;
@@ -170,6 +179,33 @@ static llvm::Value *boundBytes(const ModuleContext &module,
     bytes = builder.CreateSelect(builder.CreateIsNull(pointer),
                                  llvm::ConstantInt::get(module.i64, 0), bytes);
   return bytes;
+}
+
+/// A function's arguments by the table's parameter index: a hidden result
+/// pointer (`sret`) is no parameter. Empty when the ABI split or merged a
+/// parameter (a 16-byte struct passed in two registers on x86-64): no
+/// argument is then checked or believed by its index.
+static llvm::SmallVector<llvm::Value *, 8>
+sourceArguments(llvm::Function &function, std::size_t count) {
+  llvm::SmallVector<llvm::Value *, 8> values;
+  for (llvm::Argument &argument : function.args())
+    if (!argument.hasStructRetAttr())
+      values.push_back(&argument);
+  if (values.size() != count)
+    values.clear();
+  return values;
+}
+
+/// A call's arguments by its callee's parameter index (as above).
+static llvm::SmallVector<llvm::Value *, 8>
+sourceArguments(const llvm::CallBase &call, std::size_t count) {
+  llvm::SmallVector<llvm::Value *, 8> values;
+  for (unsigned i = 0; i < call.arg_size(); ++i)
+    if (!call.paramHasAttr(i, llvm::Attribute::StructRet))
+      values.push_back(call.getArgOperand(i));
+  if (values.size() != count)
+    values.clear();
+  return values;
 }
 
 /// The location a function's own checks report: its first line.
@@ -255,9 +291,20 @@ static bool mayOutlive(const ModuleContext &module, llvm::AllocaInst &alloca,
         if (call->isCallee(&use))
           return true;
         const unsigned index = call->getArgOperandNo(&use);
+        // The callee writes its result there and keeps nothing.
+        if (call->paramHasAttr(index, llvm::Attribute::StructRet))
+          continue;
         const FunctionBounds *table = calleeBounds(module, *call);
-        if (table != nullptr && index < table->parameters.size()) {
-          const PointerBounds &parameter = table->parameters[index];
+        // An argument the table cannot place may escape.
+        if (table != nullptr && !table->parameters.empty() &&
+            sourceArguments(*call, table->parameters.size()).empty())
+          return true;
+        std::size_t source = index;
+        for (unsigned i = 0; i < index; ++i)
+          if (call->paramHasAttr(i, llvm::Attribute::StructRet))
+            --source;
+        if (table != nullptr && source < table->parameters.size()) {
+          const PointerBounds &parameter = table->parameters[source];
           if (parameter.escapes)
             return true;
           if (parameter.lifetimeBound)
@@ -405,15 +452,15 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
 /// (SafeBounds::callBody).
 static void splitEntry(ModuleContext &module, llvm::Function &function) {
   const FunctionBounds *table = tableOf(module, function);
-  const bool typed = isTyped(module, function);
   if (table == nullptr || function.isVarArg() ||
       !(function.hasExternalLinkage() || function.hasLocalLinkage()) ||
-      (typed ? !hasTypedBody(*table)
-             : llvm::none_of(table->parameters, validated)))
+      !hasTypedBody(*table) ||
+      sourceArguments(function, table->parameters.size()).size() !=
+          table->parameters.size())
     return;
   // RFC 0042 §6: a typed unit's body is external with its function, so
   // that typed callers in other units call it.
-  const bool external = typed && function.hasExternalLinkage();
+  const bool external = function.hasExternalLinkage();
   const std::string name = function.getName().str();
   function.setName(name + ".weavec.safe");
   llvm::Function *entry =
@@ -454,11 +501,10 @@ static void splitEntry(ModuleContext &module, llvm::Function &function) {
   else
     builder.CreateRet(call);
   builder.SetInsertPoint(call);
-  for (std::size_t i = 0; i < table->parameters.size() && i < arguments.size();
-       ++i) {
+  arguments = sourceArguments(*entry, table->parameters.size());
+  for (std::size_t i = 0; i < arguments.size(); ++i) {
     const PointerBounds &parameter = table->parameters[i];
-    if (!(typed ? typedValidated(parameter) : validated(parameter)) ||
-        !arguments[i]->getType()->isPointerTy())
+    if (!typedValidated(parameter) || !arguments[i]->getType()->isPointerTy())
       continue;
     // RFC 0042 §6: a string is scanned against the shadow once, at the
     // entry from code that is not typed.
@@ -497,8 +543,7 @@ void prepareSafe(ModuleContext &module, llvm::Function &function) {
     if (!promotable.empty())
       llvm::PromoteMemToReg(promotable, tree);
   }
-  if (isTyped(module, function))
-    prepareTyped(module, function);
+  prepareTyped(module, function);
   for (llvm::BasicBlock &block : function)
     for (llvm::Instruction &instruction : block)
       if (auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction))
@@ -548,8 +593,7 @@ class SafeBounds {
 public:
   SafeBounds(ModuleContext &module, llvm::Function &function)
       : module(module), function(function), table(tableOf(module, function)),
-        location(functionLocation(function)), typed(isTyped(module, function)) {
-  }
+        location(functionLocation(function)) {}
 
   void run() {
     // The guards GuardInsert placed; the validations below are guards of
@@ -568,7 +612,7 @@ public:
         else if (marker == MarkerString)
           strings.push_back(call);
         else if (callee != nullptr && (callee->hasFnAttribute(EntryAttribute) ||
-                                       (typed && typedElsewhere(*callee))))
+                                       typedElsewhere(*callee)))
           calls.push_back(call);
       }
       if (auto *store = llvm::dyn_cast<llvm::StoreInst>(&instruction))
@@ -580,7 +624,7 @@ public:
     // Before the checks below change the blocks: the strings, and the
     // bounds of each counted pointer loaded from a field, built beside its
     // count (unused ones are dead code).
-    if (typed) {
+    {
       findStrings(markers);
       std::vector<llvm::Instruction *> loads;
       for (llvm::Instruction &instruction : llvm::instructions(function))
@@ -591,7 +635,7 @@ public:
     }
     for (llvm::CallInst *marker : markers)
       bound(*marker);
-    if (typed) {
+    {
       for (llvm::CallInst *marker : strings)
         boundString(*marker);
       for (llvm::StoreInst *store : stores)
@@ -601,6 +645,7 @@ public:
     }
     for (llvm::CallInst *call : calls)
       callBody(*call);
+    testReferences();
   }
 
 private:
@@ -608,7 +653,6 @@ private:
   llvm::Function &function;
   const FunctionBounds *table;
   llvm::DebugLoc location;
-  bool typed;
   llvm::DenseMap<const llvm::Value *, Bounds> known;
   llvm::DenseMap<const llvm::Value *, bool> rootable;
   llvm::DenseMap<const llvm::Value *, ConstantSize> constantSizes;
@@ -636,9 +680,7 @@ private:
   /// bound it declares: a typed function of the unit, its entry or body, or
   /// another typed unit's body.
   bool typedCallee(const llvm::Function &callee) const {
-    if (!module.typed())
-      return false;
-    if (isTyped(module, callee) || callee.hasFnAttribute(EntryAttribute))
+    if (isSafe(module, callee) || callee.hasFnAttribute(EntryAttribute))
       return true;
     return callee.isDeclaration() && callee.getName().ends_with(".weavec.safe");
   }
@@ -657,14 +699,12 @@ private:
   void validateParameters() {
     if (table == nullptr)
       return;
-    llvm::SmallVector<llvm::Value *, 8> arguments;
-    for (llvm::Argument &argument : function.args())
-      arguments.push_back(&argument);
+    const llvm::SmallVector<llvm::Value *, 8> arguments =
+        sourceArguments(function, table->parameters.size());
     llvm::IRBuilder<> builder(entryPoint());
     builder.SetCurrentDebugLocation(location);
     const bool body = function.hasFnAttribute(BodyAttribute);
-    for (std::size_t i = 0;
-         i < table->parameters.size() && i < arguments.size(); ++i) {
+    for (std::size_t i = 0; i < arguments.size(); ++i) {
       const PointerBounds &bounds = table->parameters[i];
       llvm::Value *pointer = arguments[i];
       if (!pointer->getType()->isPointerTy())
@@ -675,12 +715,12 @@ private:
                             module.site(location, 0)});
       // RFC 0042: a typed body believes what its entry or its typed
       // callers checked: a single pointer's object, a string.
-      if (typed && body && bounds.kind == PointerBounds::Kind::Single &&
+      if (body && bounds.kind == PointerBounds::Kind::Single &&
           bounds.pointeeSize != 0) {
         known[pointer] = singleBounds(builder, pointer, bounds.pointeeSize);
         continue;
       }
-      if (typed && body && bounds.kind == PointerBounds::Kind::NullTerminated) {
+      if (body && bounds.kind == PointerBounds::Kind::NullTerminated) {
         stringRoots.insert(pointer);
         continue;
       }
@@ -694,12 +734,11 @@ private:
       // A null `_OR_NULL` pointer may come with any count: its count is
       // empty for the index form too. (Another counted parameter is never
       // null with a nonzero count: its entry and its typed callers check.)
-      if (typed)
-        if (llvm::Value *count = boundCount(module, bounds, builder, arguments))
-          counts[pointer] = {.count = bounds.orNull
-                                          ? emptyIfNull(builder, pointer, count)
-                                          : count,
-                             .elementSize = bounds.elementSize};
+      if (llvm::Value *count = boundCount(module, bounds, builder, arguments))
+        counts[pointer] = {.count = bounds.orNull
+                                        ? emptyIfNull(builder, pointer, count)
+                                        : count,
+                           .elementSize = bounds.elementSize};
       // A body's callers checked its parameters (its entry, or a safe
       // caller at the call).
       if (body) {
@@ -741,7 +780,7 @@ private:
     if (auto size = exactSize(value, module.layout))
       return size;
     const auto *global = llvm::dyn_cast<llvm::GlobalVariable>(value);
-    if (!typed || global == nullptr || !global->isDeclaration() ||
+    if (global == nullptr || !global->isDeclaration() ||
         !global->getValueType()->isSized())
       return std::nullopt;
     const std::uint64_t size =
@@ -762,7 +801,7 @@ private:
   /// gives the pointer bounds.
   const TypedField *boundedField(const llvm::Value *value) const {
     const auto *load = llvm::dyn_cast<llvm::LoadInst>(value);
-    if (!typed || load == nullptr || !load->getType()->isPointerTy())
+    if (load == nullptr || !load->getType()->isPointerTy())
       return nullptr;
     const TypedField *field = typedFieldOf(module, load->getPointerOperand());
     if (field == nullptr || field->count)
@@ -797,10 +836,13 @@ private:
       const FunctionBounds *callee = calleeBounds(module, *call);
       if (allocationSize(*call).has_value())
         return true;
-      if (callee == nullptr)
+      // A count no argument can be paired with gives no bounds.
+      if (callee == nullptr ||
+          sourceArguments(*call, callee->parameters.size()).size() !=
+              callee->parameters.size())
         return false;
       return callee->result.kind == PointerBounds::Kind::Counted ||
-             (typed && callee->result.kind == PointerBounds::Kind::Single &&
+             (callee->result.kind == PointerBounds::Kind::Single &&
               callee->result.pointeeSize != 0);
     }
     return false;
@@ -964,9 +1006,11 @@ private:
     }
     auto *call = llvm::cast<llvm::CallInst>(value);
     llvm::IRBuilder<> builder(call->getNextNode());
-    llvm::SmallVector<llvm::Value *, 8> arguments(call->args());
     llvm::Value *bytes = nullptr;
     const FunctionBounds *callee = calleeBounds(module, *call);
+    const llvm::SmallVector<llvm::Value *, 8> arguments =
+        callee != nullptr ? sourceArguments(*call, callee->parameters.size())
+                          : llvm::SmallVector<llvm::Value *, 8>{};
     const bool trusted = call->getCalledFunction() != nullptr &&
                          typedCallee(*call->getCalledFunction());
     if (const auto size = allocationSize(*call)) {
@@ -983,7 +1027,7 @@ private:
       bytes =
           builder.CreateSelect(builder.CreateIsNull(call),
                                llvm::ConstantInt::get(module.i64, 0), bytes);
-    } else if (typed && callee->result.kind == PointerBounds::Kind::Single) {
+    } else if (callee->result.kind == PointerBounds::Kind::Single) {
       // RFC 0042 §6: the single result of a function that is not typed is
       // checked against the shadow; a typed one's checked its return.
       builder.SetCurrentDebugLocation(call->getDebugLoc());
@@ -1003,7 +1047,7 @@ private:
         bytes = llvm::ConstantInt::get(module.i64, 0);
       // A typed callee may return null with any count (its return's check
       // allows null): a null result's bounds are empty.
-      if (typed) {
+      {
         bytes = emptyIfNull(builder, call, bytes);
         if (llvm::Value *count =
                 boundCount(module, callee->result, builder, arguments))
@@ -1372,31 +1416,32 @@ private:
     }
     if (body == nullptr || bounds == nullptr)
       return;
-    llvm::SmallVector<llvm::Value *, 8> arguments(call.args());
-    for (std::size_t i = 0;
-         i < bounds->parameters.size() && i < arguments.size(); ++i) {
+    const llvm::SmallVector<llvm::Value *, 8> arguments =
+        sourceArguments(call, bounds->parameters.size());
+    if (arguments.empty() && !bounds->parameters.empty())
+      return;
+    for (std::size_t i = 0; i < arguments.size(); ++i) {
       const PointerBounds &parameter = bounds->parameters[i];
       const bool single = parameter.kind == PointerBounds::Kind::Single &&
                           parameter.pointeeSize != 0;
       const bool string = parameter.kind == PointerBounds::Kind::NullTerminated;
-      if (typed && single && !rooted(arguments[i]))
+      if (single && !rooted(arguments[i]))
         return;
-      if (typed && string && !stringLike(arguments[i]) && !rooted(arguments[i]))
+      if (string && !stringLike(arguments[i]) && !rooted(arguments[i]))
         return;
       if (validated(parameter) && !rooted(arguments[i]))
         return;
     }
-    for (std::size_t i = 0;
-         i < bounds->parameters.size() && i < arguments.size(); ++i) {
+    for (std::size_t i = 0; i < arguments.size(); ++i) {
       const PointerBounds &parameter = bounds->parameters[i];
       llvm::Value *pointer = arguments[i];
-      if (typed && parameter.kind == PointerBounds::Kind::Single &&
+      if (parameter.kind == PointerBounds::Kind::Single &&
           parameter.pointeeSize != 0) {
         convert(call, pointer,
                 llvm::ConstantInt::get(module.i64, parameter.pointeeSize));
         continue;
       }
-      if (typed && parameter.kind == PointerBounds::Kind::NullTerminated) {
+      if (parameter.kind == PointerBounds::Kind::NullTerminated) {
         convertString(call, pointer);
         continue;
       }
@@ -1424,7 +1469,7 @@ private:
     llvm::IRBuilder<> builder(&before);
     builder.SetCurrentDebugLocation(before.getDebugLoc());
     const auto *width = llvm::dyn_cast<llvm::ConstantInt>(bytes);
-    if (typed && width != nullptr) {
+    if (width != nullptr) {
       const std::uint64_t w = width->getZExtValue();
       llvm::APInt offset(64, 0);
       const llvm::Value *base = pointer->stripAndAccumulateConstantOffsets(
@@ -1482,6 +1527,10 @@ private:
           builder.CreateSub(builder.CreatePtrToInt(bounds.hi, module.i64), lo);
       llvm::Value *at =
           builder.CreateSub(builder.CreatePtrToInt(pointer, module.i64), lo);
+      // No bytes (a null `_OR_NULL` argument, an empty range) lie inside
+      // when the pointer is at most the end.
+      if (w == 0)
+        return builder.CreateICmpUGT(at, size);
       if (w > 1)
         size = builder.CreateBinaryIntrinsic(
             llvm::Intrinsic::usub_sat, size,
@@ -1517,6 +1566,78 @@ private:
          builder.CreatePtrToInt(bounds.lo, module.i64),
          builder.CreatePtrToInt(bounds.hi, module.i64),
          module.site(before.getDebugLoc(), write ? SiteWrite : 0)});
+  }
+
+  /// Whether a loaded pointer is used for more than a comparison or a copy
+  /// into memory.
+  static bool usedBeyondCopies(const llvm::LoadInst &load) {
+    return llvm::any_of(load.users(), [&](const llvm::User *user) {
+      // The bounds this pass built beside it and nothing used.
+      if (const auto *instruction = llvm::dyn_cast<llvm::Instruction>(user);
+          instruction != nullptr && instruction->use_empty() &&
+          !instruction->mayHaveSideEffects())
+        return false;
+      if (llvm::isa<llvm::ICmpInst>(user))
+        return false;
+      const auto *store = llvm::dyn_cast<llvm::StoreInst>(user);
+      return store == nullptr || store->getValueOperand() != &load;
+    });
+  }
+
+  /// RFC 0043 §7: a pointer loaded from a field that is neither an owner nor
+  /// borrowed is a reference; before it is used, its shadow byte is tested
+  /// not to say "released heap block" (`heap-use-after-free`). A released
+  /// block is not reused while something refers to it, so the test is
+  /// exact for the heap.
+  void testReferences() {
+    if (!referenceTests)
+      return;
+    std::vector<llvm::LoadInst *> loads;
+    for (llvm::Instruction &instruction : llvm::instructions(function)) {
+      auto *load = llvm::dyn_cast<llvm::LoadInst>(&instruction);
+      if (load == nullptr || !load->getType()->isPointerTy())
+        continue;
+      const TypedField *field = typedFieldOf(module, load->getPointerOperand());
+      if (field == nullptr || field->count ||
+          (field->field.flags & (FieldBounds::Owner | FieldBounds::Borrowed)) !=
+              0 ||
+          (field->field.kind == FieldBounds::Kind::Single &&
+           field->field.elementSize == 0 && field->field.pointee == 0) ||
+          !usedBeyondCopies(*load))
+        continue;
+      loads.push_back(load);
+    }
+    if (loads.empty())
+      return;
+    FunctionContext context(module, function);
+    const bool trap = module.options.mode != GuardOptions::Mode::Report;
+    for (llvm::LoadInst *load : loads) {
+      llvm::IRBuilder<> builder(load->getNextNode());
+      const llvm::DebugLoc at = load->getDebugLoc();
+      builder.SetCurrentDebugLocation(at);
+      llvm::Value *address = builder.CreatePtrToInt(load, module.i64);
+      llvm::Value *nonNull = builder.CreateIsNotNull(load);
+      // Null's shadow is not read: the field's own is, in its place.
+      llvm::Value *probe = builder.CreateSelect(
+          nonNull, address,
+          builder.CreatePtrToInt(load->getPointerOperand(), module.i64));
+      llvm::Value *shadow =
+          builder.CreateLoad(module.i8, context.shadowAddress(builder, probe));
+      llvm::Value *released = builder.CreateAnd(
+          nonNull,
+          builder.CreateICmpEQ(
+              shadow, llvm::ConstantInt::get(module.i8, ShadowHeapReleased)));
+      llvm::Instruction *then = llvm::SplitBlockAndInsertIfThen(
+          released, builder.GetInsertPoint(), /*Unreachable=*/trap,
+          llvm::MDBuilder(module.context).createUnlikelyBranchWeights());
+      llvm::IRBuilder<> fail(then);
+      fail.SetCurrentDebugLocation(at);
+      ModuleContext::callSlow(fail, module.referenceFailFunction(),
+                              {address, module.site(at, 0)});
+      module.copy(module.row(function, at, "reference", 8,
+                             LedgerRow::Outcome::Guarded, "reference"),
+                  /*stays=*/true, "reference");
+    }
   }
 
   /// Traps (`pointer-out-of-bounds`) before `before` unless `bytes` bytes at
@@ -1719,9 +1840,8 @@ private:
       convertString(ret, value);
       return;
     }
-    llvm::SmallVector<llvm::Value *, 8> arguments;
-    for (llvm::Argument &argument : function.args())
-      arguments.push_back(&argument);
+    const llvm::SmallVector<llvm::Value *, 8> arguments =
+        sourceArguments(function, table->parameters.size());
     llvm::IRBuilder<> builder(&ret);
     builder.SetCurrentDebugLocation(ret.getDebugLoc());
     if (llvm::Value *bytes = bytesOf(result, value, builder, arguments))
@@ -1739,7 +1859,7 @@ private:
     const auto *row =
         llvm::cast<llvm::ConstantInt>(marker.getArgOperand(rowArgument));
     const bool guard = ModuleContext::markerOf(marker) == MarkerGuard;
-    if (typed && !rooted(pointer)) {
+    if (!rooted(pointer)) {
       if (const auto found = measured.find(&marker); found != measured.end()) {
         llvm::CallInst *length = found->second;
         llvm::Value *string = length->getArgOperand(0);
@@ -1791,8 +1911,7 @@ private:
                                     flags.getZExtValue() | MarkerProven));
       return;
     }
-    module.copy(static_cast<unsigned>(row.getZExtValue()), false,
-                typed ? "typed" : "safe");
+    module.copy(static_cast<unsigned>(row.getZExtValue()), false, "typed");
     marker.eraseFromParent();
   }
 };

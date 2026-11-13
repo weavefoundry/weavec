@@ -1,8 +1,8 @@
 // RFC 0041 §4, §5: an access of a safe function is checked against its
 // pointer's bounds (`pointer-out-of-bounds`), and a counted parameter's
 // bytes against the shadow when the function is entered, so a guarded
-// caller that overstates a count stops at the entry; a string's accesses
-// keep their guards.
+// caller that overstates a count stops at the entry; a string is scanned
+// there once.
 // RUN: %weavec_cc -O2 -g %s -o %t
 // RUN: %t
 // RUN: not --crash %t over 2>&1 | FileCheck %s --check-prefix=OVER
@@ -33,12 +33,14 @@ WEAVEC_SAFE int heap(size_t n, size_t i) {
   return r;
 }
 
-// A string's accesses keep their guards (amendment 13).
+// RFC 0042 §6: a string from code that is not safe is scanned at the
+// entry.
 WEAVEC_SAFE size_t length(const char *WEAVEC_NULL_TERMINATED s) {
   size_t i = 0;
-  // STRING: weavec: heap-buffer-overflow at {{.*}}safe-bounds.c:[[@LINE+1]]
-  while (s[i])
+  while (*s) {
+    s++;
     i++;
+  }
   return i;
 }
 
@@ -64,5 +66,6 @@ int main(int argc, char **argv) {
     return first(a, 8);
   char *unterminated = malloc(4);
   memcpy(unterminated, "abcd", 4);
+  // STRING: weavec: unterminated-string at {{.*}}safe-bounds.c:[[@LINE+1]]
   return (int)length(unterminated);
 }

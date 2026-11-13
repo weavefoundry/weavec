@@ -1,13 +1,14 @@
 // RFC 0042 §6: a pointer stored in a counted field must cover the count it
 // is paired with (`bounds-conversion`).
-// FLAGS: -O2 -fweavec-typed
+// FLAGS: -O2 -fweavec-safe
 #include <weavec.h>
 #include <stdlib.h>
 
-struct vec { int *WEAVEC_COUNTED_BY(len) data; size_t len; };
+struct vec { int *WEAVEC_OWNED WEAVEC_COUNTED_BY(len) data; size_t len; };
 
 void set(struct vec *v, size_t n) {
   int *d = calloc(n, sizeof *d);
+  free(v->data);
   v->data = d;
   v->len = n + 1; // TRAP: bounds-conversion
 }

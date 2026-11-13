@@ -21,6 +21,8 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <set>
+#include <string>
 #include <system_error>
 #include <tuple>
 
@@ -161,7 +163,15 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
         llvm::json::Object{{.K = "function", .V = function.function},
                            {.K = "tier", .V = function.tier},
                            {.K = "file", .V = function.file},
-                           {.K = "line", .V = function.line}});
+                           {.K = "line", .V = function.line},
+                           {.K = "owns", .V = function.owns}});
+  llvm::json::Array fields;
+  for (const LedgerField &field : ledger.fields)
+    fields.push_back(llvm::json::Object{{.K = "record", .V = field.record},
+                                        {.K = "field", .V = field.field},
+                                        {.K = "kind", .V = field.kind},
+                                        {.K = "file", .V = field.file},
+                                        {.K = "line", .V = field.line}});
   llvm::json::Object document{
       {.K = "schema", .V = "weavec-ledger"},
       {.K = "version", .V = EnforcementLedgerVersion},
@@ -189,6 +199,7 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                         {.K = "unguarded",
                          .V = static_cast<std::int64_t>(ledger.unguarded)}}},
                {.K = "functions", .V = std::move(functions)},
+               {.K = "fields", .V = std::move(fields)},
                {.K = "rows", .V = std::move(rows)},
            }}},
   };
@@ -210,29 +221,41 @@ std::string enforcementSummary(const EnforcementLedger &ledger,
   os << "weavec: " << source << ": " << ledger.accesses()
      << " accesses: " << ledger.proven << " proven, " << ledger.guarded
      << " guarded, " << ledger.unguarded << " unguarded";
-  const auto typed = llvm::count_if(ledger.functions, [](const auto &function) {
-    return function.tier == "typed";
+  const auto safe = llvm::count_if(ledger.functions, [](const auto &function) {
+    return function.tier == "safe";
   });
-  if (typed != 0)
-    os << "; " << typed << " of " << ledger.functions.size()
-       << " functions typed";
+  if (safe == 0)
+    return text;
+  os << "; " << safe << " of " << ledger.functions.size() << " functions safe";
+  // RFC 0043 §11.
+  const auto kind = [&](llvm::StringRef name) {
+    return llvm::count_if(
+        ledger.fields, [&](const auto &field) { return field.kind == name; });
+  };
+  os << "; " << kind("owner") << " owner and " << kind("reference")
+     << " reference fields";
   return text;
 }
 
 //===----------------------------------------------------------------------===//
-// The audit (RFC 0042 §10)
+// The audit (RFC 0042 §10, RFC 0043 §11)
 //===----------------------------------------------------------------------===//
 
 namespace {
 /// What the audit lists of one program.
 struct Audit {
-  /// Functions that are not typed: what typed functions trust (T-A1).
+  /// Functions that are not safe: what safe functions trust (T-A1, O-A1).
   llvm::json::Array trusted;
-  /// Accesses of typed functions that kept a guard, and why.
+  /// Accesses of safe functions that kept a guard, and why.
   llvm::json::Array guarded;
-  /// Library calls of typed functions that kept a checked wrapper.
+  /// Library calls of safe functions that kept a checked wrapper.
   llvm::json::Array wrapped;
-  unsigned typed = 0;
+  /// Reference fields, tested where safe code loads them.
+  llvm::json::Array references;
+  /// Global owners safe code reads in place.
+  llvm::json::Array globals;
+  std::set<std::string> fields;
+  unsigned safe = 0;
   unsigned functions = 0;
 };
 } // namespace
@@ -286,23 +309,37 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
         const std::string tier = function->getString("tier").value_or("").str();
         tiers[name] = tier;
         ++audit.functions;
-        if (tier == "typed")
-          ++audit.typed;
+        if (tier == "safe")
+          ++audit.safe;
         else
           audit.trusted.push_back(llvm::json::Object(*function));
       }
+    if (const llvm::json::Array *fields = unit->getArray("fields"))
+      for (const llvm::json::Value &value : *fields)
+        if (const llvm::json::Object *field = value.getAsObject();
+            field != nullptr &&
+            // A header's struct is listed by each unit that includes it.
+            audit.fields.insert(llvm::formatv("{0}", value).str()).second) {
+          const auto kind = field->getString("kind");
+          if (kind == "reference")
+            audit.references.push_back(llvm::json::Object(*field));
+          else if (kind == "global")
+            audit.globals.push_back(llvm::json::Object(*field));
+        }
     const llvm::json::Array *rows = unit->getArray("rows");
     if (rows == nullptr)
       continue;
     for (const llvm::json::Value &value : *rows) {
       const llvm::json::Object *row = value.getAsObject();
-      // An entry's checks are the boundary with code that is not typed.
+      // An entry's checks are the boundary with code that is not safe; a
+      // reference's test is listed by its field.
       if (row == nullptr || row->getString("outcome") != "guarded" ||
-          row->getString("operation") == "entry")
+          row->getString("operation") == "entry" ||
+          row->getString("reason") == "reference")
         continue;
       llvm::StringRef name = row->getString("function").value_or("");
       name.consume_back(".weavec.safe");
-      if (tiers.lookup(name) != "typed")
+      if (tiers.lookup(name) != "safe")
         continue;
       if (row->getString("reason") == "checked-call")
         audit.wrapped.push_back(llvm::json::Object(*row));
@@ -341,12 +378,15 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
                         "{0:2}",
                         llvm::json::Value(llvm::json::Object{
                             {.K = "schema", .V = "weavec-audit"},
-                            {.K = "version", .V = 1},
+                            {.K = "version", .V = 2},
                             {.K = "functions", .V = audit.functions},
-                            {.K = "typed", .V = audit.typed},
+                            {.K = "safe", .V = audit.safe},
                             {.K = "trusted", .V = std::move(audit.trusted)},
                             {.K = "guarded", .V = std::move(audit.guarded)},
-                            {.K = "wrapped", .V = std::move(audit.wrapped)}}))
+                            {.K = "wrapped", .V = std::move(audit.wrapped)},
+                            {.K = "references",
+                             .V = std::move(audit.references)},
+                            {.K = "globals", .V = std::move(audit.globals)}}))
                  << '\n';
     return ok ? 0 : 1;
   }
@@ -356,21 +396,31 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
     out << '\n' << title << ":\n";
     for (const llvm::json::Value &value : entries) {
       const llvm::json::Object &entry = *value.getAsObject();
-      out << "  " << where(entry) << ": " << entry.getString(what).value_or("");
+      out << "  " << where(entry) << ": ";
+      if (what == "field")
+        out << entry.getString("record").value_or("") << '.';
+      out << entry.getString(what).value_or("");
       if (what == "operation")
         out << " in " << entry.getString("function").value_or("");
       if (!why.empty())
-        out << " (" << entry.getString(why).value_or("") << ")";
+        out << " (" << entry.getString(why).value_or("")
+            << (entry.getBoolean("owns").value_or(false) ? ", owns" : "")
+            << ")";
       out << '\n';
     }
   };
-  out << audit.typed << " of " << audit.functions << " functions typed\n";
-  list("functions that are not typed (typed code trusts them)", audit.trusted,
-       "function", "tier");
-  list("accesses of typed functions that keep a guard", audit.guarded,
+  out << audit.safe << " of " << audit.functions << " functions safe\n";
+  list("functions that are not safe (safe code trusts them; 'owns': a "
+       "parameter or the result is WEAVEC_OWNED)",
+       audit.trusted, "function", "tier");
+  list("accesses of safe functions that keep a guard", audit.guarded,
        "operation", "reason");
-  list("library calls of typed functions that keep a checked wrapper",
+  list("library calls of safe functions that keep a checked wrapper",
        audit.wrapped, "operation", "");
+  list("reference fields (tested where safe code loads them)", audit.references,
+       "field", "");
+  list("global owners read in place (in the function named)", audit.globals,
+       "field", "");
   return ok ? 0 : 1;
 }
 

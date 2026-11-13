@@ -949,7 +949,7 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
     for (llvm::Instruction &instruction : block)
       if (auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(&instruction);
           alloca && !tracked.contains(alloca) &&
-          escapes(*alloca, isTyped(module, function) && !module.verify() &&
+          escapes(*alloca, isSafe(module, function) && !module.verify() &&
                                !module.options.safe->full))
         tracked.insert(alloca);
 

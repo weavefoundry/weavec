@@ -52,7 +52,7 @@ WEAVEC_SAFE int framed(int n) {
 
 static void done(int *x) { (void)x; }
 
-WEAVEC_SAFE char *WEAVEC_COUNTED_BY(n) make(size_t n) {
+WEAVEC_SAFE char *WEAVEC_OWNED WEAVEC_COUNTED_BY(n) make(size_t n) {
   return calloc(n, 1);
 }
 

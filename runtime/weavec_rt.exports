@@ -73,6 +73,7 @@ __weavec_rt_reallocarray_at
 __weavec_rt_reallocf_at
 __weavec_rt_recvfrom
 __weavec_rt_recvmsg
+__weavec_rt_reference_fail
 __weavec_rt_scanf
 __weavec_rt_sendmsg
 __weavec_rt_shadow

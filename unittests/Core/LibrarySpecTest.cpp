@@ -74,6 +74,8 @@ static std::string renderParam(const LibraryParam &param) {
     text += " releases";
   if (param.effect == LibraryParam::Effect::Realloc)
     text += " reallocs";
+  if (param.owner)
+    text += " owner";
   return text;
 }
 
@@ -93,7 +95,7 @@ static std::string renderResult(const LibraryEntry &entry) {
   case LibraryEntry::Result::Int:
     return entry.value ? "int value=" + entry.value->str() : "int";
   case LibraryEntry::Result::Pointer:
-    return "ptr";
+    return entry.owned ? "ptr owned" : "ptr";
   }
   return "?";
 }
@@ -422,11 +424,18 @@ TEST(LibrarySpecTest, NumberParsersHaveWrappers) {
 // Heap allocation: every heap result may fail, is released by free, and
 // carries its §11 zero-initialization decision.
 static constexpr auto HeapExpectations = std::to_array<Expectation>({
+    // RFC 0043 §2: the allocations give an owner.
+    {"malloc", "int", "ptr owned", ""},
+    {"calloc", "int, int", "ptr owned", ""},
+    {"aligned_alloc", "int, int", "ptr owned", ""},
+    {"valloc", "int", "ptr owned", ""},
     // RFC 0040 §5.5: releases with their sites.
     {"free", "none nullable releases", "void", "wrapper=free_at"},
-    {"realloc", "none nullable reallocs, int", "ptr", "wrapper=realloc_at"},
-    {"reallocf", "none nullable reallocs, int", "ptr", "wrapper=reallocf_at"},
-    {"reallocarray", "none nullable reallocs, int, int", "ptr",
+    {"realloc", "none nullable reallocs, int", "ptr owned",
+     "wrapper=realloc_at"},
+    {"reallocf", "none nullable reallocs, int", "ptr owned",
+     "wrapper=reallocf_at"},
+    {"reallocarray", "none nullable reallocs, int, int", "ptr owned",
      "wrapper=reallocarray_at"},
     {"_ZdlPv", "none nullable releases", "void", "wrapper=delete_at"},
     {"_ZdlPvm", "none nullable releases, int", "void",
@@ -434,22 +443,23 @@ static constexpr auto HeapExpectations = std::to_array<Expectation>({
     {"_ZdaPv", "none nullable releases", "void", "wrapper=delete_array_at"},
     {"_ZdaPvm", "none nullable releases, int", "void",
      "wrapper=delete_array_sized_at"},
-    {"posix_memalign", "W bytes=8, int, int", "int", ""},
-    {"canonicalize_file_name", "R str nullable", "ptr", ""},
+    {"posix_memalign", "W bytes=8 owner, int, int", "int", ""},
+    {"canonicalize_file_name", "R str nullable", "ptr owned", ""},
     {"realpath", "R str nullable, W nullable", "ptr",
      "chk=__realpath_chk:0/1/size"},
-    {"strdup", "R str", "ptr", ""},
-    {"strndup", "R bytes=min(a1,strlen(a0)+1) nullable-if=a1, int", "ptr", ""},
-    {"wcsdup", "R str", "ptr", "wide"},
-    {"asprintf", "W bytes=8, R str, ...", "int",
+    {"strdup", "R str", "ptr owned", ""},
+    {"strndup", "R bytes=min(a1,strlen(a0)+1) nullable-if=a1, int", "ptr owned",
+     ""},
+    {"wcsdup", "R str", "ptr owned", "wide"},
+    {"asprintf", "W bytes=8 owner, R str, ...", "int",
      "printf=1/2 wrapper=asprintf chk=__asprintf_chk:0/_/1/2"},
-    {"vasprintf", "W bytes=8, R str, other", "int",
+    {"vasprintf", "W bytes=8 owner, R str, other", "int",
      "printf=1/2 wrapper=vasprintf chk=__vasprintf_chk:0/_/1/2"},
-    {"getline", "RW bytes=8 nullable, RW nullable, RW", "int",
+    {"getline", "RW bytes=8 nullable owner, RW nullable, RW", "int",
      "wrapper=getline"},
-    {"getdelim", "RW bytes=8 nullable, RW nullable, int, RW", "int",
+    {"getdelim", "RW bytes=8 nullable owner, RW nullable, int, RW", "int",
      "wrapper=getdelim"},
-    {"tempnam", "R str nullable, R str nullable", "ptr", ""},
+    {"tempnam", "R str nullable, R str nullable", "ptr owned", ""},
     {"getcwd", "W bytes=a1 nullable, int", "ptr", "chk=__getcwd_chk:0/1/size"},
     {"backtrace", "W bytes=a1*8, int", "int", ""},
     {"backtrace_symbols", "R bytes=a1*8, int", "ptr", ""},

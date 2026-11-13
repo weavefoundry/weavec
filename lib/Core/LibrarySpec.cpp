@@ -611,6 +611,8 @@ std::optional<LibraryParam> LibrarySpecParser::parseParam() {
       param.effect = LibraryParam::Effect::Release;
     } else if (flag == "realloc") {
       param.effect = LibraryParam::Effect::Realloc;
+    } else if (flag == "owner") {
+      param.owner = true;
     } else {
       fail("unknown parameter flag '" + flag + "'");
       return std::nullopt;
@@ -642,6 +644,11 @@ bool LibrarySpecParser::parseResult(LibraryEntry &entry) {
     entry.result = LibraryEntry::Result::Void;
   } else if (kind == "ptr") {
     entry.result = LibraryEntry::Result::Pointer;
+    if (accept(':')) {
+      if (word() != "owned")
+        return fail("expected 'owned' after 'ptr:'");
+      entry.owned = true;
+    }
   } else if (kind == "int") {
     entry.result = LibraryEntry::Result::Int;
     if (accept(':')) {

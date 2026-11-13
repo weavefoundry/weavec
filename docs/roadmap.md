@@ -4,13 +4,43 @@ Rough ordering of the major pieces of work. This page is the one-screen view;
 the design detail and the reasoning live in the [RFCs](rfcs/README.md) each
 milestone links to. Everything here is subject to change as we learn.
 
-The design today is [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for typed and safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
+The design today is [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
 sweep and colors of [RFC 0037](rfcs/0037-complete-sweep-and-colors.md), the
 reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
 and the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
 milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
+
+## Now: RFC 0043 — Ownership
+
+Design: [RFC 0043 — Ownership](rfcs/0043-ownership.md) (Accepted, built).
+Safe C checked where a pointer may point and what it may be converted to,
+and said nothing when a function read a block it released, released it
+twice, never released it, or kept a pointer into an array across the call
+that reallocated it. RFC 0043 makes ownership part of Safe C: a pointer
+declared `WEAVEC_OWNED` is the one responsible for its block, and the
+checker follows each owner through the function that holds it, rejecting a
+use after a move or a release, a leak on any path, and a borrow used after
+what it pointed into was released or replaced (`WEAVEC_DROPS` marks a
+destructor of a struct the caller keeps). A pointer field that is not an
+owner is a reference, tested when it is loaded. Nothing the runtime does is
+removed on the rules' strength. The safe and typed tiers are one
+(`-fweavec-safe`), and `weavec-cc --weavec-explain <rule>` prints each rule
+with its rewrite. The stages:
+
+- [x] **S0 The rules on paper** against cJSON, sds, zlib and the `lzw`
+      port (findings M1–M20; amendments 5, 6, 8 and 9 adopt some).
+- [x] **S1 One safe tier**: `-fweavec-typed` removed.
+- [x] **S2–S4 Owners, fields and slots, borrows**: the seven rules.
+- [x] **S5 References** tested when loaded; the ledger (version 6) and the
+      audit (version 2).
+- [x] **S6 Explanations and the guide.**
+- [x] **S7 Conversions of the eight projects and the port, the C and Rust
+      port, seeded bugs**; the held-out projects (G4) not run.
+- [ ] **Next**: the S0 findings not built (ownership by outcome and by flag,
+      owners inside their block, init parameters), reference tests out of
+      hot loops, safe C++ on owners, borrows and references.
 
 ## Now: RFC 0042 — Typed memory
 

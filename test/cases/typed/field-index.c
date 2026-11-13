@@ -1,6 +1,6 @@
 // RFC 0042 §4: an element of a counted field is compared with the count
 // loaded beside the pointer, wherever the struct came from.
-// FLAGS: -O2 -fweavec-typed
+// FLAGS: -O2 -fweavec-safe
 #include <weavec.h>
 #include <stdlib.h>
 

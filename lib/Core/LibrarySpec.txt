@@ -25,8 +25,8 @@
 #   access   ::= 'r' | 'w' | 'rw' | 'none'
 #   pflag    ::= 'bytes(' term ')' | 'count(' term ')' | 'str' | 'null-ok'
 #              | 'null-if-zero(' term ')' | 'release' | 'realloc'
-#              | 'scan' | 'scan(' term ')'
-#   result   ::= 'void' | 'int' [ ':value(' term ')' ] | 'ptr'
+#              | 'scan' | 'scan(' term ')' | 'owner'
+#   result   ::= 'void' | 'int' [ ':value(' term ')' ] | 'ptr' [ ':owned' ]
 #   clause   ::= 'disjoint(' INT ',' INT ',' term ')' | 'wide'
 #              | 'printf(' INT ',' INT ')' | 'scanf(' INT ',' INT ')'
 #              | 'chk(' NAME ':' carg { ',' carg } ')' | 'wrapper(' NAME ')'
@@ -60,9 +60,15 @@
 #                    zero. Otherwise null is forbidden.
 #   release, realloc the call releases (free) or reallocates (realloc) the
 #                    pointer: the allocator validates it, nothing is guarded.
+#                    To Safe C (RFC 0043 section 2) the argument is an owner
+#                    the call consumes (realloc: when its result is not null).
+#   owner            the pointer points to a place the call stores an owner
+#                    in (RFC 0043 section 2): asprintf's first argument.
 #
 # RESULTS
 #   void, int, ptr   no result, any non-pointer result, a pointer.
+#   ptr:owned        the caller owns the block the result points to (RFC
+#                    0043 section 2); the allocations' blocks are zero.
 #   value(t)         the result equals t (strlen: strlen(a0)); a call whose
 #                    result only a value computes from what it reads is
 #                    replaced by the guards that compute t.
@@ -140,35 +146,41 @@
 # RFC 0040 section 5.5: a guarded call's release reaches the allocator
 # with its site, so that a bad release names its line; a C row's wrapper
 # for a release is its name and `_at`.
+# RFC 0043 section 2: the allocations give the caller an owner.
+malloc (int) -> ptr:owned;
+calloc (int, int) -> ptr:owned;
+aligned_alloc (int, int) -> ptr:owned;
+valloc (int) -> ptr:owned;
 free (none:null-ok:release) -> void wrapper(free_at);
-realloc (none:null-ok:realloc, int) -> ptr wrapper(realloc_at);
-reallocf (none:null-ok:realloc, int) -> ptr wrapper(reallocf_at);
-reallocarray (none:null-ok:realloc, int, int) -> ptr \
+realloc (none:null-ok:realloc, int) -> ptr:owned wrapper(realloc_at);
+reallocf (none:null-ok:realloc, int) -> ptr:owned wrapper(reallocf_at);
+reallocarray (none:null-ok:realloc, int, int) -> ptr:owned \
     wrapper(reallocarray_at);
 _ZdlPv (none:null-ok:release) -> void wrapper(delete_at);
 _ZdlPvm (none:null-ok:release, int) -> void wrapper(delete_sized_at);
 _ZdaPv (none:null-ok:release) -> void wrapper(delete_array_at);
 _ZdaPvm (none:null-ok:release, int) -> void wrapper(delete_array_sized_at);
 
-posix_memalign (w:bytes(8), int, int) -> int;
+posix_memalign (w:bytes(8):owner, int, int) -> int;
 # glibc: allocates the result of realpath(path, NULL) in one call.
-canonicalize_file_name (r:str:null-ok) -> ptr;
+canonicalize_file_name (r:str:null-ok) -> ptr:owned;
 realpath (r:str:null-ok, w:null-ok) -> ptr chk(__realpath_chk:0,1,size);
 
-strdup (r:str) -> ptr;
-strndup (r:bytes(min(a1,strlen(a0)+1)):null-if-zero(a1), int) -> ptr;
+strdup (r:str) -> ptr:owned;
+strndup (r:bytes(min(a1,strlen(a0)+1)):null-if-zero(a1), int) -> ptr:owned;
 
-wcsdup (r:str) -> ptr wide;
+wcsdup (r:str) -> ptr:owned wide;
 
-asprintf (w:bytes(8), r:str, ...) -> int printf(1,2) \
+asprintf (w:bytes(8):owner, r:str, ...) -> int printf(1,2) \
     chk(__asprintf_chk:0,_,1,2) wrapper(asprintf);
-vasprintf (w:bytes(8), r:str, other) -> int printf(1,2) \
+vasprintf (w:bytes(8):owner, r:str, other) -> int printf(1,2) \
     chk(__vasprintf_chk:0,_,1,2) wrapper(vasprintf);
 # The buffer is reallocated in place of the old one, and stays allocated
 # after a failed read: it is freed on every path.
-getline (rw:null-ok:bytes(8), rw:null-ok, rw) -> int wrapper(getline);
-getdelim (rw:null-ok:bytes(8), rw:null-ok, int, rw) -> int wrapper(getdelim);
-tempnam (r:str:null-ok, r:str:null-ok) -> ptr;
+getline (rw:null-ok:bytes(8):owner, rw:null-ok, rw) -> int wrapper(getline);
+getdelim (rw:null-ok:bytes(8):owner, rw:null-ok, int, rw) -> int \
+    wrapper(getdelim);
+tempnam (r:str:null-ok, r:str:null-ok) -> ptr:owned;
 
 # getcwd(NULL, n) allocates (glibc, BSD, macOS).
 getcwd (w:null-ok:bytes(a1), int) -> ptr chk(__getcwd_chk:0,1,size);

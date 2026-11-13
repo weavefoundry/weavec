@@ -5,14 +5,16 @@
 #include <weavec.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 WEAVEC_SAFE size_t copy(char *WEAVEC_COUNTED_BY(cap) dst, size_t cap,
                         const char *WEAVEC_NULL_TERMINATED src) {
+  size_t n = strlen(src);
   size_t i = 0;
 #ifdef FIX
-  for (; src[i] && i + 1 < cap; i++)
+  for (; i < n && i + 1 < cap; i++)
 #else
-  for (; src[i] && i < cap; i++)
+  for (; i < n && i < cap; i++)
 #endif
     dst[i] = src[i];
   dst[i] = 0; // STOP

@@ -1,12 +1,12 @@
 // RFC 0042 §6: a null result declared WEAVEC_NULL_TERMINATED_OR_NULL is
 // returned as it is; a bounded one is searched for its zero byte.
 // CLEAN
-// FLAGS: -O2 -fweavec-typed
+// FLAGS: -O2 -fweavec-safe
 #include <weavec.h>
 #include <stdlib.h>
 #include <string.h>
 
-static char *WEAVEC_NULL_TERMINATED_OR_NULL
+static char *WEAVEC_OWNED WEAVEC_NULL_TERMINATED_OR_NULL
 copy(const char *WEAVEC_NULL_TERMINATED_OR_NULL s) {
   if (s == NULL)
     return NULL;

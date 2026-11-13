@@ -17,6 +17,8 @@ weavec_add_library(
           GuardSafe.cpp
           GuardTyped.cpp
           SafeCheck.cpp
+          # RFC 0043: ownership's rules.
+          SafeOwnership.cpp
           # RFC 0040 §4.2: weavec-cc --weavec-symbolize.
           Symbolizer.cpp
           UnsafeRegions.cpp
@@ -46,6 +48,8 @@ weavec_link_clang(
   weavecFrontend
   clangFrontend
   clangCodeGen
+  # RFC 0043 §10: the CFG ownership's rules run on.
+  clangAnalysis
   clangDriver
   clangParse
   clangSema
@@ -53,3 +57,26 @@ weavec_link_clang(
   clangAST
   clangBasic
   clangLex)
+
+# RFC 0043 §12: the rules' explanations, embedded for --weavec-explain as the
+# library table is in Core.
+set(_weavec_safe_rules "${PROJECT_SOURCE_DIR}/resources/safe-c/rules.md")
+set_property(
+  DIRECTORY
+  APPEND
+  PROPERTY CMAKE_CONFIGURE_DEPENDS "${_weavec_safe_rules}")
+file(READ "${_weavec_safe_rules}" _weavec_safe_rules_hex HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "'\\\\x\\1',"
+                     _weavec_safe_rules_bytes "${_weavec_safe_rules_hex}")
+file(
+  CONFIGURE
+  OUTPUT
+  "${CMAKE_CURRENT_BINARY_DIR}/SafeRulesText.inc"
+  CONTENT
+  "// Generated from resources/safe-c/rules.md by lib/Frontend/CMakeLists.txt.
+// NOLINTNEXTLINE(*-avoid-c-arrays)
+static constexpr char SafeRulesTextData[] = {@_weavec_safe_rules_bytes@ '\\0'};
+static constexpr std::size_t SafeRulesTextSize = sizeof(SafeRulesTextData) - 1;
+"
+  @ONLY)
+target_include_directories(weavecFrontend PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")

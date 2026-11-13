@@ -2,7 +2,7 @@
 // struct's size, so the struct's bounds do not cover it: the access keeps its
 // guard, and a valid program runs.
 // CLEAN
-// FLAGS: -O2 -fweavec-typed
+// FLAGS: -O2 -fweavec-safe
 #include <weavec.h>
 #include <stdlib.h>
 

@@ -43,7 +43,7 @@ Eight checks, the rules of AGENTS.md that a script can hold the tree to:
                      only is a violation, and so is a missing list when such
                      declarations exist.
   library-lines      the code under lib/, include/ and tools/ totals at most
-                     14,200 lines (RFC 0042; the headers and the
+                     17,500 lines (RFC 0043; the headers and the
                      driver's tool count too). lib/Core/LibrarySpec.txt does
                      not count: it is a declarative table, and its growth is
                      coverage, not sprawl. The limit is a ratchet: it is
@@ -103,7 +103,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 
 # Recorded by RFC 0037 gate H1 and RFC 0032 gate H1 (see the module docstring).
-LIBRARY_LINE_LIMIT = 14_200
+LIBRARY_LINE_LIMIT = 17_500
 RUNTIME_LINE_LIMIT = 10_500
 
 # library-name-test

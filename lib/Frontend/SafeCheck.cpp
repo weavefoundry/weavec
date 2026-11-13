@@ -16,6 +16,7 @@
 
 #include "weavec/Frontend/SafeCheck.h"
 
+#include "SafeCheckImpl.h"
 #include "weavec/Core/LibrarySpec.h"
 #include "weavec/Frontend/UnsafeRegions.h"
 
@@ -61,7 +62,7 @@ constexpr llvm::StringLiteral NoAsm = "no-asm";
 constexpr llvm::StringLiteral UnsafeBlock = "unsafe-block";
 constexpr llvm::StringLiteral BadAnnotation = "bad-annotation";
 constexpr llvm::StringLiteral Cxx = "cxx";
-// RFC 0042 §3: typed units only.
+// RFC 0042 §3.
 constexpr llvm::StringLiteral CountedPair = "counted-pair";
 constexpr llvm::StringLiteral StringIndex = "string-index";
 constexpr llvm::StringLiteral StringWrite = "string-write";
@@ -73,18 +74,10 @@ constexpr llvm::StringLiteral FieldAddress = "field-address";
 /// holding borrowed pointers it is or points into.
 using Origins = llvm::SmallPtrSet<const clang::NamedDecl *, 2>;
 
-/// One annotation of a pointer type.
-struct TypeAnnotation {
-  llvm::StringRef name;
-  std::string argument;
-};
-
 } // namespace
 
-/// The annotations on `type`'s own pointer level, through its sugar
-/// (typedefs, attributes), and Clang's `counted_by` family on a field.
-static std::vector<TypeAnnotation> annotationsOf(clang::QualType type,
-                                                 const clang::ASTContext &ast) {
+std::vector<TypeAnnotation> annotationsOf(clang::QualType type,
+                                          const clang::ASTContext &ast) {
   std::vector<TypeAnnotation> found;
   clang::QualType current = type;
   for (unsigned depth = 0; depth < 16; ++depth) {
@@ -126,8 +119,8 @@ static std::vector<TypeAnnotation> annotationsOf(clang::QualType type,
   return found;
 }
 
-static bool hasAnnotation(llvm::ArrayRef<TypeAnnotation> annotations,
-                          llvm::StringRef name) {
+bool hasAnnotation(llvm::ArrayRef<TypeAnnotation> annotations,
+                   llvm::StringRef name) {
   return llvm::any_of(annotations, [&](const TypeAnnotation &annotation) {
     return annotation.name == name;
   });
@@ -137,7 +130,9 @@ static bool hasAnnotation(llvm::ArrayRef<TypeAnnotation> annotations,
 static bool boundedBy(llvm::ArrayRef<TypeAnnotation> annotations) {
   return llvm::any_of(annotations, [](const TypeAnnotation &annotation) {
     return annotation.name != EscapesAnnotation &&
-           annotation.name != BorrowedAnnotation;
+           annotation.name != DropsAnnotation &&
+           annotation.name != BorrowedAnnotation &&
+           annotation.name != OwnedAnnotation;
   });
 }
 
@@ -300,10 +295,9 @@ public:
                const clang::Preprocessor *preprocessor,
                std::function<void(clang::SourceLocation, llvm::StringRef,
                                   llvm::StringRef, llvm::StringRef)>
-                   report,
-               bool typed)
+                   report)
       : ast(ast), diagnostics(diagnostics), preprocessor(preprocessor),
-        report(std::move(report)), typed(typed) {}
+        report(std::move(report)) {}
 
   PointerBounds boundsOf(const clang::FunctionDecl &function,
                          clang::QualType type, clang::SourceLocation at) {
@@ -312,12 +306,19 @@ public:
       return bounds;
     bounds.kind = PointerBounds::Kind::Single;
     const clang::QualType pointee = type->getPointeeType();
-    // RFC 0042 §5: a typed unit's table gives a single pointer's size.
-    if (typed)
-      bounds.pointeeSize = sizeOf(pointee);
+    // RFC 0042 §5: the table gives a single pointer's size.
+    bounds.pointeeSize = sizeOf(pointee);
     for (const TypeAnnotation &annotation : annotationsOf(type, ast)) {
       const llvm::StringRef name = annotation.name;
       if (name == EscapesAnnotation) {
+        bounds.escapes = true;
+        continue;
+      }
+      if (name == DropsAnnotation)
+        continue;
+      // RFC 0043 §2: an owner is a heap block: not a stack address either.
+      if (name == OwnedAnnotation) {
+        bounds.owned = true;
         bounds.escapes = true;
         continue;
       }
@@ -453,6 +454,7 @@ public:
            annotationsOf(field->getType(), ast)) {
         const llvm::StringRef name = annotation.name;
         if (name == EscapesAnnotation || name == BorrowedAnnotation ||
+            name == OwnedAnnotation || name == DropsAnnotation ||
             name == NullTerminatedAnnotation ||
             name == NullTerminatedOrNullAnnotation)
           continue;
@@ -499,7 +501,7 @@ public:
         ast.getTypeSizeInChars(type).getQuantity());
   }
 
-  /// RFC 0042 §5: gives each pointer field of `record` (a typed unit's) the
+  /// RFC 0042 §5: gives each pointer field of `record` the
   /// implicit `weavec.field` annotation, and each field that counts one a
   /// `weavec.count`. A bound that names something else than a sibling
   /// integer field or a constant, and `WEAVEC_ENDED_BY`, give none: the
@@ -533,7 +535,12 @@ public:
       bool known = true;
       for (const TypeAnnotation &annotation : annotationsOf(type, ast)) {
         const llvm::StringRef name = annotation.name;
-        if (name == EscapesAnnotation || name == BorrowedAnnotation)
+        if (name == OwnedAnnotation)
+          bounds.flags |= FieldBounds::Owner;
+        if (name == BorrowedAnnotation)
+          bounds.flags |= FieldBounds::Borrowed;
+        if (name == EscapesAnnotation || name == BorrowedAnnotation ||
+            name == OwnedAnnotation || name == DropsAnnotation)
           continue;
         if (name == NullTerminatedAnnotation ||
             name == NullTerminatedOrNullAnnotation) {
@@ -615,7 +622,6 @@ private:
   std::function<void(clang::SourceLocation, llvm::StringRef, llvm::StringRef,
                      llvm::StringRef)>
       report;
-  bool typed;
 
   /// An implicit `annotate(name, values...)`, its arguments constants of
   /// type `long long`, as Sema would have made them.
@@ -709,8 +715,8 @@ public:
     if (base->getType()->isPointerType() && !isZero(subscript->getIdx()) &&
         !bounded(base))
       single(subscript->getExprLoc(), base);
-    if (unit.typed && base->getType()->isPointerType() &&
-        nullTerminated(base) && !forwardConstant(subscript->getIdx(), false))
+    if (base->getType()->isPointerType() && nullTerminated(base) &&
+        !forwardConstant(subscript->getIdx(), false))
       stringIndex(subscript->getExprLoc(), base);
     return true;
   }
@@ -720,8 +726,6 @@ public:
         op->getSubExpr()->getType()->isPointerType() &&
         !bounded(op->getSubExpr()))
       single(op->getExprLoc(), op->getSubExpr());
-    if (!unit.typed)
-      return true;
     if (op->isDecrementOp() && op->getSubExpr()->getType()->isPointerType() &&
         nullTerminated(op->getSubExpr()))
       stringIndex(op->getExprLoc(), op->getSubExpr());
@@ -746,7 +750,7 @@ public:
           pointer == op->getLHS() ? op->getRHS() : op->getLHS();
       if (pointer != nullptr && !isZero(offset) && !bounded(pointer))
         single(op->getExprLoc(), pointer);
-      if (unit.typed && pointer != nullptr && nullTerminated(pointer) &&
+      if (pointer != nullptr && nullTerminated(pointer) &&
           !forwardConstant(offset, op->getOpcode() == clang::BO_Sub ||
                                        op->getOpcode() == clang::BO_SubAssign))
         stringIndex(op->getExprLoc(), pointer);
@@ -754,7 +758,7 @@ public:
     if (op->getOpcode() == clang::BO_Assign && !isLocalSlot(op->getLHS()) &&
         !isBorrowedSlot(op->getLHS()))
       storesBorrowed(op->getRHS(), op->getExprLoc());
-    if (unit.typed && op->isAssignmentOp()) {
+    if (op->isAssignmentOp()) {
       writesString(*op->getLHS(), op->getExprLoc());
       const bool decrease =
           op->getOpcode() == clang::BO_SubAssign ||
@@ -818,17 +822,15 @@ public:
   }
 
   bool VisitCallExpr(clang::CallExpr *call) {
-    if (unit.typed)
-      for (const clang::Expr *argument : call->arguments())
-        leavesWithFieldAddress(*argument);
+    for (const clang::Expr *argument : call->arguments())
+      leavesWithFieldAddress(*argument);
     const clang::FunctionDecl *callee = call->getDirectCallee();
     if (callee == nullptr)
       return true;
     checkBuiltin(*call, *callee);
-    if (unit.typed)
-      for (unsigned i = 0; i < call->getNumArgs() && i < callee->getNumParams();
-           ++i)
-        passesString(*call->getArg(i), *callee->getParamDecl(i), *callee);
+    for (unsigned i = 0; i < call->getNumArgs() && i < callee->getNumParams();
+         ++i)
+      passesString(*call->getArg(i), *callee->getParamDecl(i), *callee);
     const auto *prototype =
         callee->getType()->getAs<clang::FunctionProtoType>();
     if (prototype != nullptr && prototype->isVariadic() &&
@@ -886,10 +888,8 @@ public:
     const clang::Expr *value = statement->getRetValue();
     if (value == nullptr)
       return true;
-    if (unit.typed) {
-      leavesWithFieldAddress(*value);
-      singleIntoBound(*value, function.getReturnType(), "the result");
-    }
+    leavesWithFieldAddress(*value);
+    singleIntoBound(*value, function.getReturnType(), "the result");
     for (const clang::NamedDecl *origin : originsOf(value))
       if (!origin->hasAttr<clang::LifetimeBoundAttr>() ||
           !llvm::isa<clang::ParmVarDecl>(origin)) {
@@ -910,7 +910,7 @@ public:
   bool VisitVarDecl(clang::VarDecl *variable) {
     if (variable->hasInit() && !variable->hasLocalStorage())
       storesBorrowed(variable->getInit(), variable->getLocation());
-    if (unit.typed && variable->hasInit() && !variable->hasLocalStorage())
+    if (variable->hasInit() && !variable->hasLocalStorage())
       leavesWithFieldAddress(*variable->getInit());
     return true;
   }
@@ -923,7 +923,7 @@ public:
             : visited;
     const clang::RecordDecl *record = list->getType()->getAsRecordDecl();
     const bool local = initializesLocal(*list) || initializesLocal(*visited);
-    if (unit.typed && record != nullptr && list == visited)
+    if (record != nullptr && list == visited)
       checkCountedInit(ast, *list, *record, report);
     unsigned index = 0;
     llvm::SmallVector<const clang::FieldDecl *, 8> fields;
@@ -933,7 +933,7 @@ public:
       const clang::FieldDecl *field =
           index < fields.size() ? fields[index] : nullptr;
       ++index;
-      if (unit.typed && element != nullptr)
+      if (element != nullptr)
         leavesWithFieldAddress(*element);
       if (element == nullptr || !(element->getType()->isPointerType() ||
                                   holdsBorrowed(element->getType(), ast)))
@@ -1019,23 +1019,21 @@ private:
     for (const clang::VarDecl *variable : addressed)
       localBounded[variable] =
           boundedBy(annotationsOf(variable->getType(), ast));
-    if (unit.typed)
-      collectTyped(function.getBody());
+    collectTyped(function.getBody());
     for (bool changed = true; changed;) {
       changed = false;
       for (auto &[variable, values] : assigned) {
-        if (unit.typed)
-          for (const clang::Expr *value : values) {
-            if (!localStrings.contains(variable) && nullTerminated(value)) {
-              localStrings.insert(variable);
-              changed = true;
-            }
-            if (!localFieldAddresses.contains(variable) &&
-                carriesFieldAddress(*value)) {
-              localFieldAddresses.insert(variable);
-              changed = true;
-            }
+        for (const clang::Expr *value : values) {
+          if (!localStrings.contains(variable) && nullTerminated(value)) {
+            localStrings.insert(variable);
+            changed = true;
           }
+          if (!localFieldAddresses.contains(variable) &&
+              carriesFieldAddress(*value)) {
+            localFieldAddresses.insert(variable);
+            changed = true;
+          }
+        }
         if (addressed.contains(variable))
           continue;
         bool isBounded = true;
@@ -1201,7 +1199,9 @@ private:
         if (parameter->getType()->isPointerType() &&
             !parameter->getType()->isFunctionPointerType() &&
             !hasAnnotation(annotationsOf(parameter->getType(), ast),
-                           EscapesAnnotation))
+                           EscapesAnnotation) &&
+            !hasAnnotation(annotationsOf(parameter->getType(), ast),
+                           OwnedAnnotation))
           origins.insert(parameter);
         return;
       }
@@ -1357,7 +1357,7 @@ private:
   }
 
   //===--------------------------------------------------------------------===//
-  // RFC 0042 §3: typed functions' rules
+  // RFC 0042 §3: typed memory's rules
   //===--------------------------------------------------------------------===//
 
   /// Variables assigned after their initialization, and those a `strlen`
@@ -1501,13 +1501,13 @@ private:
       return;
     report(at, rule::StringWrite,
            "store through '" + text(base) +
-               "', which points into a string: typed code only reads a "
+               "', which points into a string: safe code only reads a "
                "string",
            "take the buffer and its size to write it: "
            "'char *WEAVEC_COUNTED_BY(cap) s, size_t cap'");
   }
 
-  /// RFC 0042 `call-args` for typed functions: a pointer to one object
+  /// RFC 0042 `call-args`: a pointer to one object
   /// stored where a declaration bounds it, or returned as a bounded result.
   void singleIntoBound(const clang::Expr &value, clang::QualType place,
                        const std::string &what) {
@@ -1545,7 +1545,7 @@ private:
                   callee.getName().str() + "'";
     report(argument.getExprLoc(), rule::StringWrite,
            "'" + text(&argument) + "' points into a string, and " + name +
-               " may write through it: typed code only reads a string",
+               " may write through it: safe code only reads a string",
            "pass a counted buffer, or declare what the parameter points to "
            "'const' ('const char *')");
   }
@@ -1748,7 +1748,7 @@ private:
     if (!carriesFieldAddress(expression))
       return;
     report(expression.getExprLoc(), rule::FieldAddress,
-           "the address of a pointer field cannot leave a typed function",
+           "the address of a pointer field cannot leave a safe function",
            "pass the struct that holds the field, or read the field into a "
            "local, pass that, and assign the field back");
   }
@@ -1770,7 +1770,7 @@ private:
     return false;
   }
 
-  /// RFC 0042 §3, `pointer-cast` tightened for typed functions: memory
+  /// RFC 0042 §3, `pointer-cast` tightened: memory
   /// that holds a pointer is viewed only as itself, `void` or `const` bytes,
   /// and a `void *` (which may hide such memory) becomes another type only
   /// where an allocation made it. A view larger than its object needs no
@@ -1795,7 +1795,7 @@ private:
       return;
     report(cast.getExprLoc(), rule::PointerCast,
            "converting " + names +
-               " in a typed function: a 'void *' may hide memory that holds "
+               " in a safe function: a 'void *' may hide memory that holds "
                "pointers",
            "convert an allocation's result where it is made, take a '" +
                to.getAsString() +
@@ -1918,8 +1918,7 @@ private:
              "allocation's result, or in a WEAVEC_GUARDED helper function");
       return;
     }
-    if (unit.typed)
-      checkTypedCast(cast, from, to);
+    checkTypedCast(cast, from, to);
     if (isByteType(to) && !to.isConstQualified() && holdsPointers(from) &&
         !byteViewAllowed(cast, from))
       report(cast.getExprLoc(), rule::PointerBytes,
@@ -1952,12 +1951,11 @@ private:
     if (callee == nullptr)
       return false;
     const unsigned builtin = callee->getBuiltinID();
-    // RFC 0042: in a typed function, whole objects only, so that no
+    // RFC 0042: whole objects only, so that no
     // pointer is half written.
     // The size: memcpy's, memmove's and memset's third argument (their
     // fortified forms add the object's size after it), bzero's second.
     const bool whole =
-        !unit.typed ||
         wholeObjects(call->getArg(std::min(2U, call->getNumArgs() - 1)), from);
     if (builtin == clang::Builtin::BImemset ||
         builtin == clang::Builtin::BI__builtin_memset ||
@@ -1965,8 +1963,7 @@ private:
       clang::Expr::EvalResult value;
       return call->getNumArgs() > 1 &&
              call->getArg(1)->EvaluateAsInt(value, ast) &&
-             value.Val.getInt().isZero() &&
-             (!unit.typed || wholeObjects(call->getArg(2), from));
+             value.Val.getInt().isZero() && wholeObjects(call->getArg(2), from);
     }
     if (builtin == clang::Builtin::BIbzero ||
         builtin == clang::Builtin::BI__builtin_bzero)
@@ -2038,11 +2035,14 @@ public:
               bool unitSafe)
       : compiler(compiler), out(std::move(out)), unitSafe(unitSafe) {}
 
-  /// RFC 0042 §5: a typed unit's struct is annotated when its definition
+  /// RFC 0042 §5: a C unit's struct is annotated when its definition
   /// is complete, before the code of any function that uses it is made.
   void HandleTagDeclDefinition(clang::TagDecl *tag) override {
     auto *record = llvm::dyn_cast<clang::RecordDecl>(tag);
-    if (!out->typed || record == nullptr ||
+    // Only the guard passes, on a 64-bit target, remove the annotations.
+    if (record == nullptr || !out->annotates ||
+        tag->getASTContext().getTargetInfo().getPointerWidth(
+            clang::LangAS::Default) != 64 ||
         tag->getASTContext().getLangOpts().CPlusPlus ||
         tag->getASTContext().getSourceManager().isInSystemHeader(
             tag->getLocation()))
@@ -2071,15 +2071,26 @@ public:
         declarations.checkRecord(*record);
     for (const clang::FunctionDecl *function : safe)
       out->functions[function->getName()].safe = true;
-    if (out->typed)
+    if (!safe.empty())
       checkGlobalInits(ast.getTranslationUnitDecl(), ast);
-    for (const clang::FunctionDecl *function : safe)
+    if (!safe.empty())
+      listFields(records, ast);
+    for (const clang::FunctionDecl *function : safe) {
       FunctionCheck(ast, *function, *out,
                     [this](clang::SourceLocation at, llvm::StringRef rule,
                            llvm::StringRef message, llvm::StringRef fix) {
                       report(at, rule, message, fix);
                     })
           .run();
+      // RFC 0043: ownership's rules.
+      checkOwnership(ast, *function, *out,
+                     [this](clang::SourceLocation at, llvm::StringRef rule,
+                            llvm::StringRef message,
+                            clang::SourceLocation noteAt,
+                            llvm::StringRef note) {
+                       report(at, rule, message, note, noteAt);
+                     });
+    }
   }
 
 private:
@@ -2089,7 +2100,7 @@ private:
   std::set<std::pair<clang::SourceLocation::UIntTy, std::string>> reported;
   std::unique_ptr<Declarations> unitDeclarations;
 
-  /// RFC 0042 §2: a typed unit's globals are initialized by constants
+  /// RFC 0042 §2: a safe unit's globals are initialized by constants
   /// whose counts the checker compares with their pointers' objects.
   void checkGlobalInits(const clang::DeclContext *context,
                         clang::ASTContext &ast) {
@@ -2120,14 +2131,56 @@ private:
     }
   }
 
-  /// An error that names its rule, with the note that says what to write.
+  /// RFC 0043 §11: each pointer field of the unit's structs, and its kind.
+  void listFields(llvm::ArrayRef<const clang::RecordDecl *> records,
+                  clang::ASTContext &ast) {
+    const clang::SourceManager &sources = ast.getSourceManager();
+    for (const clang::RecordDecl *record : records)
+      for (const clang::FieldDecl *field : record->fields()) {
+        clang::QualType type = field->getType();
+        if (const auto *array = ast.getAsConstantArrayType(type))
+          type = array->getElementType();
+        if (!type->isPointerType() || type->isFunctionPointerType())
+          continue;
+        const auto annotations = annotationsOf(type, ast);
+        const char *kind = "reference";
+        if (hasAnnotation(annotations, OwnedAnnotation))
+          kind = "owner";
+        else if (hasAnnotation(annotations, BorrowedAnnotation))
+          kind = "borrowed";
+        const clang::PresumedLoc at =
+            sources.getPresumedLoc(field->getLocation());
+        std::string name = record->getName().str();
+        if (name.empty())
+          if (const clang::TypedefNameDecl *alias =
+                  record->getTypedefNameForAnonDecl())
+            name = alias->getName().str();
+        out->fields.push_back({.record = name,
+                               .field = field->getName().str(),
+                               .kind = kind,
+                               .file = at.isValid() ? at.getFilename() : "",
+                               .line = at.isValid() ? at.getLine() : 0});
+      }
+  }
+
+  /// An error that names its rule, with the note that says what to write
+  /// (at `noteAt` when given: where the error's cause is). The first error
+  /// of a compile says how to read the rule's explanation (RFC 0043 §12).
   void report(clang::SourceLocation at, llvm::StringRef rule,
-              llvm::StringRef message, llvm::StringRef fix) {
+              llvm::StringRef message, llvm::StringRef fix,
+              clang::SourceLocation noteAt = {}) {
     // A macro may expand an argument twice (a fortified memcpy): once per
     // place in the file.
     const clang::SourceLocation file =
         at.isValid() ? compiler.getSourceManager().getFileLoc(at) : at;
-    if (!reported.emplace(file.getRawEncoding(), rule.str()).second)
+    // Ownership's different errors at one place (two owners leaked at one
+    // return) are each reported.
+    const bool ownership = rule.starts_with("owner") ||
+                           rule == "stale-borrow" || rule == "call-alias";
+    if (!reported
+             .emplace(file.getRawEncoding(),
+                      rule.str() + (ownership ? message.str() : ""))
+             .second)
       return;
     clang::DiagnosticsEngine &diagnostics = compiler.getDiagnostics();
     diagnostics.Report(
@@ -2135,9 +2188,19 @@ private:
                                         "%0 [weavec-safe:%1]"))
         << message << rule;
     diagnostics.Report(
-        at, diagnostics.getCustomDiagID(clang::DiagnosticsEngine::Note, "%0"))
+        noteAt.isValid() ? noteAt : at,
+        diagnostics.getCustomDiagID(clang::DiagnosticsEngine::Note, "%0"))
         << fix;
+    if (!explained) {
+      explained = true;
+      diagnostics.Report(at, diagnostics.getCustomDiagID(
+                                 clang::DiagnosticsEngine::Note,
+                                 "'weavec-cc --weavec-explain %0' explains "
+                                 "this rule"))
+          << rule;
+    }
   }
+  bool explained = false;
 
   Declarations &declarationsFor(clang::ASTContext &ast) {
     if (!unitDeclarations)
@@ -2146,8 +2209,7 @@ private:
           compiler.hasPreprocessor() ? &compiler.getPreprocessor() : nullptr,
           [this](clang::SourceLocation at, llvm::StringRef rule,
                  llvm::StringRef message,
-                 llvm::StringRef fix) { report(at, rule, message, fix); },
-          out->typed);
+                 llvm::StringRef fix) { report(at, rule, message, fix); });
     return *unitDeclarations;
   }
 
@@ -2210,9 +2272,9 @@ private:
           });
       const bool definesSafe = function->doesThisDeclarationHaveABody() &&
                                isSafe(*function, ast.getSourceManager());
-      // RFC 0042 §6, §5: a typed unit's table knows every function it
-      // declares (single results' sizes), and which are typed elsewhere.
-      if (out->typed && !annotated && !definesSafe &&
+      // RFC 0042 §6, §5: the table knows every function the unit
+      // declares (single results' sizes), and which are safe elsewhere.
+      if (!annotated && !definesSafe &&
           !out->functions.contains(function->getName()))
         out->functions[function->getName()] = table;
 
@@ -2238,7 +2300,7 @@ private:
       if (function->doesThisDeclarationHaveABody() &&
           !ast.getSourceManager().isInSystemHeader(function->getLocation()))
         define(*function, definesSafe, ast.getSourceManager());
-      if (out->typed && !function->doesThisDeclarationHaveABody() &&
+      if (!function->doesThisDeclarationHaveABody() &&
           hasAnnotateAttr(*function, SafeAnnotation))
         out->functions[function->getName()].declaredTyped = true;
     }
@@ -2249,17 +2311,28 @@ private:
               const clang::SourceManager &sources) {
     const char *tier = "guarded";
     if (safeFunction)
-      tier = out->typed ? "typed" : "safe";
+      tier = "safe";
     else if (hasAnnotateAttr(function, UnsafeAnnotation) ||
              function.hasAttr<clang::NoSanitizeAttr>() ||
              function.hasAttr<clang::DisableSanitizerInstrumentationAttr>())
       tier = "unsafe";
     const clang::PresumedLoc at =
         sources.getPresumedLoc(function.getLocation());
-    out->definitions.push_back({.name = function.getName().str(),
-                                .tier = tier,
-                                .file = at.isValid() ? at.getFilename() : "",
-                                .line = at.isValid() ? at.getLine() : 0});
+    const auto owned = [&](clang::QualType type) {
+      return type->isPointerType() &&
+             hasAnnotation(annotationsOf(type, function.getASTContext()),
+                           OwnedAnnotation);
+    };
+    out->definitions.push_back(
+        {.name = function.getName().str(),
+         .tier = tier,
+         .file = at.isValid() ? at.getFilename() : "",
+         .line = at.isValid() ? at.getLine() : 0,
+         .owns = owned(function.getReturnType()) ||
+                 llvm::any_of(function.parameters(),
+                              [&](const clang::ParmVarDecl *parameter) {
+                                return owned(parameter->getType());
+                              })});
   }
 
   void reportMismatch(const clang::FunctionDecl &function,
@@ -2285,6 +2358,47 @@ private:
 };
 
 } // namespace
+
+int runExplain(llvm::ArrayRef<const char *> operands) {
+#include "SafeRulesText.inc"
+  const llvm::StringRef text(SafeRulesTextData, SafeRulesTextSize);
+  llvm::SmallVector<llvm::StringRef, 32> parts;
+  text.split(parts, "\n## ");
+  llvm::StringMap<llvm::StringRef> rules;
+  llvm::SmallVector<llvm::StringRef, 32> order;
+  for (const llvm::StringRef part : llvm::ArrayRef(parts).drop_front()) {
+    const llvm::StringRef id =
+        part.take_until([](char c) { return c == '\n'; });
+    rules[id] = part;
+    order.push_back(id);
+  }
+  llvm::raw_ostream &out = llvm::outs();
+  if (operands.empty()) {
+    out << "Safe C's rules; 'weavec-cc --weavec-explain <rule>' explains one, "
+           "'--weavec-explain all' every one:\n";
+    for (const llvm::StringRef id : order)
+      out << "  " << id << '\n';
+    return 0;
+  }
+  if (operands.size() == 1 && llvm::StringRef(operands[0]) == "all") {
+    out << text;
+    return 0;
+  }
+  bool ok = true;
+  for (const char *operand : operands) {
+    llvm::StringRef id(operand);
+    id.consume_front("weavec-safe:");
+    const auto found = rules.find(id);
+    if (found == rules.end()) {
+      llvm::errs() << "weavec-cc: error: no rule '" << id
+                   << "'; 'weavec-cc --weavec-explain' lists them\n";
+      ok = false;
+      continue;
+    }
+    out << "## " << found->second.rtrim() << "\n\n";
+  }
+  return ok ? 0 : 1;
+}
 
 std::unique_ptr<clang::ASTConsumer>
 createSafeChecker(clang::CompilerInstance &compiler,

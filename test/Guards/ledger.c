@@ -6,7 +6,7 @@
 
 // SUMMARY: weavec: {{.*}}ledger.c: 2 accesses: 1 proven, 1 guarded, 0 unguarded
 // CHECK-DAG: "schema": "weavec-ledger"
-// CHECK-DAG: "version": 5
+// CHECK-DAG: "version": 6
 // CHECK-DAG: "checks": "trap"
 // CHECK-DAG: "accesses": 2
 // CHECK-DAG: "outcome": "guarded"

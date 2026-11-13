@@ -1,19 +1,12 @@
-// RFC 0042 §3: the rules typed functions add to Safe C's, each with an
+// RFC 0042 §3: the rules typed memory adds to Safe C's, each with an
 // accepted and a rejected form: counted-pair, string-write, string-index,
 // field-address, and pointer-cast and pointer-bytes tightened.
-// RUN: %weavec_cc -fsyntax-only -fweavec-typed -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
-// Without -fweavec-typed the same unit is plain Safe C, and none of them
-// applies.
-// RUN: %weavec_cc -fsyntax-only -fweavec-safe %s 2>&1 | FileCheck %s --allow-empty --check-prefix=SAFE
-// SAFE-NOT: counted-pair
-// SAFE-NOT: string-write
-// SAFE-NOT: string-index
-// SAFE-NOT: field-address
+// RUN: %weavec_cc -fsyntax-only -fweavec-safe -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
 #include <weavec.h>
 #include <stdlib.h>
 #include <string.h>
 
-struct vec { int *WEAVEC_COUNTED_BY(cap) data; size_t len, cap; };
+struct vec { int *WEAVEC_OWNED WEAVEC_COUNTED_BY(cap) data; size_t len, cap; };
 struct node { struct node *next; int value; };
 struct plain { long a, b; };
 struct small { int x; };
@@ -43,7 +36,7 @@ int growPaired(struct vec *v) {
 
 int growCountFirst(struct vec *v, size_t cap) {
   v->cap = cap; // expected-error {{'cap' and 'data' are assigned with a call between them [weavec-safe:counted-pair]}}
-  v->data = calloc(cap, sizeof *v->data);
+  v->data = calloc(cap, sizeof *v->data); // expected-error {{[weavec-safe:owner-leak]}}
   return v->data == NULL;
 }
 
@@ -60,7 +53,7 @@ struct vec over = {four, 0, 8}; // expected-error {{'data' is initialized with f
 
 // string-write and string-index
 void trim(char *WEAVEC_NULL_TERMINATED s) {
-  s[strlen(s) - 1] = '\0'; // expected-error {{store through 's', which points into a string: typed code only reads a string [weavec-safe:string-write]}}
+  s[strlen(s) - 1] = '\0'; // expected-error {{store through 's', which points into a string: safe code only reads a string [weavec-safe:string-write]}}
 }
 
 void trimCounted(char *WEAVEC_COUNTED_BY(cap) s, size_t cap) {
@@ -70,7 +63,7 @@ void trimCounted(char *WEAVEC_COUNTED_BY(cap) s, size_t cap) {
 }
 
 void pass(char *WEAVEC_NULL_TERMINATED s) {
-  edit(s); // expected-error {{'s' points into a string, and 'p' of 'edit' may write through it: typed code only reads a string [weavec-safe:string-write]}}
+  edit(s); // expected-error {{'s' points into a string, and 'p' of 'edit' may write through it: safe code only reads a string [weavec-safe:string-write]}}
 }
 
 size_t count(const char *WEAVEC_NULL_TERMINATED s) {
@@ -98,7 +91,7 @@ char back(const char *WEAVEC_NULL_TERMINATED s) {
 
 // field-address
 struct node **link(struct node *n WEAVEC_LIFETIMEBOUND) {
-  return &n->next; // expected-error {{the address of a pointer field cannot leave a typed function [weavec-safe:field-address]}}
+  return &n->next; // expected-error {{the address of a pointer field cannot leave a safe function [weavec-safe:field-address]}}
 }
 
 void unlink(struct node **head);
@@ -119,7 +112,7 @@ long pun(struct node *n) {
 }
 
 int fromVoid(void *context) {
-  struct small *s = context; // expected-error {{converting 'void *' to 'struct small *' in a typed function: a 'void *' may hide memory that holds pointers [weavec-safe:pointer-cast]}}
+  struct small *s = context; // expected-error {{converting 'void *' to 'struct small *' in a safe function: a 'void *' may hide memory that holds pointers [weavec-safe:pointer-cast]}}
   return s->x;
 }
 
@@ -173,4 +166,4 @@ void point(struct cursor *c, const char *WEAVEC_ESCAPES text) {
 const char *WEAVEC_NULL_TERMINATED name(const char *one WEAVEC_LIFETIMEBOUND) {
   return one; // expected-error {{'one' points to one object, and the result has a bound [weavec-safe:call-args]}}
 }
-void release(char *WEAVEC_NULL_TERMINATED owned) { free(owned); }
+void release(char *WEAVEC_OWNED WEAVEC_NULL_TERMINATED owned) { free(owned); }
