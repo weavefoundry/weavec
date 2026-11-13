@@ -14,7 +14,7 @@
 // RUN: %weavec_cc --weavec-audit %t/ledger | FileCheck %s --check-prefix=AUDIT
 // RUN: %weavec_cc --weavec-audit --format=json %t/ledger | FileCheck %s --check-prefix=JSON
 // RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe %s -o %t/program
-// RUN: not %t/program 2>&1 | FileCheck %s --check-prefix=RUN
+// RUN: not --crash %t/program 2>&1 | FileCheck %s --check-prefix=REPORT
 #include <cstdio>
 #include <functional>
 #include <memory>
@@ -35,23 +35,24 @@ struct Cache {
   std::function<void()> onChange;
   std::string_view label;
   int count = 0;
-  void remember() { last = items.back().get(); }
-  int recall() const { return last->v; }
+  [[gnu::noinline]] void remember() { last = items.back().get(); }
+  [[gnu::noinline]] int recall() const { return last->v; }
 };
 WEAVEC_GUARDED int raw(const int *p) { return p[0]; }
+[[gnu::noinline]] void drop(Cache &cache) { cache.items.pop_back(); }
 
 // A reference is not followed by the rules: the guard stops its use.
 int main() {
   Cache cache;
   cache.items.push_back(std::make_unique<Item>());
   cache.remember();
-  cache.items.pop_back();
+  drop(cache);
   int one = 1;
   std::printf("%d\n", cache.recall() + raw(&one));
   return 0;
 }
 
-// SUMMARY: weavec: {{.*}}safe-cxx-units.cpp: {{[0-9]+}} accesses: {{.*}}; 3 of 4 functions safe; 3 owner and 1 reference fields
+// SUMMARY: weavec: {{.*}}safe-cxx-units.cpp: {{[0-9]+}} accesses: {{.*}}; 4 of 5 functions safe; 3 owner and 1 reference fields
 // LEDGER: "fields": [
 // LEDGER: "field": "name"
 // LEDGER-NEXT: "file":
@@ -81,10 +82,12 @@ int main() {
 // LEDGER: "tier": "safe"
 // LEDGER: "function": "raw"
 // LEDGER: "tier": "guarded"
+// LEDGER: "function": "drop"
+// LEDGER: "tier": "safe"
 // LEDGER: "function": "main"
 // LEDGER: "tier": "safe"
 // LEDGER: "version": 7
-// AUDIT: 3 of 4 functions safe
+// AUDIT: 4 of 5 functions safe
 // AUDIT: functions that are not safe
 // AUDIT-NEXT: safe-cxx-units.cpp:{{[0-9]+}}: raw (guarded)
 // AUDIT: reference fields
@@ -97,4 +100,4 @@ int main() {
 // JSON-DAG: "version": 3
 // JSON-DAG: "shared": [
 // JSON-DAG: "erased": [
-// RUN: weavec: heap-use-after-free at {{.*}}safe-cxx-units.cpp:39:
+// REPORT: weavec: heap-use-after-free at {{.*}}safe-cxx-units.cpp:39:

@@ -787,7 +787,7 @@ FAKE_CC = r'''#!PYTHON
 """A stand-in for weavec-cc (and, named fake-clang, for the reference compiler).
 
 -c writes an "object" that lists its source and, for weavec-cc with
--fweavec-ledger=, a version 6 ledger: one access per line, FAKE_PROVEN of
+-fweavec-ledger=, a version 7 ledger: one access per line, FAKE_PROVEN of
 them proven. Linking writes a shell script: the program. A source that
 contains FAKE_FAIL fails to compile with weavec-cc. A source line
 `REPORT kind` makes it report that guard at that line when FAKE_TRAP is set
@@ -992,7 +992,7 @@ class EndToEndTest(unittest.TestCase):
         (self.root / "bin" / "fake-weavec-cc").write_text(f"#!{sys.executable}\nimport sys; sys.exit(3)\n")
         status, output = self.run_gate("--quick", "--update")
         self.assertEqual(status, 2, output)  # the probe sees it first
-        self.assertIn("does not write a weavec-ledger version 6 ledger", output)
+        self.assertIn("does not write a weavec-ledger version 7 ledger", output)
         self.assertFalse(self.expected.exists())
 
     def test_a_failed_compile_is_not_recorded(self):
