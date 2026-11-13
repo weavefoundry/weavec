@@ -396,9 +396,10 @@ push, the `weavec` package on GitHub's registry made public (a new package
 is private). A failed publication is retried by re-running the failed jobs
 of the release's CI run.
 
-Repository setup: a `RELEASE_TOKEN` secret holding a token that may write
-this repository's contents, pull requests and issues (for the release pull
-request's labels). GitHub starts no workflows for a pull request opened with
+Repository setup: a `RELEASE_TOKEN` secret, an organization secret shared
+with the other WeaveFoundry projects, holding a fine-grained token with read
+and write access to this repository's contents and pull requests (which
+covers the release pull request's labels). GitHub starts no workflows for a pull request opened with
 the built-in `GITHUB_TOKEN`, so without `RELEASE_TOKEN` the workflow falls
 back to `GITHUB_TOKEN` and the release pull request gets no CI until it is
 closed and reopened or a commit is pushed to it. The release identity needs to

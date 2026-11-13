@@ -268,7 +268,6 @@ jobs:
     permissions:
       contents: write
       # release-please's pull request and its labels.
-      issues: write
       pull-requests: write
       # RFC 0038 section 6: the container image.
       packages: write
