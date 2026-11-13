@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v0.24.0 (2026-11-13)
+
+### Features
+
+- Add ownership to Safe C ([#67](https://github.com/weavefoundry/weavec/pull/67),
+  [`8a7ce7e`](https://github.com/weavefoundry/weavec/commit/8a7ce7e4b240f2dc1de393d10fad699979583413))
+
+
 ## v0.23.0 (2026-11-11)
 
 ### Features
