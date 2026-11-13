@@ -379,7 +379,8 @@ Each of these still stops when it runs, under the guards:
 
 - a dangling raw pointer member or element (a reference);
 - an object shared by `std::shared_ptr<T>` that another holder changed under a borrow;
-- a callable that code which is not safe keeps or passes in, when it captured locals that are gone (between safe functions, `WEAVEC_ESCAPES` on the parameter closes this);
+- a callable that captured `this`, or an object a parameter refers to, and is kept by an object that outlives it; and a stored callable that changes the container it is being called from;
+- an element moved out of a container (`std::move(v[i])`) and used again;
 - a container's iterators passed to a standard algorithm the standard forbids them for (`v.assign(v.begin() + 1, v.end())`);
 - an index or an iterator out of range, a null `std::unique_ptr`, an empty `std::optional`;
 - globals that are not `const`, and data races.

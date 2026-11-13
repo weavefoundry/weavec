@@ -12,9 +12,10 @@ milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
-## Next: RFC 0044 — Safe C++
+## Now: RFC 0044 — Safe C++
 
-Design: [RFC 0044 — Safe C++](rfcs/0044-safe-cxx.md) (Accepted, not built). Safe C gives
+Design: [RFC 0044 — Safe C++](rfcs/0044-safe-cxx.md) (Accepted, built; its
+_Implementation amendments_ and _Measured gates_ say how). Safe C gives
 an agent compile errors for bounds, conversions and ownership; C++, the
 language a rewrite would more likely target, has only the run-time half:
 `weavec-c++` stops each of twenty probe bugs when a test reaches it and
@@ -30,15 +31,24 @@ later RFC spends the rules, does not change what an object owns through a
 raw pointer member, and trusts the standard library. The stages:
 
 - [x] **The RFC**, accepted as drafted on 2026-11-12.
-- [ ] **S0 On paper, and probes**: the rules applied by hand to three
-      files, a prototype dataflow over the probe, the frozen sets of bugs
-      and of correct functions, the ports and conversions chosen.
-- [ ] **S1 Cleanups**: the rule `cxx` deleted, the ownership checker split
-      into a shared engine and C's front, the flag in C++.
-- [ ] **S2 Expression rules**; **S3 Kinds of types and moves**;
+- [x] **S0 Probes**: twenty bugs, Clang's lifetime analysis as a
+      comparison, the CFG with destructors, temporaries and exceptional
+      edges. The paper review was replaced by the frozen sets below.
+- [x] **S1 The flag in C++**, `WEAVEC_SAFE` on classes, the rule `cxx`
+      deleted, the ledger (version 7) and the audit (version 3). The
+      ownership checker was not split (amendment 1).
+- [x] **S2 Expression rules**; **S3 Kinds of types and moves**;
       **S4 Borrows**; **S5 Views**.
-- [ ] **S6 Explanations and the guide.**
-- [ ] **S7 Ports against Rust, conversions and seeded bugs**; the gates.
+- [x] **S6 Explanations and the guide.**
+- [x] **S7 on darwin-arm64**: 82 of 110 independently written temporal
+      bugs stop the compile for the bug (14 more stop as their fixed twins
+      do, 14 compile and stop when they run); 87 of 90 correct files
+      compile unchanged; two ports (an LRU cache, Python's `json`) with
+      every function safe, in 1.2 to 1.4 times a Rust agent's time.
+- [ ] **Next**: conversions of existing C++ projects (gate G5), the gates
+      on linux-aarch64 and linux-x86_64, and the RFC that spends the rules
+      (safe C++ costs what guarded C++ does: 1.45 times the reference on
+      the LRU port, 3.1 on the `json` port).
 
 ## Now: RFC 0043 — Ownership
 

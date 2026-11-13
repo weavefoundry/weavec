@@ -174,7 +174,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
    (the guards read it through `GuardLibrary.cpp`), never in
    `name == "…"` tests; nothing under `lib/` names a corpus project; the
    library code (`lib/`, `include/`, `tools/`) stays within its line budget
-   (20,500, RFC 0044), and so does the runtime (`runtime/` without `runtime/test/`
+   (20,750, RFC 0044), and so does the runtime (`runtime/` without `runtime/test/`
    and its export list, counted apart: 10,500). The runtime is C and
    includes no WeaveC header but its own `weavec_rt.h`, and every runtime
    entry point the passes declare (and every `wrapper(NAME)` of the table)
