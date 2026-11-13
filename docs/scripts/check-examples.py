@@ -9,7 +9,7 @@ vec.c and stop a read past its heap block with a `heap-buffer-overflow`
 report, its stack and its summary line (RFC 0035 section 5.3, RFC 0040
 section 5; the default `-fweavec-checks=trap`).
 
-Every example of resources/safe-c/rules.md (RFC 0043 section 12) tagged
+Every example of resources/safe/rules.md (RFC 0043 section 12) tagged
 `c accepted` compiles under -fweavec-safe, and every one tagged `c rejected`
 fails with the error of the rule whose section holds it.
 """
@@ -65,7 +65,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert enforcement_summary(compiled.stderr, "lookup.c"), "no summary line:\n" + compiled.stderr
 
     ledger = json.loads((ledgers / "lookup.o.ledger.json").read_text())
-    assert ledger["schema"] == "weavec-ledger" and ledger["version"] == 6, ledger
+    assert ledger["schema"] == "weavec-ledger" and ledger["version"] == 7, ledger
     rows = [row for unit in ledger["units"] for row in unit["rows"]
             if row["function"] == "lookup" and row["line"] == 8 and row["operation"] == "load"]
     assert rows, "no ledger row for the load of table[i]"
@@ -94,10 +94,15 @@ with tempfile.TemporaryDirectory() as temp:
                      past.stderr, re.M), "no summary line:\n" + past.stderr
 
     # RFC 0043 section 12: the rules' examples.
-    rules = examples.parent.parent / "resources" / "safe-c" / "rules.md"
+    rules = examples.parent.parent / "resources" / "safe" / "rules.md"
     prelude = "".join(f"#include <{h}>\n" for h in
                       ("weavec.h", "stddef.h", "stdio.h", "stdlib.h", "string.h"))
+    cxx_prelude = "".join(f"#include <{h}>\n" for h in (
+        "weavec.h", "algorithm", "cstdarg", "cstdio", "cstdlib", "cstring", "functional", "initializer_list", "map",
+        "memory", "optional", "span", "string", "string_view", "unordered_map", "utility", "variant", "vector"))
+    weavec_cxx = Path(weavec_cc).with_name("weavec-c++")
     checked = 0
+    checked_cxx = 0
     for section in rules.read_text().split("\n## ")[1:]:
         rule = section.split("\n", 1)[0]
         for number, match in enumerate(re.finditer(r"```c (accepted|rejected)\n(.*?)```", section, re.S)):
@@ -110,7 +115,29 @@ with tempfile.TemporaryDirectory() as temp:
                 assert compiled.returncode != 0 and f"[weavec-safe:{rule}]" in compiled.stderr, \
                     f"{rule} rejected example {number}:\n{compiled.stderr}"
             checked += 1
+        # RFC 0044 section 13: the C++ examples, with weavec-c++.
+        for number, match in enumerate(re.finditer(r"```cpp (accepted|rejected)\n(.*?)```", section, re.S)):
+            source = temp / f"rule-{rule}-{number}.cpp"
+            source.write_text(cxx_prelude + match.group(2))
+            compiled = run([weavec_cxx, "-std=c++20", "-fsyntax-only", "-w", "-fweavec-safe", source])
+            if match.group(1) == "accepted":
+                assert compiled.returncode == 0, f"{rule} accepted C++ example {number}:\n{compiled.stderr}"
+            else:
+                assert compiled.returncode != 0 and f"[weavec-safe:{rule}]" in compiled.stderr, \
+                    f"{rule} rejected C++ example {number}:\n{compiled.stderr}"
+            checked_cxx += 1
     assert checked >= 30, checked
+    assert checked_cxx >= 30, checked_cxx
+    # RFC 0044 section 13: the guide's building blocks.
+    guide = examples.parent / "pages" / "guides" / "safe-cxx.md"
+    blocks = re.findall(r"```cpp accepted\n(.*?)```", guide.read_text(), re.S)
+    assert len(blocks) >= 9, len(blocks)
+    for number, block in enumerate(blocks):
+        source = temp / f"guide-{number}.cpp"
+        source.write_text(cxx_prelude + block)
+        compiled = run([weavec_cxx, "-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-fweavec-safe",
+                        source])
+        assert compiled.returncode == 0, f"the C++ guide's block {number}:\n{compiled.stderr}"
 
 print("Documentation examples passed: every example compiles, the guarded load "
       "in the ledger, the index and heap reports, and the rules' examples.")

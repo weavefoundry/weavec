@@ -844,7 +844,9 @@ private:
       // it has its type.
       if (same)
         value.add(object(flow, expression));
-    } else if (!kinds.pureView(given)) {
+    } else if (!kinds.pureView(given) && !(constructs && same)) {
+      // A copy or a move of a view points where the view does, not into
+      // the object it was copied from.
       value.add(object(flow, expression).inside());
     }
     return value;

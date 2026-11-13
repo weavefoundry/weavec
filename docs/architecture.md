@@ -465,7 +465,7 @@ partly moved) and the owners each local borrow is below, and reports
 `stale-borrow` and `call-alias`. Each error ends in
 `[weavec-safe:<rule>]`; the first of a compile notes
 `weavec-cc --weavec-explain <rule>`, which prints the rule's section of
-`resources/safe-c/rules.md`, embedded in the compiler. The checker also
+`resources/safe/rules.md`, embedded in the compiler. The checker also
 annotates the unit's pointer fields with their bounds and kinds (owner,
 reference, borrowed) for the passes and the ledger.
 

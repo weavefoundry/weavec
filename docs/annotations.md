@@ -101,6 +101,6 @@ ownership analysis that read them
 ([RFC 0036](rfcs/0036-deterministic-heap-reuse.md)). `WEAVEC_COUNTED_BY`
 returned with RFC 0041, `WEAVEC_BORROWED` with RFC 0041 and
 `WEAVEC_OWNED` with RFC 0043, with the meanings above, which Safe C's
-rules check ([the rules](../resources/safe-c/rules.md)). `annotate` payloads that do not
+rules check ([the rules](../resources/safe/rules.md)). `annotate` payloads that do not
 start with `weavec.` are ignored. The [unsafe boundaries
 guide](pages/guides/unsafe.md) says when a region is the right tool.

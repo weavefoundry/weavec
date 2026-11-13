@@ -63,7 +63,7 @@ weavec_link_clang(
 
 # RFC 0043 §12: the rules' explanations, embedded for --weavec-explain as the
 # library table is in Core.
-set(_weavec_safe_rules "${PROJECT_SOURCE_DIR}/resources/safe-c/rules.md")
+set(_weavec_safe_rules "${PROJECT_SOURCE_DIR}/resources/safe/rules.md")
 set_property(
   DIRECTORY
   APPEND
@@ -76,7 +76,7 @@ file(
   OUTPUT
   "${CMAKE_CURRENT_BINARY_DIR}/SafeRulesText.inc"
   CONTENT
-  "// Generated from resources/safe-c/rules.md by lib/Frontend/CMakeLists.txt.
+  "// Generated from resources/safe/rules.md by lib/Frontend/CMakeLists.txt.
 // NOLINTNEXTLINE(*-avoid-c-arrays)
 static constexpr char SafeRulesTextData[] = {@_weavec_safe_rules_bytes@ '\\0'};
 static constexpr std::size_t SafeRulesTextSize = sizeof(SafeRulesTextData) - 1;

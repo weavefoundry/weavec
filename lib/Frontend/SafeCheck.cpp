@@ -2356,8 +2356,9 @@ int runExplain(llvm::ArrayRef<const char *> operands) {
   }
   llvm::raw_ostream &out = llvm::outs();
   if (operands.empty()) {
-    out << "Safe C's rules; 'weavec-cc --weavec-explain <rule>' explains one, "
-           "'--weavec-explain all' every one:\n";
+    out << "The rules of Safe C and Safe C++ ('safe-cxx' introduces the C++ "
+           "ones); '--weavec-explain <rule>' explains one, '--weavec-explain "
+           "all' every one:\n";
     for (const llvm::StringRef id : order)
       out << "  " << id << '\n';
     return 0;

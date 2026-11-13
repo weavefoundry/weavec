@@ -115,7 +115,7 @@ list.c:8:5: note: released here; use it before this, or keep what you need from 
 2 errors generated.
 ```
 
-Taking the rest of the list into an owner first, `struct node *WEAVEC_OWNED next = head->next; free(head); head = next;`, compiles. See [Safe C](docs/pages/guides/safe-c.md) and [its rules](resources/safe-c/rules.md).
+Taking the rest of the list into an owner first, `struct node *WEAVEC_OWNED next = head->next; free(head); head = next;`, compiles. See [Safe C](docs/pages/guides/safe-c.md) and [its rules](resources/safe/rules.md).
 
 ## How it works
 
@@ -237,7 +237,7 @@ Other presets are `dev-asan`, `dev-tidy`, `release` and `relwithdebinfo`; see [`
 | Installation, first check, guides | [weavec.com](https://weavec.com) |
 | Command-line reference | [docs/pages/reference/cli.md](docs/pages/reference/cli.md) |
 | Guarantees and scope | [docs/pages/reference/guarantees.md](docs/pages/reference/guarantees.md) |
-| Safe C | [docs/pages/guides/safe-c.md](docs/pages/guides/safe-c.md), [its rules](resources/safe-c/rules.md) |
+| Safe C | [docs/pages/guides/safe-c.md](docs/pages/guides/safe-c.md), [its rules](resources/safe/rules.md) |
 | Unsafe regions | [docs/pages/guides/unsafe.md](docs/pages/guides/unsafe.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
 | Design decisions (RFCs) | [docs/rfcs/](docs/rfcs/) |
@@ -257,7 +257,7 @@ runtime/          The C runtime: the shadow memory, the arena allocator and its 
                   with their stacks and symbolizer
 tools/weavec-cc/  The drop-in compiler driver (Clang's driver with WeaveC inside; weavec-c++ links to it)
 resources/        weavec.h, the C-facing header with WEAVEC_UNSAFE and Safe C's annotations
-                  (installed to lib/weavec/include); safe-c/rules.md, the rules --weavec-explain prints
+                  (installed to lib/weavec/include); safe/rules.md, the rules --weavec-explain prints
 unittests/        GoogleTest unit tests
 test/             lit + FileCheck integration tests (test/Guards pins the passes and the runtime)
   cases/          Executable C cases by feature, with markers, run by scripts/run-cases.py
