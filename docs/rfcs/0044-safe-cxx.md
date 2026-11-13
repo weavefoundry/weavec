@@ -1294,8 +1294,9 @@ They override the body.
 10. **The expression rules (§4).** `index-single` allows the difference
     and the comparison of two pointers, arithmetic on a pointer whose
     type is a library class's member typedef (an iterator that happens to
-    be a pointer), the decay of an array of constant characters, and
-    `main`'s `argv`; it rejects a library view made from a pointer and a
+    be a pointer), the decay of an array of constant characters and of
+    a `va_list` where that is an array (x86-64; `variadic` is its rule),
+    and `main`'s `argv`; it rejects a library view made from a pointer and a
     size. `raw-owner` knows `release()` by structure (a library owner's
     member function that is not `const`, has no `const` twin and returns
     a raw pointer) and a smart pointer made from a raw one by its

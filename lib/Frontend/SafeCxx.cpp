@@ -292,8 +292,8 @@ public:
             to->getPointeeType()->isAnyCharacterType()) &&
           // Where `va_list` is an array (x86-64), naming one decays it;
           // `variadic` is the rule for it.
-          !ast.hasSameType(cast->getSubExpr()->getType(),
-                           ast.getBuiltinVaListType()))
+          !clang::ASTContext::hasSameType(cast->getSubExpr()->getType(),
+                                          ast.getBuiltinVaListType()))
         error(cast->getExprLoc(), rule::IndexSingle,
               "an array becomes a pointer that has lost its size",
               "pass a 'std::span' of it, or make it a 'std::array' and "
