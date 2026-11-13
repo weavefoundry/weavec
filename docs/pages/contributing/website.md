@@ -62,7 +62,7 @@ python3 docs/scripts/check-examples.py --weavec-cc build/dev/bin/weavec-cc
 
 ## GitHub Pages deployment
 
-The `Documentation` workflow builds and checks pull requests. On `main`, successful website validation publishes the static output to GitHub Pages. It also runs after successful compiler CI so a semantic-release commit made by `GITHUB_TOKEN` refreshes the version badge and generated release notes.
+The `Documentation` workflow builds and checks pull requests. On `main`, successful website validation publishes the static output to GitHub Pages. Merging a release pull request changes `CMakeLists.txt` and `CHANGELOG.md`, so the version badge and generated release notes refresh on that push.
 
 The workflow can be run manually from the Actions tab. Deployment uses the `github-pages` environment and GitHub's short-lived deployment credentials. Generated output stays out of Git.
 

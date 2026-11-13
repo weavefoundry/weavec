@@ -342,28 +342,30 @@ after `CI passed` succeeds on a push to `main` or a manual CI run on `main`.
 PRs, merge-queue runs and forks do not publish. The release job skips a tested
 commit if `main` has already advanced; the new commit must pass its own CI.
 
-[Python Semantic Release](https://python-semantic-release.readthedocs.io/)
-is pinned in `.github/release-requirements.txt` and configured in
-`.releaserc.toml`. It is release tooling only, with no Python package or
-registry credentials involved. The first feature release is `0.1.0`;
-`feat` and breaking changes increment the minor while below 1.0, and
-`fix`/`perf` increment the patch. Other commit types do not normally release.
-Keep squash-merge titles in Conventional Commit form and describe user-visible
-changes in the relevant guides and commit/PR descriptions. `CHANGELOG.md` is
-created on the first release and regenerated solely by semantic-release;
-do not edit it manually.
+Releases are cut by merging a release pull request, so any number of pull
+requests can land on `main` before one is released.
+[release-please](https://github.com/googleapis/release-please) is configured
+in `release-please-config.json`, with the current version in
+`.release-please-manifest.json`. On every green push to `main` it opens or
+updates one pull request titled `chore(release): vX.Y.Z`, which stamps the
+`project(... VERSION ...)` line marked `x-release-please-version` in
+`CMakeLists.txt`, the manifest, and a new `CHANGELOG.md` entry generated from
+the Conventional Commits since the last release. `feat` and breaking changes
+increment the minor while below 1.0, and `fix`/`perf` increment the patch;
+other commit types do not open a release pull request on their own. Keep
+squash-merge titles in Conventional Commit form and describe user-visible
+changes in the relevant guides and commit/PR descriptions. Do not edit
+`CHANGELOG.md` by hand on `main`; to adjust a release's notes, edit the
+release pull request before merging it. To release a specific version, add a
+`Release-As: X.Y.Z` footer to a commit on `main`.
 
-The workflow first prepares everything locally: it stamps
-`project(... VERSION ...)` in `CMakeLists.txt`, regenerates `CHANGELOG.md` from
-the Conventional Commit history, and creates a release commit and `vX.Y.Z`
-tag. It packages that exact
-tag using `git archive` and verifies the version, changelog and required
-source files. Build directories and other untracked files are excluded.
-The commit and tag are pushed atomically, so a concurrent update or rejected
-push cannot publish just one of them. A GitHub draft receives the source
-archive and `SHA256SUMS` before it is made public. Release notes link to the
-versioned generated changelog and include its entry inline when it fits GitHub's
-body limit.
+Merging the release pull request runs CI on `main` again. When it passes,
+release-please creates the `vX.Y.Z` tag on the merge commit and a draft GitHub
+Release whose notes are the new changelog entry. The release job then packages
+that exact tag using `git archive` and verifies the version, changelog and
+required source files (`scripts/package-source.py`). Build directories and
+other untracked files are excluded. The draft receives the source archive and
+`SHA256SUMS` before it is made public.
 
 RFC 0038 §6: `release.yml` then calls `.github/workflows/toolchains.yml`
 for the tag. Its `build` jobs build the tag with the `release` preset and
@@ -394,34 +396,30 @@ push, the `weavec` package on GitHub's registry made public (a new package
 is private). A failed publication is retried by re-running the failed jobs
 of the release's CI run.
 
-Repository setup: Actions needs permission to write repository contents,
-and the release identity needs to be allowed to push its release commit to
-`main` and create `v*` tags under your branch/tag rules. The workflow uses
-the built-in `GITHUB_TOKEN`; it cannot bypass repository rules that reject
-that identity. Such rules must be configured by a repository administrator
-before enabling automatic publication. No PyPI, Cargo or npm token is needed.
-Keep `CI passed` as the required branch-protection check.
+Repository setup: a `RELEASE_TOKEN` secret holding a token that may write
+this repository's contents, pull requests and issues (for the release pull
+request's labels). GitHub starts no workflows for a pull request opened with
+the built-in `GITHUB_TOKEN`, so without `RELEASE_TOKEN` the workflow falls
+back to `GITHUB_TOKEN` and the release pull request gets no CI until it is
+closed and reopened or a commit is pushed to it. The release identity needs to
+be allowed to create `v*` tags under your tag rules. No PyPI, Cargo or npm
+token is needed. Keep `CI passed` as the required branch-protection check.
 
-For a local preview, install the pinned tooling into a virtual environment
-and run this on `main` with all tags fetched:
+To preview the next release, read the open release pull request. For a local
+rehearsal of the packaging, run
+`python scripts/package-source.py vX.Y.Z --output-dir dist` on an existing
+tag, extract the archive, and follow the README's build/install instructions.
+`scripts/test-release.py` checks the release-please configuration against
+`CMakeLists.txt` and packages fixture tags. Release builds must configure
+with `-DWEAVEC_VERSION_SUFFIX=""` to omit the development suffix.
+`cpack -G TGZ` still produces a local binary installation archive; it is not
+the source archive published by this workflow.
 
-```sh
-semantic-release -c .releaserc.toml --noop version --no-push --no-vcs-release
-```
-
-For a full rehearsal, use a disposable clone and omit `--noop`. This makes
-local commits and tags but does not push or publish. Then run
-`python scripts/package-source.py vX.Y.Z --output-dir dist`, extract the
-archive, and follow the README's build/install instructions. Release builds
-must configure with `-DWEAVEC_VERSION_SUFFIX=""` to omit the development
-suffix. `cpack -G TGZ` still produces a local binary installation archive;
-it is not the source archive published by this workflow.
-
-If publication fails after the atomic push, manually run the **CI** workflow
-on `main` while its tip is the release commit. It reruns validation, recognizes
-the existing tag, reconstructs the archive, and finishes a missing or draft
-GitHub Release. Already public releases are left unchanged. If `main` has
-advanced, recover the existing release from a checkout of its tag using
+If publication fails after the tag is created, re-run the failed jobs of the
+release's CI run, or manually run the **CI** workflow on `main` while its tip
+is the release commit. It reruns validation, recognizes the existing tag,
+reconstructs the archive, and finishes a missing or draft GitHub Release.
+Already public releases are left unchanged. If `main` has advanced, recover
+the existing release from a checkout of its tag using
 `scripts/package-source.py` and the GitHub release UI/CLI; do not move a
-published tag. Release commits pushed with `GITHUB_TOKEN` do not trigger
-another CI run, preventing a release loop.
+published tag.

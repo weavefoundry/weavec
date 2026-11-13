@@ -148,8 +148,8 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
    constants, `camelBack` functions/variables, `static` free functions rather
    than anonymous namespaces); `.clang-tidy` enforces it.
 6. Use Conventional Commit PR titles and document user-visible changes in the
-   relevant guides. `CHANGELOG.md` is generated solely by semantic-release;
-   do not edit it manually.
+   relevant guides. `CHANGELOG.md` is generated solely by release-please's
+   release pull request; do not edit it manually.
 7. Do not commit generated files (`build/`, `compile_commands.json`,
    `docs/.generated/`).
 8. Changes to the library table, the guard passes, the runtime, the

@@ -34,10 +34,13 @@ def main():
                 raise SystemExit(f"Missing source file: {name}")
         cmake = source.extractfile(prefix + "CMakeLists.txt").read().decode()
         changelog = source.extractfile(prefix + "CHANGELOG.md").read().decode()
-    if not re.search(rf"^  VERSION {re.escape(version)}$", cmake, re.MULTILINE):
+    # release-please stamps the line marked x-release-please-version.
+    if not re.search(rf"^  VERSION {re.escape(version)}(?: +#[^\n]*)?$", cmake, re.MULTILINE):
         raise SystemExit("Tagged CMake version does not match the release tag")
+    # release-please's headings, "## [X.Y.Z](compare link) (date)", or the
+    # older "## vX.Y.Z (date)" of the releases before it.
     section = re.search(
-        rf"^## v{re.escape(version)} \([^\n]+\)\n(.*?)(?=^## |\Z)",
+        rf"^## (?:\[{re.escape(version)}\]\([^)\n]+\)|v?{re.escape(version)}) \([^\n]+\)\n(.*?)(?=^## |\Z)",
         changelog,
         re.MULTILINE | re.DOTALL,
     )
@@ -46,10 +49,11 @@ def main():
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (args.output_dir / "SHA256SUMS").write_text(f"{digest}  {archive.name}\n")
     notes = section.group(0).strip() + "\n"
-    # The generated changelog lists releases newest first.
-    previous = re.search(r"^## (v\d+\.\d+\.\d+) \(", changelog[section.end():], re.MULTILINE)
-    if previous:
-        comparison = f"{previous.group(1)}...{args.tag}"
+    # The generated changelog lists releases newest first; release-please's
+    # headings already link the comparison.
+    previous = re.search(r"^## \[?v?(\d+\.\d+\.\d+)[\] ]", changelog[section.end():], re.MULTILINE)
+    if previous and not section.group(0).startswith("## ["):
+        comparison = f"v{previous.group(1)}...{args.tag}"
         notes += (
             f"\n---\n\n**Detailed Changes**: [{comparison}]"
             f"(https://github.com/weavefoundry/weavec/compare/{comparison})\n"

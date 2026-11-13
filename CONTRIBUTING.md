@@ -134,8 +134,9 @@ for incompatible changes. `docs`, `ci`, `build`, `test`, `refactor`, `style`
 and `chore` normally do not trigger a release. Optional scopes include `core`,
 `frontend`, `runtime`, `driver` and `cmake`.
 
-Python Semantic Release generates `CHANGELOG.md` from the commit history;
-do not edit it manually. Document behavior and migration guidance in the
+release-please generates `CHANGELOG.md` from the commit history in a release
+pull request, which a maintainer merges to cut a release; do not edit it
+manually. Document behavior and migration guidance in the
 relevant guides and commit/PR descriptions.
 
 ## Reporting bugs
