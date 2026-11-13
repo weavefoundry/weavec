@@ -1,13 +1,16 @@
 name: Release
 
-# Called only after the CI aggregate succeeds on main. Keeping publication in
-# this run also avoids relying on tags pushed by GITHUB_TOKEN triggering CI.
+# Called only after the CI aggregate succeeds on main. release-please keeps a
+# release pull request open with the next version and changelog; merging it
+# tags the release (a draft) in this run, and the jobs below fill and publish
+# the draft. Every other push to main only opens or updates that pull request.
 on:
   workflow_call:
 
 permissions:
   contents: write
   packages: write
+  pull-requests: write
 
 concurrency:
   group: release
@@ -15,7 +18,7 @@ concurrency:
 
 jobs:
   release:
-    name: Semantic Release
+    name: Release Please
     if: github.repository == 'weavefoundry/weavec'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -39,58 +42,57 @@ jobs:
             echo "Main has advanced; its own CI run will handle the release."
           fi
 
-      - uses: actions/setup-python@v7
+      # A token other than GITHUB_TOKEN, so CI runs on the release pull request
+      # (GitHub starts no workflows for GITHUB_TOKEN's pull requests).
+      # RELEASE_TOKEN may push branches, open pull requests and create tags
+      # and releases in this repository.
+      - name: Open or update the release pull request, or tag a merged one
         if: steps.current.outputs.ready == 'true'
+        id: please
+        uses: googleapis/release-please-action@v5
         with:
-          python-version: "3.12"
-
-      - name: Install release tooling
-        if: steps.current.outputs.ready == 'true'
-        run: python -m pip install -r .github/release-requirements.txt
-
-      - name: Prepare version, changelog, commit and tag locally
-        if: steps.current.outputs.ready == 'true'
-        id: version
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          semantic-release -c .releaserc.toml version \
-            --no-push --no-vcs-release
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          target-branch: main
 
       - name: Select the release tag
         if: steps.current.outputs.ready == 'true'
         id: target
         env:
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          CREATED: ${{ steps.please.outputs.release_created }}
+          CREATED_TAG: ${{ steps.please.outputs.tag_name }}
         run: |
-          # Also retry publication when CI is manually rerun on a release commit.
-          # Ordinary docs/CI-only commits after a release have no tag at HEAD.
-          if [ -n "$RELEASE_TAG" ] &&
-             [ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)" ]; then
-            echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          git fetch --force --tags origin
+          if [ "$CREATED" = "true" ]; then
+            echo "tag=$CREATED_TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A manual rerun of CI on a release commit finishes that release's
+          # draft. Ordinary commits after a release have no tag at HEAD.
+          tag="$(git tag --points-at HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' | head -n 1)"
+          if [ -n "$tag" ]; then
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Package and verify the tagged source
         if: steps.target.outputs.tag != ''
         env:
           RELEASE_TAG: ${{ steps.target.outputs.tag }}
-        run: python scripts/package-source.py "$RELEASE_TAG" --output-dir dist
+        run: python3 scripts/package-source.py "$RELEASE_TAG" --output-dir dist
 
-      - name: Push the release commit and tag together
-        if: steps.version.outputs.released == 'true'
-        env:
-          RELEASE_TAG: ${{ steps.target.outputs.tag }}
-        run: git push --atomic origin HEAD:refs/heads/main "refs/tags/$RELEASE_TAG"
-
-      - name: Draft the GitHub Release with the source downloads
+      - name: Attach the source downloads to the draft GitHub Release
         if: steps.target.outputs.tag != ''
+        id: draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ steps.target.outputs.tag }}
         run: |
-          # A draft holds every asset before the release is made public (the
-          # publish job, after the toolchains are built and checked). A retry
-          # repairs a draft; an already published release is left alone.
+          # release-please creates the release as a draft, which holds every
+          # asset before the release is made public (the publish job, after the
+          # toolchains are built and checked). A retry repairs a draft, or
+          # creates one if release-please's is missing; an already published
+          # release is left alone.
           if gh release view "$RELEASE_TAG" --json isDraft > "$RUNNER_TEMP/release.json"; then
             if jq -e '.isDraft == false' "$RUNNER_TEMP/release.json" >/dev/null; then
               echo "$RELEASE_TAG is already published."
@@ -103,7 +105,6 @@ jobs:
               --verify-tag --draft --title "$RELEASE_TAG" \
               --notes-file dist/release-notes.md
           fi
-        id: draft
 
   # RFC 0038, section 6 and gate G8: the toolchains, built and tested for the
   # tag, checked on clean runners, and the formula and the container image

@@ -29,7 +29,7 @@ Start with the [RFC process](/rfcs/process/#process) and [RFC library](/rfcs/). 
 - A new or changed run-time report needs a lit test in `test/Guards/` pinning its exact text, and an entry in the command-line reference's list of report kinds.
 - Use Conventional Commit titles and update the relevant user guide.
 - Run formatting and required checks. Generated build outputs are not source files.
-- Leave `CHANGELOG.md` to semantic-release; do not edit it manually.
+- Leave `CHANGELOG.md` to release-please's release pull request; do not edit it manually.
 
 ## Improve these docs
 
