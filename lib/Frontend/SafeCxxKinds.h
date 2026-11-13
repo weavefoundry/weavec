@@ -20,7 +20,6 @@
 #define WEAVEC_LIB_FRONTEND_SAFECXXKINDS_H
 
 #include "SafeCheckImpl.h"
-
 #include "weavec/Core/LibrarySpec.h"
 
 #include "clang/AST/ASTContext.h"
@@ -72,7 +71,9 @@ public:
 
   /// A class whose objects hold a borrow.
   [[nodiscard]] bool viewClass(const clang::CXXRecordDecl *record) {
-    if (record == nullptr || (record = record->getDefinition()) == nullptr)
+    if (record != nullptr)
+      record = record->getDefinition();
+    if (record == nullptr)
       return false;
     const auto [found, inserted] = views.try_emplace(record, false);
     if (!inserted)
@@ -119,9 +120,104 @@ public:
     return erases;
   }
 
+  /// Whether an object of type `given` can be what a reference or pointer
+  /// to `type` names: the same type, or one derived from it or a base.
+  [[nodiscard]] static bool related(clang::QualType given,
+                                    clang::QualType type) {
+    type = type.getNonReferenceType();
+    if (type->isPointerType())
+      type = type->getPointeeType();
+    given = given.getNonReferenceType();
+    if (clang::ASTContext::hasSameUnqualifiedType(given, type))
+      return true;
+    const clang::CXXRecordDecl *derived = given->getAsCXXRecordDecl();
+    const clang::CXXRecordDecl *base = type->getAsCXXRecordDecl();
+    return derived != nullptr && base != nullptr && derived->hasDefinition() &&
+           base->hasDefinition() &&
+           (derived->isDerivedFrom(base) || base->isDerivedFrom(derived));
+  }
+
+  /// §7: whether an object of class `record` can keep a borrow of an
+  /// object of type `given` it is constructed from: it has a reference
+  /// member (or a borrowed pointer) to such a type, or a member that is a
+  /// library view or erases, which could point anywhere. A class of the
+  /// program whose members own what they hold keeps none.
+  [[nodiscard]] bool mayBorrow(const clang::CXXRecordDecl *record,
+                               clang::QualType given, unsigned depth = 0) {
+    if (record != nullptr)
+      record = record->getDefinition();
+    if (record == nullptr || depth > 8)
+      return true;
+    if (isLibrary(*record)) {
+      // A library template keeps what its arguments could (a vector of a
+      // class with a reference member); a library view of its own points
+      // anywhere.
+      const auto *specialization =
+          llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(record);
+      bool viaArguments = false;
+      if (specialization != nullptr)
+        for (const clang::TemplateArgument &argument :
+             specialization->getTemplateArgs().asArray()) {
+          if (argument.getKind() != clang::TemplateArgument::Type)
+            continue;
+          const clang::QualType type = argument.getAsType();
+          const clang::CXXRecordDecl *of = type->getAsCXXRecordDecl();
+          if (type->isReferenceType()
+                  ? related(given, type)
+                  : (viewClass(of) && mayBorrow(of, given, depth + 1)))
+            return true;
+          viaArguments |= type->isReferenceType() || viewClass(of);
+        }
+      return !viaArguments;
+    }
+    for (const clang::CXXBaseSpecifier &base : record->bases())
+      if (viewClass(base.getType()->getAsCXXRecordDecl()) &&
+          mayBorrow(base.getType()->getAsCXXRecordDecl(), given, depth + 1))
+        return true;
+    for (const clang::FieldDecl *field : record->fields()) {
+      clang::QualType type = field->getType();
+      while (const clang::ArrayType *array = ast.getAsArrayType(type))
+        type = array->getElementType();
+      if (type->isReferenceType() ||
+          (type->isPointerType() && !type->isFunctionPointerType() &&
+           (record->isLambda() ||
+            hasAnnotation(annotationsOf(field->getType(), ast),
+                          BorrowedAnnotation)))) {
+        if (related(given, type) || type->getPointeeType()->isVoidType())
+          return true;
+        continue;
+      }
+      const clang::CXXRecordDecl *of = type->getAsCXXRecordDecl();
+      if (of == nullptr)
+        continue;
+      if (isLibrary(*of) ? (viewClass(of) || erased(type))
+                         : (viewClass(of) && mayBorrow(of, given, depth + 1)))
+        return true;
+    }
+    return false;
+  }
+
+  /// §5: a member function the table says resets its object.
+  [[nodiscard]] static bool resets(const clang::CXXMethodDecl &method) {
+    const clang::CXXRecordDecl *record = method.getParent();
+    return method.getIdentifier() != nullptr && isLibrary(*record) &&
+           core::LibrarySpec::shipped().resetsClass(qualifiedName(*record),
+                                                    method.getName());
+  }
+
   /// A local of this type has a set of borrows the rules follow.
   [[nodiscard]] bool tracked(clang::QualType type) {
     return view(type) || erased(type);
+  }
+
+  /// A view that points elsewhere (`std::string_view`, an iterator, a
+  /// closure): what its member functions return is where it points, not
+  /// inside it.
+  [[nodiscard]] static bool pointerClass(clang::QualType type) {
+    const clang::CXXRecordDecl *record =
+        type.getNonReferenceType()->getAsCXXRecordDecl();
+    return record != nullptr &&
+           (record->hasAttr<clang::PointerAttr>() || record->isLambda());
   }
 
   /// A view that owns nothing itself (`std::string_view`, an iterator): a
@@ -140,17 +236,26 @@ public:
         accessors.try_emplace(method.getCanonicalDecl(), false);
     if (!inserted)
       return found->second;
+    // An instantiation of a member template is compared as it was written
+    // (`find(const K &)` with its const twin).
+    const clang::FunctionTemplateDecl *primary = method.getPrimaryTemplate();
+    const clang::FunctionDecl *templated =
+        primary != nullptr ? primary->getTemplatedDecl() : nullptr;
+    const clang::FunctionDecl &mine =
+        templated != nullptr ? *templated : method;
     bool twin = false;
     for (const clang::NamedDecl *other :
          method.getParent()->lookup(method.getDeclName())) {
-      const auto *candidate = llvm::dyn_cast<clang::CXXMethodDecl>(other);
+      const auto *candidate =
+          llvm::dyn_cast_or_null<clang::CXXMethodDecl>(other->getAsFunction());
       if (candidate == nullptr || !candidate->isConst() ||
-          candidate->getNumParams() != method.getNumParams())
+          candidate->getNumParams() != mine.getNumParams())
         continue;
       bool same = true;
-      for (unsigned i = 0; i < method.getNumParams() && same; ++i)
-        same = ast.hasSameType(candidate->getParamDecl(i)->getType(),
-                               method.getParamDecl(i)->getType());
+      for (unsigned i = 0; i < mine.getNumParams() && same; ++i)
+        same = clang::ASTContext::hasSameType(
+            candidate->getParamDecl(i)->getType(),
+            mine.getParamDecl(i)->getType());
       if (same) {
         twin = true;
         break;
@@ -158,6 +263,44 @@ public:
     }
     accessors[method.getCanonicalDecl()] = twin;
     return twin;
+  }
+
+  /// §6: a parameter of a library function that is not a member, taken by
+  /// reference to an object that is not const, where an overload takes the
+  /// same object as const (`std::get`, `std::begin`): the function only
+  /// gives access through it.
+  [[nodiscard]] static bool
+  accessorParameter(const clang::ParmVarDecl &parameter) {
+    const auto *function =
+        llvm::dyn_cast<clang::FunctionDecl>(parameter.getDeclContext());
+    if (function == nullptr || !isLibrary(*function) ||
+        llvm::isa<clang::CXXMethodDecl>(function))
+      return false;
+    const clang::FunctionDecl *pattern =
+        function->getTemplateInstantiationPattern();
+    const clang::FunctionDecl &mine = pattern != nullptr ? *pattern : *function;
+    const unsigned index = parameter.getFunctionScopeIndex();
+    if (index >= mine.getNumParams())
+      return false;
+    const clang::QualType type = mine.getParamDecl(index)->getType();
+    if (!type->isLValueReferenceType() ||
+        type->getPointeeType().isConstQualified())
+      return false;
+    for (const clang::NamedDecl *other :
+         mine.getDeclContext()->getRedeclContext()->lookup(
+             mine.getDeclName())) {
+      const clang::FunctionDecl *candidate = other->getAsFunction();
+      if (candidate == nullptr ||
+          candidate->getNumParams() != mine.getNumParams())
+        continue;
+      const clang::QualType twin = candidate->getParamDecl(index)->getType();
+      if (twin->isLValueReferenceType() &&
+          twin->getPointeeType().isConstQualified() &&
+          clang::ASTContext::hasSameUnqualifiedType(twin->getPointeeType(),
+                                                    type->getPointeeType()))
+        return true;
+    }
+    return false;
   }
 
   /// A library class Clang marks as an owner (a container, a smart
@@ -180,8 +323,9 @@ public:
                       }))
       return false;
     return !record
-                ->lookup(record->getASTContext().DeclarationNames.getCXXOperatorName(
-                    clang::OO_Arrow))
+                ->lookup(
+                    record->getASTContext().DeclarationNames.getCXXOperatorName(
+                        clang::OO_Arrow))
                 .empty();
   }
 
@@ -194,10 +338,10 @@ public:
          context != nullptr; context = context->getParent()) {
       if (const auto *space = llvm::dyn_cast<clang::NamespaceDecl>(context)) {
         if (!space->isInline() && !space->isAnonymousNamespace())
-          name = space->getName().str() + "::" + name;
+          name = (space->getName() + "::" + name).str();
       } else if (const auto *outer =
                      llvm::dyn_cast<clang::CXXRecordDecl>(context)) {
-        name = outer->getName().str() + "::" + name;
+        name = (outer->getName() + "::" + name).str();
       }
     }
     return name;
@@ -212,8 +356,7 @@ private:
   [[nodiscard]] bool viewArgument(const clang::TemplateArgument &argument) {
     if (argument.getKind() == clang::TemplateArgument::Type) {
       const clang::QualType type = argument.getAsType();
-      return type->isReferenceType() ||
-             viewClass(type->getAsCXXRecordDecl());
+      return type->isReferenceType() || viewClass(type->getAsCXXRecordDecl());
     }
     if (argument.getKind() == clang::TemplateArgument::Pack)
       return llvm::any_of(argument.pack_elements(),

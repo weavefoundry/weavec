@@ -189,8 +189,7 @@ static const clang::Expr *strip(const clang::Expr *expression) {
     else if (const auto *bind =
                  llvm::dyn_cast<clang::CXXBindTemporaryExpr>(inner))
       inner = bind->getSubExpr();
-    else if (const auto *opaque =
-                 llvm::dyn_cast<clang::OpaqueValueExpr>(inner);
+    else if (const auto *opaque = llvm::dyn_cast<clang::OpaqueValueExpr>(inner);
              opaque != nullptr && opaque->getSourceExpr() != nullptr)
       inner = opaque->getSourceExpr();
     if (inner == expression)
@@ -349,14 +348,19 @@ private:
                         "reference";
       break;
     case End::Why::Called:
-      message = loop ? "the loop over '" + *loop + "' continues after the "
-                       "call to " + called(end.by) + ", which may change "
-                       "what " + owner + " owns"
+      message = loop ? "the loop over '" + *loop +
+                           "' continues after the "
+                           "call to " +
+                           called(end.by) +
+                           ", which may change "
+                           "what " +
+                           owner + " owns"
                      : name + " was taken from " + owner +
                            " before the call to " + called(end.by) +
                            ", which may change what " + owner + " owns";
       note = "take the borrow again after the call, or declare the "
-             "parameter 'const' if " + called(end.by) + " changes nothing";
+             "parameter 'const' if " +
+             called(end.by) + " changes nothing";
       break;
     case End::Why::Destroyed:
       message = name + " points into " + owner +
@@ -365,9 +369,12 @@ private:
                      : ", whose lifetime has ended");
       note = end.root.kind == RootKind::Temp
                  ? "the temporary is destroyed here; keep it in a local "
-                   "that lives as long as " + name
-                 : owner + " is destroyed here; declare it in the scope "
-                           "that uses " + name;
+                   "that lives as long as " +
+                       name
+                 : owner +
+                       " is destroyed here; declare it in the scope "
+                       "that uses " +
+                       name;
       break;
     case End::Why::Moved:
       message = name + " points into " + owner + ", which was moved";
@@ -419,8 +426,8 @@ private:
 
   /// What a borrow local holds. One the flow does not know (a parameter,
   /// a capture of an enclosing function) stands for what it was given.
-  [[nodiscard]] Value borrowOf(const Flow &flow,
-                               const clang::VarDecl &variable) const {
+  [[nodiscard]] static Value borrowOf(const Flow &flow,
+                                      const clang::VarDecl &variable) {
     Value value;
     const clang::VarDecl *canonical = variable.getCanonicalDecl();
     const auto found = flow.borrows.find(canonical);
@@ -460,20 +467,36 @@ private:
         return borrowOf(flow, *variable);
       if (!variable->hasLocalStorage()) {
         // §10: a global that is not const is read in place as a reference.
+        // The library's own (`std::cout`) are the library's to keep.
         Value value;
-        value.reference = !variable->getType().isConstQualified();
+        value.reference =
+            !variable->getType().isConstQualified() && !isLibrary(*variable);
         return value;
       }
       return at(*variable);
     }
     if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(expression)) {
-      const auto *field = llvm::dyn_cast<clang::FieldDecl>(member->getMemberDecl());
+      const auto *field =
+          llvm::dyn_cast<clang::FieldDecl>(member->getMemberDecl());
       if (field == nullptr)
         return {};
       Value base = member->isArrow() ? pointee(flow, member->getBase())
                                      : object(flow, member->getBase());
-      if (field->getType()->isReferenceType())
-        return base;
+      if (field->getType()->isReferenceType()) {
+        // A reference member names another object: what the view was
+        // given, not a part of the object that holds it.
+        Value named;
+        named.reference = base.reference;
+        named.through = base.through;
+        for (Loan loan : viewOf(flow, base).loans) {
+          if (loan.root.beyond) {
+            loan.root.field = field;
+            loan.depth = 0;
+          }
+          named.add(loan);
+        }
+        return named;
+      }
       for (Loan &loan : base.loans)
         if (loan.depth == 0 && loan.root.field == nullptr)
           loan.root.field = field;
@@ -507,7 +530,8 @@ private:
       value.add(object(flow, conditional->getFalseExpr()));
       return value;
     }
-    if (const auto *binary = llvm::dyn_cast<clang::BinaryOperator>(expression)) {
+    if (const auto *binary =
+            llvm::dyn_cast<clang::BinaryOperator>(expression)) {
       if (binary->isAssignmentOp())
         return object(flow, binary->getLHS());
       if (binary->getOpcode() == clang::BO_Comma)
@@ -580,7 +604,8 @@ private:
       value.add(pointee(flow, conditional->getFalseExpr()));
       return value;
     }
-    if (const auto *binary = llvm::dyn_cast<clang::BinaryOperator>(expression)) {
+    if (const auto *binary =
+            llvm::dyn_cast<clang::BinaryOperator>(expression)) {
       if (binary->getOpcode() == clang::BO_Comma)
         return pointee(flow, binary->getRHS());
       return pointee(flow, binary->getLHS()->getType()->isPointerType()
@@ -592,9 +617,20 @@ private:
     return {};
   }
 
+  /// What a place of type `type` takes from `expression`: the object a
+  /// reference names, what a pointer points at, where a view points.
+  [[nodiscard]] Value held(const Flow &flow, clang::QualType type,
+                           const clang::Expr *expression) {
+    if (type->isReferenceType())
+      return object(flow, expression);
+    if (type->isPointerType())
+      return pointee(flow, expression);
+    return points(flow, expression);
+  }
+
   /// Where the views kept in the named objects point: a view local's own
   /// borrows; for anything else, into the object.
-  [[nodiscard]] Value viewOf(const Flow &flow, const Value &objects) const {
+  [[nodiscard]] static Value viewOf(const Flow &flow, const Value &objects) {
     Value value;
     value.reference = objects.reference;
     value.through = objects.through;
@@ -664,13 +700,11 @@ private:
                              llvm::ArrayRef<clang::Expr *> inits,
                              clang::QualType type) {
     Value value;
-    const clang::RecordDecl *record = type->getAsRecordDecl();
-    auto field = record != nullptr && !llvm::isa<clang::CXXRecordDecl>(record)
-                     ? record->field_end()
-                     : (record != nullptr ? record->field_begin()
-                                          : clang::RecordDecl::field_iterator());
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
     const bool fields = record != nullptr && type->isAggregateType() &&
-                        llvm::cast<clang::CXXRecordDecl>(record)->getNumBases() == 0;
+                        record->getNumBases() == 0;
+    auto field =
+        fields ? record->field_begin() : clang::RecordDecl::field_iterator();
     for (const clang::Expr *init : inits) {
       const bool bindsReference = fields && field != record->field_end() &&
                                   field->getType()->isReferenceType();
@@ -687,7 +721,7 @@ private:
   [[nodiscard]] Value captured(const Flow &flow,
                                const clang::LambdaExpr &lambda) {
     Value value;
-    auto init = lambda.capture_init_begin();
+    const auto *init = lambda.capture_init_begin();
     for (const clang::LambdaCapture &capture : lambda.captures()) {
       const clang::Expr *expression = *init++;
       if (capture.capturesThis()) {
@@ -705,14 +739,19 @@ private:
     return value;
   }
 
-  /// A borrow taken through `expression`, the object of a member call: one
-  /// through a view that owns nothing points where the view points; any
-  /// other points into the object.
-  [[nodiscard]] Value through(const Flow &flow, const clang::Expr *expression) {
+  /// A borrow taken through `expression`, the object of a member call.
+  /// Through a view that points elsewhere (an iterator, a
+  /// `std::string_view`) it points where the view points. Through a view
+  /// that owns nothing but holds views (an optional of one, a struct of
+  /// them) it does too, unless the result names one of the views it holds
+  /// (`*optional`), which is in the object. Through anything else it
+  /// points into the object.
+  [[nodiscard]] Value through(const Flow &flow, const clang::Expr *expression,
+                              bool namesView) {
     const clang::QualType type = expression->getType();
     if (type->isPointerType())
       return pointee(flow, expression).inside();
-    if (kinds.pureView(type))
+    if (kinds.pureView(type) && (CxxKinds::pointerClass(type) || !namesView))
       return points(flow, expression);
     return object(flow, expression).inside();
   }
@@ -731,11 +770,13 @@ private:
       arguments = {plain.getArgs(), plain.getNumArgs()};
       const auto *method =
           llvm::dyn_cast_or_null<clang::CXXMethodDecl>(call.callee);
-      if (const auto *member = llvm::dyn_cast<clang::CXXMemberCallExpr>(&plain)) {
+      if (const auto *member =
+              llvm::dyn_cast<clang::CXXMemberCallExpr>(&plain)) {
         call.method = member->getMethodDecl();
         call.object = member->getImplicitObjectArgument();
       } else if (llvm::isa<clang::CXXOperatorCallExpr>(plain) &&
-                 method != nullptr && method->isImplicitObjectMemberFunction() &&
+                 method != nullptr &&
+                 method->isImplicitObjectMemberFunction() &&
                  !arguments.empty()) {
         call.method = method;
         call.object = arguments.front();
@@ -745,9 +786,10 @@ private:
     for (unsigned i = 0; i < arguments.size(); ++i)
       call.arguments.push_back(
           {.expression = arguments[i],
-           .parameter = call.callee != nullptr && i < call.callee->getNumParams()
-                            ? call.callee->getParamDecl(i)
-                            : nullptr});
+           .parameter =
+               call.callee != nullptr && i < call.callee->getNumParams()
+                   ? call.callee->getParamDecl(i)
+                   : nullptr});
     return call;
   }
 
@@ -775,8 +817,21 @@ private:
           return argument.parameter != nullptr &&
                  argument.parameter->hasAttr<clang::LifetimeBoundAttr>();
         });
-    if (call.object != nullptr && !marked)
-      value.add(through(flow, call.object));
+    // §7: a callable returned in a type that hides its captures owns
+    // them (the callee is checked for it): only a view passed by value
+    // comes back out.
+    // The result is a reference or a pointer to a view.
+    const clang::QualType named =
+        type->isPointerType() ? type->getPointeeType() : type;
+    const bool namesView = (names || type->isPointerType()) &&
+                           (named->isPointerType() ||
+                            kinds.viewClass(named->getAsCXXRecordDecl()));
+    const bool owning = !constructs && !expression->isGLValue() &&
+                        kinds.erased(expression->getType()) &&
+                        !kinds.view(expression->getType()) &&
+                        call.callee != nullptr && !isLibrary(*call.callee);
+    if (call.object != nullptr && !marked && !owning)
+      value.add(through(flow, call.object, namesView));
     bool views = false;
     for (const Call::Argument &argument : call.arguments) {
       const clang::QualType given = argument.expression->getType();
@@ -792,7 +847,16 @@ private:
         // A pointer can be what a reference or pointer result names only
         // if it points to the result's type.
         if (given->isPointerType() && (names || type->isPointerType()) &&
-            !constructs && !related(given->getPointeeType(), type))
+            !constructs && !CxxKinds::related(given->getPointeeType(), type))
+          continue;
+        // An owning callable takes borrows only from a callable it wraps;
+        // a class of the program keeps a view only if a member could.
+        if (owning && !kinds.erased(given))
+          continue;
+        if (!names && type->isRecordType() &&
+            !kinds.mayBorrow(type->getAsCXXRecordDecl(),
+                             given->isPointerType() ? given->getPointeeType()
+                                                    : given))
           continue;
         value.add(points(flow, argument.expression));
         views = true;
@@ -801,27 +865,35 @@ private:
     // §9: without a view passed by value, the result of a function that is
     // not a member points into its reference arguments. What is
     // constructed may keep every one.
-    if (!marked && (constructs || (!views && call.object == nullptr)))
+    if (!marked && !owning &&
+        (constructs || (!views && call.object == nullptr)))
       for (const Call::Argument &argument : call.arguments)
         if (argument.parameter != nullptr &&
-            argument.parameter->getType()->isReferenceType())
-          value.add(contribution(flow, argument, type, names, constructs));
+            argument.parameter->getType()->isReferenceType()) {
+          // What a library accessor returns is inside its argument
+          // (`std::get<T>(variant)`), whatever its type.
+          if (CxxKinds::accessorParameter(*argument.parameter) ||
+              accessorTwin(*argument.parameter))
+            value.add(through(flow, argument.expression, namesView));
+          else
+            value.add(contribution(flow, argument, type, names, constructs));
+        }
     return value;
   }
 
-  /// Whether an object of type `given` can be what a result of type `type`
-  /// (or a pointer to it) names: the same type, or one derived from it.
-  [[nodiscard]] bool related(clang::QualType given, clang::QualType type) const {
-    type = type.getNonReferenceType();
-    if (type->isPointerType())
-      type = type->getPointeeType();
-    given = given.getNonReferenceType();
-    if (ast.hasSameUnqualifiedType(given, type))
-      return true;
-    const clang::CXXRecordDecl *derived = given->getAsCXXRecordDecl();
-    const clang::CXXRecordDecl *base = type->getAsCXXRecordDecl();
-    return derived != nullptr && base != nullptr && derived->hasDefinition() &&
-           base->hasDefinition() && derived->isDerivedFrom(base);
+  /// The const side of a library accessor that is not a member.
+  [[nodiscard]] static bool accessorTwin(const clang::ParmVarDecl &parameter) {
+    const auto *function =
+        llvm::dyn_cast<clang::FunctionDecl>(parameter.getDeclContext());
+    const clang::QualType type = parameter.getType();
+    if (function == nullptr || !isLibrary(*function) ||
+        llvm::isa<clang::CXXMethodDecl>(function) ||
+        !type->isLValueReferenceType() ||
+        !type->getPointeeType().isConstQualified() ||
+        function->getNumParams() != 1)
+      return false;
+    const clang::QualType result = function->getReturnType();
+    return result->isLValueReferenceType() || result->isPointerType();
   }
 
   /// What a reference (or marked) argument gives a result of `type`.
@@ -838,15 +910,21 @@ private:
     Value value;
     if (kinds.tracked(given))
       value.add(points(flow, expression));
-    const bool same = related(given, type);
+    const bool same = CxxKinds::related(given, type);
     if ((names || type->isPointerType()) && !constructs) {
       // A reference or pointer result can be the argument itself only if
       // it has its type.
       if (same)
         value.add(object(flow, expression));
-    } else if (!kinds.pureView(given) && !(constructs && same)) {
+    } else if (!kinds.pureView(given) && !(constructs && same) &&
+               // What erases its contents copies them in (`std::function`,
+               // `std::async`): it keeps their borrows, not their place.
+               !(kinds.erased(type) && !kinds.view(type)) &&
+               (!type->isRecordType() ||
+                kinds.mayBorrow(type->getAsCXXRecordDecl(), given))) {
       // A copy or a move of a view points where the view does, not into
-      // the object it was copied from.
+      // the object it was copied from; and a class whose members could
+      // not refer to the argument keeps no borrow of it.
       value.add(object(flow, expression).inside());
     }
     return value;
@@ -858,8 +936,9 @@ private:
 
   enum class Ends : std::uint8_t { Into, All };
 
-  void invalidate(Flow &flow, const Value &objects, Ends ends, End::Why why,
-                  clang::SourceLocation at, const clang::NamedDecl *by) {
+  static void invalidate(Flow &flow, const Value &objects, Ends ends,
+                         End::Why why, clang::SourceLocation at,
+                         const clang::NamedDecl *by) {
     for (auto &[variable, borrow] : flow.borrows) {
       if (borrow.end.why != End::Why::None ||
           llvm::is_contained(objects.through, variable))
@@ -882,9 +961,9 @@ private:
   /// §5: the place `std::move(x)` (or a cast to an rvalue) moves from.
   [[nodiscard]] std::optional<Place> movedFrom(const clang::Expr *expression) {
     expression = strip(expression);
-    while (const auto *temporary =
-               llvm::dyn_cast_or_null<clang::MaterializeTemporaryExpr>(
-                   expression))
+    while (
+        const auto *temporary =
+            llvm::dyn_cast_or_null<clang::MaterializeTemporaryExpr>(expression))
       expression = strip(temporary->getSubExpr());
     const clang::Expr *operand = nullptr;
     if (const auto *call = llvm::dyn_cast_or_null<clang::CallExpr>(expression);
@@ -917,8 +996,8 @@ private:
   [[nodiscard]] static Value rootOf(const Place &place) {
     Value value;
     value.loans.push_back(
-        {.root = {.kind = place.first == nullptr ? RootKind::This
-                                                  : RootKind::Var,
+        {.root = {.kind =
+                      place.first == nullptr ? RootKind::This : RootKind::Var,
                   .base = place.first,
                   .field = place.second},
          .depth = 0});
@@ -934,6 +1013,29 @@ private:
            (!type->isReferenceType() && type->isRecordType());
   }
 
+  /// §7: the callee keeps the argument: the parameter says WEAVEC_ESCAPES,
+  /// or takes by value a type that hides what it holds (a `std::function`
+  /// taken by value is one the callee means to store; one it only calls is
+  /// taken by reference to const).
+  [[nodiscard]] bool keeps(const clang::ParmVarDecl *parameter) {
+    if (parameter == nullptr)
+      return false;
+    const clang::QualType type = parameter->getType();
+    if (hasAnnotation(annotationsOf(type, ast), EscapesAnnotation))
+      return true;
+    if (type->isLValueReferenceType() || !kinds.erased(type))
+      return false;
+    // A template's parameter that an instantiation gave such a type was
+    // not declared with it: a callable taken as `F f` is called.
+    const auto *callee =
+        llvm::dyn_cast<clang::FunctionDecl>(parameter->getDeclContext());
+    const clang::FunctionDecl *pattern =
+        callee == nullptr ? nullptr : callee->getTemplateInstantiationPattern();
+    const unsigned index = parameter->getFunctionScopeIndex();
+    return pattern == nullptr || index >= pattern->getNumParams() ||
+           !pattern->getParamDecl(index)->getType()->isDependentType();
+  }
+
   /// Whether a call can change what an argument for `parameter` owns (§6,
   /// rule 3).
   [[nodiscard]] bool changes(const clang::ParmVarDecl *parameter) const {
@@ -943,7 +1045,8 @@ private:
     if (!type->isLValueReferenceType() && !type->isPointerType())
       return false;
     const clang::QualType target = type->getPointeeType();
-    return !target.isConstQualified() && kinds.holdsOwners(target);
+    return !target.isConstQualified() && kinds.holdsOwners(target) &&
+           !CxxKinds::accessorParameter(*parameter);
   }
 
   [[nodiscard]] bool changing(const Call &call) {
@@ -954,41 +1057,78 @@ private:
            !kinds.accessor(*call.method);
   }
 
-  [[nodiscard]] clang::QualType objectType(const Call &call) const {
+  [[nodiscard]] static clang::QualType objectType(const Call &call) {
     const clang::QualType type = call.object->getType();
     return type->isPointerType() ? type->getPointeeType() : type;
   }
 
   [[nodiscard]] Value objectOf(const Flow &flow, const Call &call) {
-    return call.object->getType()->isPointerType()
-               ? pointee(flow, call.object)
-               : object(flow, call.object);
+    return call.object->getType()->isPointerType() ? pointee(flow, call.object)
+                                                   : object(flow, call.object);
   }
 
   /// A local view or erased object named directly.
-  [[nodiscard]] const clang::VarDecl *
-  viewLocal(const clang::Expr *expression) {
+  [[nodiscard]] const clang::VarDecl *viewLocal(const clang::Expr *expression) {
     const auto *named = llvm::dyn_cast_or_null<clang::DeclRefExpr>(
         expression == nullptr ? nullptr : expression->IgnoreParenImpCasts());
     const clang::VarDecl *variable =
         named == nullptr ? nullptr : variableOf(*named);
     if (variable == nullptr || !variable->hasLocalStorage() ||
-        kinds.pointerLike(variable->getType()) ||
+        CxxKinds::pointerLike(variable->getType()) ||
         !kinds.tracked(variable->getType()))
       return nullptr;
     return variable->getCanonicalDecl();
   }
 
+  /// The local a member (of a member…) belongs to.
+  [[nodiscard]] const clang::VarDecl *
+  memberOfLocal(const clang::Expr *expression) const {
+    expression = expression->IgnoreParenImpCasts();
+    bool member = false;
+    while (const auto *access = llvm::dyn_cast<clang::MemberExpr>(expression)) {
+      if (access->isArrow() ||
+          !llvm::isa<clang::FieldDecl>(access->getMemberDecl()))
+        return nullptr;
+      expression = access->getBase()->IgnoreParenImpCasts();
+      member = true;
+    }
+    return member ? ownObject(expression) : nullptr;
+  }
+
+  /// A local object of the function, named directly.
+  [[nodiscard]] const clang::VarDecl *
+  ownObject(const clang::Expr *expression) const {
+    const auto *named = llvm::dyn_cast_or_null<clang::DeclRefExpr>(
+        expression == nullptr ? nullptr : expression->IgnoreParenImpCasts());
+    const clang::VarDecl *variable =
+        named == nullptr ? nullptr : variableOf(*named);
+    return variable != nullptr && ownLocal(*variable) &&
+                   !llvm::isa<clang::ParmVarDecl>(variable) &&
+                   variable->getType()->isRecordType()
+               ? variable->getCanonicalDecl()
+               : nullptr;
+  }
+
   /// What a view takes from an argument it may store (§7, widened).
-  [[nodiscard]] Value stored(const Flow &flow, const Call::Argument &argument) {
+  [[nodiscard]] Value stored(const Flow &flow, const Call::Argument &argument,
+                             const Call *into = nullptr) {
     const clang::Expr *expression = argument.expression;
     const clang::QualType given = expression->getType();
     if (given->isPointerType())
       return given->isFunctionPointerType() ? Value{}
                                             : pointee(flow, expression);
+    if (kinds.tracked(given))
+      return points(flow, expression);
     // An owner passed by reference is lent for the call: a callee that is
     // not a constructor does not keep a view of it (checked in the callee).
-    return kinds.tracked(given) ? points(flow, expression) : Value{};
+    // A library container makes its elements from what it is passed
+    // (`emplace_back`), and they keep what their class could.
+    if (into != nullptr && into->object != nullptr && into->method != nullptr &&
+        isLibrary(*into->method) && expression->isGLValue() &&
+        given->isRecordType() && kinds.view(objectType(*into)) &&
+        kinds.mayBorrow(objectType(*into)->getAsCXXRecordDecl(), given))
+      return object(flow, expression).inside();
+    return {};
   }
 
   void owners(const Value &objects, clang::SourceLocation at,
@@ -1047,7 +1187,7 @@ private:
   /// object it points into.
   void storedOutside(const Value &target, const Value &source,
                      clang::SourceLocation at, const std::string &where,
-                     bool viewTarget) {
+                     bool viewTarget, const std::string &fix = {}) {
     const bool toThis = llvm::any_of(target.loans, [](const Loan &loan) {
       return loan.root.kind == RootKind::This;
     });
@@ -1057,9 +1197,11 @@ private:
               "a borrow of " + nameOf(loan.root) + " is stored in " + where +
                   ", which outlives it",
               at,
-              "store a copy that owns its data, or take " +
-                  nameOf(loan.root) +
-                  " as a parameter so that the caller keeps it");
+              !fix.empty() ? fix
+                           : "store a copy that owns its data, or take " +
+                                 nameOf(loan.root) +
+                                 " as a parameter so that the caller keeps "
+                                 "it");
         return;
       }
       const auto *parameter =
@@ -1068,22 +1210,22 @@ private:
       // captured may hold borrows of the caller's locals.
       if (parameter != nullptr && loan.root.beyond &&
           kinds.erased(parameter->getType()) && ownLocal(*parameter) &&
-          !hasAnnotation(annotationsOf(parameter->getType(), ast),
-                         EscapesAnnotation)) {
+          !keeps(parameter)) {
         error(at, rule::Escape,
               where + " would keep " + nameOf(loan.root) +
                   ", which may hold borrows of its caller's locals",
               parameter->getLocation(),
-              "declare the parameter WEAVEC_ESCAPES ('" +
-                  parameter->getType().getNonReferenceType().getUnqualifiedType().getAsString(
-                      ast.getPrintingPolicy()) +
-                  " WEAVEC_ESCAPES " + parameter->getNameAsString() +
-                  "'), so that callers pass a callable that captures by "
-                  "value");
+              "take the callable by value, which says it is kept, or "
+              "declare the parameter WEAVEC_ESCAPES, so that callers pass a "
+              "callable that captures by value");
         return;
       }
-      if (viewTarget && toThis && parameter != nullptr && !loan.root.beyond &&
-          parameter->getType()->isReferenceType() &&
+      // In the function's own view member, any parameter it borrowed; in
+      // what another object keeps, one that could be a temporary.
+      if (viewTarget && parameter != nullptr && !loan.root.beyond &&
+          (toThis ||
+           parameter->getType()->getPointeeType().isConstQualified()) &&
+          ownLocal(*parameter) && parameter->getType()->isReferenceType() &&
           !kinds.tracked(parameter->getType()->getPointeeType()) &&
           !llvm::isa<clang::CXXConstructorDecl>(&function)) {
         error(at, rule::Escape,
@@ -1123,11 +1265,11 @@ private:
   }
 
   [[nodiscard]] static bool global(const clang::Expr *expression) {
-    const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(
-        expression->IgnoreParenImpCasts());
-    const auto *variable = named == nullptr
-                               ? nullptr
-                               : llvm::dyn_cast<clang::VarDecl>(named->getDecl());
+    const auto *named =
+        llvm::dyn_cast<clang::DeclRefExpr>(expression->IgnoreParenImpCasts());
+    const auto *variable =
+        named == nullptr ? nullptr
+                         : llvm::dyn_cast<clang::VarDecl>(named->getDecl());
     return variable != nullptr && !variable->hasLocalStorage();
   }
 
@@ -1148,8 +1290,8 @@ private:
         llvm::isa<clang::CallExpr, clang::CXXConstructExpr>(expression)) {
       const Call call = describe(*expression);
       const auto note = [&](const clang::Expr *argument) {
-        const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(
-            argument->IgnoreParenImpCasts());
+        const auto *named =
+            llvm::dyn_cast<clang::DeclRefExpr>(argument->IgnoreParenImpCasts());
         if (named != nullptr && named->refersToEnclosingVariableOrCapture())
           if (const clang::VarDecl *variable = variableOf(*named))
             changed.insert(variable->getCanonicalDecl());
@@ -1165,23 +1307,24 @@ private:
       lambdaChanges(child, changed);
   }
 
-  [[nodiscard]] const clang::LambdaExpr *
-  lambdaOf(const clang::Expr *expression) const {
+  [[nodiscard]] static const clang::LambdaExpr *
+  lambdaOf(const clang::Expr *expression) {
     expression = strip(expression);
     while (expression != nullptr) {
       if (const auto *lambda = llvm::dyn_cast<clang::LambdaExpr>(expression))
         return lambda;
       if (const auto *temporary =
-              llvm::dyn_cast<clang::MaterializeTemporaryExpr>(expression))
+              llvm::dyn_cast<clang::MaterializeTemporaryExpr>(expression)) {
         expression = strip(temporary->getSubExpr());
-      else if (const auto *cast = llvm::dyn_cast<clang::CastExpr>(expression))
+      } else if (const auto *cast =
+                     llvm::dyn_cast<clang::CastExpr>(expression)) {
         expression = strip(cast->getSubExpr());
-      else if (const auto *construct =
-                   llvm::dyn_cast<clang::CXXConstructExpr>(expression);
-               construct != nullptr && construct->getNumArgs() == 1)
+      } else if (const auto *construct =
+                     llvm::dyn_cast<clang::CXXConstructExpr>(expression);
+                 construct != nullptr && construct->getNumArgs() == 1) {
         expression = strip(construct->getArg(0));
-      else if (const auto *named =
-                   llvm::dyn_cast<clang::DeclRefExpr>(expression)) {
+      } else if (const auto *named =
+                     llvm::dyn_cast<clang::DeclRefExpr>(expression)) {
         const clang::VarDecl *variable = variableOf(*named);
         expression = variable != nullptr && variable->hasLocalStorage() &&
                              variable->hasInit()
@@ -1195,7 +1338,7 @@ private:
   }
 
   /// RFC 0043 §5's rule, and the callable a library function is given.
-  void alias(const Flow &flow, const Call &call, const Value *object,
+  void alias(const Flow &flow, const Call &call, const Value *target,
              bool objectChanges) {
     struct Passed {
       Value value;
@@ -1204,8 +1347,8 @@ private:
     };
     llvm::SmallVector<Passed, 4> passed;
     const bool library = call.callee != nullptr && isLibrary(*call.callee);
-    if (object != nullptr)
-      passed.push_back({.value = *object,
+    if (target != nullptr)
+      passed.push_back({.value = *target,
                         .changer = objectChanges,
                         .expression = call.object});
     for (const Call::Argument &argument : call.arguments) {
@@ -1216,7 +1359,7 @@ private:
           argument.parameter->getType()->isReferenceType() &&
           expression->isGLValue())
         value = kinds.pureView(given) ? points(flow, expression)
-                                      : object_(flow, expression);
+                                      : object(flow, expression);
       else if (given->isPointerType() || kinds.tracked(given))
         value = points(flow, expression);
       passed.push_back({.value = value,
@@ -1257,9 +1400,12 @@ private:
           continue;
         for (const Loan &mine : changer.value.loans)
           for (const Loan &theirs : other.value.loans)
-            if (mine.root.overlaps(theirs.root) &&
-                (theirs.depth > mine.depth ||
-                 (theirs.depth == 0 && mine.depth == 0))) {
+            // A borrow below what the callee may change, or the same
+            // object passed twice.
+            if ((theirs.depth > mine.depth &&
+                 mine.root.overlaps(theirs.root)) ||
+                (theirs.depth == 0 && mine.depth == 0 &&
+                 mine.root == theirs.root)) {
               error(call.at, rule::CallAlias,
                     spell(other.expression, ast) + " points into " +
                         nameOf(mine.root) + ", which " + called(call.callee) +
@@ -1273,18 +1419,16 @@ private:
       }
     }
   }
-  [[nodiscard]] Value object_(const Flow &flow, const clang::Expr *expression) {
-    return object(flow, expression);
-  }
-
   void call(Flow &flow, const clang::Expr *expression) {
     if (const auto *plain = llvm::dyn_cast<clang::CallExpr>(expression);
         plain != nullptr && passesThrough(*plain))
       return;
     const Call call = describe(*expression);
     const bool constructs = llvm::isa<clang::CXXConstructExpr>(expression);
-    const bool assigns = call.method != nullptr &&
-                         call.method->getOverloadedOperator() == clang::OO_Equal;
+    const bool assigns =
+        call.method != nullptr &&
+        (call.method->getOverloadedOperator() == clang::OO_Equal ||
+         CxxKinds::resets(*call.method));
     // Everything is evaluated before anything is changed.
     Value target;
     bool targetChanges = false;
@@ -1294,7 +1438,7 @@ private:
     }
     Value taken;
     for (const Call::Argument &argument : call.arguments)
-      taken.add(stored(flow, argument));
+      taken.add(stored(flow, argument, &call));
     alias(flow, call, call.object != nullptr ? &target : nullptr,
           targetChanges);
 
@@ -1307,6 +1451,17 @@ private:
     // §7: a view that is assigned, or that may store what it is passed.
     const clang::VarDecl *view =
         call.object != nullptr ? viewLocal(call.object) : nullptr;
+    // A member of a local view that is assigned or changed: the local
+    // takes the borrows too.
+    const clang::VarDecl *holder = call.object != nullptr && view == nullptr
+                                       ? memberOfLocal(call.object)
+                                       : nullptr;
+    if (holder != nullptr && changing(call) && !taken.loans.empty()) {
+      Borrow &borrow = flow.borrows[holder];
+      for (const Loan &loan : taken.loans)
+        if (!llvm::is_contained(borrow.loans, loan))
+          borrow.loans.push_back(loan);
+    }
     if (assigns && call.object != nullptr) {
       if (const std::optional<Place> place = placeOf(call.object))
         unmove(flow, *place);
@@ -1347,14 +1502,26 @@ private:
     // §6, rule 3: what a call may change through its parameters.
     for (const Call::Argument &argument : call.arguments) {
       const clang::Expr *given = argument.expression;
-      if (argument.parameter != nullptr &&
-          (given->getType()->isPointerType() ||
-           kinds.tracked(given->getType())) &&
-          hasAnnotation(annotationsOf(argument.parameter->getType(), ast),
-                        EscapesAnnotation))
-        storedOutside({}, stored(flow, argument), given->getExprLoc(),
-                      "what " + called(call.callee) + " keeps",
-                      /*viewTarget=*/false);
+      if (!(given->getType()->isPointerType() ||
+            kinds.tracked(given->getType())) ||
+          !keeps(argument.parameter)) {
+        // Nothing is kept.
+      } else if (const clang::VarDecl *keeper = ownObject(call.object)) {
+        // A local that keeps what it is passed holds its borrows.
+        Borrow &borrow = flow.borrows[keeper];
+        for (const Loan &loan : stored(flow, argument).loans)
+          if (!llvm::is_contained(borrow.loans, loan))
+            borrow.loans.push_back(loan);
+      } else if (!(constructs && declaresLocal(expression)))
+        storedOutside(
+            {}, stored(flow, argument), given->getExprLoc(),
+            "what " + called(call.callee) + " keeps",
+            /*viewTarget=*/!given->getType()->isPointerType(),
+            given->getType()->isPointerType()
+                ? ""
+                : "capture by value what the callable needs ('[count]', "
+                  "'[p = std::move(p)]', a 'std::shared_ptr'); a callee that "
+                  "only calls it takes it by reference to const");
       if (!changes(argument.parameter) || movedFrom(given).has_value())
         continue;
       const Value objects = given->getType()->isPointerType()
@@ -1377,8 +1544,8 @@ private:
     (void)constructs;
   }
 
-  [[nodiscard]] std::optional<Place>
-  placeOf(const clang::Expr *expression) const {
+  [[nodiscard]] static std::optional<Place>
+  placeOf(const clang::Expr *expression) {
     expression = expression->IgnoreParenImpCasts();
     const clang::FieldDecl *field = nullptr;
     if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(expression)) {
@@ -1428,6 +1595,12 @@ private:
              operation->getOperator() == clang::OO_Equal &&
              operation->getNumArgs() == 2)
       target = operation->getArg(0);
+    // §5: a member function that resets its object is as good.
+    if (const auto *member =
+            llvm::dyn_cast<clang::CXXMemberCallExpr>(statement);
+        member != nullptr && member->getMethodDecl() != nullptr &&
+        CxxKinds::resets(*member->getMethodDecl()))
+      target = member->getImplicitObjectArgument();
     if (target != nullptr)
       assigned.insert(target->IgnoreParenImpCasts());
     for (const clang::Stmt *child : statement->children())
@@ -1451,12 +1624,12 @@ private:
     // A reference to a view is stale when the view is.
     for (const Loan &loan : found->second.loans) {
       const clang::VarDecl *root = loan.root.variable();
-      const auto holder =
-          root == nullptr || root == variable ? flow.borrows.end()
-                                              : flow.borrows.find(root);
+      const auto holder = root == nullptr || root == variable
+                              ? flow.borrows.end()
+                              : flow.borrows.find(root);
       if (holder != flow.borrows.end() &&
           holder->second.end.why != End::Why::None &&
-          !kinds.pointerLike(root->getType())) {
+          !CxxKinds::pointerLike(root->getType())) {
         reportStale(*variable, named.getLocation(), holder->second.end);
         return;
       }
@@ -1483,13 +1656,12 @@ private:
       if (!(whole || same) && (place.second != nullptr || partUse))
         continue;
       if (emit && reportedMoves.emplace(moved, where.getRawEncoding()).second)
-        report(at, rule::OwnerMoved,
-               whole || same
-                   ? "'" + name + "' is used after it was moved"
-                   : "'" + name + "' is used while its member '" +
-                         moved.second->getNameAsString() + "' is moved",
-               where,
-               "moved here; use it before the move, or assign to it first");
+        report(
+            at, rule::OwnerMoved,
+            whole || same ? "'" + name + "' is used after it was moved"
+                          : "'" + name + "' is used while its member '" +
+                                moved.second->getNameAsString() + "' is moved",
+            where, "moved here; use it before the move, or assign to it first");
       return;
     }
   }
@@ -1498,18 +1670,54 @@ private:
   void declare(Flow &flow, const clang::VarDecl &variable) {
     const clang::VarDecl *canonical = variable.getCanonicalDecl();
     unmove(flow, {canonical, nullptr});
-    if (!variable.hasLocalStorage() || !kinds.tracked(variable.getType()))
+    if (!variable.hasLocalStorage())
       return;
+    // §7: what a constructor keeps of its arguments (a callable taken by
+    // value, a WEAVEC_ESCAPES parameter) the new local holds.
+    const Value kept = keptBy(flow, variable.getInit());
+    if (!kinds.tracked(variable.getType())) {
+      if (!kept.loans.empty())
+        flow.borrows[canonical] = {.loans = kept.loans};
+      return;
+    }
     Borrow borrow;
     if (const clang::Expr *init = variable.getInit()) {
       const clang::QualType type = variable.getType();
-      const Value value = type->isReferenceType() ? object(flow, init)
-                          : type->isPointerType() ? pointee(flow, init)
-                                                  : points(flow, init);
+      Value value = held(flow, type, init);
+      value.add(kept);
       borrow.loans = value.loans;
       borrow.reference = value.reference;
     }
     flow.borrows[canonical] = std::move(borrow);
+  }
+
+  /// The arguments a construction passes for parameters that keep them.
+  [[nodiscard]] Value keptBy(const Flow &flow, const clang::Expr *init) {
+    Value kept;
+    const auto *construct =
+        llvm::dyn_cast_or_null<clang::CXXConstructExpr>(strip(init));
+    if (construct == nullptr)
+      return kept;
+    for (const Call::Argument &argument : describe(*construct).arguments)
+      if (keeps(argument.parameter))
+        kept.add(stored(flow, argument));
+    return kept;
+  }
+
+  /// A local that is constructed where it is declared.
+  [[nodiscard]] bool declaresLocal(const clang::Expr *construct) const {
+    const clang::Stmt *parent = parents.getParent(construct);
+    while (parent != nullptr &&
+           llvm::isa<clang::ExprWithCleanups, clang::CXXBindTemporaryExpr,
+                     clang::ParenExpr>(parent))
+      parent = parents.getParent(parent);
+    const auto *declaration = llvm::dyn_cast_or_null<clang::DeclStmt>(parent);
+    if (declaration == nullptr || !declaration->isSingleDecl())
+      return false;
+    const auto *variable =
+        llvm::dyn_cast<clang::VarDecl>(declaration->getSingleDecl());
+    return variable != nullptr && variable->hasLocalStorage() &&
+           strip(variable->getInit()) == construct;
   }
 
   void assign(Flow &flow, const clang::BinaryOperator &binary) {
@@ -1532,18 +1740,53 @@ private:
                     /*viewTarget=*/false);
   }
 
+  /// The local a `return` names, through the copy or move that returns it.
+  [[nodiscard]] static const clang::Expr *
+  returnedName(const clang::Expr *expression) {
+    expression = strip(expression);
+    while (const auto *construct =
+               llvm::dyn_cast_or_null<clang::CXXConstructExpr>(expression)) {
+      if (construct->getNumArgs() != 1)
+        break;
+      expression = strip(construct->getArg(0)->IgnoreParenImpCasts());
+    }
+    return expression;
+  }
+
   void returned(Flow &flow, const clang::ReturnStmt &statement) {
     const clang::Expr *expression = statement.getRetValue();
     const clang::QualType type = function.getReturnType();
-    if (expression == nullptr || !kinds.tracked(type))
+    if (expression == nullptr)
       return;
-    const Value value = type->isReferenceType()  ? object(flow, expression)
-                        : type->isPointerType() ? pointee(flow, expression)
-                                                : points(flow, expression);
+    Value value;
+    if (kinds.tracked(type)) {
+      value = held(flow, type, expression);
+    } else if (const clang::VarDecl *keeper =
+                   ownObject(returnedName(expression))) {
+      // A local that kept what it was passed (§7).
+      if (const auto found = flow.borrows.find(keeper);
+          found != flow.borrows.end())
+        value.loans = found->second.loans;
+    }
+    // §7: a callable returned in a type that hides its captures owns them.
+    if (!type->isReferenceType() && kinds.erased(type) && !kinds.view(type))
+      for (const Loan &loan : value.loans)
+        if (!localRoot(loan.root) &&
+            !(loan.root.beyond && loan.root.variable() != nullptr &&
+              kinds.erased(loan.root.variable()->getType()))) {
+          error(statement.getReturnLoc(), rule::Escape,
+                "the callable that is returned captures " + nameOf(loan.root) +
+                    " by reference, and its type does not show it",
+                statement.getReturnLoc(),
+                "capture by value what the callable needs ('[name]', "
+                "'[value = member_]', a 'std::shared_ptr'), so that it owns "
+                "what it uses");
+          return;
+        }
     for (const Loan &loan : value.loans) {
       if (!localRoot(loan.root))
         continue;
-      const bool whole = kinds.pointerLike(type) && loan.depth == 0;
+      const bool whole = CxxKinds::pointerLike(type) && loan.depth == 0;
       error(statement.getReturnLoc(), rule::Escape,
             whole ? "a " +
                         std::string(type->isReferenceType() ? "reference"
@@ -1568,9 +1811,7 @@ private:
     if (!kinds.tracked(type) || type->isFunctionPointerType())
       return;
     const clang::Expr *init = initializer.getInit();
-    const Value value = type->isReferenceType()  ? object(flow, init)
-                        : type->isPointerType() ? pointee(flow, init)
-                                                : points(flow, init);
+    const Value value = held(flow, type, init);
     Value target;
     target.loans.push_back(
         {.root = {.kind = RootKind::This, .field = field}, .depth = 0});
@@ -1644,10 +1885,10 @@ private:
         continue;
       const clang::VarDecl *canonical = parameter->getCanonicalDecl();
       Borrow borrow;
-      if (kinds.pointerLike(type))
+      if (CxxKinds::pointerLike(type))
         borrow.loans.push_back(
             {.root = {.kind = RootKind::Var, .base = canonical}, .depth = 0});
-      if (!kinds.pointerLike(type) || kinds.tracked(type->getPointeeType()))
+      if (!CxxKinds::pointerLike(type) || kinds.tracked(type->getPointeeType()))
         borrow.loans.push_back(
             {.root = {.kind = RootKind::Var, .base = canonical, .beyond = true},
              .depth = 1});
@@ -1662,19 +1903,17 @@ private:
     const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(&function);
     const bool mayLeave =
         llvm::isa<clang::CXXDestructorDecl>(&function) ||
-        (method != nullptr &&
-         method->getRefQualifier() == clang::RQ_RValue);
+        (method != nullptr && method->getRefQualifier() == clang::RQ_RValue);
     for (const auto &[place, where] : flow.moved) {
-      if (place.first == nullptr ? mayLeave
-                                 : !place.first->getType()
-                                        ->isLValueReferenceType())
+      if (place.first == nullptr
+              ? mayLeave
+              : !place.first->getType()->isLValueReferenceType())
         continue;
       if (emit && reportedMoves.emplace(place, where.getRawEncoding()).second)
         report(at, rule::OwnerMoved,
                "'" +
-                   (place.second != nullptr
-                        ? place.second->getNameAsString()
-                        : place.first->getNameAsString()) +
+                   (place.second != nullptr ? place.second->getNameAsString()
+                                            : place.first->getNameAsString()) +
                    "' is left moved when the function returns",
                where,
                "moved here; assign to it before returning ('x = {}', or "
@@ -1711,9 +1950,9 @@ private:
       Flow out = in[block->getBlockID()];
       transferBlock(*block, out);
       for (const clang::CFGBlock::AdjacentBlock &adjacent : block->succs())
-        if (const clang::CFGBlock *next = adjacent.getReachableBlock())
-          if (join(in[next->getBlockID()], out))
-            work.insert(rank[next->getBlockID()]);
+        if (const clang::CFGBlock *next = adjacent.getReachableBlock();
+            next != nullptr && join(in[next->getBlockID()], out))
+          work.insert(rank[next->getBlockID()]);
     }
     emit = true;
     const clang::CFGBlock &exit = graph->getExit();

@@ -3,6 +3,8 @@
 // RUN: %weavec_cxx -std=c++20 -fsyntax-only -fweavec-safe -w -ferror-limit=0 -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
 #include <functional>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -203,7 +205,7 @@ std::size_t readGlobal() { return ownedName.size() + currentName.size(); }
 std::thread spawnOverLocal() {
   int local = 0;
   std::thread worker([&] { ++local; });
-  return worker; // expected-error {{what is returned points into 'local', which does not outlive the function [weavec-safe:escape]}}
+  return worker; // expected-error {{a borrow of 'local' is stored in what 'thread' keeps, which outlives it [weavec-safe:escape]}} // expected-error {{what is returned points into 'local', which does not outlive the function [weavec-safe:escape]}}
 }
 int joinOverLocal() {
   int local = 0;
@@ -224,8 +226,8 @@ int calledInPlace(const std::vector<int> &v) {
 struct Events {
   std::vector<std::function<void()>> handlers;
   std::function<void()> last;
-  void keep(std::function<void()> handler) {
-    handlers.push_back(std::move(handler)); // expected-error {{'this->handlers' would keep 'handler', which may hold borrows of its caller's locals [weavec-safe:escape]}}
+  void keep(std::function<void()> handler) { // taken by value: kept
+    handlers.push_back(std::move(handler));
   }
   void keepLast(const std::function<void()> &handler) {
     last = handler; // expected-error {{'this->last' would keep 'handler', which may hold borrows of its caller's locals [weavec-safe:escape]}}
@@ -237,17 +239,104 @@ struct Timer {
   std::function<void()> tick;
   explicit Timer(std::function<void()> WEAVEC_ESCAPES t) : tick(std::move(t)) {}
 };
-struct WrongTimer {
+struct ByValueTimer {
   std::function<void()> tick;
-  explicit WrongTimer(std::function<void()> t) : tick(std::move(t)) {} // expected-error {{'tick' would keep 't', which may hold borrows of its caller's locals [weavec-safe:escape]}}
+  explicit ByValueTimer(std::function<void()> t) : tick(std::move(t)) {}
 };
+template <typename F> int callNow(F f) { return f(); }
 void wire(Events &events) {
   int count = 0;
   events.callNow([&] { ++count; });
   events.declared([count] { (void)count; });
   events.declared([&] { ++count; }); // expected-error {{a borrow of 'count' is stored in what 'declared' keeps, which outlives it [weavec-safe:escape]}}
-  Timer timer([&count] { ++count; }); // expected-error {{a borrow of 'count' is stored in what 'Timer' keeps, which outlives it [weavec-safe:escape]}}
+  Timer timer([&count] { ++count; }); // a local keeper holds the borrow
+  ByValueTimer other([&count] { ++count; });
+  events.keep([&] { ++count; }); // expected-error {{a borrow of 'count' is stored in what 'keep' keeps, which outlives it [weavec-safe:escape]}}
+  events.keep([count] { (void)count; });
+  const std::function<int()> get = [&] { return count; };
+  count += callNow(get) + callNow([&] { return count; });
   (void)timer;
+  (void)other;
+}
+
+Timer returnsKeeper() {
+  int count = 0;
+  Timer timer([&count] { ++count; });
+  return timer; // expected-error {{what is returned points into 'count', which does not outlive the function [weavec-safe:escape]}}
+}
+int keeperOutlives() {
+  Events events;
+  {
+    int inner = 0;
+    events.keep([&inner] { ++inner; });
+  }
+  events.handlers.front()(); // expected-error {{'events' points into 'inner', whose lifetime has ended [weavec-safe:stale-borrow]}}
+  return 0;
+}
+void keepsTemporary(Events &events, const std::string &prefix) {
+  events.keep([&prefix] { (void)prefix.size(); }); // expected-error {{what 'keep' keeps would keep a borrow of the parameter 'prefix', which is lent for the call only [weavec-safe:escape]}}
+}
+std::function<int()> returnsCapture(const std::string &name) {
+  return [&name] { return int(name.size()); }; // expected-error {{the callable that is returned captures 'name' by reference, and its type does not show it [weavec-safe:escape]}}
+}
+std::function<int()> returnsOwned(const std::string &name) {
+  return [name] { return int(name.size()); };
+}
+struct Formatter {
+  std::string prefix;
+  std::function<std::string(int)> byReference() {
+    return [this](int n) { return prefix + std::to_string(n); }; // expected-error {{the callable that is returned captures 'this object' by reference, and its type does not show it [weavec-safe:escape]}}
+  }
+  std::function<std::string(int)> byValue() const {
+    return [prefix = prefix](int n) { return prefix + std::to_string(n); };
+  }
+};
+int usesOwned() {
+  const auto format = Formatter{"id-"}.byValue();
+  return int(format(7).size());
+}
+struct Endpoint {
+  std::string host;
+};
+struct HealthCheck {
+  const Endpoint &endpoint;
+  explicit HealthCheck(const Endpoint &e) : endpoint(e) {}
+};
+std::vector<HealthCheck> checksOfLocals(const std::vector<std::string> &hosts) {
+  std::vector<HealthCheck> checks;
+  for (const std::string &host : hosts) {
+    Endpoint endpoint{host};
+    checks.emplace_back(endpoint);
+  }
+  return checks; // expected-error {{'checks' was taken from 'endpoint' before the call to 'emplace_back', which may change what 'endpoint' owns [weavec-safe:stale-borrow]}} // expected-error {{what is returned points into 'endpoint', which does not outlive the function [weavec-safe:escape]}}
+}
+struct Logger {
+  std::string prefix;
+  std::vector<std::string> &sink;
+  Logger(const std::string &p, std::vector<std::string> &s) : prefix(p), sink(s) {}
+  void info(const std::string &text) { sink.push_back(prefix + text); }
+};
+void logsWithTemporaries(std::vector<std::string> &sink, int n) {
+  Logger log("[" + std::to_string(n) + "] ", sink); // the prefix is copied
+  log.info("started " + std::to_string(n));
+}
+struct Packet {
+  std::span<const int> payload;
+  int channel = 0;
+};
+struct Inbox {
+  std::vector<Packet> packets;
+  void receive(std::vector<int> datagram) {
+    Packet packet;
+    packet.payload = std::span<const int>(datagram).subspan(1);
+    packets.push_back(packet); // expected-error {{a borrow of 'datagram' is stored in 'this->packets', which outlives it [weavec-safe:escape]}}
+  }
+};
+std::size_t optionalOfView(std::string_view text) {
+  std::optional<std::string_view> word = text.substr(0, 3);
+  std::string_view previous = *word; // a copy: it points into 'text'
+  word.reset();
+  return previous.size();
 }
 
 // kept by a callee

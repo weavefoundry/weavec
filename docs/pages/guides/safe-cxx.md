@@ -262,7 +262,7 @@ private:
 
 ### Callbacks
 
-A callable that captures by reference is a view. Pass it down freely, as a template parameter or as a `std::function` for the call. One that is kept captures by value: copies, moved owners, or a `std::shared_ptr` to what it needs. A function that keeps a callable it was passed says so with `WEAVEC_ESCAPES`, written after the parameter's type and before its name; the compiler then rejects a caller that passes a lambda capturing a local by reference, and rejects the function if it keeps a callable without saying so.
+A callable that captures by reference is a view. Pass it down freely, as a template parameter or as a `std::function` for the call. One that is kept captures by value: copies, moved owners, or a `std::shared_ptr` to what it needs. A function that keeps a callable takes it by value (`std::function<void()> handler`), and one that only calls it takes it by reference to `const` or as a template parameter: the compiler rejects a caller that passes a lambda capturing a local by reference where it would be kept past the local, and rejects a function that keeps a callable it took by reference. A callable returned as a `std::function` owns what it captured. (`WEAVEC_ESCAPES`, written after a parameter's type, says "kept" where the type does not.)
 
 ```cpp accepted
 template <typename F> void each_even(const std::vector<int> &values, F visit) {
@@ -287,7 +287,7 @@ int use(const std::vector<int> &values) {
 
 class Button {
 public:
-  void on_click(std::function<void()> WEAVEC_ESCAPES handler) { handlers_.push_back(std::move(handler)); }
+  void on_click(std::function<void()> handler) { handlers_.push_back(std::move(handler)); }
   void click() const {
     for (const auto &handler : handlers_)
       handler();

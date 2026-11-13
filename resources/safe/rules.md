@@ -208,7 +208,7 @@ void keep(struct holder *h, int *WEAVEC_ESCAPES p) { h->kept = p; }
 
 ### In C++
 
-A borrow or a view of a local is not returned, and is not stored where it outlives the function's locals: in a member of `*this`, through a parameter, in a global. That covers a reference or a `std::string_view` of a local, a lambda that captures a local by reference, and a `std::vector` of views into a local buffer. A view member is assigned only from parameters that are themselves views (a `std::string_view`, a `std::span`, a pointer), which callers can see, or bound in the constructor; it is not made to point into another member of the same object, which would break when the object is moved. A `std::function`, a `std::thread` or a `std::any` made from a view is a view. A function that keeps a callable it was passed (in a member, a container, a global) declares the parameter `WEAVEC_ESCAPES`, written after the type: `std::function<void()> WEAVEC_ESCAPES handler`. The argument for a `WEAVEC_ESCAPES` parameter is not the address of a local, nor a callable that captures one by reference.
+A borrow or a view of a local is not returned, and is not stored where it outlives the function's locals: in a member of `*this`, through a parameter, in a global. That covers a reference or a `std::string_view` of a local, a lambda that captures a local by reference, and a `std::vector` of views into a local buffer. A view member is assigned only from parameters that are themselves views (a `std::string_view`, a `std::span`, a pointer), which callers can see, or bound in the constructor; it is not made to point into another member of the same object, which would break when the object is moved. A `std::function`, a `std::thread` or a `std::any` made from a view is a view. A function that keeps a callable it was passed (in a member, a container, a global) takes it by value, `std::function<void()> handler`, which says so; one that only calls it takes `const std::function<void()> &` or a template parameter. (`WEAVEC_ESCAPES`, written after the type, says "kept" of a parameter taken another way, and of a pointer.) What is passed for a parameter that keeps is not a callable that captures a local by reference, nor the address of a local, unless the object that keeps it is itself a local of the same function, which then counts as a view of what the callable captured. A callable that is returned as a `std::function` owns what it captured.
 
 ```cpp rejected
 std::string read_line(int n);
@@ -236,18 +236,24 @@ struct Document {
 ```cpp rejected
 struct Events {
   std::vector<std::function<void()>> handlers;
-  void subscribe(std::function<void()> handler) { handlers.push_back(std::move(handler)); }
+  void subscribe(const std::function<void()> &handler) { handlers.push_back(handler); }
 };
 ```
 
 ```cpp rejected
 struct Events {
   std::vector<std::function<void()>> handlers;
-  void subscribe(std::function<void()> WEAVEC_ESCAPES handler) { handlers.push_back(std::move(handler)); }
+  void subscribe(std::function<void()> handler) { handlers.push_back(std::move(handler)); }
 };
 void count_events(Events &events) {
   int count = 0;
   events.subscribe([&count] { ++count; });
+}
+```
+
+```cpp rejected
+std::function<std::size_t()> length_of(const std::string &text) {
+  return [&text] { return text.size(); };
 }
 ```
 
@@ -266,10 +272,21 @@ struct Button {
 };
 struct Events {
   std::vector<std::function<void()>> handlers;
-  void subscribe(std::function<void()> WEAVEC_ESCAPES handler) { handlers.push_back(std::move(handler)); }
+  void subscribe(std::function<void()> handler) { handlers.push_back(std::move(handler)); }
 };
 void count_events(Events &events, std::shared_ptr<int> count) {
   events.subscribe([count] { ++*count; });   // captures by value
+}
+int count_here() {
+  int count = 0;
+  Events events;                             // a local keeper: a view of 'count'
+  events.subscribe([&count] { ++count; });
+  for (const auto &handler : events.handlers)
+    handler();
+  return count;
+}
+std::function<std::size_t()> length_of(const std::string &text) {
+  return [text] { return text.size(); };     // owns its copy
 }
 struct Document {
   std::string buffer;

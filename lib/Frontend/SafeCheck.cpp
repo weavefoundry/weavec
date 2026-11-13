@@ -2176,10 +2176,10 @@ private:
         at.isValid() ? compiler.getSourceManager().getFileLoc(at) : at;
     // Ownership's different errors at one place (two owners leaked at one
     // return) are each reported.
-    const bool ownership = rule.starts_with("owner") ||
-                           rule == "stale-borrow" || rule == "call-alias" ||
-                           (rule == "escape" &&
-                            compiler.getLangOpts().CPlusPlus);
+    const bool ownership =
+        rule.starts_with("owner") || rule == "stale-borrow" ||
+        rule == "call-alias" ||
+        (rule == "escape" && compiler.getLangOpts().CPlusPlus);
     if (!reported
              .emplace(file.getRawEncoding(),
                       rule.str() + (ownership ? message.str() : ""))

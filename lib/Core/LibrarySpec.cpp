@@ -827,7 +827,8 @@ bool LibrarySpecParser::validateEntry(const LibraryEntry &entry) {
   return true;
 }
 
-/// RFC 0044 §2: `class NAME : erased;`, NAME qualified with `::`.
+/// RFC 0044 §2, §5: `class NAME : erased;`, `class NAME : resets(f, g);`,
+/// NAME qualified with `::`.
 bool LibrarySpecParser::parseClass() {
   std::string qualified;
   do {
@@ -839,11 +840,27 @@ bool LibrarySpecParser::parseClass() {
   entryName = qualified;
   if (!expect(':', "after the class name"))
     return false;
-  if (word() != "erased")
-    return fail("expected 'erased'");
+  do {
+    const std::string clause = word();
+    if (clause == "erased") {
+      spec.erased.insert(qualified);
+    } else if (clause == "resets") {
+      if (!expect('(', "after 'resets'"))
+        return false;
+      do {
+        auto member = name("a member function's name");
+        if (!member)
+          return false;
+        spec.resets.emplace(qualified, std::move(*member));
+      } while (accept(','));
+      if (!expect(')', "after the member functions"))
+        return false;
+    } else {
+      return fail("expected 'erased' or 'resets(...)'");
+    }
+  } while (accept(','));
   if (!expect(';', "at the end of the entry") || !atEnd())
     return fail("unexpected text after the class entry");
-  spec.erased.insert(std::move(qualified));
   entryName.clear();
   return true;
 }
@@ -937,6 +954,12 @@ std::optional<LibrarySpec> LibrarySpec::parse(std::string_view text,
 
 bool LibrarySpec::erasedClass(std::string_view qualified) const {
   return erased.contains(qualified);
+}
+
+bool LibrarySpec::resetsClass(std::string_view qualified,
+                              std::string_view member) const {
+  return resets.contains(
+      std::pair(std::string(qualified), std::string(member)));
 }
 
 const LibraryEntry *LibrarySpec::find(std::string_view name) const {

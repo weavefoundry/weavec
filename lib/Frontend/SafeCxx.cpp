@@ -19,7 +19,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "SafeCxxKinds.h"
-
 #include "weavec/Frontend/UnsafeRegions.h"
 
 #include "clang/AST/ASTLambda.h"
@@ -50,8 +49,7 @@ constexpr llvm::StringLiteral BadAnnotation = "bad-annotation";
 constexpr llvm::StringLiteral NotModeled = "not-modeled";
 } // namespace rule
 
-constexpr llvm::StringLiteral Helper =
-    "; or keep this function WEAVEC_GUARDED";
+constexpr llvm::StringLiteral Helper = "; or keep this function WEAVEC_GUARDED";
 
 /// §4: the rules of single expressions, over one safe function's body and
 /// the lambdas in it.
@@ -126,17 +124,18 @@ public:
         argument(first) ||
         llvm::isa<clang::StringLiteral, clang::CXXNullPtrLiteralExpr>(first))
       return true;
-    const unsigned written = llvm::count_if(
-        construct->arguments(), [](const clang::Expr *argument) {
+    const auto written = static_cast<unsigned>(
+        llvm::count_if(construct->arguments(), [](const clang::Expr *argument) {
           return !llvm::isa<clang::CXXDefaultArgExpr>(argument);
-        });
+        }));
     const clang::QualType second =
         written > 1 ? construct->getArg(1)->getType() : clang::QualType();
-    if (record->hasAttr<clang::OwnerAttr>() && !kinds.viewClass(record)) {
+    if ((record->hasAttr<clang::OwnerAttr>() || CxxKinds::shared(record)) &&
+        !kinds.viewClass(record)) {
       // A smart pointer made from a raw pointer (and perhaps a deleter).
       if (!given->getPointeeType().isConstQualified() &&
-          (written == 1 || !(second->isPointerType() ||
-                             second->isIntegerType())) &&
+          (written == 1 ||
+           !(second->isPointerType() || second->isIntegerType())) &&
           constructor->getParamDecl(0)->getType()->isPointerType())
         error(construct->getExprLoc(), rule::RawOwner,
               "a raw pointer is handed to '" + record->getNameAsString() +
@@ -222,12 +221,14 @@ public:
       if (target.isNull() || !target->isRecordType() ||
           target.isTriviallyCopyableType(ast))
         continue;
-      error(call->getArg(i)->getExprLoc(), rule::PointerBytes,
-            "'" + callee->getNameAsString() + "' reads or writes the bytes "
-            "of a '" + target.getUnqualifiedType().getAsString(
-                           ast.getPrintingPolicy()) +
-                "', which is not trivially copyable",
-            "copy, assign or compare the object itself");
+      error(
+          call->getArg(i)->getExprLoc(), rule::PointerBytes,
+          "'" + callee->getNameAsString() +
+              "' reads or writes the bytes "
+              "of a '" +
+              target.getUnqualifiedType().getAsString(ast.getPrintingPolicy()) +
+              "', which is not trivially copyable",
+          "copy, assign or compare the object itself");
       break;
     }
     return true;
@@ -236,7 +237,8 @@ public:
   bool VisitArraySubscriptExpr(clang::ArraySubscriptExpr *subscript) {
     const clang::Expr *base = subscript->getBase()->IgnoreParens();
     if (const auto *cast = llvm::dyn_cast<clang::ImplicitCastExpr>(base);
-        cast != nullptr && cast->getCastKind() == clang::CK_ArrayToPointerDecay) {
+        cast != nullptr &&
+        cast->getCastKind() == clang::CK_ArrayToPointerDecay) {
       indexedArrays.insert(cast);
       return true;
     }
@@ -281,9 +283,13 @@ public:
             "keep the pointer itself rather than its address as an integer");
       return true;
     case clang::CK_ArrayToPointerDecay:
+      // A string literal, and an array of constant characters, is read as
+      // a string.
       if (!indexedArrays.contains(cast) &&
           !llvm::isa<clang::StringLiteral, clang::PredefinedExpr>(
-              cast->getSubExpr()->IgnoreParens()))
+              cast->getSubExpr()->IgnoreParens()) &&
+          !(to->getPointeeType().isConstQualified() &&
+            to->getPointeeType()->isAnyCharacterType()))
         error(cast->getExprLoc(), rule::IndexSingle,
               "an array becomes a pointer that has lost its size",
               "pass a 'std::span' of it, or make it a 'std::array' and "
@@ -291,35 +297,36 @@ public:
       return true;
     case clang::CK_BaseToDerived:
       if (llvm::isa<clang::ExplicitCastExpr>(cast))
-        cast_(cast->getExprLoc(),
-              "a base is converted to a derived class without a check",
-              "'dynamic_cast' checks the object's type; a 'std::variant' "
-              "names the alternatives");
+        castError(cast->getExprLoc(),
+                  "a base is converted to a derived class without a check",
+                  "'dynamic_cast' checks the object's type; a 'std::variant' "
+                  "names the alternatives");
       return true;
     case clang::CK_BitCast:
     case clang::CK_LValueBitCast:
       if (llvm::isa<clang::ExplicitCastExpr>(cast) &&
           (to->isPointerType() || cast->isGLValue()))
-        cast_(cast->getExprLoc(),
-              "a pointer is converted to a pointer to another type",
-              "use the object through its own type; 'std::variant' and "
-              "'dynamic_cast' are the checked conversions");
+        castError(cast->getExprLoc(),
+                  "a pointer is converted to a pointer to another type",
+                  "use the object through its own type; 'std::variant' and "
+                  "'dynamic_cast' are the checked conversions");
       return true;
     case clang::CK_NoOp:
       if (llvm::isa<clang::CXXConstCastExpr>(cast) ||
           (llvm::isa<clang::CStyleCastExpr, clang::CXXFunctionalCastExpr>(
                cast) &&
-           (to->isPointerType() || to->isReferenceType() || cast->isGLValue()) &&
+           (to->isPointerType() || to->isReferenceType() ||
+            cast->isGLValue()) &&
            dropsConst(from, to, cast->isGLValue())))
-        cast_(cast->getExprLoc(), "a cast removes 'const'",
-              "take the object as non-'const' where it is changed");
+        castError(cast->getExprLoc(), "a cast removes 'const'",
+                  "take the object as non-'const' where it is changed");
       return true;
     default:
       if (llvm::isa<clang::CXXReinterpretCastExpr>(cast))
-        cast_(cast->getExprLoc(),
-              "'reinterpret_cast' reads an object as another type",
-              "use the object through its own type, or 'std::bit_cast' for "
-              "values that hold no pointer");
+        castError(cast->getExprLoc(),
+                  "'reinterpret_cast' reads an object as another type",
+                  "use the object through its own type, or 'std::bit_cast' for "
+                  "values that hold no pointer");
       return true;
     }
   }
@@ -327,13 +334,14 @@ public:
   bool VisitBuiltinBitCastExpr(clang::BuiltinBitCastExpr *cast) {
     if (holdsPointer(cast->getType()) ||
         holdsPointer(cast->getSubExpr()->getType()))
-      cast_(cast->getExprLoc(), "'std::bit_cast' makes or reads a pointer",
-            "convert values that hold no pointer");
+      castError(cast->getExprLoc(), "'std::bit_cast' makes or reads a pointer",
+                "convert values that hold no pointer");
     return true;
   }
 
   bool VisitMemberExpr(clang::MemberExpr *member) {
-    const auto *field = llvm::dyn_cast<clang::FieldDecl>(member->getMemberDecl());
+    const auto *field =
+        llvm::dyn_cast<clang::FieldDecl>(member->getMemberDecl());
     if (field == nullptr || !field->getParent()->isUnion())
       return true;
     for (const clang::FieldDecl *other : field->getParent()->fields())
@@ -404,8 +412,8 @@ private:
   bool programArguments = false;
 
   [[nodiscard]] bool argument(const clang::Expr *expression) const {
-    const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(
-        expression->IgnoreParenImpCasts());
+    const auto *named =
+        llvm::dyn_cast<clang::DeclRefExpr>(expression->IgnoreParenImpCasts());
     return programArguments && named != nullptr &&
            llvm::isa<clang::ParmVarDecl>(named->getDecl());
   }
@@ -432,8 +440,8 @@ private:
           "index");
   }
 
-  void cast_(clang::SourceLocation at, const std::string &message,
-             const std::string &fix) {
+  void castError(clang::SourceLocation at, const std::string &message,
+                 const std::string &fix) {
     error(at, rule::PointerCast, message, fix);
   }
 
@@ -461,11 +469,14 @@ private:
         type->isReferenceType())
       return true;
     const clang::RecordDecl *record = type->getAsRecordDecl();
-    if (record == nullptr || (record = record->getDefinition()) == nullptr)
+    if (record != nullptr)
+      record = record->getDefinition();
+    if (record == nullptr)
       return false;
-    return llvm::any_of(record->fields(), [this](const clang::FieldDecl *field) {
-      return holdsPointer(field->getType());
-    });
+    return llvm::any_of(record->fields(),
+                        [this](const clang::FieldDecl *field) {
+                          return holdsPointer(field->getType());
+                        });
   }
 
   /// A pointer type spelled as a member typedef of a library class (a
@@ -557,10 +568,9 @@ private:
         function.hasAttr<clang::NoSanitizeAttr>() ||
         function.hasAttr<clang::DisableSanitizerInstrumentationAttr>())
       return false;
-    const clang::Decl *declaration = &function;
     for (const clang::DeclContext *context = &function; context != nullptr;
          context = context->getParent()) {
-      declaration = llvm::dyn_cast<clang::Decl>(context);
+      const auto *declaration = llvm::dyn_cast<clang::Decl>(context);
       if (declaration == nullptr ||
           !llvm::isa<clang::FunctionDecl, clang::CXXRecordDecl>(declaration))
         continue;
@@ -586,14 +596,19 @@ private:
     const unsigned line = at.isValid() ? at.getLine() : 0;
     if (!defined.emplace(name, line).second)
       for (std::size_t i = 0; i < unit.definitions.size(); ++i)
-        if (unit.definitions[i].name == name && unit.definitions[i].line == line)
+        if (unit.definitions[i].name == name &&
+            unit.definitions[i].line == line)
           return i;
-    unit.definitions.push_back(
-        {.name = std::move(name),
-         .tier = safe ? "safe" : unsafe(function) ? "unsafe" : "guarded",
-         .file = at.isValid() ? at.getFilename() : "",
-         .line = line,
-         .owns = false});
+    const char *tier = "guarded";
+    if (safe)
+      tier = "safe";
+    else if (unsafe(function))
+      tier = "unsafe";
+    unit.definitions.push_back({.name = std::move(name),
+                                .tier = tier,
+                                .file = at.isValid() ? at.getFilename() : "",
+                                .line = line,
+                                .owns = false});
     return unit.definitions.size() - 1;
   }
 
@@ -645,7 +660,8 @@ private:
     const auto *specialization =
         llvm::dyn_cast_or_null<clang::ClassTemplateSpecializationDecl>(
             type->getAsCXXRecordDecl());
-    if (specialization == nullptr || specialization->getTemplateArgs().size() == 0)
+    if (specialization == nullptr ||
+        specialization->getTemplateArgs().size() == 0)
       return false;
     const clang::TemplateArgument &first = specialization->getTemplateArgs()[0];
     return first.getKind() == clang::TemplateArgument::Type &&

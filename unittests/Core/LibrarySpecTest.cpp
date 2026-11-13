@@ -393,9 +393,9 @@ TEST(LibrarySpecTest, GlibcFortifiedSpellingsCarryTheObjectSize) {
 // RFC 0044 section 2: the classes that erase the type of what they hold.
 TEST(LibrarySpecTest, ClassRowsNameErasedTypes) {
   const LibrarySpec &table = LibrarySpec::shipped();
-  for (const char *name :
-       {"std::function", "std::move_only_function", "std::any",
-        "std::packaged_task", "std::thread", "std::jthread"})
+  for (const char *name : {"std::function", "std::move_only_function",
+                           "std::any", "std::packaged_task", "std::thread",
+                           "std::jthread", "std::future", "std::shared_future"})
     EXPECT_TRUE(table.erasedClass(name)) << name;
   EXPECT_FALSE(table.erasedClass("std::vector"));
   std::string error;
@@ -405,6 +405,19 @@ TEST(LibrarySpecTest, ClassRowsNameErasedTypes) {
   EXPECT_TRUE(parsed->entries().empty());
   EXPECT_FALSE(LibrarySpec::parse("class a : owned;\n", error).has_value());
   EXPECT_NE(error.find("expected 'erased'"), std::string::npos) << error;
+  // RFC 0044 section 5: member functions that reset their object.
+  EXPECT_TRUE(table.resetsClass("std::vector", "clear"));
+  EXPECT_TRUE(table.resetsClass("std::basic_string", "assign"));
+  EXPECT_TRUE(table.resetsClass("std::unique_ptr", "reset"));
+  EXPECT_TRUE(table.resetsClass("std::any", "reset"));
+  EXPECT_FALSE(table.resetsClass("std::vector", "pop_back"));
+  EXPECT_FALSE(table.resetsClass("std::map", "assign"));
+  const auto both =
+      LibrarySpec::parse("class a : erased, resets(f, g);\n", error);
+  ASSERT_TRUE(both.has_value()) << error;
+  EXPECT_TRUE(both->erasedClass("a"));
+  EXPECT_TRUE(both->resetsClass("a", "g"));
+  EXPECT_FALSE(both->resetsClass("a", "h"));
 }
 
 TEST(LibrarySpecTest, OverloadsFollowTheArity) {
