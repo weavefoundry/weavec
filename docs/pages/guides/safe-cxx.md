@@ -262,7 +262,7 @@ private:
 
 ### Callbacks
 
-A callable that captures by reference is a view. Pass it down freely, as a template parameter or as a `std::function` for the call. One that is kept captures by value: copies, moved owners, or a `std::shared_ptr` to what it needs.
+A callable that captures by reference is a view. Pass it down freely, as a template parameter or as a `std::function` for the call. One that is kept captures by value: copies, moved owners, or a `std::shared_ptr` to what it needs. A function that keeps a callable it was passed says so with `WEAVEC_ESCAPES`, written after the parameter's type and before its name; the compiler then rejects a caller that passes a lambda capturing a local by reference, and rejects the function if it keeps a callable without saying so.
 
 ```cpp accepted
 template <typename F> void each_even(const std::vector<int> &values, F visit) {
@@ -287,7 +287,7 @@ int use(const std::vector<int> &values) {
 
 class Button {
 public:
-  void on_click(std::function<void()> handler) { handlers_.push_back(std::move(handler)); }
+  void on_click(std::function<void()> WEAVEC_ESCAPES handler) { handlers_.push_back(std::move(handler)); }
   void click() const {
     for (const auto &handler : handlers_)
       handler();
@@ -379,7 +379,7 @@ Each of these still stops when it runs, under the guards:
 
 - a dangling raw pointer member or element (a reference);
 - an object shared by `std::shared_ptr<T>` that another holder changed under a borrow;
-- a `std::function` received as a parameter and copied into a member by the callee, when it captured its caller's locals (declare the parameter `WEAVEC_ESCAPES` to have safe callers checked);
+- a callable that code which is not safe keeps or passes in, when it captured locals that are gone (between safe functions, `WEAVEC_ESCAPES` on the parameter closes this);
 - a container's iterators passed to a standard algorithm the standard forbids them for (`v.assign(v.begin() + 1, v.end())`);
 - an index or an iterator out of range, a null `std::unique_ptr`, an empty `std::optional`;
 - globals that are not `const`, and data races.

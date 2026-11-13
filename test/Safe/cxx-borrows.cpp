@@ -312,6 +312,17 @@ struct Tree {
   void growShared() { twin->label += "x"; } // a shared object may be changed
   void passDown(Tree &to) { to.label += label; }
 };
+std::vector<std::string> registry;
+const std::vector<int> primes = {2, 3, 5};
+void changesGlobal(const std::string &name) {
+  registry.push_back(name); // expected-error {{'registry' is a global, which every function can reach, and 'push_back' may change what it owns [weavec-safe:owner-path]}}
+}
+std::size_t readsGlobal() { return registry.size() + primes.size(); }
+void movesGlobalOutAndBack(const std::string &name) {
+  std::vector<std::string> local = std::move(registry);
+  local.push_back(name);
+  registry = std::move(local);
+}
 struct Cache {
   mutable std::string last;
   std::vector<int> data;

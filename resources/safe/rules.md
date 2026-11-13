@@ -208,7 +208,7 @@ void keep(struct holder *h, int *WEAVEC_ESCAPES p) { h->kept = p; }
 
 ### In C++
 
-A borrow or a view of a local is not returned, and is not stored where it outlives the function's locals: in a member of `*this`, through a parameter, in a global. That covers a reference or a `std::string_view` of a local, a lambda that captures a local by reference, and a `std::vector` of views into a local buffer. A view member is assigned only from parameters that are themselves views (a `std::string_view`, a `std::span`, a pointer), which callers can see, or bound in the constructor; it is not made to point into another member of the same object, which would break when the object is moved. A `std::function`, a `std::thread` or a `std::any` made from a view is a view. The argument for a `WEAVEC_ESCAPES` parameter is not the address of a local.
+A borrow or a view of a local is not returned, and is not stored where it outlives the function's locals: in a member of `*this`, through a parameter, in a global. That covers a reference or a `std::string_view` of a local, a lambda that captures a local by reference, and a `std::vector` of views into a local buffer. A view member is assigned only from parameters that are themselves views (a `std::string_view`, a `std::span`, a pointer), which callers can see, or bound in the constructor; it is not made to point into another member of the same object, which would break when the object is moved. A `std::function`, a `std::thread` or a `std::any` made from a view is a view. A function that keeps a callable it was passed (in a member, a container, a global) declares the parameter `WEAVEC_ESCAPES`, written after the type: `std::function<void()> WEAVEC_ESCAPES handler`. The argument for a `WEAVEC_ESCAPES` parameter is not the address of a local, nor a callable that captures one by reference.
 
 ```cpp rejected
 std::string read_line(int n);
@@ -233,6 +233,24 @@ struct Document {
 };
 ```
 
+```cpp rejected
+struct Events {
+  std::vector<std::function<void()>> handlers;
+  void subscribe(std::function<void()> handler) { handlers.push_back(std::move(handler)); }
+};
+```
+
+```cpp rejected
+struct Events {
+  std::vector<std::function<void()>> handlers;
+  void subscribe(std::function<void()> WEAVEC_ESCAPES handler) { handlers.push_back(std::move(handler)); }
+};
+void count_events(Events &events) {
+  int count = 0;
+  events.subscribe([&count] { ++count; });
+}
+```
+
 ```cpp accepted
 std::string read_line(int n);
 std::string first_word(int n) {              // owns what it returns
@@ -246,6 +264,13 @@ struct Button {
   std::function<void()> on_click;
   void count_into(std::shared_ptr<int> count) { on_click = [count] { ++*count; }; }
 };
+struct Events {
+  std::vector<std::function<void()>> handlers;
+  void subscribe(std::function<void()> WEAVEC_ESCAPES handler) { handlers.push_back(std::move(handler)); }
+};
+void count_events(Events &events, std::shared_ptr<int> count) {
+  events.subscribe([count] { ++*count; });   // captures by value
+}
 struct Document {
   std::string buffer;
   std::size_t title_length = 0;              // an offset and a length, not a view

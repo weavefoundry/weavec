@@ -992,7 +992,19 @@ private:
   }
 
   void owners(const Value &objects, clang::SourceLocation at,
-              const std::string &what, const clang::NamedDecl *by) {
+              const std::string &what, const clang::NamedDecl *by,
+              const clang::Expr *expression) {
+    if (objects.reference && globalBase(expression)) {
+      error(at, rule::OwnerPath,
+            what + " is a global, which every function can reach, and " +
+                called(by) + " may change what it owns",
+            at,
+            "move the global into a local, change the local and move it "
+            "back ('auto local = std::move(global); ...; global = "
+            "std::move(local);'), pass the object as a parameter instead, "
+            "or keep this function WEAVEC_GUARDED");
+      return;
+    }
     if (objects.reference) {
       error(at, rule::OwnerPath,
             what + " is reached through a pointer kept in memory, and " +
@@ -1052,6 +1064,24 @@ private:
       }
       const auto *parameter =
           llvm::dyn_cast_or_null<clang::ParmVarDecl>(loan.root.variable());
+      // §7, received: a callable handed in a type that hides what it
+      // captured may hold borrows of the caller's locals.
+      if (parameter != nullptr && loan.root.beyond &&
+          kinds.erased(parameter->getType()) && ownLocal(*parameter) &&
+          !hasAnnotation(annotationsOf(parameter->getType(), ast),
+                         EscapesAnnotation)) {
+        error(at, rule::Escape,
+              where + " would keep " + nameOf(loan.root) +
+                  ", which may hold borrows of its caller's locals",
+              parameter->getLocation(),
+              "declare the parameter WEAVEC_ESCAPES ('" +
+                  parameter->getType().getNonReferenceType().getUnqualifiedType().getAsString(
+                      ast.getPrintingPolicy()) +
+                  " WEAVEC_ESCAPES " + parameter->getNameAsString() +
+                  "'), so that callers pass a callable that captures by "
+                  "value");
+        return;
+      }
       if (viewTarget && toThis && parameter != nullptr && !loan.root.beyond &&
           parameter->getType()->isReferenceType() &&
           !kinds.tracked(parameter->getType()->getPointeeType()) &&
@@ -1077,6 +1107,28 @@ private:
         return;
       }
     }
+  }
+
+  /// Whether a place is a global or a part of one.
+  [[nodiscard]] static bool globalBase(const clang::Expr *expression) {
+    while (expression != nullptr) {
+      expression = expression->IgnoreParenImpCasts();
+      if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(expression);
+          member != nullptr && !member->isArrow())
+        expression = member->getBase();
+      else
+        break;
+    }
+    return expression != nullptr && global(expression);
+  }
+
+  [[nodiscard]] static bool global(const clang::Expr *expression) {
+    const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(
+        expression->IgnoreParenImpCasts());
+    const auto *variable = named == nullptr
+                               ? nullptr
+                               : llvm::dyn_cast<clang::VarDecl>(named->getDecl());
+    return variable != nullptr && !variable->hasLocalStorage();
   }
 
   [[nodiscard]] bool outside(const Value &objects) {
@@ -1269,24 +1321,38 @@ private:
           borrow.loans.push_back(loan);
     }
     if (call.object != nullptr && view == nullptr && changing(call) &&
-        kinds.tracked(objectType(call)) && outside(target))
-      storedOutside(target, taken, call.at, spell(call.object, ast),
-                    /*viewTarget=*/true);
+        kinds.tracked(objectType(call)) && outside(target)) {
+      if (global(call.object) && !taken.loans.empty())
+        error(call.at, rule::Escape,
+              "a borrow is stored in the global " + spell(call.object, ast) +
+                  ", which outlives every function",
+              call.at,
+              "keep in a global only what owns its data (a 'std::string', "
+              "not a 'std::string_view')");
+      else
+        storedOutside(target, taken, call.at, spell(call.object, ast),
+                      /*viewTarget=*/true);
+    }
 
     // §6, rule 2: the object of a member function that is not const and
     // not an accessor.
     if (targetChanges) {
-      owners(target, call.at, spell(call.object, ast), call.method);
+      // RFC 0043 §9: a global is assigned as a whole, moved out and back.
+      if (!(assigns && global(call.object)))
+        owners(target, call.at, spell(call.object, ast), call.method,
+               call.object);
       invalidate(flow, target, Ends::Into, End::Why::Changed, call.at,
                  call.method);
     }
     // §6, rule 3: what a call may change through its parameters.
     for (const Call::Argument &argument : call.arguments) {
       const clang::Expr *given = argument.expression;
-      if (given->getType()->isPointerType() && argument.parameter != nullptr &&
+      if (argument.parameter != nullptr &&
+          (given->getType()->isPointerType() ||
+           kinds.tracked(given->getType())) &&
           hasAnnotation(annotationsOf(argument.parameter->getType(), ast),
                         EscapesAnnotation))
-        storedOutside({}, pointee(flow, given), given->getExprLoc(),
+        storedOutside({}, stored(flow, argument), given->getExprLoc(),
                       "what " + called(call.callee) + " keeps",
                       /*viewTarget=*/false);
       if (!changes(argument.parameter) || movedFrom(given).has_value())
@@ -1294,7 +1360,8 @@ private:
       const Value objects = given->getType()->isPointerType()
                                 ? pointee(flow, given)
                                 : object(flow, given);
-      owners(objects, given->getExprLoc(), spell(given, ast), call.callee);
+      owners(objects, given->getExprLoc(), spell(given, ast), call.callee,
+             given);
       invalidate(flow, objects, Ends::Into, End::Why::Called, call.at,
                  call.callee);
       // §7: a view passed where the callee may store the other borrows.

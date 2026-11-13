@@ -95,18 +95,28 @@ public:
     return pointerLike(type) || viewClass(type->getAsCXXRecordDecl());
   }
 
-  /// §2: a library class the table marks `erased`.
+  /// §2: a library class the table marks `erased`, or a library template
+  /// with one among its arguments (a vector of callbacks).
   [[nodiscard]] bool erased(clang::QualType type) {
     const clang::CXXRecordDecl *record =
         type.getNonReferenceType()->getAsCXXRecordDecl();
     if (record == nullptr || !isLibrary(*record))
       return false;
-    const auto [found, inserted] =
-        erasures.try_emplace(record->getCanonicalDecl(), false);
-    if (inserted)
-      found->second =
-          core::LibrarySpec::shipped().erasedClass(qualifiedName(*record));
-    return found->second;
+    record = record->getCanonicalDecl();
+    if (const auto found = erasures.find(record); found != erasures.end())
+      return found->second;
+    erasures[record] = false;
+    bool erases =
+        core::LibrarySpec::shipped().erasedClass(qualifiedName(*record));
+    if (const auto *specialization =
+            llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(record);
+        specialization != nullptr && !erases)
+      for (const clang::TemplateArgument &argument :
+           specialization->getTemplateArgs().asArray())
+        erases |= argument.getKind() == clang::TemplateArgument::Type &&
+                  erased(argument.getAsType());
+    erasures[record] = erases;
+    return erases;
   }
 
   /// A local of this type has a set of borrows the rules follow.

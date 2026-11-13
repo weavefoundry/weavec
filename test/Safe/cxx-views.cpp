@@ -192,10 +192,12 @@ struct Cache {
     last = &local; // expected-error {{a borrow of 'local' is stored in 'this->last', which outlives it [weavec-safe:escape]}}
   }
 };
-std::string_view global;
-void storeGlobal(const std::string &s) {
-  (void)s;
+std::string_view currentName;
+std::string ownedName;
+void storeGlobalView(std::string_view s) {
+  currentName = s; // expected-error {{a borrow is stored in the global 'currentName', which outlives every function [weavec-safe:escape]}}
 }
+std::size_t readGlobal() { return ownedName.size() + currentName.size(); }
 
 // erased
 std::thread spawnOverLocal() {
@@ -216,6 +218,36 @@ int calledInPlace(const std::vector<int> &v) {
   for (int x : v)
     s += scale(x);
   return s;
+}
+
+// a callable kept by a callee
+struct Events {
+  std::vector<std::function<void()>> handlers;
+  std::function<void()> last;
+  void keep(std::function<void()> handler) {
+    handlers.push_back(std::move(handler)); // expected-error {{'this->handlers' would keep 'handler', which may hold borrows of its caller's locals [weavec-safe:escape]}}
+  }
+  void keepLast(const std::function<void()> &handler) {
+    last = handler; // expected-error {{'this->last' would keep 'handler', which may hold borrows of its caller's locals [weavec-safe:escape]}}
+  }
+  void declared(std::function<void()> WEAVEC_ESCAPES handler) { handlers.push_back(std::move(handler)); }
+  void callNow(const std::function<void()> &handler) const { handler(); }
+};
+struct Timer {
+  std::function<void()> tick;
+  explicit Timer(std::function<void()> WEAVEC_ESCAPES t) : tick(std::move(t)) {}
+};
+struct WrongTimer {
+  std::function<void()> tick;
+  explicit WrongTimer(std::function<void()> t) : tick(std::move(t)) {} // expected-error {{'tick' would keep 't', which may hold borrows of its caller's locals [weavec-safe:escape]}}
+};
+void wire(Events &events) {
+  int count = 0;
+  events.callNow([&] { ++count; });
+  events.declared([count] { (void)count; });
+  events.declared([&] { ++count; }); // expected-error {{a borrow of 'count' is stored in what 'declared' keeps, which outlives it [weavec-safe:escape]}}
+  Timer timer([&count] { ++count; }); // expected-error {{a borrow of 'count' is stored in what 'Timer' keeps, which outlives it [weavec-safe:escape]}}
+  (void)timer;
 }
 
 // kept by a callee
