@@ -92,13 +92,13 @@ A C++ function made safe by `weavec-c++ -fweavec-safe` or `WEAVEC_SAFE` ([RFC 00
 
 (X1) to (X5) are facts about the source and hold under any compiler. They assume:
 
-|          | Assumption |
-| -------- | ---------- |
+|          | Assumption                                                                                                                                                                                                                                                                                                                              |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **X-A1** | Code that is not safe (guarded and unsafe functions, system headers, code WeaveC did not compile) honors the declarations safe code sees: a `const` member function or parameter changes nothing an object owns, and a result that is a view points into the arguments the caller is told it may, or into something that outlives them. |
-| **X-A2** | The arguments with which code that is not safe calls a safe function do not overlap in the way `call-alias` forbids, and a view it passes outlives the call. |
-| **X-A3** | No other thread, and no signal handler, destroys, moves or changes an owner while a safe function uses it or a borrow into it. |
-| **X-A4** | The standard library behaves as the standard specifies: a `const` member function invalidates nothing, a member function with a `const` overload of the same parameters only gives access, its own functions accept the arguments their specification allows, and the types Clang marks as owners and pointers are. |
-| **X-A5** | A moved-from object of a library type may be assigned and destroyed. |
+| **X-A2** | The arguments with which code that is not safe calls a safe function do not overlap in the way `call-alias` forbids, and a view it passes outlives the call.                                                                                                                                                                            |
+| **X-A3** | No other thread, and no signal handler, destroys, moves or changes an owner while a safe function uses it or a borrow into it.                                                                                                                                                                                                          |
+| **X-A4** | The standard library behaves as the standard specifies: a `const` member function invalidates nothing, a member function with a `const` overload of the same parameters only gives access, its own functions accept the arguments their specification allows, and the types Clang marks as owners and pointers are.                     |
+| **X-A5** | A moved-from object of a library type may be assigned and destroyed.                                                                                                                                                                                                                                                                    |
 
 The audit lists what the rules do not follow: the functions and classes that are not safe, the reference, shared and erased members.
 

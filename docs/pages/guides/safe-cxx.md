@@ -9,12 +9,12 @@ Safe C++ is ordinary modern C++ over the standard library you already use. It ha
 
 ## Making functions safe
 
-| How                                                        | Effect                                                                                      |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| How                                                        | Effect                                                                                                             |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `-fweavec-safe` on `weavec-c++`'s command line             | every function the unit defines in its own files is safe, with its lambdas and the instantiations of its templates |
-| `WEAVEC_SAFE` before a function, or after `struct`/`class` | that function, or every member function the class defines, is safe in a unit without the flag |
-| `WEAVEC_GUARDED` in the same places                        | that function or class stays guarded in a safe unit                                         |
-| `WEAVEC_UNSAFE`, `no_sanitize("address")`                  | that function stays unsafe (unguarded), as before                                           |
+| `WEAVEC_SAFE` before a function, or after `struct`/`class` | that function, or every member function the class defines, is safe in a unit without the flag                      |
+| `WEAVEC_GUARDED` in the same places                        | that function or class stays guarded in a safe unit                                                                |
+| `WEAVEC_UNSAFE`, `no_sanitize("address")`                  | that function stays unsafe (unguarded), as before                                                                  |
 
 Functions from system headers (the standard library, the SDK, anything behind `-isystem`) are never checked: put third-party headers behind `-isystem`. A header of your own is checked by each safe unit that includes it, so a project converts a file at a time. C++17 or later.
 
@@ -357,21 +357,21 @@ std::size_t count_lines(const std::string &path) {
 
 ## Coming from Rust
 
-| Rust                                        | Safe C++                                                                                             |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `Box<T>`, `Vec<T>`, `String`, `Option<T>`   | `std::unique_ptr<T>`, `std::vector<T>`, `std::string`, `std::optional<T>`                             |
-| a move, and "use of moved value"            | `std::move`, and `owner-moved`; `std::exchange(x, {})` is `mem::take`                                 |
-| `&T`, `&mut T` in a local or a parameter    | `const T &`, `T &`, pointers, iterators: borrows, ended by a non-`const` use of what they point into  |
-| "cannot borrow as mutable because…"         | `stale-borrow` at the later use; two `int &` into one vector are fine, since changing an `int` ends nothing |
-| `&str`, `&[T]`, a struct with a lifetime    | `std::string_view`, `std::span<T>`, a class with one as a member: views; there are no lifetime parameters, and a view's borrows are worked out per local |
-| returning or storing a borrow of a local    | `escape`                                                                                             |
-| `&mut self` twice (`self.f(&mut self.x)`)   | `call-alias`                                                                                         |
-| a back pointer: `Weak<T>`, an index         | a raw pointer member (read only, checked at run time), or an index                                   |
-| `Rc<T>`                                     | `std::shared_ptr<const T>`                                                                           |
-| `Rc<RefCell<T>>`                            | `std::shared_ptr<T>`: allowed; conflicting borrows are found at run time by the guards, not by a count |
-| a slice index or `unwrap()` that panics     | a hardened library check (`library-assertion`) or a `null-dereference` report                         |
-| `unsafe`                                    | `WEAVEC_GUARDED` (still guarded at run time), `WEAVEC_UNSAFE` (not)                                   |
-| `Send`, `Sync`                              | nothing yet: data races are not checked                                                              |
+| Rust                                      | Safe C++                                                                                                                                                 |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Box<T>`, `Vec<T>`, `String`, `Option<T>` | `std::unique_ptr<T>`, `std::vector<T>`, `std::string`, `std::optional<T>`                                                                                |
+| a move, and "use of moved value"          | `std::move`, and `owner-moved`; `std::exchange(x, {})` is `mem::take`                                                                                    |
+| `&T`, `&mut T` in a local or a parameter  | `const T &`, `T &`, pointers, iterators: borrows, ended by a non-`const` use of what they point into                                                     |
+| "cannot borrow as mutable because…"       | `stale-borrow` at the later use; two `int &` into one vector are fine, since changing an `int` ends nothing                                              |
+| `&str`, `&[T]`, a struct with a lifetime  | `std::string_view`, `std::span<T>`, a class with one as a member: views; there are no lifetime parameters, and a view's borrows are worked out per local |
+| returning or storing a borrow of a local  | `escape`                                                                                                                                                 |
+| `&mut self` twice (`self.f(&mut self.x)`) | `call-alias`                                                                                                                                             |
+| a back pointer: `Weak<T>`, an index       | a raw pointer member (read only, checked at run time), or an index                                                                                       |
+| `Rc<T>`                                   | `std::shared_ptr<const T>`                                                                                                                               |
+| `Rc<RefCell<T>>`                          | `std::shared_ptr<T>`: allowed; conflicting borrows are found at run time by the guards, not by a count                                                   |
+| a slice index or `unwrap()` that panics   | a hardened library check (`library-assertion`) or a `null-dereference` report                                                                            |
+| `unsafe`                                  | `WEAVEC_GUARDED` (still guarded at run time), `WEAVEC_UNSAFE` (not)                                                                                      |
+| `Send`, `Sync`                            | nothing yet: data races are not checked                                                                                                                  |
 
 ## What the rules do not see
 
