@@ -29,7 +29,7 @@
 namespace weavec::frontend {
 
 /// The version of the `weavec-ledger` JSON this writes.
-inline constexpr unsigned EnforcementLedgerVersion = 6;
+inline constexpr unsigned EnforcementLedgerVersion = 7;
 
 /// What the pass decided for one access.
 struct LedgerRow {

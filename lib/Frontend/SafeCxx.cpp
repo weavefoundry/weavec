@@ -641,6 +641,17 @@ private:
       collectLambdas(child, lambdas);
   }
 
+  [[nodiscard]] static bool sharedConst(clang::QualType type) {
+    const auto *specialization =
+        llvm::dyn_cast_or_null<clang::ClassTemplateSpecializationDecl>(
+            type->getAsCXXRecordDecl());
+    if (specialization == nullptr || specialization->getTemplateArgs().size() == 0)
+      return false;
+    const clang::TemplateArgument &first = specialization->getTemplateArgs()[0];
+    return first.getKind() == clang::TemplateArgument::Type &&
+           first.getAsType().isConstQualified();
+  }
+
   /// §12: each member of the unit's classes that owns, borrows, refers,
   /// shares or erases.
   void listFields(const clang::CXXRecordDecl &record) {
@@ -662,7 +673,8 @@ private:
       else if (kinds.erased(type))
         kind = "erased";
       else if (CxxKinds::shared(of))
-        kind = "shared";
+        // A shared object that is const is changed by no holder.
+        kind = sharedConst(type) ? "owner" : "shared";
       else if (kinds.holdsOwners(type))
         kind = "owner";
       if (kind == nullptr)

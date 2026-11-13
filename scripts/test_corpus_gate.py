@@ -41,7 +41,7 @@ def proc(returncode=0, stdout="", stderr="", timed_out=False, error=""):
     return gate.ProcResult("cmd", returncode, stdout, stderr, 0.1, timed_out=timed_out, error=error)
 
 
-def ledger_document(*summaries, version=6, rows=()):
+def ledger_document(*summaries, version=7, rows=()):
     return {"schema": "weavec-ledger", "version": version, "producer": {"name": "weavec-cc"},
             "units": [{"source": "a.c", "object": "a.o", "summary": s, "rows": list(rows)} for s in summaries]}
 
@@ -165,7 +165,7 @@ class LedgerTest(unittest.TestCase):
             for data, message in ((ledger_document({"accesses": 1}, version=2), "version 2"),
                                   ({"schema": "other"}, "not a weavec-ledger"),
                                   (ledger_document(), "no units"),
-                                  ({"schema": "weavec-ledger", "version": 6, "units": [{}]}, "no summary")):
+                                  ({"schema": "weavec-ledger", "version": 7, "units": [{}]}, "no summary")):
                 with self.assertRaisesRegex(ValueError, message):
                     gate.read_ledger(self.write(directory, data))
             with self.assertRaisesRegex(ValueError, "x.ledger.json"):
@@ -825,7 +825,7 @@ if "-c" in args:
         summary = {"accesses": lines, "proven": proven, "guarded": lines - proven, "unguarded": 0}
         rows = [{"file": sources[0], "line": 1, "column": 1, "function": "f", "operation": "load", "bytes": 4,
                  "outcome": "proven", "reason": "in-bounds"}] * proven
-        json.dump({"schema": "weavec-ledger", "version": 6, "units": [
+        json.dump({"schema": "weavec-ledger", "version": 7, "units": [
             {"source": sources[0], "object": out, "config": {"checks": checks}, "summary": summary,
              "rows": rows}]}, open(ledger, "w"))
     sys.exit(0)
