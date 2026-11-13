@@ -132,6 +132,13 @@
 #   arguments of its call in the IR: a member function's implicit object
 #   first (RFC 0039 section 7).
 #
+# CLASSES
+#   entry    ::= 'class' NAME { '::' NAME } ':' 'erased' ';'
+#   RFC 0044 section 2: a C++ class that can hold an object of a type its
+#   own type does not name (a callable, a value of any type). Safe C++
+#   treats one made from a view as a view. Inline namespaces are not
+#   written (std::function, not std::__1::function).
+#
 # OVERLOADS
 #   A name may have several rows; a call uses the first whose arity it
 #   matches (a variadic row accepts more arguments), or else the first.
@@ -1299,3 +1306,13 @@ _ZNSt13basic_istreamIwSt11char_traitsIwEE3getEPwlw (rw, w:count(a2):null-if-zero
 _ZNSt13basic_istreamIwSt11char_traitsIwEE7getlineEPwl (rw, w:count(a2):null-if-zero(a2), int) -> ptr wide;
 _ZNSt13basic_istreamIwSt11char_traitsIwEE7getlineEPwlw (rw, w:count(a2):null-if-zero(a2), int, int) -> ptr wide;
 
+#============================================================================
+# C++ classes that erase the type of what they hold (RFC 0044 section 2)
+#============================================================================
+
+class std::function : erased;
+class std::move_only_function : erased;
+class std::any : erased;
+class std::packaged_task : erased;
+class std::thread : erased;
+class std::jthread : erased;

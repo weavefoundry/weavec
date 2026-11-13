@@ -57,6 +57,11 @@ using RuleReport = std::function<void(
 void checkOwnership(clang::ASTContext &ast, const clang::FunctionDecl &function,
                     SafeUnit &unit, const RuleReport &report);
 
+/// RFC 0044: Safe C++'s rules for a C++ unit, and its functions and
+/// classes' members for the ledger.
+void checkCxx(clang::ASTContext &ast, bool unitSafe, SafeUnit &unit,
+              const RuleReport &report);
+
 } // namespace weavec::frontend
 
 #endif // WEAVEC_LIB_FRONTEND_SAFECHECKIMPL_H

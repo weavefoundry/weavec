@@ -93,5 +93,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0041](0041-safe-c.md) | Safe C | Accepted |
 | [0042](0042-typed-memory.md) | Typed memory | Accepted |
 | [0043](0043-ownership.md) | Ownership | Accepted |
+| [0044](0044-safe-cxx.md) | Safe C++ | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

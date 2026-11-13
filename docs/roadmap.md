@@ -12,6 +12,34 @@ milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
+## Next: RFC 0044 — Safe C++
+
+Design: [RFC 0044 — Safe C++](rfcs/0044-safe-cxx.md) (Accepted, not built). Safe C gives
+an agent compile errors for bounds, conversions and ownership; C++, the
+language a rewrite would more likely target, has only the run-time half:
+`weavec-c++` stops each of twenty probe bugs when a test reaches it and
+rejects none when it compiles, and `-fweavec-safe` is an error in C++. RFC
+0044 makes the flag work: safe C++ functions are checked against local
+rules over owners (objects), borrows and views (references, iterators,
+`std::string_view`, types that hold them) and references (pointer members,
+left to the guards), rejecting a use after `std::move`, a borrow used after
+its container changed or died, a view returned or stored past what it
+points into, and raw `new`, `delete` and pointer arithmetic. Nothing at run
+time changes: safe C++ is a subset, costs what guarded C++ costs until a
+later RFC spends the rules, does not change what an object owns through a
+raw pointer member, and trusts the standard library. The stages:
+
+- [x] **The RFC**, accepted as drafted on 2026-11-12.
+- [ ] **S0 On paper, and probes**: the rules applied by hand to three
+      files, a prototype dataflow over the probe, the frozen sets of bugs
+      and of correct functions, the ports and conversions chosen.
+- [ ] **S1 Cleanups**: the rule `cxx` deleted, the ownership checker split
+      into a shared engine and C's front, the flag in C++.
+- [ ] **S2 Expression rules**; **S3 Kinds of types and moves**;
+      **S4 Borrows**; **S5 Views**.
+- [ ] **S6 Explanations and the guide.**
+- [ ] **S7 Ports against Rust, conversions and seeded bugs**; the gates.
+
 ## Now: RFC 0043 — Ownership
 
 Design: [RFC 0043 — Ownership](rfcs/0043-ownership.md) (Accepted, built).

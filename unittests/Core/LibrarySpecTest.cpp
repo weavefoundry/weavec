@@ -390,6 +390,23 @@ TEST(LibrarySpecTest, GlibcFortifiedSpellingsCarryTheObjectSize) {
   EXPECT_EQ(remap("__isoc99_fscanf", 4), (std::vector<int>{0, 1, 2, 3}));
 }
 
+// RFC 0044 section 2: the classes that erase the type of what they hold.
+TEST(LibrarySpecTest, ClassRowsNameErasedTypes) {
+  const LibrarySpec &table = LibrarySpec::shipped();
+  for (const char *name :
+       {"std::function", "std::move_only_function", "std::any",
+        "std::packaged_task", "std::thread", "std::jthread"})
+    EXPECT_TRUE(table.erasedClass(name)) << name;
+  EXPECT_FALSE(table.erasedClass("std::vector"));
+  std::string error;
+  const auto parsed = LibrarySpec::parse("class a::b : erased;\n", error);
+  ASSERT_TRUE(parsed.has_value()) << error;
+  EXPECT_TRUE(parsed->erasedClass("a::b"));
+  EXPECT_TRUE(parsed->entries().empty());
+  EXPECT_FALSE(LibrarySpec::parse("class a : owned;\n", error).has_value());
+  EXPECT_NE(error.find("expected 'erased'"), std::string::npos) << error;
+}
+
 TEST(LibrarySpecTest, OverloadsFollowTheArity) {
   const LibrarySpec &spec = LibrarySpec::shipped();
   // glibc's pthread_setname_np(thread, name); macOS's pthread_setname_np(name).

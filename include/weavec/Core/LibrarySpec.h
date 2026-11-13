@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <set>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -259,6 +260,10 @@ public:
     return rows;
   }
 
+  /// RFC 0044 §2: whether the table has `class <qualified> : erased;`, a
+  /// class that can hold an object of a type its own type does not name.
+  [[nodiscard]] bool erasedClass(std::string_view qualified) const;
+
   /// The row named exactly `name` (the first, if it has overloads).
   [[nodiscard]] const LibraryEntry *find(std::string_view name) const;
   /// Resolves a callee name: the row's own name, a `chk` alias, or either
@@ -275,6 +280,7 @@ private:
   /// Alias name to (row index, index into the row's `chk`).
   std::map<std::string, std::pair<std::size_t, std::size_t>, std::less<>>
       byAlias;
+  std::set<std::string, std::less<>> erased;
   friend class LibrarySpecParser;
 };
 

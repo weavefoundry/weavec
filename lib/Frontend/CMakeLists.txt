@@ -19,6 +19,9 @@ weavec_add_library(
           SafeCheck.cpp
           # RFC 0043: ownership's rules.
           SafeOwnership.cpp
+          # RFC 0044: Safe C++.
+          SafeCxx.cpp
+          SafeCxxFlow.cpp
           # RFC 0040 §4.2: weavec-cc --weavec-symbolize.
           Symbolizer.cpp
           UnsafeRegions.cpp

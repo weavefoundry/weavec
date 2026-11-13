@@ -61,7 +61,6 @@ constexpr llvm::StringLiteral Variadic = "variadic";
 constexpr llvm::StringLiteral NoAsm = "no-asm";
 constexpr llvm::StringLiteral UnsafeBlock = "unsafe-block";
 constexpr llvm::StringLiteral BadAnnotation = "bad-annotation";
-constexpr llvm::StringLiteral Cxx = "cxx";
 // RFC 0042 §3.
 constexpr llvm::StringLiteral CountedPair = "counted-pair";
 constexpr llvm::StringLiteral StringIndex = "string-index";
@@ -2052,11 +2051,13 @@ public:
 
   void HandleTranslationUnit(clang::ASTContext &ast) override {
     if (ast.getLangOpts().CPlusPlus) {
-      auto report = [this](clang::SourceLocation at, llvm::StringRef rule,
-                           llvm::StringRef message, llvm::StringRef fix) {
-        this->report(at, rule, message, fix);
-      };
-      rejectCxx(ast.getTranslationUnitDecl(), report);
+      // RFC 0044: Safe C++.
+      checkCxx(ast, unitSafe, *out,
+               [this](clang::SourceLocation at, llvm::StringRef rule,
+                      llvm::StringRef message, clang::SourceLocation noteAt,
+                      llvm::StringRef note) {
+                 report(at, rule, message, note, noteAt);
+               });
       return;
     }
     Declarations &declarations = declarationsFor(ast);
@@ -2176,7 +2177,9 @@ private:
     // Ownership's different errors at one place (two owners leaked at one
     // return) are each reported.
     const bool ownership = rule.starts_with("owner") ||
-                           rule == "stale-borrow" || rule == "call-alias";
+                           rule == "stale-borrow" || rule == "call-alias" ||
+                           (rule == "escape" &&
+                            compiler.getLangOpts().CPlusPlus);
     if (!reported
              .emplace(file.getRawEncoding(),
                       rule.str() + (ownership ? message.str() : ""))
@@ -2195,8 +2198,9 @@ private:
       explained = true;
       diagnostics.Report(at, diagnostics.getCustomDiagID(
                                  clang::DiagnosticsEngine::Note,
-                                 "'weavec-cc --weavec-explain %0' explains "
-                                 "this rule"))
+                                 "'%0 --weavec-explain %1' explains this "
+                                 "rule"))
+          << (compiler.getLangOpts().CPlusPlus ? "weavec-c++" : "weavec-cc")
           << rule;
     }
   }
@@ -2211,28 +2215,6 @@ private:
                  llvm::StringRef message,
                  llvm::StringRef fix) { report(at, rule, message, fix); });
     return *unitDeclarations;
-  }
-
-  /// RFC 0041 §12: a C++ unit has no safe functions; a unit compiled with
-  /// -fweavec-safe or a function marked WEAVEC_SAFE is an error.
-  template <typename Report>
-  void rejectCxx(const clang::DeclContext *context, Report &report) {
-    for (const clang::Decl *declaration : context->decls()) {
-      if (llvm::isa<clang::NamespaceDecl, clang::LinkageSpecDecl,
-                    clang::CXXRecordDecl>(declaration)) {
-        rejectCxx(llvm::cast<clang::DeclContext>(declaration), report);
-        continue;
-      }
-      const auto *function = declaration->getAsFunction();
-      if (function != nullptr && function->doesThisDeclarationHaveABody() &&
-          (hasAnnotateAttr(*function, SafeAnnotation) ||
-           (unitSafe &&
-            !function->getASTContext().getSourceManager().isInSystemHeader(
-                function->getLocation()))))
-        report(function->getLocation(), rule::Cxx,
-               "safe functions are C only (RFC 0041 §12)",
-               "compile the function as C, or drop WEAVEC_SAFE");
-    }
   }
 
   bool isSafe(const clang::FunctionDecl &function,
