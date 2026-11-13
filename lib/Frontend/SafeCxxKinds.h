@@ -321,11 +321,14 @@ public:
                                !constructor->isDeleted();
                       }))
       return false;
-    return !record
-                ->lookup(
-                    record->getASTContext().DeclarationNames.getCXXOperatorName(
-                        clang::OO_Arrow))
-                .empty();
+    // `->` may come from a base (libstdc++'s `__shared_ptr_access`).
+    const clang::DeclarationName arrow =
+        record->getASTContext().DeclarationNames.getCXXOperatorName(
+            clang::OO_Arrow);
+    return !record->lookup(arrow).empty() ||
+           !record->forallBases([&](const clang::CXXRecordDecl *base) {
+             return base->lookup(arrow).empty();
+           });
   }
 
   /// The name the table's class rows use: qualified, without inline
