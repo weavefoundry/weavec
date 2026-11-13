@@ -286,21 +286,20 @@ public:
     if (!type->isLValueReferenceType() ||
         type->getPointeeType().isConstQualified())
       return false;
-    for (const clang::NamedDecl *other :
-         mine.getDeclContext()->getRedeclContext()->lookup(
-             mine.getDeclName())) {
-      const clang::FunctionDecl *candidate = other->getAsFunction();
-      if (candidate == nullptr ||
-          candidate->getNumParams() != mine.getNumParams())
-        continue;
-      const clang::QualType twin = candidate->getParamDecl(index)->getType();
-      if (twin->isLValueReferenceType() &&
-          twin->getPointeeType().isConstQualified() &&
-          clang::ASTContext::hasSameUnqualifiedType(twin->getPointeeType(),
-                                                    type->getPointeeType()))
-        return true;
-    }
-    return false;
+    return llvm::any_of(
+        mine.getDeclContext()->getRedeclContext()->lookup(mine.getDeclName()),
+        [&](const clang::NamedDecl *other) {
+          const clang::FunctionDecl *candidate = other->getAsFunction();
+          if (candidate == nullptr ||
+              candidate->getNumParams() != mine.getNumParams())
+            return false;
+          const clang::QualType twin =
+              candidate->getParamDecl(index)->getType();
+          return twin->isLValueReferenceType() &&
+                 twin->getPointeeType().isConstQualified() &&
+                 clang::ASTContext::hasSameUnqualifiedType(
+                     twin->getPointeeType(), type->getPointeeType());
+        });
   }
 
   /// A library class Clang marks as an owner (a container, a smart

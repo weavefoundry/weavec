@@ -911,15 +911,17 @@ private:
     if (kinds.tracked(given))
       value.add(points(flow, expression));
     const bool same = CxxKinds::related(given, type);
+    // A copy or a move of a view; and what erases its contents copies them
+    // in (`std::function`, `std::async`): it keeps their borrows, not
+    // their place.
+    const bool copies = constructs && same;
+    const bool erases = kinds.erased(type) && !kinds.view(type);
     if ((names || type->isPointerType()) && !constructs) {
       // A reference or pointer result can be the argument itself only if
       // it has its type.
       if (same)
         value.add(object(flow, expression));
-    } else if (!kinds.pureView(given) && !(constructs && same) &&
-               // What erases its contents copies them in (`std::function`,
-               // `std::async`): it keeps their borrows, not their place.
-               !(kinds.erased(type) && !kinds.view(type)) &&
+    } else if (!kinds.pureView(given) && !copies && !erases &&
                (!type->isRecordType() ||
                 kinds.mayBorrow(type->getAsCXXRecordDecl(), given))) {
       // A copy or a move of a view points where the view does, not into
@@ -1467,7 +1469,8 @@ private:
         unmove(flow, *place);
       if (view != nullptr) {
         Borrow &borrow = flow.borrows[view];
-        borrow = {.loans = taken.loans, .reference = taken.reference};
+        borrow = {
+            .loans = taken.loans, .reference = taken.reference, .end = {}};
       }
     } else if (view != nullptr && changing(call)) {
       Borrow &borrow = flow.borrows[view];
@@ -1512,7 +1515,7 @@ private:
         for (const Loan &loan : stored(flow, argument).loans)
           if (!llvm::is_contained(borrow.loans, loan))
             borrow.loans.push_back(loan);
-      } else if (!(constructs && declaresLocal(expression)))
+      } else if (!(constructs && declaresLocal(expression))) {
         storedOutside(
             {}, stored(flow, argument), given->getExprLoc(),
             "what " + called(call.callee) + " keeps",
@@ -1522,6 +1525,7 @@ private:
                 : "capture by value what the callable needs ('[count]', "
                   "'[p = std::move(p)]', a 'std::shared_ptr'); a callee that "
                   "only calls it takes it by reference to const");
+      }
       if (!changes(argument.parameter) || movedFrom(given).has_value())
         continue;
       const Value objects = given->getType()->isPointerType()
@@ -1564,7 +1568,7 @@ private:
     return Place{variable->getCanonicalDecl(), field};
   }
 
-  void move(Flow &flow, const Place &place, clang::SourceLocation at) {
+  static void move(Flow &flow, const Place &place, clang::SourceLocation at) {
     flow.moved.emplace(place, at);
     invalidate(flow, rootOf(place), Ends::All, End::Why::Moved, at, nullptr);
   }
@@ -1677,7 +1681,8 @@ private:
     const Value kept = keptBy(flow, variable.getInit());
     if (!kinds.tracked(variable.getType())) {
       if (!kept.loans.empty())
-        flow.borrows[canonical] = {.loans = kept.loans};
+        flow.borrows[canonical] = {
+            .loans = kept.loans, .reference = false, .end = {}};
       return;
     }
     Borrow borrow;
@@ -1731,7 +1736,7 @@ private:
           variable != nullptr && variable->hasLocalStorage() &&
           !variable->getType()->isReferenceType()) {
         flow.borrows[variable->getCanonicalDecl()] = {
-            .loans = value.loans, .reference = value.reference};
+            .loans = value.loans, .reference = value.reference, .end = {}};
         return;
       }
     const Value target = object(flow, left);
@@ -1770,19 +1775,23 @@ private:
     }
     // §7: a callable returned in a type that hides its captures owns them.
     if (!type->isReferenceType() && kinds.erased(type) && !kinds.view(type))
-      for (const Loan &loan : value.loans)
-        if (!localRoot(loan.root) &&
-            !(loan.root.beyond && loan.root.variable() != nullptr &&
-              kinds.erased(loan.root.variable()->getType()))) {
-          error(statement.getReturnLoc(), rule::Escape,
-                "the callable that is returned captures " + nameOf(loan.root) +
-                    " by reference, and its type does not show it",
-                statement.getReturnLoc(),
-                "capture by value what the callable needs ('[name]', "
-                "'[value = member_]', a 'std::shared_ptr'), so that it owns "
-                "what it uses");
-          return;
-        }
+      for (const Loan &loan : value.loans) {
+        // A callable the function was handed and passes on is the
+        // caller's.
+        const bool handed = loan.root.beyond &&
+                            loan.root.variable() != nullptr &&
+                            kinds.erased(loan.root.variable()->getType());
+        if (localRoot(loan.root) || handed)
+          continue;
+        error(statement.getReturnLoc(), rule::Escape,
+              "the callable that is returned captures " + nameOf(loan.root) +
+                  " by reference, and its type does not show it",
+              statement.getReturnLoc(),
+              "capture by value what the callable needs ('[name]', "
+              "'[value = member_]', a 'std::shared_ptr'), so that it owns "
+              "what it uses");
+        return;
+      }
     for (const Loan &loan : value.loans) {
       if (!localRoot(loan.root))
         continue;
