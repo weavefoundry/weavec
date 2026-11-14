@@ -229,6 +229,7 @@ void insertGuards(ModuleContext &module, llvm::Function &function) {
   // options for its macros; nothing else of ASan's applies, and the
   // attribute would keep the optimizer from its usual work.
   function.removeFnAttr(llvm::Attribute::SanitizeAddress);
+  const FastCode code = fastCodeOf(module, function);
   std::vector<Found> found;
   for (llvm::BasicBlock &block : function)
     for (llvm::Instruction &instruction : block)
@@ -247,6 +248,31 @@ void insertGuards(ModuleContext &module, llvm::Function &function) {
     if (module.isUnsafe(location)) {
       (void)module.row(function, location, access.operation, access.width,
                        LedgerRow::Outcome::Unguarded, "unsafe");
+      continue;
+    }
+    // RFC 0045 §4, §5: a believed pointer's bytes, and a trusted clone's
+    // accesses (verify mode keeps them as monitors).
+    const bool trusted = code == FastCode::Trusted;
+    if (trusted ||
+        (access.length == nullptr &&
+         believedAccess(module, function, access.pointer, access.width))) {
+      const unsigned row = module.row(function, location, access.operation,
+                                      access.width, LedgerRow::Outcome::Proven,
+                                      trusted ? "trusted" : "believed");
+      if (!module.verify())
+        continue;
+      const unsigned flags =
+          (access.write ? MarkerWrite : 0) | MarkerProven | MarkerBelieved;
+      if (access.length != nullptr || access.width > 113)
+        module.insertRange(
+            access.instruction, access.pointer,
+            access.length != nullptr
+                ? access.length
+                : llvm::ConstantInt::get(module.i64, access.width),
+            flags, row);
+      else
+        module.insertGuard(access.instruction, access.pointer, access.width,
+                           access.alignment, flags, nullptr, row);
       continue;
     }
     const bool ranged = access.length != nullptr || access.width > 113;

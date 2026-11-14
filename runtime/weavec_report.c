@@ -680,6 +680,11 @@ static void writeText(struct Line *line) {
                       : " (not recorded: WEAVEC_RT_HEAP_STACKS=0)\n");
       }
     }
+    /* RFC 0045 section 9: a fast program reuses blocks at once. */
+    if (weavecRtFastProgram)
+      put(line, "weavec: note: built for speed; rebuild with "
+                "-fweavec-safe-checks=full for allocation stacks and exact "
+                "use-after-free reports\n");
   } else if (report.memory == StackMemory) {
     putFrameLocals(line);
   }
@@ -791,7 +796,11 @@ static int begin(const char *kind, const struct __weavec_rt_site *site) {
   report.kind = kind;
   report.local = -1;
   if (site != NULL) {
-    report.proven = (site->flags & WeavecRtSiteProven) != 0;
+    /* RFC 0045 section 10: a believed access through a null pointer (a
+     * zeroed object's) faults in the fast build too; it is no hole. */
+    report.proven = (site->flags & WeavecRtSiteProven) != 0 &&
+                    !((site->flags & WeavecRtSiteBelieved) != 0 &&
+                      strcmp(kind, "null-dereference") == 0);
     report.writes = (site->flags & WeavecRtSiteWrite) != 0;
     report.file = weavecRtSiteFile(site);
     report.line = site->line;
@@ -1217,7 +1226,8 @@ __attribute__((destructor)) static void printStats(void) {
   static const char *const Names[WeavecRtStatCount] = {
       "allocations", "releases",     "recycled slots", "huge blocks",
       "slow guards", "range guards", "string guards",  "stack unpoisons",
-      "sweeps"};
+      "sweeps", "typed allocations", "releases to a pool",
+      "pooled slots moved to the quarantine"};
   char text[400];
   struct Line line = {text, text + sizeof text - 2};
   int i;
@@ -1244,6 +1254,18 @@ __attribute__((destructor)) static void printStats(void) {
     put(&line, " blocks (");
     putUnsigned(&line, last.retainedBytes, 10);
     put(&line, " bytes)");
+    statLine(&line, text);
+  }
+  {
+    size_t count;
+    size_t bytes;
+    weavecRtPoolStats(&count, &bytes);
+    line.at = text;
+    put(&line, "weavec: runtime: ");
+    putUnsigned(&line, count, 10);
+    put(&line, " pools holding ");
+    putUnsigned(&line, bytes >> 10, 10);
+    put(&line, " KiB of free slots");
     statLine(&line, text);
   }
   {

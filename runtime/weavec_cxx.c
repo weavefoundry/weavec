@@ -117,6 +117,24 @@ void __weavec_rt_delete_array_sized_at(void *p, size_t size,
   deleteArrayAt(p, size, site);
 }
 
+/* RFC 0045 section 2: a typed `new` expression's allocation; a program that
+ * replaced the base forms gets its own. */
+void *__weavec_rt_new_typed(size_t size, struct __weavec_rt_type *type,
+                            unsigned how) {
+  const unsigned form = (how & WeavecRtNewArray) != 0 ? Array : New;
+  const int nothrow = (how & WeavecRtNewNothrow) != 0;
+  void *p;
+  if (replaced()) {
+    const int base = form == Array ? 1 : 0;
+    return (nothrow ? chain(form == Array ? "_ZnamRKSt9nothrow_t"
+                                          : "_ZnwmRKSt9nothrow_t",
+                            base)
+                    : (NewFunction *)bases[base])(size, 0, 0, 0);
+  }
+  p = weavecRtAllocTyped(size, form, type);
+  return p != NULL ? p : newSlow(nothrow, form, size, 0);
+}
+
 /* The definitions every image resolves the base names to, and whether one
  * is not the runtime's. Linux's library binds its own calls to itself
  * (-Bsymbolic-functions), so the loader is asked; a -static program is one
@@ -226,6 +244,15 @@ void __weavec_rt_delete_array_at(void *p, const struct __weavec_rt_site *site) {
 void __weavec_rt_delete_array_sized_at(void *p, size_t size,
                                        const struct __weavec_rt_site *site) {
   (void)site, deleteBy("_ZdaPvm", p, size);
+}
+void *__weavec_rt_new_typed(size_t size, struct __weavec_rt_type *type,
+                            unsigned how) {
+  void *(*allocate)(size_t) = (void *(*)(size_t))dlsym(
+      RTLD_DEFAULT, (how & WeavecRtNewArray) != 0
+                        ? ((how & WeavecRtNewNothrow) != 0 ? "_ZnamRKSt9nothrow_t" : "_Znam")
+                        : ((how & WeavecRtNewNothrow) != 0 ? "_ZnwmRKSt9nothrow_t" : "_Znwm"));
+  (void)type;
+  return allocate(size);
 }
 #endif
 

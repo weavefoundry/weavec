@@ -30,7 +30,7 @@
 #   clause   ::= 'disjoint(' INT ',' INT ',' term ')' | 'wide'
 #              | 'printf(' INT ',' INT ')' | 'scanf(' INT ',' INT ')'
 #              | 'chk(' NAME ':' carg { ',' carg } ')' | 'wrapper(' NAME ')'
-#              | 'exits' | 'unwinds'
+#              | 'exits' | 'unwinds' | 'typed(' NAME ',' INT ')'
 #   carg     ::= INT | '_' | 'size'
 #   term     ::= INT | 'a' N | 'strlen(a' N ')' | term '*' term
 #              | term '+' term | term '-' INT | term '/' INT
@@ -93,6 +93,13 @@
 #                    unwinds the stack (a throw): the stack's shadow is not
 #                    cleared before it, as it is before any other call that
 #                    does not return.
+#   typed(N, F)      (RFC 0045 section 2) in a fast safe unit, a call whose
+#                    type the compiler infers becomes the runtime's
+#                    __weavec_rt_N with the call's arguments, the site's
+#                    type record and the flags F where N takes them:
+#                    alloc_typed (size, form F, record), calloc_typed (count,
+#                    size, record), new_typed (size, record, F: 1 an array,
+#                    2 nothrow).
 #   chk(A: c0, c1, ...)
 #                    A is an alias of the row (a fortified form): its k-th
 #                    argument is the row's argument c_k, dropped ('_', a
@@ -160,8 +167,8 @@
 # with its site, so that a bad release names its line; a C row's wrapper
 # for a release is its name and `_at`.
 # RFC 0043 section 2: the allocations give the caller an owner.
-malloc (int) -> ptr:owned;
-calloc (int, int) -> ptr:owned;
+malloc (int) -> ptr:owned typed(alloc_typed, 0);
+calloc (int, int) -> ptr:owned typed(calloc_typed, 0);
 aligned_alloc (int, int) -> ptr:owned;
 valloc (int) -> ptr:owned;
 free (none:null-ok:release) -> void wrapper(free_at);
@@ -169,6 +176,12 @@ realloc (none:null-ok:realloc, int) -> ptr:owned wrapper(realloc_at);
 reallocf (none:null-ok:realloc, int) -> ptr:owned wrapper(reallocf_at);
 reallocarray (none:null-ok:realloc, int, int) -> ptr:owned \
     wrapper(reallocarray_at);
+# RFC 0045 section 2: C++'s allocation functions, typed in a fast unit (an
+# over-aligned form is not).
+_Znwm (int) -> ptr:owned typed(new_typed, 0);
+_Znam (int) -> ptr:owned typed(new_typed, 1);
+_ZnwmRKSt9nothrow_t (int, other) -> ptr:owned typed(new_typed, 2);
+_ZnamRKSt9nothrow_t (int, other) -> ptr:owned typed(new_typed, 3);
 _ZdlPv (none:null-ok:release) -> void wrapper(delete_at);
 _ZdlPvm (none:null-ok:release, int) -> void wrapper(delete_sized_at);
 _ZdaPv (none:null-ok:release) -> void wrapper(delete_array_at);

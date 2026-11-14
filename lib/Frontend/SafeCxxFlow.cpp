@@ -848,10 +848,19 @@ private:
                  (given->isPointerType() || kinds.tracked(given)) &&
                  !given->isFunctionPointerType()) {
         // A pointer can be what a reference or pointer result names only
-        // if it points to the result's type.
+        // if it points to the result's type; RFC 0045 §7: or, for the
+        // library's (`std::get_if(&variant)`), into what it points to.
         if (given->isPointerType() && (names || type->isPointerType()) &&
-            !constructs && !CxxKinds::related(given->getPointeeType(), type))
+            !constructs && !CxxKinds::related(given->getPointeeType(), type)) {
+          if (call.callee != nullptr && isLibrary(*call.callee) &&
+              kinds.contains(given->getPointeeType(),
+                             type->isPointerType() ? type->getPointeeType()
+                                                   : type)) {
+            value.add(points(flow, argument.expression).inside());
+            views = true;
+          }
           continue;
+        }
         // An owning callable takes borrows only from a callable it wraps;
         // a class of the program keeps a view only if a member could.
         if (owning && !kinds.erased(given))
@@ -1190,6 +1199,41 @@ private:
     return "'" + text + "'";
   }
 
+  /// RFC 0045 §7: a pointer into storage that changes type in place is not
+  /// kept where the rules stop following it, unless what it points to is
+  /// `const` and holds no pointer.
+  void switchingStore(const Value &source, clang::SourceLocation at,
+                      const std::string &where, clang::QualType pointee) {
+    if (pointee.isNull() ||
+        (pointee.isConstQualified() && !kinds.holdsPointer(pointee)))
+      return;
+    for (const Loan &loan : source.loans) {
+      clang::QualType type;
+      if (loan.root.field != nullptr)
+        type = loan.root.field->getType();
+      else if (const clang::VarDecl *variable = loan.root.variable())
+        type = variable->getType();
+      else if (loan.root.kind == RootKind::Temp)
+        type = static_cast<const clang::Expr *>(loan.root.base)->getType();
+      else if (const auto *method =
+                   llvm::dyn_cast<clang::CXXMethodDecl>(&function))
+        type = method->getFunctionObjectParameterType();
+      // (A pointer to the object itself is no pointer into its storage.)
+      if (type.isNull() || loan.root.beyond ||
+          clang::ASTContext::hasSameUnqualifiedType(type.getNonReferenceType(),
+                                                    pointee) ||
+          !kinds.switchesFor(type, pointee))
+        continue;
+      error(at, rule::Escape,
+            "a pointer into " + nameOf(loan.root) +
+                ", whose contents change type, is stored in " + where,
+            at,
+            "keep the index or the key and look the value up when it is "
+            "used; 'weavec-cc --weavec-explain escape' shows the forms");
+      return;
+    }
+  }
+
   /// §7: a view stored where it outlives the function's locals, or in the
   /// object it points into.
   void storedOutside(const Value &target, const Value &source,
@@ -1501,6 +1545,15 @@ private:
         storedOutside(target, taken, call.at, spell(call.object, ast),
                       /*viewTarget=*/true);
     }
+    // RFC 0045 §7: a pointer kept by a container that outlives the call.
+    if (call.object != nullptr && changing(call) && outside(target))
+      for (const Call::Argument &argument : call.arguments)
+        if (argument.expression->getType()->isPointerType())
+          // (A pointer passed by reference is a temporary bound to it.)
+          switchingStore(pointee(flow, argument.expression->IgnoreImplicit()),
+                         argument.expression->getExprLoc(),
+                         spell(call.object, ast),
+                         argument.expression->getType()->getPointeeType());
 
     // §6, rule 2: the object of a member function that is not const and
     // not an accessor.
@@ -1526,6 +1579,10 @@ private:
           if (!llvm::is_contained(borrow.loans, loan))
             borrow.loans.push_back(loan);
       } else if (!(constructs && declaresLocal(expression))) {
+        if (given->getType()->isPointerType())
+          switchingStore(stored(flow, argument), given->getExprLoc(),
+                         "what " + called(call.callee) + " keeps",
+                         given->getType()->getPointeeType());
         storedOutside(
             {}, stored(flow, argument), given->getExprLoc(),
             "what " + called(call.callee) + " keeps",
@@ -1754,9 +1811,12 @@ private:
         return;
       }
     const Value target = object(flow, left);
-    if (outside(target))
+    if (outside(target)) {
       storedOutside(target, value, binary.getOperatorLoc(), spell(left, ast),
                     /*viewTarget=*/false);
+      switchingStore(value, binary.getOperatorLoc(), spell(left, ast),
+                     left->getType()->getPointeeType());
+    }
   }
 
   /// The local a `return` names, through the copy or move that returns it.
@@ -1841,6 +1901,10 @@ private:
     storedOutside(target, value, initializer.getSourceLocation(),
                   "'" + field->getNameAsString() + "'",
                   /*viewTarget=*/!type->isPointerType());
+    if (type->isPointerType())
+      switchingStore(value, initializer.getSourceLocation(),
+                     "'" + field->getNameAsString() + "'",
+                     type->getPointeeType());
   }
 
   void transfer(Flow &flow, const clang::Stmt *statement) {

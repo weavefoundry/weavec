@@ -172,6 +172,17 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                                         {.K = "kind", .V = field.kind},
                                         {.K = "file", .V = field.file},
                                         {.K = "line", .V = field.line}});
+  llvm::json::Array library;
+  for (const LedgerLibrary &entry : ledger.library)
+    library.push_back(llvm::json::Object{{.K = "kind", .V = entry.kind},
+                                         {.K = "function", .V = entry.function},
+                                         {.K = "file", .V = entry.file},
+                                         {.K = "line", .V = entry.line},
+                                         {.K = "reason", .V = entry.reason}});
+  llvm::json::Object config{{.K = "checks", .V = unit.checks},
+                            {.K = "zeroInit", .V = unit.zeroInit}};
+  if (!unit.safe.empty())
+    config["safe"] = unit.safe;
   llvm::json::Object document{
       {.K = "schema", .V = "weavec-ledger"},
       {.K = "version", .V = EnforcementLedgerVersion},
@@ -180,28 +191,31 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                                {.K = "version", .V = WEAVEC_VERSION_STRING}}},
       {.K = "units",
        .V =
-           llvm::json::Array{llvm::json::Object{
-               {.K = "source", .V = unit.source},
-               {.K = "object", .V = unit.object},
-               {.K = "target", .V = unit.target},
-               {.K = "config",
-                .V = llvm::json::Object{{.K = "checks", .V = unit.checks},
-                                        {.K = "zeroInit", .V = unit.zeroInit}}},
-               {.K = "summary",
-                .V =
-                    llvm::json::Object{
-                        {.K = "accesses",
-                         .V = static_cast<std::int64_t>(ledger.accesses())},
-                        {.K = "proven",
-                         .V = static_cast<std::int64_t>(ledger.proven)},
-                        {.K = "guarded",
-                         .V = static_cast<std::int64_t>(ledger.guarded)},
-                        {.K = "unguarded",
-                         .V = static_cast<std::int64_t>(ledger.unguarded)}}},
-               {.K = "functions", .V = std::move(functions)},
-               {.K = "fields", .V = std::move(fields)},
-               {.K = "rows", .V = std::move(rows)},
-           }}},
+           llvm::json::Array{
+               llvm::json::Object{
+                   {.K = "source", .V = unit.source},
+                   {.K = "object", .V = unit.object},
+                   {.K = "target", .V = unit.target},
+                   {.K = "config", .V = std::move(config)},
+                   {.K = "summary",
+                    .V =
+                        llvm::json::Object{
+                            {.K = "accesses",
+                             .V = static_cast<std::int64_t>(ledger.accesses())},
+                            {.K = "proven",
+                             .V = static_cast<std::int64_t>(ledger.proven)},
+                            {.K = "guarded",
+                             .V = static_cast<std::int64_t>(ledger.guarded)},
+                            {.K = "unguarded",
+                             .V = static_cast<std::int64_t>(ledger.unguarded)},
+                            {.K = "typedSites",
+                             .V = static_cast<std::int64_t>(
+                                 ledger.typedSites)}}},
+                   {.K = "functions", .V = std::move(functions)},
+                   {.K = "fields", .V = std::move(fields)},
+                   {.K = "library", .V = std::move(library)},
+                   {.K = "rows", .V = std::move(rows)},
+               }}},
   };
   std::string text;
   llvm::raw_string_ostream os(text);
@@ -234,6 +248,13 @@ std::string enforcementSummary(const EnforcementLedger &ledger,
   };
   os << "; " << kind("owner") << " owner and " << kind("reference")
      << " reference fields";
+  // RFC 0045 §10.
+  if (ledger.typedSites != 0 || !ledger.library.empty())
+    os << "; " << ledger.typedSites << " typed allocation sites, "
+       << llvm::count_if(
+              ledger.library,
+              [](const auto &entry) { return entry.kind == "trusted"; })
+       << " trusted library functions";
   return text;
 }
 
@@ -258,6 +279,11 @@ struct Audit {
   llvm::json::Array erased;
   /// Global owners safe code reads in place.
   llvm::json::Array globals;
+  /// RFC 0045 §10: the library functions fast units run without guards
+  /// (once each), and the allocations they could not type.
+  llvm::json::Array library;
+  llvm::json::Array untyped;
+  std::set<std::string> libraryNames;
   std::set<std::string> fields;
   unsigned safe = 0;
   unsigned functions = 0;
@@ -334,6 +360,18 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
           else if (kind == "global")
             audit.globals.push_back(llvm::json::Object(*field));
         }
+    if (const llvm::json::Array *library = unit->getArray("library"))
+      for (const llvm::json::Value &value : *library) {
+        const llvm::json::Object *entry = value.getAsObject();
+        if (entry == nullptr)
+          continue;
+        if (entry->getString("kind") == "untyped")
+          audit.untyped.push_back(llvm::json::Object(*entry));
+        else if (audit.libraryNames
+                     .insert(entry->getString("function").value_or("").str())
+                     .second)
+          audit.library.push_back(llvm::json::Object(*entry));
+      }
     const llvm::json::Array *rows = unit->getArray("rows");
     if (rows == nullptr)
       continue;
@@ -386,7 +424,7 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
                         "{0:2}",
                         llvm::json::Value(llvm::json::Object{
                             {.K = "schema", .V = "weavec-audit"},
-                            {.K = "version", .V = 3},
+                            {.K = "version", .V = 4},
                             {.K = "functions", .V = audit.functions},
                             {.K = "safe", .V = audit.safe},
                             {.K = "trusted", .V = std::move(audit.trusted)},
@@ -396,7 +434,9 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
                              .V = std::move(audit.references)},
                             {.K = "shared", .V = std::move(audit.shared)},
                             {.K = "erased", .V = std::move(audit.erased)},
-                            {.K = "globals", .V = std::move(audit.globals)}}))
+                            {.K = "globals", .V = std::move(audit.globals)},
+                            {.K = "library", .V = std::move(audit.library)},
+                            {.K = "untyped", .V = std::move(audit.untyped)}}))
                  << '\n';
     return ok ? 0 : 1;
   }
@@ -436,6 +476,11 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
        audit.erased, "field", "");
   list("global owners read in place (in the function named)", audit.globals,
        "field", "");
+  list("library functions fast units run without guards (the library's own "
+       "checks stand in for them)",
+       audit.library, "function", "");
+  list("allocations fast units could not type (they wait for a sweep)",
+       audit.untyped, "function", "reason");
   return ok ? 0 : 1;
 }
 

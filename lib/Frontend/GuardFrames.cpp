@@ -267,7 +267,7 @@ static void layoutStatic(FunctionContext &context,
       context.frameColors[object.alloca] = object.color;
     }
   }
-  if (frameSize > ShareAbove &&
+  if (frameSize > ShareAbove && sharesFrames(context.module) &&
       llvm::any_of(objects, [](const FrameObject &object) {
         return !object.starts.empty();
       })) {

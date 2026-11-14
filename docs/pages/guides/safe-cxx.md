@@ -3,7 +3,7 @@ title: Write safe C++
 description: Compile a C++ unit with weavec-c++ -fweavec-safe so that a use after std::move, a reference kept across push_back, a string_view of a temporary and a view that outlives its buffer stop the compile, with errors you or an agent can act on.
 ---
 
-`weavec-c++` guards every access of the C++ it compiles, unchanged, and turns the hardened standard library's checks into reports. A **safe C++ function** is also checked when it compiles, against a few rules that are local to the function, as Rust's borrow checker checks safe Rust. The rules reject; they prove nothing and remove nothing: a safe function is compiled exactly as a guarded one, so whatever the rules do not see still stops the program when it runs.
+`weavec-c++` guards every access of the C++ it compiles, unchanged, and turns the hardened standard library's checks into reports. A **safe C++ function** is also checked when it compiles, against a few rules that are local to the function, as Rust's borrow checker checks safe Rust. The rules reject; they prove nothing. What a safe unit gains at run time comes from its heap, not from the rules: in the fast mode, the default, a block is reused only by its own type, so the accesses a reference or the standard library's own checks already cover need no guard (see [fast and checked builds](#fast-and-checked-builds)).
 
 Safe C++ is ordinary modern C++ over the standard library you already use. It has no new syntax and no second library. Code written against the rules compiles with any C++ compiler.
 
@@ -44,6 +44,28 @@ A borrow into an owner ends when the owner is destroyed, moved or assigned, when
 - Changing an _element_ ends borrows into that element's own data, not borrows of the container's elements: a loop that edits each item is fine, a loop that pushes to the vector it iterates is not.
 
 As in Rust, the fix is one of: take the borrow again after the change, keep an index, copy the value out first, or declare the callee's parameter `const`.
+
+### Fast and checked builds
+
+A safe unit is built one of two ways, as Rust builds a debug and a release binary:
+
+| `-fweavec-safe-checks=` | What it is for                                 | At run time                                                                                                                                                                                                                                                                           |
+| ----------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bounds` (the default)  | the build you ship and benchmark               | allocations carry their type and a block safe code releases is reused at once by its own type; no guard on an access through a reference at a constant offset, none in the standard library's functions whose preconditions its hardening checks; indices and iterators still checked |
+| `full`                  | the build you test, and an agent iterates with | exactly a guarded unit: every guard, the quarantine and the sweep, allocation stacks, container annotations; every bug the rules miss stops with a full report                                                                                                                        |
+
+The rules are the same in both, so code that compiles in one compiles in the other. A stale pointer the rules missed stops when it runs in the checked build; in the fast build it reaches memory of its own type, as a stale index does in Rust, and a report of it ends with `weavec: note: built for speed; rebuild with -fweavec-safe-checks=full …`. The one error that rests on the rules alone in the fast build is a borrow into storage that changes type in place, used after the change: a reference into the alternative of a `std::variant` after the variant was assigned another alternative. `stale-borrow` rejects it in the function, and `escape` keeps a pointer into such storage out of members:
+
+```cpp
+struct Holder {
+  std::string *name = nullptr;
+  void keep(std::variant<std::string, int> &v) {
+    name = &std::get<std::string>(v);   // error: a pointer into 'v', whose contents
+  }                                     // change type, is stored in 'this->name'
+};
+```
+
+Keep the index or the key, and look the value up when it is used. `weavec-cc --weavec-audit` lists the library functions a fast unit runs without guards and the allocations it could not type.
 
 ## Building blocks
 
@@ -375,7 +397,7 @@ std::size_t count_lines(const std::string &path) {
 
 ## What the rules do not see
 
-Each of these still stops when it runs, under the guards:
+Each of these stops when it runs in the checked build (`-fweavec-safe-checks=full`); in the fast build an index or iterator out of range still stops, and a use after free reaches an object of the same type or is reported while the block is not yet reused:
 
 - a dangling raw pointer member or element (a reference);
 - an object shared by `std::shared_ptr<T>` that another holder changed under a borrow;

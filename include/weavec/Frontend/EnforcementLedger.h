@@ -9,9 +9,10 @@
 // RFC 0035 §9. The guard pass records each access it collected, before it
 // removes any guard: where it is, what it does, and whether it is guarded,
 // proven (its guard removed by a rule of §6) or unguarded. `weavec-cc`
-// writes the rows of a unit as JSON (`weavec-ledger` version 7: RFC 0039
+// writes the rows of a unit as JSON (`weavec-ledger` version 8: RFC 0039
 // §8 adds each row's `display`, RFC 0042 §10 the functions' tiers, RFC 0043
-// §11 the pointer fields' kinds) under
+// §11 the pointer fields' kinds, RFC 0045 §10 the safe mode and what a fast
+// unit trusts of the standard library and could not type) under
 // `-fweavec-ledger` and prints the summary line under `-fweavec-summary`.
 //
 //===----------------------------------------------------------------------===//
@@ -29,7 +30,7 @@
 namespace weavec::frontend {
 
 /// The version of the `weavec-ledger` JSON this writes.
-inline constexpr unsigned EnforcementLedgerVersion = 7;
+inline constexpr unsigned EnforcementLedgerVersion = 8;
 
 /// What the pass decided for one access.
 struct LedgerRow {
@@ -46,7 +47,7 @@ struct LedgerRow {
   Outcome outcome = Outcome::Guarded;
   /// `access`, `range`, `string`, `checked-call`, `loop-range`,
   /// `typed-unbounded`, `reference`; `in-bounds`, `dominated`, `merged`,
-  /// `typed`; `unsafe`.
+  /// `typed`, `believed`, `trusted` (RFC 0045 §4, §5); `unsafe`.
   std::string reason;
 };
 
@@ -72,6 +73,17 @@ struct LedgerField {
   unsigned line = 0;
 };
 
+/// RFC 0045 §10: what a fast unit rests on beyond its own code: a library
+/// function it runs without guards (`trusted`), or an allocation it could
+/// not type (`untyped`, with the reason).
+struct LedgerLibrary {
+  std::string kind;
+  std::string function;
+  std::string file;
+  unsigned line = 0;
+  std::string reason;
+};
+
 /// The rows of one unit, and their counts by outcome. The pass adds a row
 /// for each access when it inserts the access's guard, and later says, for
 /// each copy of that guard the optimizer left (inlining and unrolling copy
@@ -82,6 +94,9 @@ struct EnforcementLedger {
   std::vector<LedgerRow> rows;
   std::vector<LedgerFunction> functions;
   std::vector<LedgerField> fields;
+  std::vector<LedgerLibrary> library;
+  /// RFC 0045: the typed allocation sites of a fast unit.
+  std::uint64_t typedSites = 0;
   std::uint64_t guarded = 0;
   std::uint64_t proven = 0;
   std::uint64_t unguarded = 0;
@@ -123,6 +138,8 @@ struct EnforcementUnit {
   /// `trap`, `report` or `verify`.
   std::string checks;
   bool zeroInit = true;
+  /// RFC 0045 §1: `fast` or `full` for a unit compiled as safe, else empty.
+  std::string safe;
 };
 
 /// A `-fweavec-ledger` value names a directory when it ends in a path

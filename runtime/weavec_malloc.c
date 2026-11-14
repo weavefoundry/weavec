@@ -93,7 +93,11 @@ void free(void *p) {
 
 /* RFC 0040 section 5.5: a guarded call's release, with its site. A
  * program that defines `free` and `realloc` itself (an allocator of its
- * own) gets its calls. */
+ * own) gets its calls; RFC 0045 section 2: its `malloc` and `calloc` serve
+ * a fast unit's typed allocations too, since code the runtime does not see
+ * releases them with the program's `free`. */
+static void *(*programMalloc)(size_t);
+static void *(*programCalloc)(size_t, size_t);
 static void (*programFree)(void *);
 static void *(*programRealloc)(void *, size_t);
 
@@ -114,13 +118,42 @@ static void *programs(const char *name, const void *own) {
 }
 
 __attribute__((constructor(101))) static void findProgramAllocator(void) {
+  programMalloc = (void *(*)(size_t))programs("malloc", (const void *)malloc);
+  programCalloc =
+      (void *(*)(size_t, size_t))programs("calloc", (const void *)calloc);
   programFree = (void (*)(void *))programs("free", (const void *)free);
   programRealloc =
       (void *(*)(void *, size_t))programs("realloc", (const void *)realloc);
 }
 
+/* An arena block (a typed allocation's, RFC 0045) is the runtime's to
+ * release whatever the program's allocator. */
+static int arenaBlock(const void *p) {
+  return (uintptr_t)p - __weavec_rt_heap.base < __weavec_rt_heap.bytes;
+}
+
+void *__weavec_rt_alloc_typed(size_t size, unsigned form,
+                              struct __weavec_rt_type *type) {
+  if (form != WeavecRtFormNew && programMalloc != NULL)
+    return programMalloc(size);
+  return weavecRtAllocTyped(
+      size, form == WeavecRtFormNew ? form : WeavecRtFormMalloc, type);
+}
+
+void *__weavec_rt_calloc_typed(size_t count, size_t size,
+                               struct __weavec_rt_type *type) {
+  size_t bytes;
+  if (programCalloc != NULL)
+    return programCalloc(count, size);
+  if (__builtin_mul_overflow(count, size, &bytes)) {
+    errno = ENOMEM;
+    return NULL;
+  }
+  return weavecRtAllocTyped(bytes, WeavecRtFormMalloc, type);
+}
+
 void __weavec_rt_free_at(void *p, const struct __weavec_rt_site *site) {
-  if (programFree != NULL)
+  if (programFree != NULL && !arenaBlock(p))
     programFree(p);
   else
     weavecRtReleaseForm(p, WeavecRtFormMalloc, SIZE_MAX,
@@ -129,7 +162,7 @@ void __weavec_rt_free_at(void *p, const struct __weavec_rt_site *site) {
 
 void *__weavec_rt_realloc_at(void *p, size_t size,
                              const struct __weavec_rt_site *site) {
-  if (programRealloc != NULL)
+  if (programRealloc != NULL && !arenaBlock(p))
     return programRealloc(p, size);
   return weavecRtReallocAt(p, size, site);
 }

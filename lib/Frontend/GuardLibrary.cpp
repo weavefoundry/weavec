@@ -695,8 +695,16 @@ static bool redirect(LibraryCall &call, bool late) {
     arguments.push_back(value);
     types.push_back(value->getType());
   }
-  // A read's site: the wrapper marks what it writes.
-  llvm::Constant *site = call.site(false);
+  // A read's site: the wrapper marks what it writes. RFC 0045 §3: a
+  // release by safe code returns a typed block to its pool.
+  const bool releases =
+      llvm::any_of(entry.params, [](const core::LibraryParam &param) {
+        return param.effect != core::LibraryParam::Effect::Borrow;
+      });
+  llvm::Constant *site =
+      releases && typedRelease(module, *call.call.getFunction())
+          ? module.site(call.call.getDebugLoc(), SiteTyped)
+          : call.site(false);
   // RFC 0036 §6: the object size of a fortified form, or no limit.
   llvm::Value *limit = nullptr;
   if (call.wrapperTakesLimit()) {

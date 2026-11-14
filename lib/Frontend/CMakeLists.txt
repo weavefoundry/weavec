@@ -16,6 +16,8 @@ weavec_add_library(
           # RFC 0041: Safe C's rules and its bounds in the passes.
           GuardSafe.cpp
           GuardTyped.cpp
+          # RFC 0045: type-stable memory in fast safe units.
+          GuardFast.cpp
           SafeCheck.cpp
           # RFC 0043: ownership's rules.
           SafeOwnership.cpp

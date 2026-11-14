@@ -30,6 +30,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 
 #include <cstdint>
 #include <memory>
@@ -180,6 +181,20 @@ struct SafeUnit {
   llvm::StringMap<FunctionBounds> functions;
   /// `-fweavec-safe-checks=full` (§7): safe functions keep their guards.
   bool full = false;
+  /// RFC 0045 §1: a unit compiled as safe (`-fweavec-safe`) in the fast
+  /// mode: its allocations are typed and its safe code's releases return
+  /// typed blocks to their pools (§3); in C++ its believed accesses (§4)
+  /// and its trusted library functions (§5) carry no guard.
+  bool fast = false;
+  /// A C++ unit (RFC 0044).
+  bool cxx = false;
+  /// RFC 0045 §4, §5 (C++): the symbols of the unit's safe functions (their
+  /// lambdas and the implicit members of its safe classes), of the unit's
+  /// other functions, and of the library functions its safe functions call
+  /// that are trusted.
+  llvm::StringSet<> cxxSafe;
+  llvm::StringSet<> cxxOther;
+  llvm::StringSet<> cxxTrusted;
   /// RFC 0042 §5: the guard passes run, which read the fields' annotations.
   bool annotates = false;
   /// RFC 0042 §10: each function the unit defines outside system headers,

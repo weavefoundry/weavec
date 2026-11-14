@@ -209,6 +209,11 @@ struct LibraryEntry {
   bool wide = false;
   std::optional<LibFormat> format;
   std::optional<LibWrapper> wrapper;
+  /// RFC 0045 §2: `typed(N, F)`, the runtime's typed allocation entry point
+  /// `__weavec_rt_N` (`alloc_typed`, `calloc_typed`, `new_typed`) and its
+  /// flags.
+  std::optional<LibWrapper> typed;
+  unsigned typedFlags = 0;
   /// RFC 0039 §3: `exits`, the call ends the process; `unwinds`, it unwinds
   /// the stack (a throw). Nothing is cleared of the stack's shadow before
   /// either.
