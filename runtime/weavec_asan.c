@@ -115,11 +115,24 @@ uintptr_t __asan_load_cxx_array_cookie(uintptr_t *cookie) { return *cookie; }
 
 /*===-- Containers (RFC 0039 section 5) ------------------------------------===*/
 
-/* WEAVEC_RT_CONTAINERS=0 turns the annotations off (assumption A9). */
+/* WEAVEC_RT_CONTAINERS=0 turns the annotations off (assumption A9); so does
+ * a fast safe C++ unit (RFC 0045 section 9), whose copies of the containers
+ * make none, unless WEAVEC_RT_CONTAINERS=1 asks for them. */
 static int containersOff;
+static int containersSet;
+int weavecRtFastProgram;
+
+void __weavec_rt_fast_program(void) {
+  weavecRtFastProgram = 1;
+  if (!containersSet)
+    containersOff = 1;
+  __weavec_rt_typed_program();
+}
 __attribute__((constructor)) static void readContainers(void) {
   const char *value = getenv("WEAVEC_RT_CONTAINERS");
-  containersOff = value != NULL && strcmp(value, "0") == 0;
+  containersSet = value != NULL && (*value == '0' || *value == '1');
+  containersOff = (value != NULL && strcmp(value, "0") == 0) ||
+                  (!containersSet && weavecRtFastProgram);
 }
 
 /* Granule `g` of storage [begin, end) with elements [live, mid): the

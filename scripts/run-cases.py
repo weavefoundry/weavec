@@ -60,7 +60,7 @@ RESOURCE_INCLUDE = ROOT / "resources" / "include"
 # ---------------------------------------------------------------------------
 
 # The `version` of the enforcement ledger this runner reads.
-LEDGER_VERSION = 7
+LEDGER_VERSION = 8
 # Run-time report kinds (runtime/weavec_report.c).
 KINDS = (
     "heap-buffer-overflow", "heap-use-after-free", "stack-buffer-overflow",

@@ -12,6 +12,6 @@ int main(void) {
   free(p);
   return sink[2];
 }
-// CHECK: {"weavec":43,"kind":"heap-use-after-free","proven":false,"site":{"file":"{{.*}}report-json.c","line":13,"column":{{[0-9]+}}},"what":"read of 1 bytes at 0x{{[0-9a-f]+}}","access":{"op":"read","width":1,"address":"0x{{[0-9a-f]+}}"},"thread":{"id":0},"stack":[{"pc":"0x{{[0-9a-f]+}}","module":"{{.*}}","offset":"0x{{[0-9a-f]+}}","function":"main","file":"{{.*}}report-json.c","line":13,
+// CHECK: {"weavec":44,"kind":"heap-use-after-free","proven":false,"site":{"file":"{{.*}}report-json.c","line":13,"column":{{[0-9]+}}},"what":"read of 1 bytes at 0x{{[0-9a-f]+}}","access":{"op":"read","width":1,"address":"0x{{[0-9a-f]+}}"},"thread":{"id":0},"stack":[{"pc":"0x{{[0-9a-f]+}}","module":"{{.*}}","offset":"0x{{[0-9a-f]+}}","function":"main","file":"{{.*}}report-json.c","line":13,
 // CHECK-SAME: "object":{"memory":"heap","base":"0x{{[0-9a-f]+}}","size":8,"state":"released","released":[{"pc":"0x{{[0-9a-f]+}}",{{.*}}"line":12,
 // CHECK-SAME: "allocated":[{"pc":"0x{{[0-9a-f]+}}",{{.*}}"line":10,

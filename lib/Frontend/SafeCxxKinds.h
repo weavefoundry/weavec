@@ -253,6 +253,102 @@ public:
            });
   }
 
+  /// RFC 0045 §7: a `pointee` inside an object of `type` may be in storage
+  /// that changes type in place: a union, in the object or in what it
+  /// holds (a library template's arguments, a container's elements), with
+  /// two members that are more than a one-character placeholder, one of
+  /// which holds a `pointee` (a variant's alternative; a short string's
+  /// characters beside a long one's pointer, or, in libstdc++, its
+  /// capacity, which the library's own code believes). Structural; an
+  /// optional, whose union holds one type, does not switch.
+  [[nodiscard]] bool switchesFor(clang::QualType type, clang::QualType pointee,
+                                 unsigned depth = 0) {
+    type = type.getNonReferenceType();
+    while (const clang::ArrayType *array = ast.getAsArrayType(type))
+      type = array->getElementType();
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record == nullptr || depth > 12)
+      return false;
+    record = record->getDefinition();
+    if (record == nullptr)
+      return false;
+    if (record->isUnion()) {
+      unsigned members = 0;
+      bool holds = false;
+      for (const clang::FieldDecl *field : record->fields()) {
+        const clang::QualType member = field->getType();
+        const clang::CXXRecordDecl *of = member->getAsCXXRecordDecl();
+        if (member->isCharType() ||
+            (of != nullptr && of->hasDefinition() && of->isEmpty()))
+          continue;
+        ++members;
+        holds |= contains(member, pointee);
+      }
+      if (members >= 2 && holds)
+        return true;
+    }
+    const auto *specialization =
+        llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(record);
+    if (specialization != nullptr && isLibrary(*record))
+      for (const clang::TemplateArgument &argument :
+           specialization->getTemplateArgs().asArray())
+        if (argument.getKind() == clang::TemplateArgument::Type &&
+            switchesFor(argument.getAsType(), pointee, depth + 1))
+          return true;
+    return llvm::any_of(record->bases(),
+                        [&](const clang::CXXBaseSpecifier &base) {
+                          return switchesFor(base.getType(), pointee,
+                                             depth + 1);
+                        }) ||
+           llvm::any_of(record->fields(), [&](const clang::FieldDecl *field) {
+             return switchesFor(field->getType(), pointee, depth + 1);
+           });
+  }
+
+  /// An object of `type` is, or holds as a member, an element or a base, a
+  /// `pointee`.
+  [[nodiscard]] bool contains(clang::QualType type, clang::QualType pointee,
+                              unsigned depth = 0) {
+    type = type.getNonReferenceType();
+    while (const clang::ArrayType *array = ast.getAsArrayType(type))
+      type = array->getElementType();
+    if (clang::ASTContext::hasSameUnqualifiedType(type, pointee))
+      return true;
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record == nullptr || depth > 12)
+      return false;
+    record = record->getDefinition();
+    return record != nullptr &&
+           (llvm::any_of(record->bases(),
+                         [&](const clang::CXXBaseSpecifier &base) {
+                           return contains(base.getType(), pointee, depth + 1);
+                         }) ||
+            llvm::any_of(record->fields(), [&](const clang::FieldDecl *field) {
+              return contains(field->getType(), pointee, depth + 1);
+            }));
+  }
+
+  /// An object of `type` holds a pointer (not to a function).
+  [[nodiscard]] bool holdsPointer(clang::QualType type, unsigned depth = 0) {
+    type = type.getNonReferenceType();
+    while (const clang::ArrayType *array = ast.getAsArrayType(type))
+      type = array->getElementType();
+    if (type->isPointerType())
+      return !type->isFunctionPointerType();
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record == nullptr || depth > 12)
+      return false;
+    record = record->getDefinition();
+    return record == nullptr ||
+           llvm::any_of(record->bases(),
+                        [&](const clang::CXXBaseSpecifier &base) {
+                          return holdsPointer(base.getType(), depth + 1);
+                        }) ||
+           llvm::any_of(record->fields(), [&](const clang::FieldDecl *field) {
+             return holdsPointer(field->getType(), depth + 1);
+           });
+  }
+
   /// A local of this type has a set of borrows the rules follow.
   [[nodiscard]] bool tracked(clang::QualType type) {
     return view(type) || erased(type);

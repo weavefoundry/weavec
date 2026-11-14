@@ -248,6 +248,40 @@ static inline unsigned weavecRtLiveForm(uint32_t word) {
 WEAVEC_RT_API void *__weavec_rt_alloc(size_t size, size_t alignment);
 WEAVEC_RT_API void __weavec_rt_free(void *p);
 WEAVEC_RT_API void *__weavec_rt_realloc(void *p, size_t size);
+
+/* RFC 0045 section 2: an allocation site's element type, a key the pass
+ * hashes from the type's name (and its unit, for a type without linkage),
+ * and the pool the site last resolved: (class + 1) << 32 | (pool + 1). */
+struct __weavec_rt_type {
+  uint64_t key;
+  uint64_t cache;
+};
+/* Typed allocations (section 3): a block of `form` from the pool of its
+ * type and size class, reused at once after a typed release. */
+WEAVEC_RT_API void *__weavec_rt_alloc_typed(size_t size, unsigned form,
+                                            struct __weavec_rt_type *type);
+WEAVEC_RT_API void *__weavec_rt_calloc_typed(size_t count, size_t size,
+                                             struct __weavec_rt_type *type);
+/* C++'s `operator new` and `operator new[]` (`how`: WeavecRtNewArray,
+ * WeavecRtNewNothrow), which throw or return null as theirs do. */
+enum { WeavecRtNewArray = 1, WeavecRtNewNothrow = 2 };
+WEAVEC_RT_API void *__weavec_rt_new_typed(size_t size,
+                                          struct __weavec_rt_type *type,
+                                          unsigned how);
+/* RFC 0045 (Y4): a safe function's result `address` points into its own
+ * frame, or a frame it called (`stack-escape`). */
+WEAVEC_RT_API void __weavec_rt_frame_escape(uintptr_t address,
+                                            const char *function,
+                                            const struct __weavec_rt_site *site);
+/* RFC 0045 section 9: called by each fast safe C++ unit's constructor: the
+ * container annotations of every unit are ignored. */
+WEAVEC_RT_API void __weavec_rt_fast_program(void);
+extern int weavecRtFastProgram;
+/* Allocates as `allocForm` does, from the pool of `type` when it has one. */
+void *weavecRtAllocTyped(size_t size, unsigned form,
+                         struct __weavec_rt_type *type);
+/* WEAVEC_RT_STATS=1: the pools made, and the free bytes they hold. */
+void weavecRtPoolStats(size_t *count, size_t *bytes);
 /* The requested size of a live block; of any other pointer, what the next
  * allocator says, or 0. */
 WEAVEC_RT_API size_t __weavec_rt_size(const void *p);
@@ -308,7 +342,13 @@ enum {
   /* Verify mode's monitor of a guard section 6 removed. */
   WeavecRtSiteProven = 4,
   /* A string the call accepts as null (`system(NULL)`). */
-  WeavecRtSiteNullOk = 8
+  WeavecRtSiteNullOk = 8,
+  /* RFC 0045 section 3: a release by safe code, which returns a typed
+   * block to its pool. */
+  WeavecRtSiteTyped = 16,
+  /* Section 10: verify mode's monitor of a believed access, which a released
+   * heap block passes (its pointer reaches memory of its type). */
+  WeavecRtSiteBelieved = 32
 };
 /* RFC 0037 section 11: the file name lies `file` bytes from the record (0:
  * none), so that the records and the names are read-only data without a
@@ -800,7 +840,7 @@ void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
 /* The library's interface version (libweavec_rt.so.<abi>,
  * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
  * encoding or a site record changes. */
-#define WEAVEC_RT_ABI 43
+#define WEAVEC_RT_ABI 44
 
 /*===-- Internal -----------------------------------------------------------===*/
 
@@ -877,6 +917,10 @@ enum {
   WeavecRtStatStrings,
   WeavecRtStatStackUnpoisons,
   WeavecRtStatSweeps,
+  /* RFC 0045 section 3. */
+  WeavecRtStatTyped,
+  WeavecRtStatPooled,
+  WeavecRtStatUnpooled,
   WeavecRtStatCount
 };
 extern unsigned long long weavecRtStats[WeavecRtStatCount];

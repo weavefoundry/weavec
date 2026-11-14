@@ -118,7 +118,7 @@ MANIFEST_VERSION = 2
 INJECTIONS_VERSION = 2
 # The enforcement ledger (RFC 0035, section 9).
 LEDGER_SCHEMA = "weavec-ledger"
-LEDGER_VERSION = 7
+LEDGER_VERSION = 8
 LEDGER_COUNTS = ("accesses", "proven", "guarded", "unguarded")
 # The per-file compiles: the optimization real builds use (a config's own
 # -O in compile.args comes later and wins).

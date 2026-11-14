@@ -46,6 +46,11 @@ inline constexpr unsigned SiteWrite = 1;
 inline constexpr unsigned SiteReport = 2;
 inline constexpr unsigned SiteProven = 4;
 inline constexpr unsigned SiteNullOk = 8;
+/// RFC 0045 §3: a release by safe code, which returns a typed block to its
+/// pool; §10: a monitor of a believed access, which a released heap block
+/// passes.
+inline constexpr unsigned SiteTyped = 16;
+inline constexpr unsigned SiteBelieved = 32;
 
 /// The markers GuardInsert puts before accesses and GuardExpand turns into
 /// checks:
@@ -84,6 +89,8 @@ inline constexpr unsigned MarkerKeep = 1U << 16U;
 /// RFC 0042 §8: a range a library call scanned (RFC 0038 §2), which a
 /// search of a string stops within.
 inline constexpr unsigned MarkerScan = 1U << 17U;
+/// RFC 0045 §10: verify mode's monitor of an access §4 or §5 believed.
+inline constexpr unsigned MarkerBelieved = 1U << 18U;
 
 /// The redzone between a frame's objects and after a global (section 3.2,
 /// section 4): at least 16 bytes, one eighth of the object up to 4 KiB, so
@@ -506,6 +513,40 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
 /// Whether the passes leave `function` alone: a declaration, a naked
 /// function, or the runtime's.
 [[nodiscard]] bool skips(const llvm::Function &function);
+
+/// RFC 0045 (GuardFast.cpp): a unit compiled as safe in the fast mode, and
+/// what each of its functions is there: safe code, the standard library's
+/// (or the unit's implicit members), a trusted clone (§5), or the unit's
+/// other code.
+enum class FastCode : std::uint8_t { None, Safe, Library, Trusted };
+inline constexpr llvm::StringLiteral TrustedSuffix = ".weavec.t";
+[[nodiscard]] bool fastUnit(const ModuleContext &module);
+[[nodiscard]] bool fastCxxUnit(const ModuleContext &module);
+[[nodiscard]] FastCode fastCodeOf(const ModuleContext &module,
+                                  const llvm::Function &function);
+/// §3: a release in `function` returns a typed block to its pool.
+[[nodiscard]] bool typedRelease(const ModuleContext &module,
+                                const llvm::Function &function);
+/// Before GuardInsert: LLVM's token pass disabled, the constructor that
+/// tells the runtime, and (C++) the trusted clones.
+void prepareFast(ModuleContext &module, llvm::Module &ir);
+void cloneTrusted(ModuleContext &module, llvm::Module &ir);
+/// §2, in GuardExpand: the typed allocation sites' calls.
+void typeAllocations(ModuleContext &module, llvm::Function &function);
+/// §4: an access of `width` bytes at `pointer` lies inside what a believed
+/// pointer covers, and so gets no guard.
+[[nodiscard]] bool believedAccess(const ModuleContext &module,
+                                  const llvm::Function &function,
+                                  const llvm::Value *pointer,
+                                  std::uint64_t width);
+/// §8: whether a frame's locals may share bytes; in a fast C++ unit they
+/// never do, and its untracked locals lose their lifetime markers.
+[[nodiscard]] bool sharesFrames(const ModuleContext &module);
+void dropUntrackedLifetimes(const ModuleContext &module,
+                            llvm::Function &function,
+                            llvm::ArrayRef<llvm::AllocaInst *> tracked);
+/// (Y4): a safe function's pointer result is not into its own frame.
+void checkResults(ModuleContext &module, llvm::Function &function);
 
 } // namespace weavec::frontend::guard
 

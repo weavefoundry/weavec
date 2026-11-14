@@ -149,7 +149,9 @@ The rules make every store of a safe function keep **typed memory**: each pointe
 - `-fweavec-safe-checks=full` keeps every guard in safe functions, and `-fweavec-checks=verify` keeps each guard a safe function dropped as a monitor that reports `weavec.proven` if it would have failed: run the tests so, and a guarded function that breaks typed memory, or a use after free in safe code, is reported.
 - A program with a safe unit records no allocation stacks by default; `WEAVEC_RT_HEAP_STACKS=<frames>` turns them on.
 
-A use after free that the rules do not reject (through a pointer a safe function loaded before its block was released under it) reads the released block's own bytes, which stay as the program left them: the runtime does not reuse a block that something still refers to, or a block that such a block refers to.
+A use after free that the rules do not reject (through a pointer a safe function loaded before its block was released under it) reads the released block's own bytes, which stay as the program left them: the runtime does not reuse a block that something still refers to, or a block that such a block refers to. In the fast mode, the default, there is one exception: a block a safe function released is zeroed and reused at once by the next allocation of its own type (see [what runs](#what-runs)).
+
+An allocation that becomes a `T *` is sized by what it holds: `malloc(sizeof *p)`, `calloc(n, sizeof *p)`, `malloc(sizeof(struct buf) + n)` for a struct with a flexible array. `struct node *n = malloc(sizeof(struct wide))` is `pointer-cast`, since the block is reused for the type its size names; a byte buffer may be sized by any type without pointers.
 
 ## Ownership
 
@@ -346,7 +348,9 @@ A rule never tries to prove something about the code: it rejects a construct. Wh
 - A reference loaded from a field and used is tested not to point into a released block (`heap-use-after-free`).
 - An access through a pointer whose bound is unknown (loaded from a place no declaration bounds, such as `*pp` or an array of pointers outside a struct, or through `void *`) keeps its guard.
 
-The ownership rules are checked only when the program compiles. Nothing at run time rests on them: every released block still waits in the quarantine for a sweep, and no guard is removed because of them.
+- In the fast mode (`-fweavec-safe` without `-fweavec-safe-checks=full`) every allocation whose type the compiler can tell (`malloc(sizeof *p)`, `calloc(n, sizeof *p)`) carries it, and a block a safe function releases is zeroed and handed to the next allocation of the same type and size, at once, instead of waiting in the quarantine for a sweep. A stale pointer to it then reads an empty object, or the object of its type that lives there; it never reads another type. Releases by code that is not safe, and blocks of no known type, still wait for a sweep.
+
+The ownership rules are checked only when the program compiles. In the checked mode (`-fweavec-safe-checks=full`) nothing at run time rests on them: every released block waits in the quarantine for a sweep, and no guard is removed because of them.
 
 ## Converting a module
 
@@ -415,8 +419,8 @@ void list_free(struct node *WEAVEC_OWNED head) {
 
 A converted module is tested in three builds:
 
-1. **`-fweavec-safe-checks=full`** keeps every guard in safe functions as well as their comparisons: a use after free the rules did not reject, or a guarded helper that broke typed memory, is reported as in guarded code.
+1. **`-fweavec-safe-checks=full`** keeps every guard in safe functions as well as their comparisons, and every released block waits for a sweep: a use after free the rules did not reject, or a guarded helper that broke typed memory, is reported as in guarded code, with its allocation and release stacks.
 2. **`-fweavec-checks=verify`** keeps each guard a safe function dropped as a monitor: a report that starts `weavec: weavec.proven:` means code that is not safe broke what safe code believes, or a rule has a hole.
-3. **The plain build**, which is the one to measure.
+3. **The plain build** (the fast mode), which is the one to measure and to ship. A heap report from it ends with a note that the program was built for speed.
 
 Then build with `-fweavec-ledger=out/` and read `weavec-cc --weavec-audit out/`. It prints how many functions are safe (`<k> of <f> functions safe`) and lists what they trust: the functions that are not safe (with `, owns` after the tier when one has a `WEAVEC_OWNED` parameter or result, which safe code believes), the accesses of safe functions that keep a guard and why (`typed-unbounded`: a pointer whose bound the compiler does not know), the library calls that keep a checked wrapper, the reference fields, and the global owners read in place. `--format=json` writes it for tools. What safe functions guarantee, and assume, is listed under [the guarantees](/reference/guarantees/#safe-functions).

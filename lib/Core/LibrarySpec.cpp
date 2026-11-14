@@ -714,6 +714,26 @@ bool LibrarySpecParser::parseClause(LibraryEntry &entry,
                   .vaList = !entry.variadic};
     return true;
   }
+  if (clause == "typed") {
+    if (entry.typed)
+      return fail("duplicate clause 'typed'");
+    if (!entry.owned)
+      return fail("'typed' needs a 'ptr:owned' result");
+    if (!expect('(', "after 'typed'"))
+      return false;
+    auto entryPoint = name("a typed entry point");
+    if (!entryPoint || !expect(',', "in 'typed'"))
+      return false;
+    if (*entryPoint != "alloc_typed" && *entryPoint != "calloc_typed" &&
+        *entryPoint != "new_typed")
+      return fail("'typed' names alloc_typed, calloc_typed or new_typed");
+    auto flags = index("the flags");
+    if (!flags || !expect(')', "after 'typed(…'"))
+      return false;
+    entry.typed = LibWrapper{.name = std::move(*entryPoint)};
+    entry.typedFlags = *flags;
+    return true;
+  }
   if (clause == "wrapper") {
     if (entry.wrapper)
       return fail("duplicate clause 'wrapper'");

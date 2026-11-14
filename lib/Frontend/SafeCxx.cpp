@@ -23,15 +23,36 @@
 
 #include "clang/AST/ASTLambda.h"
 #include "clang/AST/ExprCXX.h"
+#include "clang/AST/Mangle.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/Basic/Builtins.h"
+#include "clang/Basic/TargetInfo.h"
 
 #include "llvm/ADT/DenseSet.h"
 
 #include <set>
 
 namespace weavec::frontend {
+
+/// RFC 0045 §4: the symbols of `function` as the IR names them: the
+/// mangled names without the target's label prefix (Darwin's `_`).
+static void symbolsOf(const clang::FunctionDecl &function,
+                      clang::ASTNameGenerator &names, llvm::StringSet<> &into) {
+  const llvm::StringRef prefix =
+      function.getASTContext().getTargetInfo().getUserLabelPrefix();
+  auto add = [&](llvm::StringRef name) {
+    name.consume_front(prefix);
+    into.insert(name);
+  };
+  if (llvm::isa<clang::CXXConstructorDecl, clang::CXXDestructorDecl>(
+          function)) {
+    for (const std::string &name : names.getAllManglings(&function))
+      add(name);
+  } else {
+    add(names.getName(&function));
+  }
+}
 
 namespace {
 
@@ -534,6 +555,128 @@ private:
   }
 };
 
+/// RFC 0045 §5: the standard library's functions a safe function calls
+/// whose preconditions the library's hardening checks: a function of
+/// namespace `std` with a name the standard does not reserve, of a class
+/// that is no view, none of whose parameters is a pointer, a view or a
+/// callable; and the destruction, the copy and the move of what the
+/// function holds.
+class TrustedCalls final : public clang::RecursiveASTVisitor<TrustedCalls> {
+public:
+  TrustedCalls(CxxKinds &kinds, SafeUnit &unit, clang::ASTNameGenerator &names)
+      : kinds(kinds), unit(unit), names(names) {}
+
+  // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
+  bool VisitCallExpr(clang::CallExpr *call) {
+    if (const clang::FunctionDecl *callee = call->getDirectCallee())
+      consider(*callee);
+    return true;
+  }
+  bool VisitCXXConstructExpr(clang::CXXConstructExpr *construct) {
+    if (const clang::CXXConstructorDecl *constructor =
+            construct->getConstructor())
+      consider(*constructor);
+    destroyed(construct->getType());
+    return true;
+  }
+  bool VisitVarDecl(clang::VarDecl *variable) {
+    destroyed(variable->getType());
+    return true;
+  }
+  bool VisitCXXBindTemporaryExpr(clang::CXXBindTemporaryExpr *temporary) {
+    if (const clang::CXXDestructorDecl *destructor =
+            temporary->getTemporary()->getDestructor())
+      consider(*destructor);
+    return true;
+  }
+  // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
+
+  /// What an implicit member of a safe class does to a member or base of
+  /// type `type`.
+  void members(clang::QualType type) {
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record == nullptr || !record->hasDefinition())
+      return;
+    record = record->getDefinition();
+    for (const clang::CXXConstructorDecl *constructor : record->ctors())
+      if (constructor->isCopyOrMoveConstructor() ||
+          constructor->isDefaultConstructor())
+        consider(*constructor);
+    for (const clang::CXXMethodDecl *method : record->methods())
+      if (method->isCopyAssignmentOperator() ||
+          method->isMoveAssignmentOperator())
+        consider(*method);
+    destroyed(type);
+  }
+
+private:
+  CxxKinds &kinds;
+  SafeUnit &unit;
+  clang::ASTNameGenerator &names;
+
+  void destroyed(clang::QualType type) {
+    type = type.getNonReferenceType();
+    while (const clang::ArrayType *array = type->getAsArrayTypeUnsafe())
+      type = array->getElementType();
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record != nullptr && record->hasDefinition())
+      if (const clang::CXXDestructorDecl *destructor =
+              record->getDefinition()->getDestructor())
+        consider(*destructor);
+  }
+
+  [[nodiscard]] static bool reserved(const clang::NamedDecl &declaration) {
+    const clang::IdentifierInfo *identifier = declaration.getIdentifier();
+    if (identifier == nullptr)
+      return false;
+    const llvm::StringRef name = identifier->getName();
+    return name.starts_with("__") ||
+           (name.size() > 1 && name[0] == '_' && llvm::isUpper(name[1]));
+  }
+
+  [[nodiscard]] bool forbiddenParameter(clang::QualType type) {
+    const clang::QualType object = type.getNonReferenceType();
+    if (object->isPointerType() || object->isFunctionType() ||
+        object->isMemberPointerType())
+      return true;
+    const clang::CXXRecordDecl *record = object->getAsCXXRecordDecl();
+    return record != nullptr &&
+           (record->isLambda() || kinds.viewClass(record) ||
+            kinds.erased(object) || CxxKinds::pointerClass(object));
+  }
+
+  void consider(const clang::FunctionDecl &function) {
+    if (!isLibrary(function) || function.isDeleted() ||
+        function.isDependentContext() || reserved(function))
+      return;
+    const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(&function);
+    const clang::DeclContext *space =
+        function.getDeclContext()->getEnclosingNamespaceContext();
+    if (space == nullptr || !space->isStdNamespace())
+      return;
+    if (method != nullptr) {
+      const clang::CXXRecordDecl *record = method->getParent();
+      if (reserved(*record) || kinds.viewClass(record) ||
+          record->hasAttr<clang::PointerAttr>() || record->isLambda())
+        return;
+      // A nested class of another (an iterator of a container) only if its
+      // enclosing classes are not reserved either.
+      for (const clang::DeclContext *outer = record->getParent();
+           outer != nullptr && !outer->isNamespace();
+           outer = outer->getParent())
+        if (const auto *enclosing = llvm::dyn_cast<clang::CXXRecordDecl>(outer);
+            enclosing != nullptr && reserved(*enclosing))
+          return;
+    }
+    if (llvm::any_of(function.parameters(),
+                     [this](const clang::ParmVarDecl *parameter) {
+                       return forbiddenParameter(parameter->getType());
+                     }))
+      return;
+    symbolsOf(function, names, unit.cxxTrusted);
+  }
+};
+
 /// §1: the functions the unit defines in its own files, and the lambdas
 /// and instantiations among them.
 class CxxUnit final : public clang::RecursiveASTVisitor<CxxUnit> {
@@ -541,7 +684,7 @@ public:
   CxxUnit(clang::ASTContext &ast, bool unitSafe, SafeUnit &unit,
           const RuleReport &report)
       : ast(ast), unitSafe(unitSafe), unit(unit), report(report), kinds(ast),
-        rules(ast, kinds, report) {}
+        rules(ast, kinds, report), names(ast), trusted(kinds, unit, names) {}
 
   // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
   [[nodiscard]] static bool shouldVisitTemplateInstantiations() { return true; }
@@ -563,12 +706,16 @@ public:
         function->isImplicit() || isLibrary(*function))
       return true;
     if (const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(function);
-        method != nullptr && method->getParent()->isLambda())
+        method != nullptr && method->getParent()->isLambda()) {
+      nameAs(*function, isSafe(*function));
       return true;
+    }
     const bool safe = isSafe(*function);
     const std::size_t index = define(*function, safe);
-    if (safe && !check(*function))
+    const bool settled = !safe || check(*function);
+    if (!settled)
       unit.definitions[index].tier = "unsettled";
+    nameAs(*function, safe && settled);
     return true;
   }
 
@@ -580,6 +727,7 @@ public:
       if (isSafe(*record))
         for (const clang::FieldDecl *field : record->fields())
           rules.run(*field);
+      implicitMembers(*record);
     }
     return true;
   }
@@ -594,6 +742,34 @@ private:
   CxxRules rules;
   std::set<std::pair<std::string, unsigned>> defined;
   llvm::DenseSet<const clang::CXXRecordDecl *> listed;
+  clang::ASTNameGenerator names;
+  TrustedCalls trusted;
+
+  /// RFC 0045 §4: the symbols `function` is emitted under, as safe code or
+  /// as the unit's other code.
+  void nameAs(const clang::FunctionDecl &function, bool safe) {
+    if (!unit.fast)
+      return;
+    symbolsOf(function, names, safe ? unit.cxxSafe : unit.cxxOther);
+  }
+
+  /// The members the compiler writes for a class of the unit, which run as
+  /// its own code: safe for a safe class.
+  void implicitMembers(const clang::CXXRecordDecl &record) {
+    if (!unit.fast)
+      return;
+    const bool safe = isSafe(record);
+    for (const clang::CXXMethodDecl *method : record.methods())
+      if ((method->isImplicit() || method->isDefaulted()) &&
+          method->isDefined() && !method->isDeleted())
+        nameAs(*method, safe);
+    if (!safe)
+      return;
+    for (const clang::FieldDecl *field : record.fields())
+      trusted.members(field->getType());
+    for (const clang::CXXBaseSpecifier &base : record.bases())
+      trusted.members(base.getType());
+  }
 
   /// §1: what the function or the classes around it say, else the unit.
   [[nodiscard]] bool isSafe(const clang::FunctionDecl &function) const {
@@ -664,6 +840,10 @@ private:
       return true;
     }
     rules.run(function);
+    if (unit.fast)
+      // The visitor takes what it walks as changeable; it changes nothing.
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+      trusted.TraverseDecl(const_cast<clang::FunctionDecl *>(&function));
     bool settled = checkCxxFlow(ast, kinds, function, *body, report);
     std::vector<const clang::LambdaExpr *> lambdas;
     collectLambdas(body, lambdas);

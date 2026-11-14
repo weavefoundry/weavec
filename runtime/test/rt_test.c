@@ -1567,6 +1567,107 @@ static void *releaseAndExit(void *argument) {
   return NULL;
 }
 
+/* RFC 0045 section 3: typed blocks and their pools. */
+static struct __weavec_rt_site typedRelease = {0, 0, 0, WeavecRtSiteTyped};
+static struct __weavec_rt_type poolA = {0x0123456789abcdefULL, 0};
+static struct __weavec_rt_type poolB = {0x0fedcba987654321ULL, 0};
+
+static void typedDoubleRelease(void) {
+  void *p = __weavec_rt_alloc_typed(72, WeavecRtFormMalloc, &poolA);
+  __weavec_rt_free_at(p, &typedRelease);
+  __weavec_rt_free_at(opaque(p), &typedRelease);
+}
+
+static void testPoolReusesByType(void) {
+  /* A typed block safe code released is the next block of its type and
+   * class, at once and zeroed; no other type and no untyped allocation gets
+   * it, and a second release of it is a double free. */
+  unsigned char *p = (unsigned char *)opaque(
+      __weavec_rt_alloc_typed(72, WeavecRtFormMalloc, &poolA));
+  unsigned char *q;
+  unsigned i;
+  int zero = 1;
+  CHECK(inArena(p));
+  memset(p, 0xab, 72);
+  __weavec_rt_free_at(p, &typedRelease);
+  CHECK(!addressable(p, 1));
+  CHECK(shadowAt(p) == WeavecRtShadowHeapFreed);
+  q = (unsigned char *)opaque(malloc(72));
+  CHECK(q != p);
+  free(q);
+  q = (unsigned char *)opaque(
+      __weavec_rt_alloc_typed(72, WeavecRtFormMalloc, &poolB));
+  CHECK(q != p);
+  __weavec_rt_free_at(q, &typedRelease);
+  q = (unsigned char *)opaque(
+      __weavec_rt_alloc_typed(70, WeavecRtFormMalloc, &poolA));
+  CHECK(q == p);
+  CHECK(addressable(q, 70) && !addressable(q, 71));
+  for (i = 0; i < 72; ++i)
+    zero &= q[i] == 0;
+  CHECK(zero);
+  __weavec_rt_free_at(q, &typedRelease);
+  CHECK(stopsIn(typedDoubleRelease));
+}
+
+static void testPoolUntypedRelease(void) {
+  /* A typed block released by code that is not safe goes to the
+   * quarantine: no allocation of its type reuses it before a sweep. */
+  void *p = opaque(__weavec_rt_alloc_typed(88, WeavecRtFormMalloc, &poolA));
+  void *q;
+  free(p);
+  q = opaque(__weavec_rt_alloc_typed(88, WeavecRtFormMalloc, &poolA));
+  CHECK(q != p);
+  CHECK(!addressable(p, 1));
+  __weavec_rt_free_at(q, &typedRelease);
+}
+
+static void *volatile *pooledHolder;
+
+static void testPoolSlotsAreScanned(void) {
+  /* A block is zeroed when it enters its pool; what a stale pointer writes
+   * into it afterwards is kept by the sweep, which a stale pointer may read
+   * until the block is reused. (A class of its own for the target.) */
+  void *volatile first = opaque(malloc(7300));
+  volatile uintptr_t hidden = releasedBlock(7300);
+  pooledHolder = (void *volatile *)__weavec_rt_alloc_typed(
+      96, WeavecRtFormMalloc, &poolB);
+  pooledHolder[2] = (void *)0x1234;
+  __weavec_rt_free_at((void *)pooledHolder, &typedRelease);
+  CHECK(pooledHolder[2] == NULL);
+  pooledHolder[2] = (void *)(hidden ^ Hidden);
+  scrubStack();
+  weavecRtSweep();
+  {
+    void *q = opaque(malloc(7300));
+    CHECK((uintptr_t)q != (hidden ^ Hidden));
+    free(q);
+  }
+  pooledHolder = NULL;
+  free(first);
+}
+
+static void testPoolNew(void) {
+  /* C++'s typed new: its form is new's, and a typed sized delete returns
+   * it to its pool. (Darwin's archive, which this test links, leaves the
+   * allocation functions to the C++ library.) */
+  void *q;
+#if !defined(__APPLE__)
+  void *p = __weavec_rt_new_typed(40, &poolB, 0);
+  CHECK(p != NULL && inArena(p));
+  __weavec_rt_delete_sized_at(p, 40, &typedRelease);
+  q = __weavec_rt_new_typed(40, &poolB, 0);
+  CHECK(q == p);
+  __weavec_rt_delete_sized_at(q, 40, &typedRelease);
+#endif
+  q = __weavec_rt_alloc_typed(24, WeavecRtFormMalloc, &poolA);
+  q = __weavec_rt_realloc_at(q, 4000, &typedRelease);
+  CHECK(q != NULL && addressable(q, 4000));
+  __weavec_rt_free_at(q, &typedRelease);
+  q = __weavec_rt_calloc_typed(tooMany, 2, &poolA);
+  CHECK(q == NULL);
+}
+
 static void testThreadCaches(void) {
   /* A block another thread released is recycled once that thread has
    * exited (its cache moved to the quarantine), and a double free of a
@@ -1757,6 +1858,10 @@ static const struct {
     {"array-bounds", testArrayBounds},
     {"threads", testThreads},
     {"thread-caches", testThreadCaches},
+    {"pool-reuses-by-type", testPoolReusesByType},
+    {"pool-untyped-release", testPoolUntypedRelease},
+    {"pool-slots-are-scanned", testPoolSlotsAreScanned},
+    {"pool-new", testPoolNew},
     {"fork", testFork},
     {"fault-handler-restored", testFaultHandlerRestored},
     {"unwinder", testUnwinder},
