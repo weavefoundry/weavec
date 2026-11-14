@@ -13,8 +13,9 @@
 // expressions here (§4: no raw owner, no pointer arithmetic, no cast that
 // forges a pointer) and against the flow rules of SafeCxxFlow.cpp, its
 // lambdas with it. The unit's functions and its classes' members are listed
-// for the ledger (§12). Nothing here reaches the guard passes: a safe C++
-// function is compiled as a guarded one.
+// for the ledger (§12). RFC 0046: the unit's globals (§4), the calls that
+// start threads the rules cannot follow, and the C functions that keep state
+// of their own. Nothing here reaches the guard passes.
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,10 +31,17 @@
 #include "clang/Basic/TargetInfo.h"
 
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/Support/CommandLine.h"
 
 #include <set>
 
 namespace weavec::frontend {
+
+// RFC 0046 G6, G7: measures what the thread rules cost and change (`-mllvm
+// -weavec-thread-rules=0`); not a user's switch.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+static llvm::cl::opt<bool> threadRules("weavec-thread-rules",
+                                       llvm::cl::init(true), llvm::cl::Hidden);
 
 /// RFC 0045 §4: the symbols of `function` as the IR names them: the
 /// mangled names without the target's label prefix (Darwin's `_`).
@@ -68,6 +76,7 @@ constexpr llvm::StringLiteral NoAsm = "no-asm";
 constexpr llvm::StringLiteral UnsafeBlock = "unsafe-block";
 constexpr llvm::StringLiteral BadAnnotation = "bad-annotation";
 constexpr llvm::StringLiteral NotModeled = "not-modeled";
+constexpr llvm::StringLiteral ThreadShare = "thread-share";
 } // namespace rule
 
 constexpr llvm::StringLiteral Helper = "; or keep this function WEAVEC_GUARDED";
@@ -82,8 +91,24 @@ public:
 
   void run(const clang::FunctionDecl &function) {
     programArguments = function.isMain();
+    body = function.getBody();
     for (const clang::ParmVarDecl *parameter : function.parameters())
       checkAnnotations(parameter->getType(), parameter->getLocation());
+    // RFC 0046 §8: every declaration says the same.
+    for (const clang::FunctionDecl *other : function.redecls())
+      for (unsigned i = 0;
+           i < other->getNumParams() && i < function.getNumParams(); ++i)
+        if (hasAnnotation(annotationsOf(other->getParamDecl(i)->getType(), ast),
+                          SendsAnnotation) !=
+            hasAnnotation(
+                annotationsOf(function.getParamDecl(i)->getType(), ast),
+                SendsAnnotation)) {
+          error(other->getParamDecl(i)->getLocation(), rule::BadAnnotation,
+                "the declarations of '" + function.getNameAsString() +
+                    "' disagree on WEAVEC_SENDS",
+                "write WEAVEC_SENDS on the parameter in every declaration");
+          break;
+        }
     checkAnnotations(function.getReturnType(), function.getLocation());
     // A constructor's member initializers are its code too.
     if (const auto *constructor =
@@ -99,6 +124,7 @@ public:
   /// name the member runs.
   void run(const clang::FieldDecl &field) {
     programArguments = false;
+    body = nullptr;
     if (field.hasInClassInitializer())
       TraverseStmt(field.getInClassInitializer());
   }
@@ -150,6 +176,9 @@ public:
   bool VisitCXXConstructExpr(clang::CXXConstructExpr *construct) {
     const clang::CXXConstructorDecl *constructor = construct->getConstructor();
     const clang::CXXRecordDecl *record = constructor->getParent();
+    if (construct->getNumArgs() != 0)
+      constView(construct->getType(), construct->getArg(0),
+                construct->getExprLoc());
     if (construct->getNumArgs() == 0 || constructor->getNumParams() == 0 ||
         !isLibrary(*record))
       return true;
@@ -219,6 +248,19 @@ public:
     default:
       break;
     }
+    // RFC 0046 §9: an algorithm given a parallel execution policy runs its
+    // callable on several threads at once.
+    if (kinds.threadRules && isLibrary(*callee))
+      for (const clang::Expr *given : call->arguments())
+        if (CxxKinds::tableIs(given->getType(), "spawns")) {
+          error(call->getExprLoc(), rule::NotModeled,
+                "'" + callee->getNameAsString() +
+                    "' with a parallel execution policy runs its callable on "
+                    "several threads at once",
+                "use the sequential form, or start threads that each own "
+                "their part and collect the results");
+          return true;
+        }
     if (!callee->isExternC() && !callee->isInStdNamespace() &&
         !isLibrary(*callee))
       return true;
@@ -227,6 +269,23 @@ public:
     if (!match.has_value())
       return true;
     const core::LibraryEntry &row = *match->entry;
+    if (kinds.threadRules && row.spawns) {
+      error(call->getExprLoc(), rule::NotModeled,
+            "'" + callee->getNameAsString() +
+                "' starts a thread with a 'void *' the rules cannot follow",
+            "start it with 'std::jthread', whose callable the rules check",
+            /*expanded=*/true);
+      return true;
+    }
+    if (kinds.threadRules && row.unshared) {
+      error(call->getExprLoc(), rule::ThreadShare,
+            "'" + callee->getNameAsString() +
+                "' keeps state of its own that every thread shares",
+            "use the reentrant form ('localtime_r', 'strtok_r', "
+            "'strerror_r'), or '<random>' and '<chrono>'",
+            /*expanded=*/true);
+      return true;
+    }
     const bool releases =
         llvm::any_of(row.params, [](const core::LibraryParam &parameter) {
           return parameter.effect != core::LibraryParam::Effect::Borrow;
@@ -267,6 +326,29 @@ public:
       break;
     }
     return true;
+  }
+
+  bool VisitCXXOperatorCallExpr(clang::CXXOperatorCallExpr *call) {
+    if (call->getOperator() == clang::OO_Equal && call->getNumArgs() == 2)
+      constView(call->getArg(0)->getType(), call->getArg(1),
+                call->getOperatorLoc());
+    return true;
+  }
+
+  /// §4: a global of the unit that safe code names, defined elsewhere.
+  bool VisitDeclRefExpr(clang::DeclRefExpr *named) {
+    if (const auto *variable = llvm::dyn_cast<clang::VarDecl>(named->getDecl());
+        variable != nullptr && kinds.threadRules &&
+        variable->getDefinition() == nullptr &&
+        !hasAnnotate(*variable, GuardedAnnotation))
+      global(*variable, named->getLocation());
+    return true;
+  }
+
+  bool VisitOMPExecutableDirective(clang::OMPExecutableDirective *directive) {
+    return notModeled(directive->getBeginLoc(), "an OpenMP directive",
+                      "start threads with 'std::jthread', which the rules "
+                      "check");
   }
 
   bool VisitArraySubscriptExpr(clang::ArraySubscriptExpr *subscript) {
@@ -472,6 +554,127 @@ private:
     report(at, id, message, at, fix + Helper.str());
   }
 
+  /// RFC 0046 §2: a `std::shared_ptr<const T>` made from a
+  /// `std::shared_ptr<T>` leaves a handle that can still change the object.
+  void constView(clang::QualType to, const clang::Expr *from,
+                 clang::SourceLocation at) {
+    if (!kinds.threadRules)
+      return;
+    const auto pointee = [](clang::QualType type) {
+      const auto *specialization =
+          llvm::dyn_cast_or_null<clang::ClassTemplateSpecializationDecl>(
+              type.getNonReferenceType()->getAsCXXRecordDecl());
+      return specialization == nullptr || !CxxKinds::shared(specialization) ||
+                     specialization->getTemplateArgs().size() == 0 ||
+                     specialization->getTemplateArgs()[0].getKind() !=
+                         clang::TemplateArgument::Type
+                 ? clang::QualType()
+                 : specialization->getTemplateArgs()[0].getAsType();
+    };
+    const clang::QualType target = pointee(to);
+    const clang::QualType source = pointee(from->getType());
+    if (target.isNull() || source.isNull() || !target.isConstQualified() ||
+        source.isConstQualified() || kinds.shareable(source) || fresh(from))
+      return;
+    error(at, rule::ThreadShare,
+          "a 'std::shared_ptr<const " +
+              source.getUnqualifiedType().getAsString(ast.getPrintingPolicy()) +
+              ">' is made from one that can still change the object",
+          "make it with 'std::make_shared<const T>(...)', so that no "
+          "holder can write what other threads read");
+  }
+
+  /// Amendment: a handle no other handle shares: what a library function
+  /// that is given no shared pointer returns (`std::make_shared<T>`), or a
+  /// local made so, moved, and otherwise only dereferenced.
+  [[nodiscard]] bool fresh(const clang::Expr *from) {
+    from = from->IgnoreImplicit();
+    if (const auto *call = llvm::dyn_cast<clang::CallExpr>(from)) {
+      const clang::FunctionDecl *callee = call->getDirectCallee();
+      if (callee != nullptr && call->isCallToStdMove()) {
+        const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(
+            call->getArg(0)->IgnoreParenImpCasts());
+        const auto *local =
+            named == nullptr ? nullptr
+                             : llvm::dyn_cast<clang::VarDecl>(named->getDecl());
+        return local != nullptr && local->hasLocalStorage() &&
+               !llvm::isa<clang::ParmVarDecl>(local) &&
+               local->getInit() != nullptr && fresh(local->getInit()) &&
+               onlyDereferenced(*local, *named);
+      }
+      return callee != nullptr && isLibrary(*callee) &&
+             !llvm::isa<clang::CXXMethodDecl>(callee) &&
+             llvm::none_of(call->arguments(), [](const clang::Expr *argument) {
+               return CxxKinds::shared(argument->getType()
+                                           .getNonReferenceType()
+                                           ->getAsCXXRecordDecl());
+             });
+    }
+    return false;
+  }
+
+  /// Every use of `local` but `moved` is `*local` or `local->`.
+  [[nodiscard]] bool onlyDereferenced(const clang::VarDecl &local,
+                                      const clang::DeclRefExpr &moved) {
+    bool only = true;
+    const auto visit = [&](const clang::Stmt *statement, const clang::Stmt *up,
+                           const auto &self) -> void {
+      if (statement == nullptr || !only)
+        return;
+      if (const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(statement);
+          named != nullptr && named != &moved && named->getDecl() == &local) {
+        const auto *operation =
+            llvm::dyn_cast_or_null<clang::CXXOperatorCallExpr>(up);
+        only = operation != nullptr &&
+               (operation->getOperator() == clang::OO_Arrow ||
+                operation->getOperator() == clang::OO_Star);
+      }
+      for (const clang::Stmt *child : statement->children())
+        self(child,
+             llvm::isa<clang::ImplicitCastExpr, clang::ParenExpr>(statement)
+                 ? up
+                 : statement,
+             self);
+    };
+    visit(body, nullptr, visit);
+    return only;
+  }
+  const clang::Stmt *body = nullptr;
+
+public:
+  /// §4: a variable with static storage that is not `thread_local` is
+  /// immutable or of shareable type.
+  void global(const clang::VarDecl &variable, clang::SourceLocation at) {
+    const clang::VarDecl *canonical = variable.getCanonicalDecl();
+    if (!variable.hasGlobalStorage() ||
+        variable.getTLSKind() != clang::VarDecl::TLS_None ||
+        isLibrary(variable) || variable.getType()->isDependentType() ||
+        globals.contains(canonical))
+      return;
+    const clang::QualType type = variable.getType();
+    // A `const` global whose value is a constant points only at constants
+    // and at other globals, which this rule checks in turn.
+    if ((type.isConstQualified() &&
+         (kinds.frozen(type) || (variable.hasConstantInitialization() &&
+                                 !kinds.holdsMutable(type)))) ||
+        kinds.shareable(type))
+      return;
+    globals.insert(canonical);
+    report(at, rule::ThreadShare,
+           "every thread can reach the global '" + variable.getNameAsString() +
+               "', and '" +
+               type.getUnqualifiedType().getAsString(ast.getPrintingPolicy()) +
+               "' is not safe to share",
+           at,
+           "make it 'thread_local' if each thread should have its own, "
+           "'const' if it never changes, or a class that locks its members "
+           "(or WEAVEC_GUARDED, which the audit lists); 'weavec-c++ "
+           "--weavec-explain thread-share' shows each");
+  }
+
+private:
+  llvm::DenseSet<const clang::VarDecl *> globals;
+
   void pointerArithmetic(clang::SourceLocation at) {
     error(at, rule::IndexSingle,
           "arithmetic on a pointer, which points to one object",
@@ -539,6 +742,17 @@ private:
   }
 
   void checkAnnotations(clang::QualType type, clang::SourceLocation at) {
+    // RFC 0046 §8: WEAVEC_SENDS is for a callable whose type hides what it
+    // captured.
+    if (hasAnnotation(annotationsOf(type, ast), SendsAnnotation) &&
+        !kinds.erased(type)) {
+      error(at, rule::BadAnnotation,
+            "WEAVEC_SENDS is on a parameter whose type is not a callable "
+            "that hides what it captured",
+            "put it on a 'std::function' or another erased callable; a "
+            "template's callable needs none");
+      return;
+    }
     if (!type->isPointerType())
       return;
     for (const TypeAnnotation &annotation : annotationsOf(type, ast))
@@ -684,7 +898,9 @@ public:
   CxxUnit(clang::ASTContext &ast, bool unitSafe, SafeUnit &unit,
           const RuleReport &report)
       : ast(ast), unitSafe(unitSafe), unit(unit), report(report), kinds(ast),
-        rules(ast, kinds, report), names(ast), trusted(kinds, unit, names) {}
+        rules(ast, kinds, report), names(ast), trusted(kinds, unit, names) {
+    kinds.threadRules = threadRules;
+  }
 
   // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
   [[nodiscard]] static bool shouldVisitTemplateInstantiations() { return true; }
@@ -716,6 +932,20 @@ public:
     if (!settled)
       unit.definitions[index].tier = "unsettled";
     nameAs(*function, safe && settled);
+    return true;
+  }
+
+  /// RFC 0046 §4: a global, a static member or a `static` local the unit
+  /// defines, in safe code.
+  bool VisitVarDecl(clang::VarDecl *variable) {
+    if (kinds.threadRules && variable->hasGlobalStorage() &&
+        !llvm::isa<clang::ParmVarDecl>(variable) &&
+        !hasAnnotate(*variable, GuardedAnnotation) &&
+        variable->isThisDeclarationADefinition() !=
+            clang::VarDecl::DeclarationOnly &&
+        !variable->getDeclContext()->isDependentContext() &&
+        isSafe(*variable->getDeclContext()))
+      rules.global(*variable, variable->getLocation());
     return true;
   }
 
@@ -822,8 +1052,70 @@ private:
                                 .tier = tier,
                                 .file = at.isValid() ? at.getFilename() : "",
                                 .line = line,
-                                .owns = false});
+                                .owns = false,
+                                .starts = 0,
+                                .locks = false,
+                                .sends = false});
+    threadFacts(function, unit.definitions.back());
     return unit.definitions.size() - 1;
+  }
+
+  /// RFC 0046 §12: the thread starts a function makes, whether it uses a
+  /// lock or a guard object, and whether a parameter is WEAVEC_SENDS: what
+  /// the audit lists of functions that are not safe.
+  void threadFacts(const clang::FunctionDecl &function,
+                   SafeUnit::Definition &definition) {
+    definition.sends = llvm::any_of(
+        function.parameters(), [&](const clang::ParmVarDecl *parameter) {
+          return hasAnnotation(annotationsOf(parameter->getType(), ast),
+                               SendsAnnotation);
+        });
+    const auto visit = [&](const clang::Stmt *statement,
+                           const auto &self) -> void {
+      if (statement == nullptr)
+        return;
+      if (const auto *construct =
+              llvm::dyn_cast<clang::CXXConstructExpr>(statement)) {
+        if (CxxKinds::threadClass(construct->getType()) &&
+            construct->getNumArgs() != 0 &&
+            !CxxKinds::threadClass(construct->getArg(0)->getType()))
+          ++definition.starts;
+        definition.locks |= CxxKinds::guardClass(construct->getType());
+      } else if (const auto *call =
+                     llvm::dyn_cast<clang::CallExpr>(statement)) {
+        // A container of thread objects that makes one (`emplace_back`).
+        if (const auto *member = llvm::dyn_cast<clang::CXXMemberCallExpr>(call);
+            member != nullptr && member->getMethodDecl() != nullptr &&
+            !member->getMethodDecl()->isConst() && call->getNumArgs() != 0 &&
+            isLibrary(*member->getMethodDecl()) &&
+            !CxxKinds::threadClass(
+                member->getImplicitObjectArgument()->getType()) &&
+            kinds.holdsThread(member->getImplicitObjectArgument()->getType()) &&
+            !kinds.holdsThread(call->getArg(0)->getType()))
+          ++definition.starts;
+        if (const clang::FunctionDecl *callee = call->getDirectCallee();
+            callee != nullptr && callee->getIdentifier() != nullptr) {
+          const auto row = core::LibrarySpec::shipped().lookup(
+              callee->getName().str(), call->getNumArgs());
+          if ((isLibrary(*callee) &&
+               core::LibrarySpec::shipped().spawnsFunction(
+                   CxxKinds::qualifiedName(*callee))) ||
+              (callee->isExternC() && row.has_value() && row->entry->spawns))
+            ++definition.starts;
+        }
+      } else if (const auto *expression =
+                     llvm::dyn_cast<clang::Expr>(statement)) {
+        definition.locks |= CxxKinds::lockClass(expression->getType());
+      }
+      for (const clang::Stmt *child : statement->children())
+        self(child, self);
+    };
+    visit(function.getBody(), visit);
+    if (const auto *constructor =
+            llvm::dyn_cast<clang::CXXConstructorDecl>(&function))
+      for (const clang::CXXCtorInitializer *initializer : constructor->inits())
+        if (initializer->isWritten())
+          visit(initializer->getInit(), visit);
   }
 
   /// The rules for one function and the lambdas written in it. Whether
@@ -840,11 +1132,13 @@ private:
       return true;
     }
     rules.run(function);
+    if (kinds.threadRules)
+      threadGlobals(function);
     if (unit.fast)
       // The visitor takes what it walks as changeable; it changes nothing.
       // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
       trusted.TraverseDecl(const_cast<clang::FunctionDecl *>(&function));
-    bool settled = checkCxxFlow(ast, kinds, function, *body, report);
+    bool settled = checkCxxFlow(ast, kinds, function, *body, nullptr, report);
     std::vector<const clang::LambdaExpr *> lambdas;
     collectLambdas(body, lambdas);
     for (const clang::LambdaExpr *lambda : lambdas) {
@@ -853,10 +1147,11 @@ private:
         for (const clang::FunctionDecl *instance : generic->specializations())
           if (instance->hasBody())
             settled &= checkCxxFlow(ast, kinds, *instance, *instance->getBody(),
-                                    report);
+                                    lambda, report);
       } else if (const clang::CXXMethodDecl *call = lambda->getCallOperator();
                  call != nullptr && call->hasBody()) {
-        settled &= checkCxxFlow(ast, kinds, *call, *call->getBody(), report);
+        settled &=
+            checkCxxFlow(ast, kinds, *call, *call->getBody(), lambda, report);
       }
     }
     return settled;
@@ -889,6 +1184,38 @@ private:
   /// §12: each member of the unit's classes that owns, borrows, refers,
   /// shares or erases.
   void listFields(const clang::CXXRecordDecl &record) {
+    // RFC 0046 §12: the class, and the members its lock guards.
+    const clang::PresumedLoc where =
+        ast.getSourceManager().getPresumedLoc(record.getLocation());
+    const clang::QualType self = ast.getCanonicalTagType(&record);
+    unit.fields.push_back({.record = record.getQualifiedNameAsString(),
+                           .field = "",
+                           .kind = "class",
+                           .file = where.isValid() ? where.getFilename() : "",
+                           .line = where.isValid() ? where.getLine() : 0,
+                           .sendable = kinds.sendable(self),
+                           .shareable = kinds.shareable(self)});
+    const LockedClass &locked = kinds.lockedClass(record);
+    for (const clang::FieldDecl *field : record.fields()) {
+      const char *kind = nullptr;
+      if (field == locked.lock)
+        kind = "lock";
+      else if (locked.locked.contains(field))
+        kind = "locked";
+      else if (locked.threads.contains(field))
+        kind = "thread";
+      if (kind == nullptr)
+        continue;
+      const clang::PresumedLoc at =
+          ast.getSourceManager().getPresumedLoc(field->getLocation());
+      unit.fields.push_back({.record = record.getQualifiedNameAsString(),
+                             .field = field->getNameAsString(),
+                             .kind = kind,
+                             .file = at.isValid() ? at.getFilename() : "",
+                             .line = at.isValid() ? at.getLine() : 0,
+                             .sendable = false,
+                             .shareable = false});
+    }
     for (const clang::FieldDecl *field : record.fields()) {
       clang::QualType type = field->getType();
       while (const clang::ArrayType *array = ast.getAsArrayType(type))
@@ -919,8 +1246,47 @@ private:
                              .field = field->getNameAsString(),
                              .kind = kind,
                              .file = at.isValid() ? at.getFilename() : "",
-                             .line = at.isValid() ? at.getLine() : 0});
+                             .line = at.isValid() ? at.getLine() : 0,
+                             .sendable = false,
+                             .shareable = false});
     }
+  }
+
+  /// RFC 0046 §12: the globals of code that is not safe that a safe
+  /// function names, which it trusts to be used as safe code would.
+  void threadGlobals(const clang::FunctionDecl &function) {
+    llvm::DenseSet<const clang::VarDecl *> seen;
+    const auto visit = [&](const clang::Stmt *statement,
+                           const auto &self) -> void {
+      if (statement == nullptr)
+        return;
+      if (const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(statement))
+        if (const auto *variable =
+                llvm::dyn_cast<clang::VarDecl>(named->getDecl());
+            variable != nullptr && variable->hasGlobalStorage() &&
+            variable->getTLSKind() == clang::VarDecl::TLS_None &&
+            !isLibrary(*variable) &&
+            (hasAnnotate(*variable, GuardedAnnotation) ||
+             (variable->getDefinition() != nullptr &&
+              !isSafe(*variable->getDefinition()->getDeclContext()))) &&
+            !(variable->getType().isConstQualified() &&
+              kinds.frozen(variable->getType())) &&
+            !kinds.shareable(variable->getType()) &&
+            seen.insert(variable->getCanonicalDecl()).second) {
+          const clang::PresumedLoc at =
+              ast.getSourceManager().getPresumedLoc(named->getLocation());
+          unit.fields.push_back({.record = function.getQualifiedNameAsString(),
+                                 .field = variable->getNameAsString(),
+                                 .kind = "thread-global",
+                                 .file = at.isValid() ? at.getFilename() : "",
+                                 .line = at.isValid() ? at.getLine() : 0,
+                                 .sendable = false,
+                                 .shareable = false});
+        }
+      for (const clang::Stmt *child : statement->children())
+        self(child, self);
+    };
+    visit(function.getBody(), visit);
   }
 };
 

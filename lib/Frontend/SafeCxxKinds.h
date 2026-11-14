@@ -10,9 +10,13 @@
 // objects hold owners (a destructor to run), whether they hold a borrow (a
 // view), whether the library table says the type erases what it holds, and
 // whether a member function only gives access (§6: a non-const member
-// function with a const overload of the same parameters). Each is
+// function with a const overload of the same parameters). RFC 0046 §2:
+// whether a value of it may be sent to another thread, whether one object
+// of it may be shared by two, whether a `const` path to it can write
+// nothing, and which members of a class its lock guards. Each is
 // structural, or read from an attribute Clang attaches (`gsl::Pointer`,
-// `gsl::Owner`); no type or function is known by its name here.
+// `gsl::Owner`) or from the library table; no type or function is known by
+// its name here.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,10 +30,14 @@
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclTemplate.h"
+#include "clang/AST/ExprCXX.h"
 #include "clang/Basic/SourceManager.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <string>
 
@@ -52,9 +60,175 @@ namespace weavec::frontend {
                       });
 }
 
+/// RFC 0046 §6: a class with exactly one lock member, and the members that
+/// lock guards.
+struct LockedClass {
+  const clang::FieldDecl *lock = nullptr;
+  llvm::SmallPtrSet<const clang::FieldDecl *, 4> locked;
+  /// §7: members that are, or hold, a thread object.
+  llvm::SmallPtrSet<const clang::FieldDecl *, 2> threads;
+  /// More than one member is a lock: the class is not a locked class.
+  bool severalLocks = false;
+};
+
+/// RFC 0046 §6: a guard the flow knows is held: on the lock member `lock`
+/// of `this` (a null `object`) or of the local or parameter `object`, by
+/// the guard local `guard`; `shared` to read.
+struct HeldGuard {
+  const clang::VarDecl *guard = nullptr;
+  const clang::VarDecl *object = nullptr;
+  const clang::FieldDecl *lock = nullptr;
+  bool shared = false;
+  bool operator==(const HeldGuard &) const = default;
+};
+
 class CxxKinds {
 public:
   explicit CxxKinds(const clang::ASTContext &ast) : ast(ast) {}
+
+  /// RFC 0046 §6: the guards held where a lambda is written as an argument
+  /// for a parameter that does not keep it, which its body holds too; the
+  /// flow of the function that writes it records them.
+  llvm::DenseMap<const clang::LambdaExpr *, llvm::SmallVector<HeldGuard, 2>>
+      lambdaGuards;
+  /// `-mllvm -weavec-thread-rules=0`: RFC 0046's rules are off.
+  bool threadRules = true;
+
+  /// The library table's row for the class of `type` has `trait`.
+  [[nodiscard]] static bool tableIs(clang::QualType type,
+                                    llvm::StringRef trait) {
+    const clang::CXXRecordDecl *record =
+        type.isNull() ? nullptr
+                      : type.getNonReferenceType()->getAsCXXRecordDecl();
+    return record != nullptr && isLibrary(*record) &&
+           core::LibrarySpec::shipped().classIs(qualifiedName(*record),
+                                                trait.str());
+  }
+  [[nodiscard]] static bool threadClass(clang::QualType type) {
+    return tableIs(type, "thread");
+  }
+  [[nodiscard]] static bool lockClass(clang::QualType type) {
+    return tableIs(type, "lock");
+  }
+  [[nodiscard]] static bool guardClass(clang::QualType type) {
+    return tableIs(type, "guard");
+  }
+
+  /// §7: an object of `type` is, or holds as an element, a thread object.
+  [[nodiscard]] bool holdsThread(clang::QualType type, unsigned depth = 0) {
+    type = type.getNonReferenceType();
+    while (const clang::ArrayType *array = ast.getAsArrayType(type))
+      type = array->getElementType();
+    if (threadClass(type))
+      return true;
+    const auto *specialization =
+        llvm::dyn_cast_or_null<clang::ClassTemplateSpecializationDecl>(
+            type->getAsCXXRecordDecl());
+    return depth < 8 && specialization != nullptr &&
+           isLibrary(*specialization) &&
+           llvm::any_of(
+               typeArguments(*specialization),
+               [&](clang::QualType argument) {
+                 return holdsThread(argument, depth + 1);
+               });
+  }
+
+  /// §2: a value of `type` may be handed to another thread.
+  [[nodiscard]] bool sendable(clang::QualType type) {
+    return fact(Fact::Sendable, type);
+  }
+  /// §8: the same, for a locked member, where an erased value comes only
+  /// from what may be sent.
+  [[nodiscard]] bool sendableMember(clang::QualType type) {
+    return fact(Fact::SendableMember, type);
+  }
+  /// §2: two threads may use one object of `type` at once.
+  [[nodiscard]] bool shareable(clang::QualType type) {
+    return fact(Fact::Shareable, type);
+  }
+  /// §2: an object of `type` reached only through `const` access is never
+  /// written.
+  [[nodiscard]] bool frozen(clang::QualType type) {
+    return fact(Fact::Frozen, type);
+  }
+
+  /// An object of `type` has a `mutable` member, which a `const` path can
+  /// write.
+  [[nodiscard]] bool holdsMutable(clang::QualType type, unsigned depth = 0) {
+    while (const clang::ArrayType *array = ast.getAsArrayType(type))
+      type = array->getElementType();
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record == nullptr || depth > 8)
+      return false;
+    record = record->getDefinition();
+    return record == nullptr ||
+           llvm::any_of(record->fields(), [&](const clang::FieldDecl *field) {
+             return field->isMutable() ||
+                    holdsMutable(field->getType(), depth + 1);
+           });
+  }
+
+  /// §6: the lock of `record` and the members it guards.
+  [[nodiscard]] const LockedClass &
+  lockedClass(const clang::CXXRecordDecl &record) {
+    const clang::CXXRecordDecl *definition = record.getDefinition();
+    const clang::CXXRecordDecl *key =
+        definition != nullptr ? definition : &record;
+    if (const auto found = locks.find(key); found != locks.end())
+      return found->second;
+    LockedClass info;
+    if (definition != nullptr && !isLibrary(*definition)) {
+      for (const clang::FieldDecl *field : definition->fields()) {
+        if (lockClass(field->getType())) {
+          info.severalLocks = info.lock != nullptr;
+          info.lock = field;
+        } else if (holdsThread(field->getType())) {
+          info.threads.insert(field);
+        }
+      }
+      if (info.severalLocks)
+        info.lock = nullptr;
+      if (info.lock != nullptr)
+        for (const clang::FieldDecl *field : definition->fields())
+          if (field != info.lock && !info.threads.contains(field) &&
+              !sharedMember(*field))
+            info.locked.insert(field);
+    }
+    return locks.try_emplace(key, std::move(info)).first->second;
+  }
+
+  /// §2: a member that two threads may use with no lock: of shareable
+  /// type, a reference to a shareable object, or `const` and frozen.
+  [[nodiscard]] bool sharedMember(const clang::FieldDecl &field) {
+    const clang::QualType type = field.getType();
+    if (type->isReferenceType())
+      return shareable(type->getPointeeType());
+    return shareable(type) || (type.isConstQualified() && frozen(type));
+  }
+
+  /// The member of the class of `type` that keeps it from being sendable
+  /// (`Fact::Sendable`) or shareable, for a note; null when it is the type
+  /// itself (a library class, a type argument).
+  [[nodiscard]] const clang::FieldDecl *blocker(clang::QualType type,
+                                                bool toShare) {
+    type = type.getNonReferenceType();
+    while (const clang::ArrayType *array = ast.getAsArrayType(type))
+      type = array->getElementType();
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record != nullptr)
+      record = record->getDefinition();
+    if (record == nullptr || isLibrary(*record))
+      return nullptr;
+    const LockedClass &info = lockedClass(*record);
+    for (const clang::FieldDecl *field : record->fields()) {
+      if (toShare ? !(info.threads.contains(field) || sharedMember(*field) ||
+                      (info.locked.contains(field) &&
+                       sendableMember(field->getType())))
+                  : !sendable(field->getType()))
+        return field;
+    }
+    return nullptr;
+  }
 
   /// An object of `type` has a destructor to run: changing it can end a
   /// borrow, and moving it leaves it moved.
@@ -108,7 +282,7 @@ public:
       return found->second;
     erasures[record] = false;
     bool erases =
-        core::LibrarySpec::shipped().erasedClass(qualifiedName(*record));
+        core::LibrarySpec::shipped().classIs(qualifiedName(*record), "erased");
     if (const auto *specialization =
             llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(record);
         specialization != nullptr && !erases)
@@ -211,8 +385,8 @@ public:
                         : object.getNonReferenceType()->getAsCXXRecordDecl();
     const auto listed = [&](const clang::CXXRecordDecl *record) {
       return record != nullptr && isLibrary(*record) &&
-             core::LibrarySpec::shipped().resetsClass(qualifiedName(*record),
-                                                      method.getName());
+             core::LibrarySpec::shipped().classMember(
+                 qualifiedName(*record), "resets", method.getName());
     };
     return listed(of) || listed(method.getParent());
   }
@@ -457,14 +631,15 @@ public:
   /// has other owners.
   [[nodiscard]] static bool shared(const clang::CXXRecordDecl *record) {
     return record != nullptr && isLibrary(*record) &&
-           core::LibrarySpec::shipped().sharedClass(qualifiedName(*record));
+           core::LibrarySpec::shipped().classIs(qualifiedName(*record),
+                                                "shared");
   }
 
   /// The name the table's class rows use: qualified, without inline
   /// namespaces.
   [[nodiscard]] static std::string
-  qualifiedName(const clang::CXXRecordDecl &record) {
-    std::string name = record.getName().str();
+  qualifiedName(const clang::NamedDecl &record) {
+    std::string name = record.getNameAsString();
     for (const clang::DeclContext *context = record.getDeclContext();
          context != nullptr; context = context->getParent()) {
       if (const auto *space = llvm::dyn_cast<clang::NamespaceDecl>(context)) {
@@ -478,8 +653,158 @@ public:
     return name;
   }
 
+  /// The type arguments of a library template, packs flattened.
+  [[nodiscard]] static llvm::SmallVector<clang::QualType, 4>
+  typeArguments(const clang::ClassTemplateSpecializationDecl &specialization) {
+    llvm::SmallVector<clang::QualType, 4> types;
+    const auto add = [&](const clang::TemplateArgument &argument,
+                         const auto &self) -> void {
+      if (argument.getKind() == clang::TemplateArgument::Type)
+        types.push_back(argument.getAsType());
+      else if (argument.getKind() == clang::TemplateArgument::Pack)
+        for (const clang::TemplateArgument &inner : argument.pack_elements())
+          self(inner, self);
+    };
+    for (const clang::TemplateArgument &argument :
+         specialization.getTemplateArgs().asArray())
+      add(argument, add);
+    return types;
+  }
+
 private:
   const clang::ASTContext &ast;
+  enum class Fact : std::uint8_t {
+    Sendable,
+    SendableMember,
+    Shareable,
+    Frozen
+  };
+  /// Settled facts; one being computed is assumed to hold (a recursive
+  /// type), and a result that leaned on such an assumption is kept only if
+  /// it is false, which no assumption can make true.
+  llvm::DenseMap<std::pair<const clang::Type *, unsigned>, bool> facts;
+  llvm::DenseSet<std::pair<const clang::Type *, unsigned>> visiting;
+  bool assumed = false;
+  llvm::DenseMap<const clang::CXXRecordDecl *, LockedClass> locks;
+
+  [[nodiscard]] bool fact(Fact which, clang::QualType type) {
+    type = type.getCanonicalType().getUnqualifiedType();
+    const std::pair<const clang::Type *, unsigned> key{
+        type.getTypePtr(), static_cast<unsigned>(which)};
+    if (const auto found = facts.find(key); found != facts.end())
+      return found->second;
+    if (visiting.contains(key)) {
+      assumed = true;
+      return true;
+    }
+    visiting.insert(key);
+    const bool outer = assumed;
+    assumed = false;
+    const bool result = compute(which, type);
+    visiting.erase(key);
+    if (!result || !assumed || visiting.empty())
+      facts[key] = result;
+    assumed |= outer;
+    return result;
+  }
+
+  [[nodiscard]] bool compute(Fact which, clang::QualType type) {
+    const bool sends = which == Fact::Sendable || which == Fact::SendableMember;
+    if (const clang::ArrayType *array = ast.getAsArrayType(type))
+      return fact(which, array->getElementType());
+    if (type->isFunctionType())
+      return false;
+    if (pointerLike(type))
+      return which == Fact::Shareable ? false
+                                      : shareable(type->getPointeeType());
+    if (!type->isRecordType())
+      return which != Fact::Shareable;
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record == nullptr || record->getDefinition() == nullptr)
+      return false;
+    record = record->getDefinition();
+    if (isLibrary(*record))
+      return computeLibrary(which, type, *record);
+    if (which != Fact::Shareable && which != Fact::Frozen && sends) {
+      return llvm::all_of(record->bases(),
+                          [&](const clang::CXXBaseSpecifier &base) {
+                            return fact(which, base.getType());
+                          }) &&
+             llvm::all_of(record->fields(), [&](const clang::FieldDecl *field) {
+               return fact(which, field->getType());
+             });
+    }
+    if (which == Fact::Frozen) {
+      if (shareable(type))
+        return true;
+      return llvm::all_of(record->bases(),
+                          [&](const clang::CXXBaseSpecifier &base) {
+                            return frozen(base.getType());
+                          }) &&
+             llvm::all_of(record->fields(), [&](const clang::FieldDecl *field) {
+               return field->isMutable() ? shareable(field->getType())
+                                         : frozen(field->getType());
+             });
+    }
+    const LockedClass &info = lockedClass(*record);
+    return llvm::all_of(record->bases(),
+                        [&](const clang::CXXBaseSpecifier &base) {
+                          return shareable(base.getType());
+                        }) &&
+           llvm::all_of(record->fields(), [&](const clang::FieldDecl *field) {
+             return info.threads.contains(field) || sharedMember(*field) ||
+                    (info.locked.contains(field) &&
+                     sendableMember(field->getType()));
+           });
+  }
+
+  [[nodiscard]] bool computeLibrary(Fact which, clang::QualType type,
+                                    const clang::CXXRecordDecl &record) {
+    const auto *specialization =
+        llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(&record);
+    const llvm::SmallVector<clang::QualType, 4> arguments =
+        specialization != nullptr ? typeArguments(*specialization)
+                                  : llvm::SmallVector<clang::QualType, 4>();
+    const auto all = [&](Fact of) {
+      return llvm::all_of(arguments, [&](clang::QualType argument) {
+        return fact(of, argument);
+      });
+    };
+    const bool synchronized =
+        tableIs(type, "lock") || tableIs(type, "shareable");
+    if (which == Fact::Shareable)
+      return synchronized && all(Fact::Sendable);
+    if (synchronized)
+      return which == Fact::Frozen || all(Fact::Sendable);
+    if (guardClass(type))
+      return false;
+    if (shared(&record)) {
+      if (arguments.empty())
+        return false;
+      const clang::QualType pointee = arguments.front();
+      return shareable(pointee) ||
+             (pointee.isConstQualified() && frozen(pointee));
+    }
+    if (threadClass(type))
+      return true;
+    if (viewClass(&record))
+      return false;
+    if (erased(type)) {
+      // §8: what an erased object holds is not in its type. A future names
+      // its result; a callable's signature names nothing it captured.
+      if (which == Fact::SendableMember)
+        return true;
+      if (which == Fact::Frozen || arguments.empty())
+        return false;
+      return llvm::none_of(arguments,
+                           [](clang::QualType argument) {
+                             return argument->isFunctionType();
+                           }) &&
+             all(Fact::Sendable);
+    }
+    return all(which);
+  }
+
   llvm::DenseMap<const clang::CXXRecordDecl *, bool> views;
   llvm::DenseMap<const clang::CXXRecordDecl *, bool> erasures;
   llvm::DenseMap<const clang::CXXMethodDecl *, bool> accessors;
@@ -538,11 +863,12 @@ private:
   }
 };
 
-/// RFC 0044 §5 to §9: the flow rules for one safe function's body (a
-/// lambda's too). Whether the dataflow settled.
+/// RFC 0044 §5 to §9, RFC 0046: the flow rules for one safe function's
+/// body (a lambda's too, `lambda` the expression that wrote it). Whether
+/// the dataflow settled.
 bool checkCxxFlow(clang::ASTContext &ast, CxxKinds &kinds,
                   const clang::FunctionDecl &function, const clang::Stmt &body,
-                  const RuleReport &report);
+                  const clang::LambdaExpr *lambda, const RuleReport &report);
 
 } // namespace weavec::frontend
 

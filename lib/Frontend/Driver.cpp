@@ -622,19 +622,26 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
                                    .tier = definition.tier,
                                    .file = definition.file,
                                    .line = definition.line,
-                                   .owns = definition.owns});
+                                   .owns = definition.owns,
+                                   .starts = definition.starts,
+                                   .locks = definition.locks,
+                                   .sends = definition.sends});
     for (const SafeUnit::Field &field : safe->fields)
       ledger->fields.push_back({.record = field.record,
                                 .field = field.field,
                                 .kind = field.kind,
                                 .file = field.file,
-                                .line = field.line});
+                                .line = field.line,
+                                .sendable = field.sendable,
+                                .shareable = field.shareable});
     for (const SafeUnit::InPlace &global : safe->inPlace)
       ledger->fields.push_back({.record = global.function,
                                 .field = global.global,
                                 .kind = "global",
                                 .file = global.file,
-                                .line = global.line});
+                                .line = global.line,
+                                .sendable = false,
+                                .shareable = false});
     success = emitEnforcementLedger(*compiler, weavec, *ledger);
   }
   return success ? 0 : 1;

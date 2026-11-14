@@ -7,12 +7,12 @@ in C++, [RFC 0044](rfcs/0044-safe-cxx.md) and
 [its guide](pages/guides/safe-cxx.md)).
 `weavec-cc` puts the header on the system include path
 (`#include <weavec.h>`) and defines `__WEAVEC__` to `1` in every unit it
-compiles with WeaveC enabled. The header is at version 3.1
+compiles with WeaveC enabled. The header is at version 3.2
 (`WEAVEC_H_VERSION_MAJOR`, `WEAVEC_H_VERSION_MINOR`): 3.0 added
 `WEAVEC_OWNED` and made `WEAVEC_SAFE` name the one safe tier
 ([RFC 0043](rfcs/0043-ownership.md)), below; 3.1 adds no macro and gives
 the existing ones their meaning in C++ ([RFC 0044](rfcs/0044-safe-cxx.md),
-_In C++_ below).
+_In C++_ below); 3.2 adds `WEAVEC_SENDS` ([RFC 0046](rfcs/0046-thread-safety.md)).
 
 `WEAVEC_UNSAFE` expands to `__attribute__((annotate("weavec.unsafe")))`
 under compilers that understand Clang's `annotate` attribute and to nothing
@@ -88,6 +88,7 @@ region too, with no source change.
 | `WEAVEC_SAFE`, `WEAVEC_GUARDED` | before a function definition, or after `struct` or `class` | The function, or every member function the class defines, is safe (in a unit without the flag) or stays guarded (in a unit with it). |
 | `WEAVEC_UNSAFE` | as in C | Unchanged: a function or a block without guards. A safe function holds no such block. |
 | `T *WEAVEC_ESCAPES p`, `F WEAVEC_ESCAPES f` | a parameter | The callee keeps the pointer (as a reference), or a copy of the callable: a safe caller does not pass the address of a local or a callable that captures by reference. |
+| `std::function<void()> WEAVEC_SENDS task` | a parameter of a type-erased callable, after its type | RFC 0046 §8: the function may keep the callable and run it on another thread; a safe caller passes a callable that captures by value only what may be sent. The same on every declaration; `bad-annotation` on any other type, and in C. |
 | `T *WEAVEC_BORROWED m` | a pointer member | The member is a borrow, not a reference: its class is a view, as a class with a reference member is. |
 | `WEAVEC_LIFETIMEBOUND` | after a parameter's name | The result points into this argument (Clang's `lifetimebound`); without any, a view result points into every view passed by value, or, when there is none, into the reference arguments. |
 | `WEAVEC_OWNED`, `WEAVEC_DROPS`, the bounds annotations | — | Safe C's. In a safe C++ function's own declaration they are an error (`bad-annotation`): a pointer with a count is a `std::span`, an owner a `std::unique_ptr` or a container. |

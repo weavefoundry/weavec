@@ -30,7 +30,7 @@
 namespace weavec::frontend {
 
 /// The version of the `weavec-ledger` JSON this writes.
-inline constexpr unsigned EnforcementLedgerVersion = 8;
+inline constexpr unsigned EnforcementLedgerVersion = 9;
 
 /// What the pass decided for one access.
 struct LedgerRow {
@@ -60,17 +60,27 @@ struct LedgerFunction {
   std::string file;
   unsigned line = 0;
   bool owns = false;
+  /// RFC 0046 §12: the thread starts the function makes, whether it uses a
+  /// lock or a guard object, and whether a parameter is WEAVEC_SENDS.
+  unsigned starts = 0;
+  bool locks = false;
+  bool sends = false;
 };
 
 /// RFC 0043 §11: a pointer field of a struct the unit defines, and its
 /// kind: `owner`, `reference` or `borrowed`; or (`kind` `global`) a global
-/// owner a safe function reads in place.
+/// owner a safe function reads in place. RFC 0046 §12: the kinds `lock`,
+/// `locked` and `thread`; `class`, a class the unit defines (no field),
+/// with whether it is sendable and shareable; `thread-global`, a global
+/// that code which is not safe defines and a safe function names.
 struct LedgerField {
   std::string record;
   std::string field;
   std::string kind;
   std::string file;
   unsigned line = 0;
+  bool sendable = false;
+  bool shareable = false;
 };
 
 /// RFC 0045 §10: what a fast unit rests on beyond its own code: a library

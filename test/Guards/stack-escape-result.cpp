@@ -9,7 +9,8 @@
 // RUN: %weavec_cxx -std=c++20 -O1 -fweavec-safe -S -emit-llvm %s -o - | FileCheck %s --check-prefix=TAIL
 #include <weavec.h>
 
-static const int *kept;
+// RFC 0046 §4: a global of safe code is `thread_local`, `const` or shareable.
+static thread_local const int *kept;
 WEAVEC_GUARDED void keep(const int &x) { kept = &x; }
 WEAVEC_GUARDED const int &last() { return *kept; }
 

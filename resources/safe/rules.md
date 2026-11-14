@@ -4,7 +4,7 @@ A safe function (`WEAVEC_SAFE`, or every function of a unit compiled with `-fwea
 
 A rule that both languages have says first what it means in C, then, under _In C++_, what it means there. [`safe-cxx`](#safe-cxx) is the page to read before writing safe C++: the kinds of pointer its rules are stated over.
 
-The C examples below include `<weavec.h>`, `<stddef.h>`, `<stdio.h>`, `<stdlib.h>` and `<string.h>`; the C++ ones `<weavec.h>` and the standard library's containers, strings, smart pointers and algorithms, as C++20. The design is in [RFC 0041](/rfcs/0041-safe-c/) (bounds), [RFC 0042](/rfcs/0042-typed-memory/) (typed memory), [RFC 0043](/rfcs/0043-ownership/) (ownership) and [RFC 0044](/rfcs/0044-safe-cxx/) (C++).
+The C examples below include `<weavec.h>`, `<stddef.h>`, `<stdio.h>`, `<stdlib.h>` and `<string.h>`; the C++ ones `<weavec.h>` and the standard library's containers, strings, smart pointers and algorithms, as C++20. The design is in [RFC 0041](/rfcs/0041-safe-c/) (bounds), [RFC 0042](/rfcs/0042-typed-memory/) (typed memory), [RFC 0043](/rfcs/0043-ownership/) (ownership), [RFC 0044](/rfcs/0044-safe-cxx/) (C++) and [RFC 0046](/rfcs/0046-thread-safety/) (threads). The thread examples include `<atomic>`, `<condition_variable>`, `<future>`, `<mutex>`, `<shared_mutex>` and `<thread>` too.
 
 ## safe-cxx
 
@@ -18,6 +18,8 @@ Every pointer, reference and object in a safe function is one of four kinds:
 - A **reference** is a raw pointer kept in a member or in a container's element. The rules do not follow it; the guards check it when it is used. What an object owns is not changed through one ([`owner-path`](#owner-path)); `std::shared_ptr` is the way to share an object that changes.
 
 The other flow rules are [`owner-moved`](#owner-moved) (an object used after `std::move`) and [`call-alias`](#call-alias). The rules of single expressions are [`index-single`](#index-single), [`pointer-cast`](#pointer-cast), [`pointer-bytes`](#pointer-bytes), [`union-pointer`](#union-pointer), [`int-to-pointer`](#int-to-pointer), [`variadic`](#variadic), [`no-asm`](#no-asm), [`unsafe-block`](#unsafe-block), [`bad-annotation`](#bad-annotation) and [`not-modeled`](#not-modeled). Rules without an _In C++_ part are C's.
+
+Threads add three facts about a type, each read from its structure ([RFC 0046](/rfcs/0046-thread-safety/)). A type is **sendable** when a value of it can be handed to another thread: what it owns is its own, and every pointer it holds points to something shareable (`std::vector<std::string>`, `std::unique_ptr<Job>`, a `std::future<int>`; not a `std::string_view`, a `std::shared_ptr<State>` of a plain struct, or a `std::function`, whose type does not say what it captured). A type is **shareable** when two threads can use one object of it at once: an atomic, a condition variable, a `std::mutex`, or a class each of whose members is shareable, `const` and frozen, a thread member, or guarded by the class's one lock member (a **locked class**). A type is **frozen** when an object of it reached only through `const` is never written: no `mutable` member that is not shareable, and no pointer to what is not shareable. Then: what a thread is given by value is sendable ([`thread-send`](#thread-send)); what it reaches by reference, and every global, is shareable or a `const` object of frozen type ([`thread-share`](#thread-share)), or a local the function lends it and keeps off until the thread ends ([`thread-lent`](#thread-lent)); a locked member is used only while a guard on its lock lives ([`lock-held`](#lock-held)). Nothing of this changes what is compiled: these rules have no check behind them at run time.
 
 ```cpp accepted
 struct Item { int id = 0; std::string name; };
@@ -322,6 +324,73 @@ struct Holder {
 };
 ```
 
+Threads add three cases. A borrow of a locked member does not leave its lock: it is not returned or stored, since another thread may change the member as soon as the guard ends; return a copy. A thread object that holds a borrow is not detached, which would let it outlive what it borrowed; capture by value. And a class that owns a thread started with `this` declares the thread member after every other member, so that it is joined before they are destroyed; is `final` if it has virtual functions; cannot be copied or moved away from the thread; and is shareable ([`thread-share`](#thread-share)).
+
+```cpp rejected
+class Rows {
+  std::mutex mu_;
+  std::vector<std::string> rows_;
+public:
+  const std::string &first() {
+    const std::lock_guard lock(mu_);
+    return rows_.front();
+  }
+};
+```
+
+```cpp rejected
+void report(const std::string &message) {
+  std::string copy = message;
+  std::thread t([&copy] { (void)copy.size(); });
+  t.detach();
+}
+```
+
+```cpp rejected
+class Worker final {
+  std::mutex mu_;
+  std::jthread thread_;
+  std::vector<std::string> names_;         // destroyed before the thread is joined
+public:
+  Worker() : thread_([this] { add(); }) {}
+  Worker(const Worker &) = delete;
+  Worker &operator=(const Worker &) = delete;
+  void add() {
+    const std::lock_guard lock(mu_);
+    names_.push_back("x");
+  }
+};
+```
+
+```cpp accepted
+class Rows {
+  std::mutex mu_;
+  std::vector<std::string> rows_;
+public:
+  std::string first() {
+    const std::lock_guard lock(mu_);
+    return rows_.front();                  // a copy leaves the lock
+  }
+};
+void report(const std::string &message) {
+  std::thread t([copy = message] { (void)copy.size(); });
+  t.detach();                              // the thread owns what it uses
+}
+class Worker final {
+  std::mutex mu_;
+  std::vector<std::string> names_;
+  std::jthread thread_;                    // last: started last, joined first
+public:
+  Worker() : thread_([this] { add(); }) {}
+  Worker(const Worker &) = delete;
+  Worker &operator=(const Worker &) = delete;
+  void add() {
+    const std::lock_guard lock(mu_);
+    names_.push_back("x");
+  }
+};
+```
+
 ```cpp accepted
 #include <string>
 #include <variant>
@@ -447,10 +516,14 @@ int sum(const int *WEAVEC_COUNTED_BY(n) v, size_t n);
 
 ### In C++
 
-Safe C's bounds annotations and `WEAVEC_OWNED` are not used by a safe C++ function: a pointer with a count is a `std::span`, and an owner is a `std::unique_ptr` or a container. `WEAVEC_ESCAPES`, `WEAVEC_BORROWED` and `WEAVEC_LIFETIMEBOUND` keep their meaning.
+Safe C's bounds annotations and `WEAVEC_OWNED` are not used by a safe C++ function: a pointer with a count is a `std::span`, and an owner is a `std::unique_ptr` or a container. `WEAVEC_ESCAPES`, `WEAVEC_BORROWED` and `WEAVEC_LIFETIMEBOUND` keep their meaning. `WEAVEC_SENDS` ([`thread-send`](#thread-send)) goes after the type of a parameter that is a type-erased callable, the same in every declaration of the function; in C it is an error.
 
 ```cpp rejected
 int first(const int *WEAVEC_COUNTED_BY(n) p, std::size_t n) { return n != 0 ? *p : 0; }
+```
+
+```cpp rejected
+void schedule(int WEAVEC_SENDS delay) { (void)delay; }
 ```
 
 ```cpp accepted
@@ -659,6 +732,17 @@ Reach the owner from the pointer that owns it (a list's head, a tree's root), or
 
 What an object owns is changed only from what owns it or was lent it: a local, a parameter, `this`, and through members, owners (`std::unique_ptr`, containers) and borrows. Through a raw pointer kept in a member or in a container's element, a safe function reads, calls `const` member functions and assigns members that own nothing; it does not call a member function that is not `const` on an object that owns something, or assign such a member. That is what lets a borrow survive a call that was not handed its owner: no callee can reach the owner through a pointer it kept. The fixes: own the object; take it as a parameter; make the member a reference, which makes the class a view that lives in a local; or hold it by `std::shared_ptr`, through which changes are allowed. A member function that is `const`, or has a `const` twin, changes nothing `*this` owns, `mutable` members included.
 
+What an owning pointer (`std::unique_ptr`, an owner whose `const` access returns a reference that is not `const`) holds is written only through a path that is not `const`: in a `const` member function, `impl_->count++` writes what `impl_` owns, so two threads reading the object at once would race ([RFC 0046](/rfcs/0046-thread-safety/), D4). A raw pointer member is not an owning pointer: writing through one in a `const` member function stays allowed, which is why a class with one is not frozen.
+
+```cpp rejected
+struct Counter { int hits = 0; };
+class Widget {
+  std::unique_ptr<Counter> impl_ = std::make_unique<Counter>();
+public:
+  void touch() const { impl_->hits++; }
+};
+```
+
 ```cpp rejected
 struct Subject;
 struct Observer {
@@ -681,6 +765,13 @@ struct Observer {
 struct Subject {
   std::vector<Observer *> observers;
   void sweep() { std::erase_if(observers, [](const Observer *o) { return o->finished; }); }
+};
+struct Counter { int hits = 0; };
+class Widget {
+  std::unique_ptr<Counter> impl_ = std::make_unique<Counter>();
+public:
+  void touch() { impl_->hits++; }                   // not 'const': it says it writes
+  int hits() const { return impl_->hits; }
 };
 struct Node {
   std::vector<std::unique_ptr<Node>> children;
@@ -796,6 +887,51 @@ void rename_all(std::vector<std::string> &names) {
 }
 ```
 
+Threads add two ends. A borrow of a locked member points into the guard as well ([`lock-held`](#lock-held)), and ends when the guard is destroyed or unlocked, or is handed by reference to a call that may give the lock away for a while, as a condition variable's `wait` does. And a thread object's destruction joins its thread, so it is a use of everything the thread borrowed: a local the thread uses ends after the thread object, or the thread is joined first.
+
+```cpp rejected
+class Inbox {
+  std::mutex mu_;
+  std::condition_variable ready_;
+  std::vector<std::string> items_;
+public:
+  std::size_t first_length() {
+    std::unique_lock lock(mu_);
+    const std::string &first = items_.front();
+    ready_.wait(lock);                     // gives the lock away for a while
+    return first.size();
+  }
+};
+```
+
+```cpp rejected
+void outlives() {
+  std::jthread worker;
+  {
+    std::string message = "hi";
+    worker = std::jthread([&message] { (void)message.size(); });
+  }                                        // 'message' ends, the thread runs on
+}
+```
+
+```cpp accepted
+class Inbox {
+  std::mutex mu_;
+  std::condition_variable ready_;
+  std::vector<std::string> items_;
+public:
+  std::size_t first_length() {
+    std::unique_lock lock(mu_);
+    ready_.wait(lock, [this] { return !items_.empty(); });
+    return items_.front().size();          // taken after the wait
+  }
+};
+void joined_first() {
+  std::string message = "hi";
+  std::jthread worker([&message] { (void)message.size(); });
+}                                          // the thread is joined before 'message' ends
+```
+
 ## call-alias
 
 In one call, an argument through which the callee could change owners does not point to the same object as another argument that holds owners, nor above or below it, as far as the function knows where both came from.
@@ -865,7 +1001,14 @@ private:
 
 ## not-modeled
 
-Safe C++ only. A construct the rules do not follow is rejected, not guessed at: a coroutine, `goto`, a GNU statement expression, a function that returns twice (`setjmp`). Write it another way, or keep the function `WEAVEC_GUARDED`.
+A construct the rules do not follow is rejected, not guessed at. In C, a call that starts a thread (`pthread_create`, `thrd_create`, `dispatch_async`): Safe C does not check what a thread is given, so the function that starts one is `WEAVEC_GUARDED`, which the audit lists ([RFC 0046](/rfcs/0046-thread-safety/) §10). In C++, a coroutine, `goto`, a GNU statement expression, a function that returns twice (`setjmp`), and of threads: the same C calls (start the thread with `std::jthread`), an algorithm given a parallel execution policy, an OpenMP directive, a guard constructed with a tag (`std::defer_lock`, `std::try_to_lock`, `std::adopt_lock`) or moved, a lock handed to a function that is not a guard's constructor (`std::lock`), and a guard's member function the table does not name (`try_lock`). Write it another way, or keep the function `WEAVEC_GUARDED`.
+
+```cpp rejected
+void both(std::mutex &a, std::mutex &b) {
+  std::unique_lock first(a, std::defer_lock);
+  std::unique_lock second(b, std::defer_lock);
+}
+```
 
 ```cpp rejected
 int count_down(int n) {
@@ -882,4 +1025,219 @@ int count_down(int n) {
   }
   return n;
 }
+void both(std::mutex &a, std::mutex &b) {
+  const std::scoped_lock locks(a, b);       // takes both, in a safe order
+}
+```
+
+## thread-send
+
+Safe C++ only. What a thread start gives the new thread by value is sendable: each argument of a `std::thread` or `std::jthread` constructor and of `std::async`, and each by-copy capture of the callable. A sendable value carries nothing a thread could reach behind another's back: it owns what it holds, and every pointer in it points to something shareable. A `std::shared_ptr<T>` is sendable when `T` is shareable, or is `const` and frozen: share a class that locks its members, or a `std::shared_ptr<const T>` made by `std::make_shared<const T>`. A raw pointer member makes its struct sendable only if it points to something shareable.
+
+A `std::function` does not say what it captured, so it crosses only from where that is known: a lambda written at the thread start, a local made from a lambda or a function and never assigned, or a parameter declared `WEAVEC_SENDS` (written after the type). A function that keeps a callable to run on another thread (a pool's `submit`) takes it that way, and a member of erased type in a locked class is given only such callables; a caller then passes a callable that captures nothing by reference and only what may be sent by value.
+
+```cpp rejected
+struct State { std::map<int, std::string> names; };
+void start() {
+  auto state = std::make_shared<State>();
+  std::jthread a([state] { state->names[1] = "a"; });
+}
+```
+
+```cpp rejected
+void run(std::function<void()> task) {
+  std::jthread worker(task);
+}
+```
+
+```cpp accepted
+struct State { std::map<int, std::string> names; };
+class Names {
+  std::mutex mu_;
+  std::map<int, std::string> names_;
+public:
+  void set(int key, std::string name) {
+    const std::lock_guard lock(mu_);
+    names_[key] = std::move(name);
+  }
+};
+void start() {
+  auto snapshot = std::make_shared<const State>();
+  std::jthread a([snapshot] { (void)snapshot->names.size(); });
+  auto names = std::make_shared<Names>();
+  std::jthread b([names] { names->set(1, "a"); });
+}
+void run(std::function<void()> WEAVEC_SENDS task) {
+  std::jthread worker(std::move(task));
+}
+```
+
+## thread-share
+
+Safe C++ only. What a thread reaches by reference is shareable, an immutable object (a `const` local, or what a `std::shared_ptr<const T>` points to, of frozen type), or a local the function lends ([`thread-lent`](#thread-lent)): the target of a capture by reference, `this`, a pointer or a view passed or captured by value, a `std::ref`. A parameter is not lent, since the caller may use it meanwhile; neither is `*this` unless its class is shareable: share the object as a `std::shared_ptr<const T>`, start the threads in the function that owns it, or give the class a lock.
+
+Every thread can reach a global, a static member and a function's `static` local, so each is shareable, `const` with a frozen type (or a constant whose initializer points only at constants), or `thread_local`. This holds in a program that starts no thread, as Rust's rule for `static` does; a global that code which is not safe trusts is marked `WEAVEC_GUARDED`, and the audit lists the safe functions that name it. A shareable global is used in place: calling a member function of a locked class on one is how it is meant to be used.
+
+A `std::shared_ptr<const T>` is made with `std::make_shared<const T>`, or from a `std::shared_ptr<T>` no other handle shares (one `std::make_shared<T>` returned, or a local made so and only dereferenced before it is moved); one converted from a handle that still writes would let a reader race the writer. And a C function the table marks as keeping state of its own between calls (`strtok`, `localtime`, `rand`, `strerror`, `setenv`) is not called: use the reentrant form, `<random>` or `<chrono>`.
+
+```cpp rejected
+static std::vector<std::string> Log;
+```
+
+```cpp rejected
+class Worker {
+  std::vector<std::string> names_;
+public:
+  void start() {
+    std::jthread t([this] { names_.push_back("x"); });
+  }
+};
+```
+
+```cpp rejected
+void scan(const std::vector<int> &data) {
+  std::jthread reader([&data] { (void)data.size(); });
+}
+```
+
+```cpp accepted
+thread_local std::vector<std::string> Log;
+const std::vector<int> Primes{2, 3, 5};
+static std::atomic<int> Requests{0};
+class Worker {
+  std::mutex mu_;
+  std::vector<std::string> names_;
+public:
+  void add(std::string name) {
+    const std::lock_guard lock(mu_);
+    names_.push_back(std::move(name));
+  }
+  void start() {
+    std::jthread t([this] { add("x"); });   // 'Worker' locks its members
+  }
+};
+void scan(std::shared_ptr<const std::vector<int>> data) {
+  std::jthread reader([data] { (void)data->size(); });
+}
+void readers() {
+  const std::vector<int> data{1, 2, 3};
+  std::jthread a([&data] { (void)data.size(); });
+  std::jthread b([&data] { (void)data.front(); });
+}
+```
+
+## thread-lent
+
+Safe C++ only. A local of the function (not a parameter, not a reference) that a thread borrows is **lent** to the thread object: to read, when its type is frozen and the thread only reads it (the lambda uses it only as `const`, a `std::cref`, a pointer to `const`, a `std::string_view`), else to write. While the thread object holds the loan, the function does not use a local lent to write at all (nor through a reference or a view of it), and does not write, move or lend to write a local lent to read. The loan ends when the thread object is destroyed, when it is joined (`join`, and `get` or `wait` of a `std::async` future), when a container of thread objects is destroyed or cleared, or after a loop that does nothing but join each of its threads (`for (auto &t : threads) t.join();`).
+
+Threads that each write their own element of one container are lent the element at their own index, when the lambda uses the container only as `v[i]` with `i` a by-copy capture of the counter of the loop that starts them, and nothing else in the loop changes the counter: Rust's `chunks_mut` in C++'s spelling. Anything else that two threads do to one local, `std::vector<bool>`'s packed elements included, gives each thread its own data and collects the results.
+
+```cpp rejected
+void two_writers() {
+  std::vector<int> v;
+  std::jthread a([&v] { v.push_back(1); });
+  std::jthread b([&v] { v.push_back(2); });
+}
+```
+
+```cpp rejected
+std::size_t used_meanwhile() {
+  std::vector<int> v;
+  std::jthread t([&v] { v.push_back(1); });
+  return v.size();
+}
+```
+
+```cpp accepted
+std::size_t scoped_worker() {
+  std::vector<std::string> lines{"a", "bb"};
+  std::size_t total = 0;
+  {
+    std::jthread worker([&total, &lines] {
+      for (const std::string &line : lines)
+        total += line.size();
+    });
+  }                                           // the thread ends here
+  return total + lines.size();                // and both locals are the function's again
+}
+int slots() {
+  std::vector<int> parts(4);
+  std::vector<std::jthread> workers;
+  for (int i = 0; i < 4; ++i)
+    workers.emplace_back([&parts, i] { parts[i] = i * i; });
+  for (std::jthread &worker : workers)
+    worker.join();
+  return parts[3];
+}
+```
+
+## lock-held
+
+Safe C++ only. In a class with exactly one lock member (`std::mutex`, `std::shared_mutex`, perhaps `mutable`), the lock guards every other member that is not itself shareable or `const` and frozen. A safe function uses such a **locked member** of an object (`this`, or a variable named directly) only while a guard on that object's lock lives: a local `std::lock_guard`, `std::scoped_lock`, `std::unique_lock` or `std::shared_lock` constructed from the lock, until it is destroyed or unlocked. Under a `std::shared_lock` the members are only read. Locks are taken by guards, never by hand (`mu_.lock()`), and a borrow of a locked member ends with its guard ([`stale-borrow`](#stale-borrow), [`escape`](#escape)).
+
+A lambda written as the argument of a call that does not keep it (a condition variable's predicate, an algorithm's callable) holds the guards held where it is written. A member function that expects the lock held takes the guard by reference, `void compact(std::unique_lock<std::mutex> &lock)`, and is called with a guard on the lock of the object it is called on. Constructors and destructors use the members without a guard, unless the class owns a thread that may already run; a member that holds a thread is used under the lock outside them. A class with two locks is not a locked class: give each lock and the members it guards a class of their own. A ten-line `Locked<T>` with a `with(f)` member is Rust's `Mutex<T>`.
+
+```cpp rejected
+class Queue {
+  std::mutex mu_;
+  std::vector<std::string> items_;
+public:
+  std::size_t drain() {
+    const std::size_t n = items_.size();
+    items_.clear();
+    return n;
+  }
+};
+```
+
+```cpp rejected
+class Counter {
+  std::mutex mu_;
+  int value_ = 0;
+public:
+  void add() {
+    mu_.lock();
+    ++value_;
+    mu_.unlock();
+  }
+};
+```
+
+```cpp accepted
+class Queue {
+  std::mutex mu_;
+  std::condition_variable ready_;
+  std::vector<std::string> items_;
+public:
+  void push(std::string item) {
+    {
+      const std::lock_guard lock(mu_);
+      items_.push_back(std::move(item));
+    }
+    ready_.notify_one();
+  }
+  std::string pop() {
+    std::unique_lock lock(mu_);
+    ready_.wait(lock, [this] { return !items_.empty(); });
+    std::string item = std::move(items_.back());
+    items_.pop_back();
+    return item;
+  }
+  std::size_t drain() {
+    const std::lock_guard lock(mu_);
+    const std::size_t n = items_.size();
+    items_.clear();
+    return n;
+  }
+};
+template <class T> class Locked {
+  mutable std::mutex mu_;
+  T value_;
+public:
+  explicit Locked(T value) : value_(std::move(value)) {}
+  template <class F> auto with(F f) {
+    const std::lock_guard lock(mu_);
+    return f(value_);
+  }
+};
 ```

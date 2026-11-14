@@ -95,5 +95,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0043](0043-ownership.md) | Ownership | Accepted |
 | [0044](0044-safe-cxx.md) | Safe C++ | Accepted |
 | [0045](0045-type-stable-memory.md) | Type-stable memory | Accepted |
+| [0046](0046-thread-safety.md) | Thread safety | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

@@ -493,6 +493,25 @@ erased;` rows name the classes that hide what they hold. Under
 safe C++ function is compiled as a guarded one, and a unit's object is the
 same with and without the flag.
 
+The same two parts check threads (RFC 0046), and nothing of it reaches
+code generation either: an object is the same with the rules off (`-mllvm
+-weavec-thread-rules=0`). `CxxKinds` also says whether a type is
+*sendable*, *shareable* and *frozen*, and describes a *locked class* (its
+one lock member, the members it guards, its thread members), from
+structure and from the library table's `thread`, `joins(…)`,
+`detaches(…)`, `lock`, `guard`, `locks(…)` and `shareable` clauses. The
+flow's state also holds the guards held on every path (a borrow of a
+locked member points into its guard, a `RootKind::Guard` loan, and ends
+with it) and, for each live thread object (a local, a container of them, a
+`std::async` future), the locals lent to it, to read or to write, or one
+element of a container at a loop counter; it reports `thread-send`,
+`thread-share`, `thread-lent` and `lock-held` at thread starts and uses,
+and new cases of `stale-borrow` and `escape`. `CxxRules` checks the unit's
+globals, the calls that start threads it cannot follow (`not-modeled`) and
+of functions the table marks `unshared` (`thread-share`), and `CxxUnit`
+records each function's thread starts and each class's kinds for the
+ledger (version 9) and the audit (version 5).
+
 A unit compiled as safe is otherwise *fast* (RFC 0045,
 `lib/Frontend/GuardFast.cpp`). The driver asks Clang for each allocation's
 inferred type (`-fsanitize=alloc-token`'s `!alloc_token`, with LLVM's own

@@ -87,7 +87,7 @@ private:
 std::unique_ptr<Item> made() { return std::make_unique<Item>(); }
 std::shared_ptr<Item> madeShared() { return std::make_shared<Item>(); }
 std::vector<int> madeArray(std::size_t n) { return std::vector<int>(n); }
-Item *borrowed(const std::unique_ptr<Item> &p) { return p.get(); }
+const Item *borrowed(const std::unique_ptr<Item> &p) { return p.get(); }
 void reset(std::unique_ptr<Item> &p, std::optional<Item> &o) {
   p.reset();
   o.reset();
