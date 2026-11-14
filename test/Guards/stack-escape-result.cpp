@@ -4,6 +4,9 @@
 // from the rule `escape`, which rejects every direct form.
 // RUN: %weavec_cxx -std=c++20 -O1 -fweavec-safe %s -o %t
 // RUN: not --crash %t 2>&1 | FileCheck %s
+// A `musttail` call's result gets no check: nothing goes between it and the
+// return.
+// RUN: %weavec_cxx -std=c++20 -O1 -fweavec-safe -S -emit-llvm %s -o - | FileCheck %s --check-prefix=TAIL
 #include <weavec.h>
 
 static const int *kept;
@@ -16,5 +19,12 @@ WEAVEC_GUARDED const int &last() { return *kept; }
   keep(local);
   return last();
 }
+
+// TAIL-LABEL: define {{.*}} @_Z7forwardPKi(
+// TAIL-NOT: frame_escape
+// TAIL: musttail call
+// TAIL-NEXT: ret ptr
+[[gnu::noinline]] WEAVEC_GUARDED const int *pass(const int *p) { return p; }
+const int *forward(const int *p) { [[clang::musttail]] return pass(p); }
 
 int main() { return worst(); }

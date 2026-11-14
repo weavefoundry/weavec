@@ -1801,21 +1801,6 @@ void *weavecRtAllocTyped(size_t size, unsigned form,
   return allocForm(size, 0, form, type);
 }
 
-void *__weavec_rt_alloc_typed(size_t size, unsigned form,
-                              struct __weavec_rt_type *type) {
-  return allocForm(size, 0, form == WeavecRtFormNew ? form : WeavecRtFormMalloc,
-                   type);
-}
-
-void *__weavec_rt_calloc_typed(size_t count, size_t size,
-                               struct __weavec_rt_type *type) {
-  size_t bytes;
-  if (__builtin_mul_overflow(count, size, &bytes)) {
-    errno = ENOMEM;
-    return NULL;
-  }
-  return allocForm(bytes, 0, WeavecRtFormMalloc, type);
-}
 
 void weavecRtReleaseForm(void *p, unsigned form, size_t size,
                          const void *caller,
@@ -2472,6 +2457,29 @@ void weavecRtMarkHuge(void) {
     if (hugeBlocks[i].dead == 0)
       weavecRtMarkWords(hugeBlocks[i].base,
                         hugeBlocks[i].base + hugeBlocks[i].size);
+}
+
+void weavecRtEachLive(void (*visit)(uintptr_t base, size_t size)) {
+  unsigned region;
+  size_t i;
+  for (region = 0; region < __weavec_rt_heap.regions; ++region) {
+    const size_t size = __weavec_rt_heap.table[region].size;
+    const uint32_t *words = slotWords(region);
+    const uint32_t bump = __atomic_load_n(&regionState[region].bump,
+                                          __ATOMIC_ACQUIRE);
+    uint32_t slot;
+    for (slot = 0; slot < bump; ++slot) {
+      const uint32_t word = loadWord(&words[slot]);
+      if ((word & WeavecRtWordState) == WeavecRtLive)
+        visit(regionStart(region) + (uintptr_t)slot * size,
+              weavecRtLiveSize(word));
+    }
+  }
+  take(&hugeLock);
+  for (i = 0; i < hugeCount; ++i)
+    if (hugeBlocks[i].dead == 0)
+      visit(hugeBlocks[i].base, hugeBlocks[i].size);
+  give(&hugeLock);
 }
 
 void weavecRtMarkHeap(void) {

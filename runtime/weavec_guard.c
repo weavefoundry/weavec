@@ -679,10 +679,17 @@ void __weavec_rt_escape_check(uintptr_t address,
     weavecRtFail("stack-escape", address, 0, site);
 }
 
-/* RFC 0045 (Y4): a safe function's result into its own frame. */
+/* RFC 0045 (Y4): a safe function's result into its own frame. The inline
+ * test takes a range below the stack pointer; only an address on this
+ * thread's stack is one (another mapping may lie below a short stack). */
 void __weavec_rt_frame_escape(uintptr_t address, const char *function,
                               const struct __weavec_rt_site *site) {
   char message[320];
+  uintptr_t low = 0;
+  uintptr_t high = 0;
+  weavecRtOwnStack(&low, &high);
+  if (address < low || address >= high)
+    return;
   (void)snprintf(message, sizeof message,
                  "result of '%s' points into its own frame at 0x%lx",
                  function != NULL ? function : "?", (unsigned long)address);

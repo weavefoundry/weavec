@@ -87,9 +87,10 @@ FastCode fastCodeOf(const ModuleContext &module,
     return FastCode::Trusted;
   if (safe.cxxSafe.contains(name))
     return FastCode::Safe;
-  // The unit's other functions, and the initializers of its globals.
-  if (safe.cxxOther.contains(name) || name.starts_with("__cxx_global_var") ||
-      name.starts_with("_GLOBAL__"))
+  // The unit's other functions, and those the compiler makes of its code
+  // (its globals' initializers and destructors, a static local's
+  // destructor, a coroutine's parts), which no other unit names.
+  if (safe.cxxOther.contains(name) || function.hasLocalLinkage())
     return FastCode::None;
   return FastCode::Library;
 }
@@ -408,10 +409,12 @@ void checkResults(ModuleContext &module, llvm::Function &function) {
       fastCodeOf(module, function) != FastCode::Safe)
     return;
   std::vector<llvm::ReturnInst *> returns;
+  // (Nothing goes between a `musttail` call and its `ret`.)
   for (llvm::BasicBlock &block : function)
     if (auto *ret = llvm::dyn_cast<llvm::ReturnInst>(block.getTerminator());
         ret != nullptr && ret->getReturnValue() != nullptr &&
-        !llvm::isa<llvm::Constant>(ret->getReturnValue()))
+        !llvm::isa<llvm::Constant>(ret->getReturnValue()) &&
+        block.getTerminatingMustTailCall() == nullptr)
       returns.push_back(ret);
   if (returns.empty())
     return;

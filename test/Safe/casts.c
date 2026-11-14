@@ -74,10 +74,12 @@ WEAVEC_SAFE void sized(size_t n) {
   long *d = malloc(n * sizeof(int));               // expected-error {{converting an allocation sized by 'int' to 'long *'}}
   char *e = malloc(sizeof(struct pair) + n);       // bytes of a type without pointers
   char *f = malloc(sizeof(struct node) + n);       // expected-error {{converting an allocation sized by 'struct node' to 'char *'}}
+  struct node *g = malloc(sizeof(struct node[4])); // an array of what it holds
   free(a);
   free(b);
   free(c);
   free(d);
+  free(g);
   free(e);
   free(f);
 }

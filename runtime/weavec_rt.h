@@ -882,6 +882,9 @@ int weavecRtAllocatorNested(void);
 int weavecRtPrepareMarks(void);
 void weavecRtMarkWords(uintptr_t low, uintptr_t high);
 void weavecRtMarkHeap(void);
+/* RFC 0045 section 9: calls `visit` with each live heap block's start and
+ * size (a late fast unit clears what containers marked). */
+void weavecRtEachLive(void (*visit)(uintptr_t base, size_t size));
 /* RFC 0042 section 9: clears the marked released blocks, in a program with
  * typed code (weavecRtTypedProgram). */
 extern int weavecRtTypedProgram;

@@ -1814,8 +1814,14 @@ private:
         cast.getSubExpr()->IgnoreParenImpCasts());
     if (call == nullptr)
       return;
-    const clang::QualType sized =
+    clang::QualType sized =
         clang::infer_alloc::inferPossibleType(call, ast, &cast);
+    // (`sizeof(T[n])` sizes `T`s.)
+    while (!sized.isNull())
+      if (const clang::ArrayType *array = ast.getAsArrayType(sized))
+        sized = array->getElementType();
+      else
+        break;
     if (sized.isNull() || sized->isVoidType() ||
         clang::ASTContext::hasSameUnqualifiedType(sized, to) ||
         (isByteType(to) && !holdsPointers(sized)))

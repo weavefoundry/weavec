@@ -120,12 +120,42 @@ uintptr_t __asan_load_cxx_array_cookie(uintptr_t *cookie) { return *cookie; }
  * make none, unless WEAVEC_RT_CONTAINERS=1 asks for them. */
 static int containersOff;
 static int containersSet;
+/* Whether a container was annotated yet. */
+static int containersUsed;
 int weavecRtFastProgram;
 
+/* The granules of the heap block at `base` that a container marked, as the
+ * block's own again: past its elements, a last element's granule that the
+ * marks after it split, and the block's last granule. */
+static void clearContainers(uintptr_t base, size_t size) {
+  const unsigned char color = weavecRtColorOfHeap(base);
+  const uintptr_t end = base + size;
+  uintptr_t g;
+  if (!weavecRtInWindow(base) || !weavecRtInWindow(end - 1))
+    return;
+  for (g = base; g < end; g += 16) {
+    unsigned char *shadow = weavecRtShadowOf(g);
+    const int last = g + 16 >= end;
+    const unsigned char whole =
+        last && (end & 15) != 0 ? weavecRtShadowPartialOf(color, end - g)
+                                : color;
+    if (*shadow == WeavecRtShadowContainer ||
+        (!weavecRtShadowFull(*shadow) && !weavecRtShadowPoison(*shadow) &&
+         (last || *weavecRtShadowOf(g + 16) == WeavecRtShadowContainer)))
+      *shadow = whole;
+  }
+}
+
+/* A fast unit's copies of the containers mark nothing, so no container is
+ * marked from then on; one an image loaded earlier marked is cleared. */
 void __weavec_rt_fast_program(void) {
   weavecRtFastProgram = 1;
-  if (!containersSet)
-    containersOff = 1;
+  if (!containersSet && !containersOff) {
+    __atomic_store_n(&containersOff, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&containersUsed, __ATOMIC_SEQ_CST) &&
+        weavecRtShadowReady())
+      weavecRtEachLive(clearContainers);
+  }
   __weavec_rt_typed_program();
 }
 __attribute__((constructor)) static void readContainers(void) {
@@ -156,6 +186,8 @@ static void annotate(uintptr_t begin, uintptr_t end, uintptr_t live,
   if (containersOff || begin >= end || !weavecRtShadowReady() ||
       !weavecRtInWindow(begin) || !weavecRtInWindow(end - 1))
     return;
+  if (!containersUsed)
+    __atomic_store_n(&containersUsed, 1, __ATOMIC_SEQ_CST);
   from = (from < begin ? begin : from) & ~(uintptr_t)15;
   to = to > end ? end : to;
   if (color == 0 || (to > (end & ~(uintptr_t)15) && (end & 15) != 0)) {
