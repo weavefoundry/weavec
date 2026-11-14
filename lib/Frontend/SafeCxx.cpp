@@ -177,7 +177,7 @@ public:
       error(call->getExprLoc(), rule::NotModeled,
             "'" + callee->getNameAsString() +
                 "' returns twice, which the rules do not follow",
-            "use an exception or a return value");
+            "use an exception or a return value", /*expanded=*/true);
       return true;
     }
     switch (callee->getBuiltinID()) {

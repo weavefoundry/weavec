@@ -6,7 +6,6 @@
 #include <array>
 #include <bit>
 #include <coroutine>
-#include <csetjmp>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -232,8 +231,9 @@ int computedJump(int n) {
 done:
   return n;
 }
-int returnsTwice(std::jmp_buf &state) {
-  return setjmp(state); // expected-error {{'setjmp' returns twice, which the rules do not follow [weavec-safe:not-modeled]}} // expected-error {{an array becomes a pointer that has lost its size [weavec-safe:index-single]}}
+extern "C" int snapshot(int *state) __attribute__((returns_twice));
+int returnsTwice(int &state) {
+  return snapshot(&state); // expected-error {{'snapshot' returns twice, which the rules do not follow [weavec-safe:not-modeled]}}
 }
 struct Task {
   struct promise_type {
