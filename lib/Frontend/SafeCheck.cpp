@@ -24,6 +24,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/InferAlloc.h"
 #include "clang/AST/ParentMapContext.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -1789,6 +1790,10 @@ private:
                "WEAVEC_GUARDED helper function");
       return;
     }
+    if (from->isVoidType() && isAllocation(*cast.getSubExpr())) {
+      checkAllocationType(cast, to);
+      return;
+    }
     if (isAllocation(*cast.getSubExpr()) ||
         !(from->isVoidType() || from->isIncompleteType()))
       return;
@@ -1799,6 +1804,28 @@ private:
            "convert an allocation's result where it is made, take a '" +
                to.getAsString() +
                " *' parameter, or convert in a WEAVEC_GUARDED helper");
+  }
+
+  /// RFC 0045 §2: an allocation that becomes a `T *` is sized by `T` when
+  /// its size names a type: its block is reused for the type its size
+  /// names. Bytes of a type without pointers may be any such type's.
+  void checkAllocationType(const clang::CastExpr &cast, clang::QualType to) {
+    const auto *call = llvm::dyn_cast<clang::CallExpr>(
+        cast.getSubExpr()->IgnoreParenImpCasts());
+    if (call == nullptr)
+      return;
+    const clang::QualType sized =
+        clang::infer_alloc::inferPossibleType(call, ast, &cast);
+    if (sized.isNull() || sized->isVoidType() ||
+        clang::ASTContext::hasSameUnqualifiedType(sized, to) ||
+        (isByteType(to) && !holdsPointers(sized)))
+      return;
+    report(cast.getExprLoc(), rule::PointerCast,
+           "converting an allocation sized by '" + sized.getAsString() +
+               "' to '" + to.getAsString() +
+               " *': its block is reused for a '" + sized.getAsString() + "'",
+           "size it by what it holds: 'malloc(sizeof *p)' or "
+           "'calloc(n, sizeof *p)'");
   }
 
   void storesBorrowed(const clang::Expr *value, clang::SourceLocation at) {
@@ -1907,8 +1934,10 @@ private:
       return;
     }
     if (holdsPointers(to)) {
-      if (from->isVoidType() && isAllocation(*cast.getSubExpr()))
+      if (from->isVoidType() && isAllocation(*cast.getSubExpr())) {
+        checkAllocationType(cast, to);
         return;
+      }
       report(cast.getExprLoc(), rule::PointerCast,
              "converting '" + from.getAsString() + " *' to '" +
                  to.getAsString() +

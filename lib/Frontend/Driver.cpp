@@ -449,6 +449,11 @@ configureEnforcement(clang::CompilerInstance &compiler,
     lang.Sanitize.set(clang::SanitizerKind::ArrayBounds, true);
     if (weavec.checks == DriverOptions::Checks::Report)
       codegen.SanitizeRecover.set(clang::SanitizerKind::ArrayBounds, true);
+    // RFC 0045 §2: the allocated type of each allocation call
+    // (`!alloc_token`), which GuardInsert keeps from LLVM's own pass and
+    // GuardExpand makes the allocation's pool.
+    if (weavec.fastSafe())
+      lang.Sanitize.set(clang::SanitizerKind::AllocToken, true);
   }
   if (codegen.getDebugInfo() == llvm::codegenoptions::NoDebugInfo) {
     codegen.setDebugInfo(llvm::codegenoptions::LocTrackingOnly);
@@ -477,6 +482,8 @@ static bool emitEnforcementLedger(const clang::CompilerInstance &compiler,
   unit.target = compiler.getTargetOpts().Triple;
   unit.checks = checksName(weavec.checks).str();
   unit.zeroInit = weavec.zeroInitializes();
+  if (weavec.safe)
+    unit.safe = weavec.safeFull ? "full" : "fast";
   bool ok = true;
   if (!weavec.ledger.empty()) {
     std::string error;
@@ -596,6 +603,8 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   auto safe = std::make_shared<SafeUnit>();
   safe->full = weavec.safeFull;
   safe->annotates = weavec.enforces() && codegen;
+  safe->fast = safe->annotates && weavec.fastSafe();
+  safe->cxx = lang.CPlusPlus;
   if (safe->annotates) {
     unsafe = std::make_shared<UnsafeRegions>();
     ledger = configureEnforcement(*compiler, weavec, unsafe, safe);
@@ -794,8 +803,11 @@ static bool choosesMacro(llvm::ArrayRef<const char *> args,
 ///                       a compile of C++: the C++ libraries' bounds checks
 ///   _GLIBCXX_SANITIZE_VECTOR=1
 ///                       a compile of C++: libstdc++'s vector annotations
+///   __SANITIZER_DISABLE_CONTAINER_OVERFLOW__
+///                       a fast safe unit (RFC 0045 §9) in place of the
+///                       last: no container annotations
 static std::vector<std::string>
-wantsLibraryChecks(llvm::ArrayRef<const char *> args, bool cxx) {
+wantsLibraryChecks(llvm::ArrayRef<const char *> args, bool cxx, bool fast) {
   std::string triple = llvm::sys::getDefaultTargetTriple();
   bool optimizes = false;
   for (std::size_t i = 1; i < args.size(); ++i) {
@@ -819,7 +831,9 @@ wantsLibraryChecks(llvm::ArrayRef<const char *> args, bool cxx) {
   }
   // RFC 0039 §5: libstdc++ annotates a vector's storage only when asked
   // (libc++ does under __has_feature(address_sanitizer) alone).
-  if (cxx && !choosesMacro(args, {"_GLIBCXX_SANITIZE_VECTOR"}))
+  if (cxx && fast)
+    macros.emplace_back("__SANITIZER_DISABLE_CONTAINER_OVERFLOW__");
+  else if (cxx && !choosesMacro(args, {"_GLIBCXX_SANITIZE_VECTOR"}))
     macros.emplace_back("_GLIBCXX_SANITIZE_VECTOR=1");
   return macros;
 }
@@ -1265,8 +1279,8 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
       }
       add("-D__WEAVEC__=1");
       if (weavec.enforces()) {
-        for (const std::string &macro :
-             wantsLibraryChecks(clangArgs, compilesCxx(clangArgs, cxxMode)))
+        for (const std::string &macro : wantsLibraryChecks(
+                 clangArgs, compilesCxx(clangArgs, cxxMode), weavec.fastSafe()))
           add("-D" + macro);
         for (const char *flag : reportFlags(clangArgs))
           add(flag);

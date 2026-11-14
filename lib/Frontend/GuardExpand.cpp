@@ -58,6 +58,8 @@ struct Access {
   bool write = false;
   /// Verify mode: a guard GuardPrune proved redundant.
   bool pruned = false;
+  /// RFC 0045 §10: the monitor of a believed or trusted access.
+  bool believed = false;
   /// A string the call accepts as null.
   bool nullOk = false;
   llvm::Value *nullBase = nullptr;
@@ -102,6 +104,7 @@ static std::optional<Access> accessOf(llvm::CallInst &call,
   const std::uint64_t bits = flags->getZExtValue();
   access.write = (bits & MarkerWrite) != 0;
   access.pruned = (bits & MarkerProven) != 0;
+  access.believed = (bits & MarkerBelieved) != 0;
   access.alignment =
       llvm::Align(std::uint64_t{1} << ((bits >> MarkerAlignShift) & 63U));
   const unsigned rowArgument = marker == MarkerGuard ? 4 : 3;
@@ -475,8 +478,9 @@ static void expand(FunctionContext &context, const Access &access,
   }
   const bool removed = access.state != Access::State::Guard || access.pruned;
   if (!removed || module.verify()) {
-    const unsigned flags =
-        (access.write ? SiteWrite : 0) | (removed ? SiteProven : 0);
+    const unsigned flags = (access.write ? SiteWrite : 0) |
+                           (removed ? SiteProven : 0) |
+                           (access.believed ? SiteBelieved : 0);
     llvm::Constant *site = module.site(marker->getDebugLoc(), flags);
     const RootCheck root =
         removed
@@ -875,6 +879,14 @@ static void reportLibraryTraps(ModuleContext &module,
 void expandGuards(ModuleContext &module, llvm::Function &function,
                   llvm::FunctionAnalysisManager &analyses) {
   const llvm::DataLayout &layout = module.layout;
+  // RFC 0045 §2, (Y4): a result's check splits blocks.
+  typeAllocations(module, function);
+  {
+    const std::size_t before = function.size();
+    checkResults(module, function);
+    if (function.size() != before)
+      analyses.invalidate(function, llvm::PreservedAnalyses::none());
+  }
   dropScopes(function, /*orphansOnly=*/false);
   resiteInlinedCalls(module, function);
   reportLibraryTraps(module, function);
@@ -958,6 +970,8 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
       module.copy(access.row, access.state == Access::State::Guard,
                   reasonOf(access.state));
 
+  // RFC 0045 §8.
+  dropUntrackedLifetimes(module, function, tracked.getArrayRef());
   // The frame first, so that every guard reads the shadow it wrote; the
   // accesses then name what replaced their allocas.
   FunctionContext context(module, function);

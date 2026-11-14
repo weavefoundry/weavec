@@ -22,6 +22,7 @@
 #include "weavec_rt.h"
 
 #include <pthread.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 
@@ -177,7 +178,9 @@ guardSlow(uintptr_t address, uint64_t width,
   uintptr_t bad;
   unsigned char value;
   weavecRtCount(WeavecRtStatSlowGuards);
-  if (firstUnaddressable(address, width, &bad, &value, here))
+  if (firstUnaddressable(address, width, &bad, &value, here) &&
+      !(site != NULL && (site->flags & WeavecRtSiteBelieved) != 0 &&
+        value == WeavecRtShadowHeapFreed))
     failAt(bad, value, address, width, site);
 }
 
@@ -674,6 +677,16 @@ void __weavec_rt_escape_check(uintptr_t address,
   weavecRtOwnStack(&low, &high);
   if (address >= low && address < high)
     weavecRtFail("stack-escape", address, 0, site);
+}
+
+/* RFC 0045 (Y4): a safe function's result into its own frame. */
+void __weavec_rt_frame_escape(uintptr_t address, const char *function,
+                              const struct __weavec_rt_site *site) {
+  char message[320];
+  (void)snprintf(message, sizeof message,
+                 "result of '%s' points into its own frame at 0x%lx",
+                 function != NULL ? function : "?", (unsigned long)address);
+  weavecRtFailMessage("stack-escape", message, site);
 }
 
 /*===-- Array bounds (section 5.4) -----------------------------------------===*/

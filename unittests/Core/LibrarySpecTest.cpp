@@ -116,6 +116,9 @@ static std::string renderClauses(const LibraryEntry &entry) {
                       std::to_string(entry.format->first));
   if (entry.wrapper)
     clauses.push_back("wrapper=" + entry.wrapper->name);
+  if (entry.typed)
+    clauses.push_back("typed=" + entry.typed->name + "/" +
+                      std::to_string(entry.typedFlags));
   if (entry.exits)
     clauses.emplace_back("exits");
   if (entry.unwinds)
@@ -460,8 +463,13 @@ TEST(LibrarySpecTest, NumberParsersHaveWrappers) {
 // carries its §11 zero-initialization decision.
 static constexpr auto HeapExpectations = std::to_array<Expectation>({
     // RFC 0043 §2: the allocations give an owner.
-    {"malloc", "int", "ptr owned", ""},
-    {"calloc", "int, int", "ptr owned", ""},
+    {"malloc", "int", "ptr owned", "typed=alloc_typed/0"},
+    {"calloc", "int, int", "ptr owned", "typed=calloc_typed/0"},
+    // RFC 0045 §2: C++'s allocation functions are typed in a fast unit.
+    {"_Znwm", "int", "ptr owned", "typed=new_typed/0"},
+    {"_Znam", "int", "ptr owned", "typed=new_typed/1"},
+    {"_ZnwmRKSt9nothrow_t", "int, other", "ptr owned", "typed=new_typed/2"},
+    {"_ZnamRKSt9nothrow_t", "int, other", "ptr owned", "typed=new_typed/3"},
     {"aligned_alloc", "int, int", "ptr owned", ""},
     {"valloc", "int", "ptr owned", ""},
     // RFC 0040 §5.5: releases with their sites.

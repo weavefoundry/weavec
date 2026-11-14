@@ -17,6 +17,6 @@ int both(const int *p, int i) {
 
 // SUMMARY: weavec: {{.*}}unsafe-region.c: 3 accesses: 0 proven, 1 guarded, 2 unguarded
 // LEDGER-DAG: "schema": "weavec-ledger"
-// LEDGER-DAG: "version": 7
+// LEDGER-DAG: "version": 8
 // LEDGER-DAG: "outcome": "unguarded"
 // LEDGER-DAG: "reason": "unsafe"

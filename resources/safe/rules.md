@@ -95,7 +95,7 @@ int *at(unsigned long address) { return (int *)address; }
 
 ## pointer-cast
 
-A pointer converts to another pointer type only when no pointer can be forged: memory that holds pointers converts to nothing but `void` and `const` bytes; a `void *` converts to no other type, but where an allocation made it (`struct node *n = malloc(sizeof *n)`); function pointers do not convert.
+A pointer converts to another pointer type only when no pointer can be forged: memory that holds pointers converts to nothing but `void` and `const` bytes; a `void *` converts to no other type, but where an allocation made it (`struct node *n = malloc(sizeof *n)`); function pointers do not convert. An allocation that becomes a `T *` is sized by `T` when its size names a type (`malloc(sizeof *p)`, `calloc(n, sizeof(struct node))`), since its block is reused for the type its size names; bytes of a type without pointers may be any such type's (`char *b = malloc(sizeof(struct header) + n)`).
 
 ```c rejected
 struct node { struct node *WEAVEC_OWNED next; int v; };
@@ -111,6 +111,22 @@ int peek(const struct node *n) { return n->v; }
 ```
 
 A library that hands back a `void *` context gets a `WEAVEC_GUARDED` adapter of a few lines that converts it and calls the safe function.
+
+```c rejected
+#include <stdlib.h>
+struct node { struct node *WEAVEC_OWNED next; int v; };
+struct wide { long a, b, c; };
+struct node *WEAVEC_OWNED make(void) { return malloc(sizeof(struct wide)); }
+```
+
+```c accepted
+#include <stdlib.h>
+struct node { struct node *WEAVEC_OWNED next; int v; };
+struct node *WEAVEC_OWNED make(void) {
+  struct node *n = malloc(sizeof *n);
+  return n;
+}
+```
 
 ### In C++
 
@@ -292,6 +308,28 @@ struct Document {
   std::string buffer;
   std::size_t title_length = 0;              // an offset and a length, not a view
   std::string_view title() const { return std::string_view(buffer).substr(0, title_length); }
+};
+```
+
+A raw pointer into storage that changes type in place is not kept in a member or an element either: an alternative of a `std::variant`, the characters of a `std::string` (whose bytes hold its buffer's pointer once it grows). In a fast build such a pointer, used after the change, would read one type as another with no check behind it. A pointer to `const` bytes without pointers (`s.c_str()`) may be kept, and so may a pointer to the variant or the string itself, or to an element of a container.
+
+```cpp rejected
+#include <string>
+#include <variant>
+struct Holder {
+  std::string *name = nullptr;
+  void keep(std::variant<std::string, int> &v) { name = &std::get<std::string>(v); }
+};
+```
+
+```cpp accepted
+#include <string>
+#include <variant>
+#include <vector>
+struct Holder {
+  const std::vector<std::variant<std::string, int>> *values = nullptr;
+  std::size_t index = 0;                     // the key, looked up when it is used
+  const std::string *name() const { return std::get_if<std::string>(&(*values)[index]); }
 };
 ```
 

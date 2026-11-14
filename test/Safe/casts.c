@@ -62,3 +62,22 @@ WEAVEC_SAFE void names(char *dst[4], const char *const src[4]) {
 WEAVEC_SAFE void explicit_casts(struct node *d, const struct node *s) {
   memcpy((void *)d, (const void *)s, sizeof *d); // the same type on both sides
 }
+
+// RFC 0045 §2: an allocation that becomes a 'T *' is sized by 'T' when its
+// size names a type, for its block is reused for the type its size names;
+// bytes of a type without pointers may be any such type's.
+struct wide { long a, b, c; };
+WEAVEC_SAFE void sized(size_t n) {
+  struct node *a = malloc(sizeof *a);              // sized by what it holds
+  struct node *b = calloc(n, sizeof(struct node)); // the same
+  struct node *c = malloc(sizeof(struct wide));    // expected-error {{converting an allocation sized by 'struct wide' to 'struct node *': its block is reused for a 'struct wide' [weavec-safe:pointer-cast]}}
+  long *d = malloc(n * sizeof(int));               // expected-error {{converting an allocation sized by 'int' to 'long *'}}
+  char *e = malloc(sizeof(struct pair) + n);       // bytes of a type without pointers
+  char *f = malloc(sizeof(struct node) + n);       // expected-error {{converting an allocation sized by 'struct node' to 'char *'}}
+  free(a);
+  free(b);
+  free(c);
+  free(d);
+  free(e);
+  free(f);
+}

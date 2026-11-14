@@ -8,6 +8,7 @@
 # The entry points of weavec_rt.h.
 __weavec_rt_accept
 __weavec_rt_alloc
+__weavec_rt_alloc_typed
 __weavec_rt_alloca_poison
 __weavec_rt_alloca_unpoison
 __weavec_rt_asprintf
@@ -17,6 +18,7 @@ __weavec_rt_atol
 __weavec_rt_atoll
 __weavec_rt_basename_r
 __weavec_rt_bounds_fail
+__weavec_rt_calloc_typed
 __weavec_rt_color_ok
 __weavec_rt_convert_fail
 __weavec_rt_convert_string
@@ -27,7 +29,9 @@ __weavec_rt_delete_sized_at
 __weavec_rt_dirname_r
 __weavec_rt_dprintf
 __weavec_rt_escape_check
+__weavec_rt_fast_program
 __weavec_rt_fprintf
+__weavec_rt_frame_escape
 __weavec_rt_frame_shadow
 __weavec_rt_free
 __weavec_rt_free_at
@@ -59,6 +63,7 @@ __weavec_rt_localtime_r
 __weavec_rt_lstat
 __weavec_rt_mmap
 __weavec_rt_munmap
+__weavec_rt_new_typed
 __weavec_rt_null
 __weavec_rt_overlap
 __weavec_rt_preadv

@@ -72,6 +72,10 @@ struct DriverOptions {
 
   /// Whether the unit's accesses are guarded and the link carries the
   /// runtime.
+  /// RFC 0045 §1: a unit compiled as safe in the fast mode.
+  [[nodiscard]] bool fastSafe() const {
+    return safe && !safeFull && enforces();
+  }
   [[nodiscard]] bool enforces() const {
     return enabled && checks != Checks::None;
   }

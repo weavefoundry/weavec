@@ -488,9 +488,33 @@ answers what the rules ask of a type from its structure and from the
 attributes Clang attaches (`gsl::Owner`, `gsl::Pointer`): whether it holds
 owners, is a view, is a shared pointer, and whether a member function is
 an accessor (it has a `const` twin); the library table's `class … :
-erased;` rows name the classes that hide what they hold. Nothing of this
-reaches the guard passes: a safe C++ function is compiled as a guarded
-one, and a unit's object is the same with and without the flag.
+erased;` rows name the classes that hide what they hold. Under
+`-fweavec-safe-checks=full` nothing of this reaches the guard passes: a
+safe C++ function is compiled as a guarded one, and a unit's object is the
+same with and without the flag.
+
+A unit compiled as safe is otherwise *fast* (RFC 0045,
+`lib/Frontend/GuardFast.cpp`). The driver asks Clang for each allocation's
+inferred type (`-fsanitize=alloc-token`'s `!alloc_token`, with LLVM's own
+token pass disabled by removing `sanitize_alloc_token`); before inlining
+(`markAllocations`) each call the library table marks `typed(…)` gets a
+private record of its type's key, named by a `weavec.type` operand bundle,
+which survives inlining where the metadata does not, and at the end
+(`typeAllocations`) the call becomes the runtime's typed entry point. A
+release in safe code, or in the standard library's code a C++ fast unit
+compiles, carries the site flag `WeavecRtSiteTyped`. In C++ the checker
+also lists the unit's functions by symbol (safe, other) and the standard
+library's functions safe code calls that are *trusted* (`TrustedCalls`:
+of namespace `std`, unreserved, not a view's, with no pointer, view or
+callable parameter); `cloneTrusted` makes a guard-free `.weavec.t` clone of
+each, and of what they call and the constant tables they call through, and
+redirects safe code to it. GuardInsert places no guard on an access at a
+constant offset inside a believed pointer's bytes (`believedAccess`: a
+parameter's or a trusted or safe call's `dereferenceable`, through the
+locals Clang spilled them to). GuardExpand drops the lifetime markers of
+locals it does not track, shares no frame bytes, and checks each safe
+function's pointer result against its own frame (`checkResults`,
+`stack-escape`).
 
 Nothing the ownership rules decide removes a check. The guard passes see
 safe functions through those annotations and the bounds table:
@@ -595,7 +619,16 @@ is zero-filled.
 
 A released slot joins its class's *quarantine* and is never reused from
 there: only a sweep moves it to the free list (RFC 0036 §3.2), in address
-order, so that slots are reused in order. Each thread caches, per small
+order, so that slots are reused in order. RFC 0045 §3: a slot a typed
+allocation took belongs to the pool of its type and class (`slotPools`, a
+side table beside the slot words); a typed release zeroes it, marks it
+released in the shadow, leaves its word claimed (so a second release is a
+double free) and pushes it on the pool, through a per-thread cache of the
+pool, for the next allocation of that type; any other release takes it
+out of its pool and quarantines it. Pools hold at most the larger of the
+quarantine's budget and the live heap; past that a pooled slot goes to the
+quarantine, the only way it changes type. The sweep reads a pooled slot's
+bytes as roots and does not flush the threads' pool caches. Each thread caches, per small
 class (up to 32 KiB), up to 32 free slots it takes from the free lists at
 once and up to 32 released ones it gives the quarantine at once (RFC 0037
 §2.1): a release claims the slot's word by compare-and-swap, so a racing

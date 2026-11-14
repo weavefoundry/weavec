@@ -1118,6 +1118,8 @@ llvm::PreservedAnalyses GuardInsertPass::run(llvm::Module &module,
     return llvm::PreservedAnalyses::all();
   guard::ModuleContext context(module, options);
   guard::thunkLibraryAddresses(context, module);
+  // RFC 0045: before the safe functions are prepared, which clones see.
+  guard::prepareFast(context, module);
   // RFC 0042 §5: the field annotations, read before anything moves them.
   guard::readTypedFields(context, module);
   // RFC 0041: safe functions first, which may split one into an entry and

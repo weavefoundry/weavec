@@ -119,8 +119,14 @@ __attribute__((constructor(101))) static void findProgramAllocator(void) {
       (void *(*)(void *, size_t))programs("realloc", (const void *)realloc);
 }
 
+/* An arena block (a typed allocation's, RFC 0045) is the runtime's to
+ * release whatever the program's allocator. */
+static int arenaBlock(const void *p) {
+  return (uintptr_t)p - __weavec_rt_heap.base < __weavec_rt_heap.bytes;
+}
+
 void __weavec_rt_free_at(void *p, const struct __weavec_rt_site *site) {
-  if (programFree != NULL)
+  if (programFree != NULL && !arenaBlock(p))
     programFree(p);
   else
     weavecRtReleaseForm(p, WeavecRtFormMalloc, SIZE_MAX,
@@ -129,7 +135,7 @@ void __weavec_rt_free_at(void *p, const struct __weavec_rt_site *site) {
 
 void *__weavec_rt_realloc_at(void *p, size_t size,
                              const struct __weavec_rt_site *site) {
-  if (programRealloc != NULL)
+  if (programRealloc != NULL && !arenaBlock(p))
     return programRealloc(p, size);
   return weavecRtReallocAt(p, size, site);
 }
