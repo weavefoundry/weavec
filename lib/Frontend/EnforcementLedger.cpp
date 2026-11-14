@@ -252,6 +252,10 @@ struct Audit {
   llvm::json::Array wrapped;
   /// Reference fields, tested where safe code loads them.
   llvm::json::Array references;
+  /// RFC 0044 §12: members that share an object safe C++ may change, and
+  /// members that erase the type of what they hold.
+  llvm::json::Array shared;
+  llvm::json::Array erased;
   /// Global owners safe code reads in place.
   llvm::json::Array globals;
   std::set<std::string> fields;
@@ -323,6 +327,10 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
           const auto kind = field->getString("kind");
           if (kind == "reference")
             audit.references.push_back(llvm::json::Object(*field));
+          else if (kind == "shared")
+            audit.shared.push_back(llvm::json::Object(*field));
+          else if (kind == "erased")
+            audit.erased.push_back(llvm::json::Object(*field));
           else if (kind == "global")
             audit.globals.push_back(llvm::json::Object(*field));
         }
@@ -378,7 +386,7 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
                         "{0:2}",
                         llvm::json::Value(llvm::json::Object{
                             {.K = "schema", .V = "weavec-audit"},
-                            {.K = "version", .V = 2},
+                            {.K = "version", .V = 3},
                             {.K = "functions", .V = audit.functions},
                             {.K = "safe", .V = audit.safe},
                             {.K = "trusted", .V = std::move(audit.trusted)},
@@ -386,6 +394,8 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
                             {.K = "wrapped", .V = std::move(audit.wrapped)},
                             {.K = "references",
                              .V = std::move(audit.references)},
+                            {.K = "shared", .V = std::move(audit.shared)},
+                            {.K = "erased", .V = std::move(audit.erased)},
                             {.K = "globals", .V = std::move(audit.globals)}}))
                  << '\n';
     return ok ? 0 : 1;
@@ -419,6 +429,11 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
        audit.wrapped, "operation", "");
   list("reference fields (tested where safe code loads them)", audit.references,
        "field", "");
+  list("shared members (safe C++ may change what they point to, and does "
+       "not follow the other holders)",
+       audit.shared, "field", "");
+  list("erased members (they may hold borrows their type does not show)",
+       audit.erased, "field", "");
   list("global owners read in place (in the function named)", audit.globals,
        "field", "");
   return ok ? 0 : 1;

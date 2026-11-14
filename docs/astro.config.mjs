@@ -65,6 +65,7 @@ export default defineConfig({
             item('Build integration', 'guides/build-integration'),
             item('Unsafe boundaries', 'guides/unsafe'),
             item('Safe C', 'guides/safe-c'),
+            item('Safe C++', 'guides/safe-cxx'),
           ],
         },
         {

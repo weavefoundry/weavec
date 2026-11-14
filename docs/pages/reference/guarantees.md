@@ -79,6 +79,29 @@ They assume, beside A1–A9:
 
 Guarded functions keep (A)–(P) unchanged. A guard a safe function drops is justified by its bounds, or by typed memory, which each safe function keeps by rules checked inside it and which holds only if every writer keeps it: the one removal that is not local to a function, and `-fweavec-checks=verify` monitors it like the others.
 
+## Safe C++ functions
+
+A C++ function made safe by `weavec-c++ -fweavec-safe` or `WEAVEC_SAFE` ([RFC 0044](/rfcs/0044-safe-cxx/), [the guide](/guides/safe-cxx/)) is checked when it compiles and is compiled as a guarded function: (A) to (P) hold for it unchanged, and nothing at run time rests on the rules. For a program that meets X-A1 to X-A5, in every build:
+
+- **(X1) No raw owner.** A safe function allocates and releases heap memory only through objects whose destructors release it: it contains no `new`, no `delete`, and no call that returns or takes a raw owner.
+- **(X2) No use of a moved object.** It does not use an object after moving from it, on any path, until it assigns to it.
+- **(X3) No stale borrow.** It does not use a borrow or a view after an owner it points into was destroyed, moved, assigned, or passed to anything that could change what it owns, by the function itself or by a call it made. That includes the end of a local's scope and of the statement that made a temporary.
+- **(X4) No borrow where the rules cannot follow it.** It does not return a borrow or a view of its own locals, and does not store one in memory that is not a view's.
+- **(X5) No forged pointer.** It does no pointer arithmetic, indexes no raw pointer, and makes no pointer by a cast from an integer or from a pointer to an unrelated type.
+- **(X6) What is left.** A temporal error in a safe C++ function can then go only through a reference (a raw pointer kept in a member or an element), through an object shared by `std::shared_ptr` that another holder changed, through a global, through a callable that captured `this` or an object a parameter refers to and is kept by an object that outlives it, through a callable that code which is not safe kept, or through an element moved out of a container; a spatial error can only be an index or an iterator out of range. All of them stop when they run, by (T), (A) and the library's checks.
+
+(X1) to (X5) are facts about the source and hold under any compiler. They assume:
+
+|          | Assumption                                                                                                                                                                                                                                                                                                                              |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **X-A1** | Code that is not safe (guarded and unsafe functions, system headers, code WeaveC did not compile) honors the declarations safe code sees: a `const` member function or parameter changes nothing an object owns, and a result that is a view points into the arguments the caller is told it may, or into something that outlives them. |
+| **X-A2** | The arguments with which code that is not safe calls a safe function do not overlap in the way `call-alias` forbids, and a view it passes outlives the call.                                                                                                                                                                            |
+| **X-A3** | No other thread, and no signal handler, destroys, moves or changes an owner while a safe function uses it or a borrow into it.                                                                                                                                                                                                          |
+| **X-A4** | The standard library behaves as the standard specifies: a `const` member function invalidates nothing, a member function with a `const` overload of the same parameters only gives access, its own functions accept the arguments their specification allows, and the types Clang marks as owners and pointers are.                     |
+| **X-A5** | A moved-from object of a library type may be assigned and destroyed.                                                                                                                                                                                                                                                                    |
+
+The audit lists what the rules do not follow: the functions and classes that are not safe, the reference, shared and erased members.
+
 ## What is addressable
 
 A byte is addressable unless the runtime knows it is not:

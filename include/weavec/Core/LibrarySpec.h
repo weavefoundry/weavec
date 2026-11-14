@@ -32,6 +32,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -259,6 +260,18 @@ public:
     return rows;
   }
 
+  /// RFC 0044 §2: whether the table has `class <qualified> : erased;`, a
+  /// class that can hold an object of a type its own type does not name.
+  [[nodiscard]] bool erasedClass(std::string_view qualified) const;
+  /// RFC 0044 §8: whether the table has `class <qualified> : shared;`, a
+  /// pointer whose object has other owners the holder does not see.
+  [[nodiscard]] bool sharedClass(std::string_view qualified) const;
+  /// RFC 0044 §5: whether the table has `class <qualified> :
+  /// resets(<member>)`: a member function that leaves the object in a known
+  /// state whatever it held (`clear`, `reset`), as an assignment does.
+  [[nodiscard]] bool resetsClass(std::string_view qualified,
+                                 std::string_view member) const;
+
   /// The row named exactly `name` (the first, if it has overloads).
   [[nodiscard]] const LibraryEntry *find(std::string_view name) const;
   /// Resolves a callee name: the row's own name, a `chk` alias, or either
@@ -275,6 +288,9 @@ private:
   /// Alias name to (row index, index into the row's `chk`).
   std::map<std::string, std::pair<std::size_t, std::size_t>, std::less<>>
       byAlias;
+  std::set<std::string, std::less<>> erased;
+  std::set<std::string, std::less<>> shared;
+  std::set<std::pair<std::string, std::string>> resets;
   friend class LibrarySpecParser;
 };
 

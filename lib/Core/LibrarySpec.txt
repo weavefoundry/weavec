@@ -132,6 +132,19 @@
 #   arguments of its call in the IR: a member function's implicit object
 #   first (RFC 0039 section 7).
 #
+# CLASSES
+#   entry    ::= 'class' NAME { '::' NAME } ':' cclause { ',' cclause } ';'
+#   cclause  ::= 'erased' | 'shared' | 'resets' '(' NAME { ',' NAME } ')'
+#   RFC 0044. erased (section 2): a C++ class that can hold an object of a
+#   type its own type does not name (a callable, a value of any type);
+#   Safe C++ treats one made from a view as a view. shared (section 8): a
+#   pointer whose object has other owners, which the function that holds
+#   one does not see. resets (section 5):
+#   member functions that leave the object in a known state whatever it
+#   held, so that a moved-from object may be used again after one, as
+#   after an assignment. Inline namespaces are not written (std::function,
+#   not std::__1::function).
+#
 # OVERLOADS
 #   A name may have several rows; a call uses the first whose arity it
 #   matches (a variadic row accepts more arguments), or else the first.
@@ -1299,3 +1312,37 @@ _ZNSt13basic_istreamIwSt11char_traitsIwEE3getEPwlw (rw, w:count(a2):null-if-zero
 _ZNSt13basic_istreamIwSt11char_traitsIwEE7getlineEPwl (rw, w:count(a2):null-if-zero(a2), int) -> ptr wide;
 _ZNSt13basic_istreamIwSt11char_traitsIwEE7getlineEPwlw (rw, w:count(a2):null-if-zero(a2), int, int) -> ptr wide;
 
+#============================================================================
+# C++ classes that erase the type of what they hold (RFC 0044 section 2)
+#============================================================================
+
+class std::function : erased;
+class std::move_only_function : erased;
+class std::any : erased, resets(reset);
+class std::packaged_task : erased;
+class std::thread : erased;
+class std::future : erased;
+class std::shared_future : erased;
+class std::jthread : erased;
+
+#============================================================================
+# C++ member functions that reset their object (RFC 0044 section 5)
+#============================================================================
+
+class std::basic_string : resets(clear, assign);
+class std::vector : resets(clear, assign);
+class std::deque : resets(clear, assign);
+class std::list : resets(clear, assign);
+class std::forward_list : resets(clear, assign);
+class std::map : resets(clear);
+class std::multimap : resets(clear);
+class std::set : resets(clear);
+class std::multiset : resets(clear);
+class std::unordered_map : resets(clear);
+class std::unordered_multimap : resets(clear);
+class std::unordered_set : resets(clear);
+class std::unordered_multiset : resets(clear);
+class std::unique_ptr : resets(reset);
+class std::shared_ptr : shared, resets(reset);
+class std::weak_ptr : resets(reset);
+class std::optional : resets(reset);

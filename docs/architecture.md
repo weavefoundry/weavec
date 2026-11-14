@@ -465,9 +465,32 @@ partly moved) and the owners each local borrow is below, and reports
 `stale-borrow` and `call-alias`. Each error ends in
 `[weavec-safe:<rule>]`; the first of a compile notes
 `weavec-cc --weavec-explain <rule>`, which prints the rule's section of
-`resources/safe-c/rules.md`, embedded in the compiler. The checker also
+`resources/safe/rules.md`, embedded in the compiler. The checker also
 annotates the unit's pointer fields with their bounds and kinds (owner,
 reference, borrowed) for the passes and the ledger.
+
+In a C++ unit the same consumer runs Safe C++'s checker instead (RFC 0044;
+`checkCxx` in `lib/Frontend/SafeCxx.cpp`). It visits every function the
+unit defines outside system headers, with its lambdas and each
+instantiation of the unit's templates, and checks the safe ones in two
+parts. `CxxRules` (`SafeCxx.cpp`) is the rules of single expressions:
+`raw-owner`, `index-single`, `pointer-cast`, `pointer-bytes`,
+`union-pointer`, `int-to-pointer`, `variadic`, `no-asm`, `unsafe-block`,
+`bad-annotation` and `not-modeled`. `checkCxxFlow` (`SafeCxxFlow.cpp`) is
+a forward dataflow over Clang's CFG, built with destructors, the ends of
+lifetimes and of temporaries, member initializers and exceptional edges:
+for each local that is a view it keeps the loans it holds (a root, which
+is a local, a parameter, `this` or a temporary; and a depth, 0 at the root,
+1 into what it holds, more below an element) and what ended it; it also
+keeps what was moved. It reports `owner-moved`, `stale-borrow`,
+`call-alias`, `owner-path` and `escape`. `CxxKinds` (`SafeCxxKinds.h`)
+answers what the rules ask of a type from its structure and from the
+attributes Clang attaches (`gsl::Owner`, `gsl::Pointer`): whether it holds
+owners, is a view, is a shared pointer, and whether a member function is
+an accessor (it has a `const` twin); the library table's `class … :
+erased;` rows name the classes that hide what they hold. Nothing of this
+reaches the guard passes: a safe C++ function is compiled as a guarded
+one, and a unit's object is the same with and without the flag.
 
 Nothing the ownership rules decide removes a check. The guard passes see
 safe functions through those annotations and the bounds table:
@@ -497,7 +520,7 @@ reason:
 | `proven` | `in-bounds`, `dominated`, `merged`, `optimized` (the optimizer removed every copy of the access), `typed` (a safe function's comparison with its pointer's bounds) |
 | `unguarded` | `unsafe` |
 
-`-fweavec-ledger=<path>` writes the rows as JSON, `weavec-ledger` version 6
+`-fweavec-ledger=<path>` writes the rows as JSON, `weavec-ledger` version 7
 (`EnforcementLedgerVersion`; each row's `display` is its function's name
 demangled, RFC 0039 §8): an object with `schema`, `version`,
 `producer` and `units`, each unit with its `source`, `object`, `target`,
@@ -506,7 +529,7 @@ demangled, RFC 0039 §8): an object with `schema`, `version`,
 `guarded` or `unsafe`, and `owns`), `fields` (each pointer field with its
 kind, `owner`, `reference` or `borrowed`, and each global owner a safe
 function reads in place) and `rows`. `weavec-cc --weavec-audit` reads
-ledgers and lists what safe functions trust (`weavec-audit` version 2). A path ending in `/`, or an existing
+ledgers and lists what safe functions trust (`weavec-audit` version 3). A path ending in `/`, or an existing
 directory, receives `<object>.ledger.json` per unit; a file receives one
 ledger, and an invocation that would write more than one is an error. Files
 are written through a temporary renamed into place. `-fweavec-summary` (the
@@ -871,8 +894,9 @@ goes in the table, never in a comparison of a callee's name.
 | Component | Role |
 | --- | --- |
 | `GuardPass` (`GuardPass.h`; `GuardPass.cpp`, `GuardPassImpl.h`, `GuardInsert.cpp`, `GuardLibrary.cpp`, `GuardLoops.cpp`, `GuardExpand.cpp`, `GuardFrames.cpp`, `GuardGlobals.cpp`) | The four passes of *Compile pipeline* and `registerGuardPasses`, which adds them through `CodeGenOptions::PassBuilderCallbacks` with the mode (trap, report, verify), the unit's unsafe regions and its enforcement ledger. |
-| `EnforcementLedger` | The rows the passes record, their rollup, the `weavec-ledger` version 6 JSON writer, the summary line, and `--weavec-audit` (`runAudit`). |
+| `EnforcementLedger` | The rows the passes record, their rollup, the `weavec-ledger` version 7 JSON writer, the summary line, and `--weavec-audit` (`runAudit`). |
 | `SafeCheck` (`SafeCheck.h`; `SafeCheck.cpp`, `SafeCheckImpl.h`, `SafeOwnership.cpp`) | Safe C's checker (see *Safe functions*): the rules, the ownership dataflow, the bounds table and the field annotations the passes read, the annotations' spellings, and `--weavec-explain` (`runExplain`). `GuardSafe.cpp` and `GuardTyped.cpp`, in `GuardPass`, apply them. |
+| `SafeCxx` (`SafeCxx.cpp`, `SafeCxxFlow.cpp`, `SafeCxxKinds.h`) | Safe C++'s checker (RFC 0044): the safe functions of a C++ unit, the rules of single expressions, the dataflow for moves, borrows and views, and the kinds of types. Called by `SafeCheck`'s consumer; nothing in `GuardPass` reads it. |
 | `UnsafeRegions` | The `WEAVEC_UNSAFE` and `no_sanitize` ranges of a unit, by file, the AST consumer that collects them, and `UnsafeAnnotation`. |
 | `Driver` | `weavec-cc`: `DriverOptions` (WeaveC's flags, split from Clang's), the in-process `-cc1` jobs with the enforcement set-up (`configureEnforcement`), ASan's contract and fortification, the wrapper action that adds the unsafe-region collector, the runtime's link line (`addRuntimeLibraries`, `runtimeObstacle`, `allocatorDefinedBy`, `dropAllocatorIfDefined`), `--help-weavec`, and `--weavec-symbolize` (`Symbolizer.cpp`: the runtime's symbolizer over LLVM's `Symbolize` library, and the rewriter of a saved report's frames). |
 | `ResourceDir` | Locates `weavec.h`, the runtime's library and the Apple SDK. |

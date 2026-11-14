@@ -237,7 +237,7 @@ createSafeChecker(clang::CompilerInstance &compiler,
                   std::shared_ptr<SafeUnit> out, bool unitSafe);
 
 /// RFC 0043 §12: `weavec-cc --weavec-explain [<rule>... | all]`: the
-/// rules' explanations (resources/safe-c/rules.md); alone, their list.
+/// rules' explanations (resources/safe/rules.md); alone, their list.
 int runExplain(llvm::ArrayRef<const char *> operands);
 
 } // namespace weavec::frontend

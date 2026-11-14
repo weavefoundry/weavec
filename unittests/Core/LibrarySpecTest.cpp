@@ -390,6 +390,41 @@ TEST(LibrarySpecTest, GlibcFortifiedSpellingsCarryTheObjectSize) {
   EXPECT_EQ(remap("__isoc99_fscanf", 4), (std::vector<int>{0, 1, 2, 3}));
 }
 
+// RFC 0044 section 2: the classes that erase the type of what they hold.
+TEST(LibrarySpecTest, ClassRowsNameErasedTypes) {
+  const LibrarySpec &table = LibrarySpec::shipped();
+  for (const char *name : {"std::function", "std::move_only_function",
+                           "std::any", "std::packaged_task", "std::thread",
+                           "std::jthread", "std::future", "std::shared_future"})
+    EXPECT_TRUE(table.erasedClass(name)) << name;
+  EXPECT_FALSE(table.erasedClass("std::vector"));
+  std::string error;
+  const auto parsed = LibrarySpec::parse("class a::b : erased;\n", error);
+  ASSERT_TRUE(parsed.has_value()) << error;
+  EXPECT_TRUE(parsed->erasedClass("a::b"));
+  EXPECT_TRUE(parsed->entries().empty());
+  EXPECT_FALSE(LibrarySpec::parse("class a : owned;\n", error).has_value());
+  EXPECT_NE(error.find("expected 'erased'"), std::string::npos) << error;
+  // RFC 0044 section 5: member functions that reset their object.
+  EXPECT_TRUE(table.resetsClass("std::vector", "clear"));
+  EXPECT_TRUE(table.resetsClass("std::basic_string", "assign"));
+  EXPECT_TRUE(table.resetsClass("std::unique_ptr", "reset"));
+  EXPECT_TRUE(table.resetsClass("std::any", "reset"));
+  EXPECT_FALSE(table.resetsClass("std::vector", "pop_back"));
+  EXPECT_FALSE(table.resetsClass("std::map", "assign"));
+  // RFC 0044 section 8: shared pointers.
+  EXPECT_TRUE(table.sharedClass("std::shared_ptr"));
+  EXPECT_FALSE(table.sharedClass("std::unique_ptr"));
+  EXPECT_FALSE(table.sharedClass("std::expected"));
+  const auto both =
+      LibrarySpec::parse("class a : erased, shared, resets(f, g);\n", error);
+  ASSERT_TRUE(both.has_value()) << error;
+  EXPECT_TRUE(both->sharedClass("a"));
+  EXPECT_TRUE(both->erasedClass("a"));
+  EXPECT_TRUE(both->resetsClass("a", "g"));
+  EXPECT_FALSE(both->resetsClass("a", "h"));
+}
+
 TEST(LibrarySpecTest, OverloadsFollowTheArity) {
   const LibrarySpec &spec = LibrarySpec::shipped();
   // glibc's pthread_setname_np(thread, name); macOS's pthread_setname_np(name).

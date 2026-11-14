@@ -19,11 +19,12 @@ WeaveC is a drop-in C and C++ compiler, `weavec-cc` and `weavec-c++`, that makes
 - **Fortified sizes are kept.** A fortified library call never writes more than the size it was given: with Darwin's headers, a `strcpy` that would run from an 8-byte field into the next one traps.
 - **C++ too.** `new` and `delete` are checked against each other, a `std::vector`'s storage past its elements is not addressable, the C++ library's own bounds checks report through WeaveC, and an exception leaves the live frames' redzones in place.
 - **Safe C, for code you write or rewrite.** A C function marked `WEAVEC_SAFE` (or every function, with `-fweavec-safe`) is also checked when it compiles. Local rules reject what could forge a pointer or let a borrowed one escape. Ownership's rules reject a leak, a double `free`, a use after `free` or after a move, and a borrow that outlives what owns its block. Each error names its rule and says what to write instead, and `weavec-cc --weavec-explain <rule>` prints the rule with an example. At run time, its accesses are checked against the bounds its pointers' declarations give, which it believes of pointers loaded from memory too. That is the compile, fix, recompile loop that makes rewrites into Rust work well for AI agents, in C.
+- **Safe C++, for the same loop over the standard library you have.** `weavec-c++ -fweavec-safe` checks each C++ function against rules over owners (objects), borrows and views (references, iterators, `std::string_view`, types that hold them): a use after `std::move`, a reference kept across `push_back`, a `string_view` of a temporary, a view or a capturing lambda returned or stored past what it points into, and raw `new`, `delete` and pointer arithmetic stop the compile, each with its rule and its rewrite. There is no new syntax, and the code is compiled exactly as guarded C++ is, so what the rules do not follow (a raw pointer kept in a member) still stops when it runs. See [Safe C++](docs/pages/guides/safe-cxx.md).
 
 WeaveC is built on Clang and LLVM, which provide parsing, code generation and platform support. WeaveC adds LLVM passes that guard the code, and a runtime in C.
 
 > [!NOTE]
-> WeaveC is early, v0.x software: flags, report formats and the ledger can change between minor versions. The design is [RFC 0043, *Ownership*](docs/rfcs/0043-ownership.md), which checks safe functions' owners, borrows and references when they compile, over [RFC 0042, *Typed memory*](docs/rfcs/0042-typed-memory.md), which lets safe functions believe the bounds that pointers in memory declare, [RFC 0041, *Safe C*](docs/rfcs/0041-safe-c.md), which adds safe functions checked when they compile and against their pointers' bounds when they run, [RFC 0040, *Reports you can act on*](docs/rfcs/0040-actionable-reports.md), which gives every report its stacks and names its object, [RFC 0039, *C++*](docs/rfcs/0039-cxx.md), which guards C++ as C, [RFC 0038, *Drop-in everywhere*](docs/rfcs/0038-drop-in-everywhere.md), which makes one shared runtime serve every image on every platform and ships self-contained toolchains, the sweep and colors of [RFC 0037](docs/rfcs/0037-complete-sweep-and-colors.md), the reuse after a sweep of [RFC 0036](docs/rfcs/0036-deterministic-heap-reuse.md) and the guards of [RFC 0035](docs/rfcs/0035-guard-by-default.md). The [roadmap](docs/roadmap.md) tracks progress.
+> WeaveC is early, v0.x software: flags, report formats and the ledger can change between minor versions. The design is [RFC 0044, *Safe C++*](docs/rfcs/0044-safe-cxx.md), which checks C++ functions' moves, borrows and views when they compile, and [RFC 0043, *Ownership*](docs/rfcs/0043-ownership.md), which checks safe functions' owners, borrows and references when they compile, over [RFC 0042, *Typed memory*](docs/rfcs/0042-typed-memory.md), which lets safe functions believe the bounds that pointers in memory declare, [RFC 0041, *Safe C*](docs/rfcs/0041-safe-c.md), which adds safe functions checked when they compile and against their pointers' bounds when they run, [RFC 0040, *Reports you can act on*](docs/rfcs/0040-actionable-reports.md), which gives every report its stacks and names its object, [RFC 0039, *C++*](docs/rfcs/0039-cxx.md), which guards C++ as C, [RFC 0038, *Drop-in everywhere*](docs/rfcs/0038-drop-in-everywhere.md), which makes one shared runtime serve every image on every platform and ships self-contained toolchains, the sweep and colors of [RFC 0037](docs/rfcs/0037-complete-sweep-and-colors.md), the reuse after a sweep of [RFC 0036](docs/rfcs/0036-deterministic-heap-reuse.md) and the guards of [RFC 0035](docs/rfcs/0035-guard-by-default.md). The [roadmap](docs/roadmap.md) tracks progress.
 
 ## Highlights
 
@@ -115,7 +116,7 @@ list.c:8:5: note: released here; use it before this, or keep what you need from 
 2 errors generated.
 ```
 
-Taking the rest of the list into an owner first, `struct node *WEAVEC_OWNED next = head->next; free(head); head = next;`, compiles. See [Safe C](docs/pages/guides/safe-c.md) and [its rules](resources/safe-c/rules.md).
+Taking the rest of the list into an owner first, `struct node *WEAVEC_OWNED next = head->next; free(head); head = next;`, compiles. See [Safe C](docs/pages/guides/safe-c.md) and [its rules](resources/safe/rules.md).
 
 ## How it works
 
@@ -198,6 +199,8 @@ RFC 0039 guards C++ as C (`weavec-c++`, `new` and `delete` checked against each 
 
 RFCs 0041 to 0043 add Safe C, checked when it compiles, for code written or rewritten to be safe. Their conversions (jsmn, linenoise, zlib, sds, cJSON, inih, tinyexpr, http-parser, bzip2, and a C port of a program also ported to Rust) were made by AI agents from the guide and the rules. Measured under RFC 0043 (its [measured gates](docs/rfcs/0043-ownership.md#measured-gates)): 347 of 366 seeded ownership bugs (94.8%; removed, duplicated and misplaced releases, uses after release) stop the compile with the expected rule; two libraries held back from the agents until the end, parson and c-algorithms, were converted from upstream with 96.6% and 80.9% of their functions safe and their tests passing; and the conversions found seven defects in the original code (five leaks on failure paths, a use after free in zlib, an over-read in c-algorithms). The cost is about guarded C's: the C port runs at 1.37× its Rust port, allocation-heavy programs pay the most, and ownership's rules add 20 to 35 ms to a large file's compile. What safe functions cannot yet express (ownership taken only when a call succeeds, ownership by a flag, a pointer into the middle of an owned block) goes into small guarded helpers, which the audit lists.
 
+RFC 0044 adds Safe C++. Measured on darwin-arm64 (its [measured gates](docs/rfcs/0044-safe-cxx.md#measured-gates)), on sets written by agents that had not seen the rules: of 110 programs with one temporal bug each, 82 stop the compile for the bug, 14 more stop as their fixed versions also do, and the 14 that compile stop when they run; 86 of 90 correct, idiomatic files compile unchanged. Two ports from one brief each (an LRU cache, Python's `json` module) have every function safe and took a safe C++ agent 1.2 to 1.4 times as long as a Rust agent. Safe C++ is not faster than guarded C++ yet: 1.45 times the unguarded build on the LRU port and 3.1 times on the `json` port, which allocates. No existing C++ project has been converted.
+
 ## Installing
 
 Each [release](https://github.com/weavefoundry/weavec/releases) publishes a self-contained toolchain for macOS on Apple silicon and Linux on x86-64 and AArch64, `weavec-X.Y.Z-<os>-<arch>.tar.xz`: unpack it anywhere and put its `bin` on `PATH`. It needs no LLVM installation, only the platform's linker and C library headers (Xcode's Command Line Tools, or `build-essential`). Or `brew install weavefoundry/tap/weavec`, or the container image `ghcr.io/weavefoundry/weavec:X.Y.Z`. See [installation](docs/pages/getting-started/installation.mdx).
@@ -237,7 +240,8 @@ Other presets are `dev-asan`, `dev-tidy`, `release` and `relwithdebinfo`; see [`
 | Installation, first check, guides | [weavec.com](https://weavec.com) |
 | Command-line reference | [docs/pages/reference/cli.md](docs/pages/reference/cli.md) |
 | Guarantees and scope | [docs/pages/reference/guarantees.md](docs/pages/reference/guarantees.md) |
-| Safe C | [docs/pages/guides/safe-c.md](docs/pages/guides/safe-c.md), [its rules](resources/safe-c/rules.md) |
+| Safe C | [docs/pages/guides/safe-c.md](docs/pages/guides/safe-c.md), [its rules](resources/safe/rules.md) |
+| Safe C++ | [docs/pages/guides/safe-cxx.md](docs/pages/guides/safe-cxx.md), [the same rules page](resources/safe/rules.md) |
 | Unsafe regions | [docs/pages/guides/unsafe.md](docs/pages/guides/unsafe.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
 | Design decisions (RFCs) | [docs/rfcs/](docs/rfcs/) |
@@ -257,7 +261,7 @@ runtime/          The C runtime: the shadow memory, the arena allocator and its 
                   with their stacks and symbolizer
 tools/weavec-cc/  The drop-in compiler driver (Clang's driver with WeaveC inside; weavec-c++ links to it)
 resources/        weavec.h, the C-facing header with WEAVEC_UNSAFE and Safe C's annotations
-                  (installed to lib/weavec/include); safe-c/rules.md, the rules --weavec-explain prints
+                  (installed to lib/weavec/include); safe/rules.md, the rules --weavec-explain prints
 unittests/        GoogleTest unit tests
 test/             lit + FileCheck integration tests (test/Guards pins the passes and the runtime)
   cases/          Executable C cases by feature, with markers, run by scripts/run-cases.py

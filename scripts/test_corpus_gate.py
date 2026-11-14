@@ -41,7 +41,7 @@ def proc(returncode=0, stdout="", stderr="", timed_out=False, error=""):
     return gate.ProcResult("cmd", returncode, stdout, stderr, 0.1, timed_out=timed_out, error=error)
 
 
-def ledger_document(*summaries, version=6, rows=()):
+def ledger_document(*summaries, version=7, rows=()):
     return {"schema": "weavec-ledger", "version": version, "producer": {"name": "weavec-cc"},
             "units": [{"source": "a.c", "object": "a.o", "summary": s, "rows": list(rows)} for s in summaries]}
 
@@ -165,7 +165,7 @@ class LedgerTest(unittest.TestCase):
             for data, message in ((ledger_document({"accesses": 1}, version=2), "version 2"),
                                   ({"schema": "other"}, "not a weavec-ledger"),
                                   (ledger_document(), "no units"),
-                                  ({"schema": "weavec-ledger", "version": 6, "units": [{}]}, "no summary")):
+                                  ({"schema": "weavec-ledger", "version": 7, "units": [{}]}, "no summary")):
                 with self.assertRaisesRegex(ValueError, message):
                     gate.read_ledger(self.write(directory, data))
             with self.assertRaisesRegex(ValueError, "x.ledger.json"):
@@ -787,7 +787,7 @@ FAKE_CC = r'''#!PYTHON
 """A stand-in for weavec-cc (and, named fake-clang, for the reference compiler).
 
 -c writes an "object" that lists its source and, for weavec-cc with
--fweavec-ledger=, a version 6 ledger: one access per line, FAKE_PROVEN of
+-fweavec-ledger=, a version 7 ledger: one access per line, FAKE_PROVEN of
 them proven. Linking writes a shell script: the program. A source that
 contains FAKE_FAIL fails to compile with weavec-cc. A source line
 `REPORT kind` makes it report that guard at that line when FAKE_TRAP is set
@@ -825,7 +825,7 @@ if "-c" in args:
         summary = {"accesses": lines, "proven": proven, "guarded": lines - proven, "unguarded": 0}
         rows = [{"file": sources[0], "line": 1, "column": 1, "function": "f", "operation": "load", "bytes": 4,
                  "outcome": "proven", "reason": "in-bounds"}] * proven
-        json.dump({"schema": "weavec-ledger", "version": 6, "units": [
+        json.dump({"schema": "weavec-ledger", "version": 7, "units": [
             {"source": sources[0], "object": out, "config": {"checks": checks}, "summary": summary,
              "rows": rows}]}, open(ledger, "w"))
     sys.exit(0)
@@ -992,7 +992,7 @@ class EndToEndTest(unittest.TestCase):
         (self.root / "bin" / "fake-weavec-cc").write_text(f"#!{sys.executable}\nimport sys; sys.exit(3)\n")
         status, output = self.run_gate("--quick", "--update")
         self.assertEqual(status, 2, output)  # the probe sees it first
-        self.assertIn("does not write a weavec-ledger version 6 ledger", output)
+        self.assertIn("does not write a weavec-ledger version 7 ledger", output)
         self.assertFalse(self.expected.exists())
 
     def test_a_failed_compile_is_not_recorded(self):

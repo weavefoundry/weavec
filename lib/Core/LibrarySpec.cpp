@@ -539,6 +539,7 @@ private:
   }
 
   bool parseEntry();
+  bool parseClass();
   std::optional<LibraryParam> parseParam();
   bool parseResult(LibraryEntry &entry);
   bool parseClause(LibraryEntry &entry, const std::string &clause);
@@ -826,12 +827,54 @@ bool LibrarySpecParser::validateEntry(const LibraryEntry &entry) {
   return true;
 }
 
+/// RFC 0044 §2, §5: `class NAME : erased;`, `class NAME : resets(f, g);`,
+/// NAME qualified with `::`.
+bool LibrarySpecParser::parseClass() {
+  std::string qualified;
+  do {
+    auto part = name("a class name");
+    if (!part)
+      return false;
+    qualified += (qualified.empty() ? "" : "::") + *part;
+  } while (accept("::"));
+  entryName = qualified;
+  if (!expect(':', "after the class name"))
+    return false;
+  do {
+    const std::string clause = word();
+    if (clause == "erased") {
+      spec.erased.insert(qualified);
+    } else if (clause == "shared") {
+      spec.shared.insert(qualified);
+    } else if (clause == "resets") {
+      if (!expect('(', "after 'resets'"))
+        return false;
+      do {
+        auto member = name("a member function's name");
+        if (!member)
+          return false;
+        spec.resets.emplace(qualified, std::move(*member));
+      } while (accept(','));
+      if (!expect(')', "after the member functions"))
+        return false;
+    } else {
+      return fail("expected 'erased', 'shared' or 'resets(...)'");
+    }
+  } while (accept(','));
+  if (!expect(';', "at the end of the entry") || !atEnd())
+    return fail("unexpected text after the class entry");
+  entryName.clear();
+  return true;
+}
+
 bool LibrarySpecParser::parseEntry() {
   LibraryEntry entry;
   entry.line = line->lines.empty() ? 0 : line->lines.front();
   auto rowName = name("a function name");
   if (!rowName)
     return false;
+  if (*rowName == "class" && !accept('('))
+    return parseClass();
   entry.name = *rowName;
   entryName = entry.name;
   if (!expect('(', "after the function name"))
@@ -909,6 +952,20 @@ std::optional<LibrarySpec> LibrarySpec::parse(std::string_view text,
     return std::nullopt;
   }
   return spec;
+}
+
+bool LibrarySpec::erasedClass(std::string_view qualified) const {
+  return erased.contains(qualified);
+}
+
+bool LibrarySpec::sharedClass(std::string_view qualified) const {
+  return shared.contains(qualified);
+}
+
+bool LibrarySpec::resetsClass(std::string_view qualified,
+                              std::string_view member) const {
+  return resets.contains(
+      std::pair(std::string(qualified), std::string(member)));
 }
 
 const LibraryEntry *LibrarySpec::find(std::string_view name) const {
