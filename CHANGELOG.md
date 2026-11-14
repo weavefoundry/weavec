@@ -1,6 +1,17 @@
 # CHANGELOG
 
 
+## [0.25.0](https://github.com/weavefoundry/weavec/compare/v0.24.0...v0.25.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* add Safe C++, checked for moves, borrows, and views ([#69](https://github.com/weavefoundry/weavec/issues/69))
+
+### Features
+
+* add Safe C++, checked for moves, borrows, and views ([#69](https://github.com/weavefoundry/weavec/issues/69)) ([c1056db](https://github.com/weavefoundry/weavec/commit/c1056dbf786c9251294edfabc98d85e86a26d88c))
+
 ## v0.24.0 (2026-11-13)
 
 ### Features
