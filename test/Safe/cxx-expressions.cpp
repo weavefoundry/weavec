@@ -5,12 +5,15 @@
 // RUN: %weavec_cxx -std=c++20 -fsyntax-only -fweavec-safe -w -ferror-limit=0 -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
 #include <array>
 #include <bit>
+#include <coroutine>
+#include <csetjmp>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -63,6 +66,25 @@ std::unique_ptr<Item> adopted(Item *raw) {
 void destroyed(Item &item) {
   item.~Item(); // expected-error {{a destructor is called by hand [weavec-safe:raw-owner]}}
 }
+struct Buffer {
+  int *data;
+  int *spare = new int(3); // expected-error {{'new' makes a block no object owns [weavec-safe:raw-owner]}}
+  explicit Buffer(std::size_t n) : data(new int[n]) {} // expected-error {{'new' makes a block no object owns [weavec-safe:raw-owner]}}
+};
+struct Closer {
+  void operator()(std::FILE *file) const { std::fclose(file); }
+};
+struct Handle {
+  std::unique_ptr<std::FILE, Closer> file;
+  explicit Handle(const char *path) : file(std::fopen(path, "r")) {} // expected-error {{a raw pointer is handed to 'unique_ptr' to own [weavec-safe:raw-owner]}}
+};
+class WEAVEC_GUARDED GuardedHandle {
+public:
+  explicit GuardedHandle(const char *path) : file(std::fopen(path, "r")) {}
+
+private:
+  std::unique_ptr<std::FILE, Closer> file;
+};
 std::unique_ptr<Item> made() { return std::make_unique<Item>(); }
 std::shared_ptr<Item> madeShared() { return std::make_shared<Item>(); }
 std::vector<int> madeArray(std::size_t n) { return std::vector<int>(n); }
@@ -143,6 +165,12 @@ int upcast(Derived *derived) {
   return base->b + int(static_cast<double>(derived->d));
 }
 std::uint32_t bits(float f) { return std::bit_cast<std::uint32_t>(f); }
+std::uintptr_t bitsOfPointer(Item *item) {
+  return __builtin_bit_cast(std::uintptr_t, item); // expected-error {{'std::bit_cast' makes or reads a pointer [weavec-safe:pointer-cast]}}
+}
+Item *laundered(Item *item) {
+  return __builtin_launder(item); // expected-error {{'std::launder' makes a pointer to an object the rules did not see created [weavec-safe:pointer-cast]}}
+}
 
 // int-to-pointer
 Item *fromInteger(std::uintptr_t address) {
@@ -196,6 +224,28 @@ again:
   if (--n > 0)
     goto again; // expected-error {{'goto' is not followed by the rules [weavec-safe:not-modeled]}}
   return n;
+}
+int computedJump(int n) {
+  void *target = &&done;
+  if (n > 0)
+    goto *target; // expected-error {{a computed 'goto' is not followed by the rules [weavec-safe:not-modeled]}}
+done:
+  return n;
+}
+int returnsTwice(std::jmp_buf &state) {
+  return setjmp(state); // expected-error {{'setjmp' returns twice, which the rules do not follow [weavec-safe:not-modeled]}} // expected-error {{an array becomes a pointer that has lost its size [weavec-safe:index-single]}}
+}
+struct Task {
+  struct promise_type {
+    Task get_return_object() { return {}; }
+    std::suspend_never initial_suspend() noexcept { return {}; }
+    std::suspend_never final_suspend() noexcept { return {}; }
+    void return_void() {}
+    void unhandled_exception() {}
+  };
+};
+Task coroutine() { // expected-error {{a coroutine is not checked [weavec-safe:not-modeled]}}
+  co_return;
 }
 int statementExpression(int n) {
   return ({ int m = n; m + 1; }); // expected-error {{a statement expression is not followed by the rules [weavec-safe:not-modeled]}}

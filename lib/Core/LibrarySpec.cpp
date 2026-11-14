@@ -844,6 +844,8 @@ bool LibrarySpecParser::parseClass() {
     const std::string clause = word();
     if (clause == "erased") {
       spec.erased.insert(qualified);
+    } else if (clause == "shared") {
+      spec.shared.insert(qualified);
     } else if (clause == "resets") {
       if (!expect('(', "after 'resets'"))
         return false;
@@ -856,7 +858,7 @@ bool LibrarySpecParser::parseClass() {
       if (!expect(')', "after the member functions"))
         return false;
     } else {
-      return fail("expected 'erased' or 'resets(...)'");
+      return fail("expected 'erased', 'shared' or 'resets(...)'");
     }
   } while (accept(','));
   if (!expect(';', "at the end of the entry") || !atEnd())
@@ -954,6 +956,10 @@ std::optional<LibrarySpec> LibrarySpec::parse(std::string_view text,
 
 bool LibrarySpec::erasedClass(std::string_view qualified) const {
   return erased.contains(qualified);
+}
+
+bool LibrarySpec::sharedClass(std::string_view qualified) const {
+  return shared.contains(qualified);
 }
 
 bool LibrarySpec::resetsClass(std::string_view qualified,

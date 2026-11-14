@@ -64,8 +64,22 @@ public:
     for (const clang::ParmVarDecl *parameter : function.parameters())
       checkAnnotations(parameter->getType(), parameter->getLocation());
     checkAnnotations(function.getReturnType(), function.getLocation());
+    // A constructor's member initializers are its code too.
+    if (const auto *constructor =
+            llvm::dyn_cast<clang::CXXConstructorDecl>(&function))
+      for (const clang::CXXCtorInitializer *initializer : constructor->inits())
+        if (initializer->isWritten())
+          TraverseStmt(initializer->getInit());
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     TraverseStmt(const_cast<clang::Stmt *>(function.getBody()));
+  }
+
+  /// A member's default initializer, which every constructor that does not
+  /// name the member runs.
+  void run(const clang::FieldDecl &field) {
+    programArguments = false;
+    if (field.hasInClassInitializer())
+      TraverseStmt(field.getInClassInitializer());
   }
 
   // RecursiveASTVisitor's names.
@@ -532,6 +546,17 @@ public:
   // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
   [[nodiscard]] static bool shouldVisitTemplateInstantiations() { return true; }
 
+  /// Nothing a system header declares is the unit's own: its functions are
+  /// not checked and its classes not listed, so the walk does not enter
+  /// it (the standard library and its instantiations are most of a unit).
+  bool TraverseDecl(clang::Decl *declaration) {
+    if (declaration != nullptr &&
+        !llvm::isa<clang::TranslationUnitDecl>(declaration) &&
+        isLibrary(*declaration))
+      return true;
+    return clang::RecursiveASTVisitor<CxxUnit>::TraverseDecl(declaration);
+  }
+
   bool VisitFunctionDecl(clang::FunctionDecl *function) {
     if (!function->doesThisDeclarationHaveABody() ||
         function->isDependentContext() || function->isDefaulted() ||
@@ -550,8 +575,12 @@ public:
   bool VisitCXXRecordDecl(clang::CXXRecordDecl *record) {
     if (record->isThisDeclarationADefinition() && !record->isLambda() &&
         !record->isDependentContext() && !isLibrary(*record) &&
-        listed.insert(record->getCanonicalDecl()).second)
+        listed.insert(record->getCanonicalDecl()).second) {
       listFields(*record);
+      if (isSafe(*record))
+        for (const clang::FieldDecl *field : record->fields())
+          rules.run(*field);
+    }
     return true;
   }
   // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
@@ -572,7 +601,12 @@ private:
         function.hasAttr<clang::NoSanitizeAttr>() ||
         function.hasAttr<clang::DisableSanitizerInstrumentationAttr>())
       return false;
-    for (const clang::DeclContext *context = &function; context != nullptr;
+    return isSafe(static_cast<const clang::DeclContext &>(function));
+  }
+
+  /// The same for a class's own code (its members' default initializers).
+  [[nodiscard]] bool isSafe(const clang::DeclContext &inner) const {
+    for (const clang::DeclContext *context = &inner; context != nullptr;
          context = context->getParent()) {
       const auto *declaration = llvm::dyn_cast<clang::Decl>(context);
       if (declaration == nullptr ||

@@ -39,6 +39,13 @@ const int *pointerToLocal() {
 std::string_view viewOfValueParameter(std::string s) {
   return s; // expected-error {{what is returned points into 's', which does not outlive the function [weavec-safe:escape]}}
 }
+const std::string_view &referenceToViewParameter(std::string_view sv) {
+  return sv; // expected-error {{a reference to 'sv' is returned, and it does not outlive the function [weavec-safe:escape]}}
+}
+const int &elementOfValueParameter(std::vector<int> v) {
+  return v[0]; // expected-error {{what is returned points into 'v', which does not outlive the function [weavec-safe:escape]}}
+}
+std::string_view viewThroughViewParameter(std::string_view sv) { return sv.substr(1); }
 std::function<int()> lambdaOfLocal(int n) {
   int x = n + 5;
   return [&] { return x; }; // expected-error {{what is returned points into 'x', which does not outlive the function [weavec-safe:escape]}}
@@ -272,6 +279,10 @@ int keeperOutlives() {
   }
   events.handlers.front()(); // expected-error {{'events' points into 'inner', whose lifetime has ended [weavec-safe:stale-borrow]}}
   return 0;
+}
+void keepsViewParameter(Events &events, std::string_view sv) {
+  events.keep([&sv] { (void)sv.size(); }); // expected-error {{a borrow of 'sv' is stored in what 'keep' keeps, which outlives it [weavec-safe:escape]}}
+  events.keep([sv] { (void)sv.size(); });
 }
 void keepsTemporary(Events &events, const std::string &prefix) {
   events.keep([&prefix] { (void)prefix.size(); }); // expected-error {{what 'keep' keeps would keep a borrow of the parameter 'prefix', which is lent for the call only [weavec-safe:escape]}}

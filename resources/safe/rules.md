@@ -114,7 +114,7 @@ A library that hands back a `void *` context gets a `WEAVEC_GUARDED` adapter of 
 
 ### In C++
 
-No `reinterpret_cast`, no `const_cast`, no C-style cast that is one of them, no `static_cast` from `void *` or from a base to a derived class, no `std::launder`. `dynamic_cast` and `std::variant` are the checked forms.
+No `reinterpret_cast`, no `const_cast`, no C-style cast that is one of them, no `static_cast` from `void *` or from a base to a derived class. `dynamic_cast` and `std::variant` are the checked forms.
 
 ```cpp rejected
 struct Shape { virtual ~Shape() = default; };

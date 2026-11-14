@@ -134,10 +134,12 @@
 #
 # CLASSES
 #   entry    ::= 'class' NAME { '::' NAME } ':' cclause { ',' cclause } ';'
-#   cclause  ::= 'erased' | 'resets' '(' NAME { ',' NAME } ')'
+#   cclause  ::= 'erased' | 'shared' | 'resets' '(' NAME { ',' NAME } ')'
 #   RFC 0044. erased (section 2): a C++ class that can hold an object of a
 #   type its own type does not name (a callable, a value of any type);
-#   Safe C++ treats one made from a view as a view. resets (section 5):
+#   Safe C++ treats one made from a view as a view. shared (section 8): a
+#   pointer whose object has other owners, which the function that holds
+#   one does not see. resets (section 5):
 #   member functions that leave the object in a known state whatever it
 #   held, so that a moved-from object may be used again after one, as
 #   after an assignment. Inline namespaces are not written (std::function,
@@ -1341,6 +1343,6 @@ class std::unordered_multimap : resets(clear);
 class std::unordered_set : resets(clear);
 class std::unordered_multiset : resets(clear);
 class std::unique_ptr : resets(reset);
-class std::shared_ptr : resets(reset);
+class std::shared_ptr : shared, resets(reset);
 class std::weak_ptr : resets(reset);
 class std::optional : resets(reset);

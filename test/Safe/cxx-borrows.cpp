@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -79,6 +80,32 @@ struct Queue {
 Item wholeWhilePartMoved(Item item, std::vector<std::string> &all) {
   all.push_back(std::move(item.name));
   return item; // expected-error {{'item' is used while its member 'name' is moved [weavec-safe:owner-moved]}}
+}
+struct Chain {
+  std::string name;
+  Chain *next = nullptr;
+};
+std::vector<std::string> movedThroughAPointer(Chain *head) {
+  std::vector<std::string> out;
+  for (Chain *link = head; link != nullptr; link = link->next)
+    out.push_back(std::move(link->name)); // each link is another object
+  return out;
+}
+void sinkOptional(std::optional<std::string> o);
+void sinkShared(std::shared_ptr<int> p);
+bool resetAfterMove(std::optional<std::string> o, std::shared_ptr<int> p, std::vector<int> v,
+                    std::vector<std::vector<int>> &all) {
+  sinkOptional(std::move(o));
+  o.reset(); // a reset is as good as an assignment
+  sinkShared(std::move(p));
+  p.reset();
+  all.push_back(std::move(v));
+  v.clear();
+  return o.has_value() || p != nullptr || !v.empty();
+}
+void notAReset(std::vector<int> v, std::vector<std::vector<int>> &all) {
+  all.push_back(std::move(v));
+  v.pop_back(); // expected-error {{'v' is used after it was moved [weavec-safe:owner-moved]}}
 }
 void movedByLambda(std::vector<int> v, std::vector<std::vector<int>> &all) {
   auto keep = [w = std::move(v)] { return w.size(); };
@@ -323,6 +350,20 @@ void movesGlobalOutAndBack(const std::string &name) {
   local.push_back(name);
   registry = std::move(local);
 }
+class Counter {
+public:
+  int get() const {
+    const std::lock_guard<std::mutex> lock(mutex_); // nothing borrows into a mutex
+    return value_;
+  }
+  void note(const std::string &line) const { log_.push_back(line); } // what a reference member names is not this object's
+  explicit Counter(std::vector<std::string> &log) : log_(log) {}
+
+private:
+  mutable std::mutex mutex_;
+  std::vector<std::string> &log_;
+  int value_ = 0;
+};
 struct Cache {
   mutable std::string last;
   std::vector<int> data;

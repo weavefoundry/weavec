@@ -197,12 +197,60 @@ public:
     return false;
   }
 
-  /// §5: a member function the table says resets its object.
-  [[nodiscard]] static bool resets(const clang::CXXMethodDecl &method) {
-    const clang::CXXRecordDecl *record = method.getParent();
-    return method.getIdentifier() != nullptr && isLibrary(*record) &&
-           core::LibrarySpec::shipped().resetsClass(qualifiedName(*record),
-                                                    method.getName());
+  /// §5: a member function the table says resets its object. The row
+  /// names the class of the object; the library may declare the function
+  /// in a base (libc++'s `optional`, libstdc++'s `shared_ptr`).
+  [[nodiscard]] static bool resets(const clang::CXXMethodDecl &method,
+                                   clang::QualType object) {
+    if (method.getIdentifier() == nullptr)
+      return false;
+    if (!object.isNull() && object->isPointerType())
+      object = object->getPointeeType();
+    const clang::CXXRecordDecl *of =
+        object.isNull() ? nullptr
+                        : object.getNonReferenceType()->getAsCXXRecordDecl();
+    const auto listed = [&](const clang::CXXRecordDecl *record) {
+      return record != nullptr && isLibrary(*record) &&
+             core::LibrarySpec::shipped().resetsClass(qualifiedName(*record),
+                                                      method.getName());
+    };
+    return listed(of) || listed(method.getParent());
+  }
+
+  /// Whether a borrow can point into an object of `type`: it is, or holds,
+  /// one of the library's owners, a shared pointer, a view or an erased
+  /// object. A `std::mutex` has a destructor and lends nothing.
+  [[nodiscard]] bool lends(clang::QualType type, unsigned depth = 0) {
+    type = type.getNonReferenceType();
+    while (const clang::ArrayType *array = ast.getAsArrayType(type))
+      type = array->getElementType();
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record == nullptr)
+      return false;
+    record = record->getDefinition();
+    if (record == nullptr || depth > 8)
+      return true;
+    if (isLibrary(*record)) {
+      if (record->hasAttr<clang::OwnerAttr>() || shared(record) ||
+          viewClass(record) || erased(type))
+        return true;
+      const auto *specialization =
+          llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(record);
+      return specialization != nullptr &&
+             llvm::any_of(specialization->getTemplateArgs().asArray(),
+                          [&](const clang::TemplateArgument &argument) {
+                            return argument.getKind() ==
+                                       clang::TemplateArgument::Type &&
+                                   lends(argument.getAsType(), depth + 1);
+                          });
+    }
+    return llvm::any_of(record->bases(),
+                        [&](const clang::CXXBaseSpecifier &base) {
+                          return lends(base.getType(), depth + 1);
+                        }) ||
+           llvm::any_of(record->fields(), [&](const clang::FieldDecl *field) {
+             return lends(field->getType(), depth + 1);
+           });
   }
 
   /// A local of this type has a set of borrows the rules follow.
@@ -309,26 +357,11 @@ public:
            record->hasAttr<clang::OwnerAttr>();
   }
 
-  /// A library class that gives `->`, can be copied, and is neither one of
-  /// Clang's owners (which own alone) nor a view: a shared pointer.
+  /// §8: a library class the table marks `shared`: a pointer whose object
+  /// has other owners.
   [[nodiscard]] static bool shared(const clang::CXXRecordDecl *record) {
-    if (record == nullptr || !isLibrary(*record) || !record->hasDefinition() ||
-        record->hasAttr<clang::OwnerAttr>() ||
-        record->hasAttr<clang::PointerAttr>() ||
-        llvm::none_of(record->ctors(),
-                      [](const clang::CXXConstructorDecl *constructor) {
-                        return constructor->isCopyConstructor() &&
-                               !constructor->isDeleted();
-                      }))
-      return false;
-    // `->` may come from a base (libstdc++'s `__shared_ptr_access`).
-    const clang::DeclarationName arrow =
-        record->getASTContext().DeclarationNames.getCXXOperatorName(
-            clang::OO_Arrow);
-    return !record->lookup(arrow).empty() ||
-           !record->forallBases([&](const clang::CXXRecordDecl *base) {
-             return base->lookup(arrow).empty();
-           });
+    return record != nullptr && isLibrary(*record) &&
+           core::LibrarySpec::shipped().sharedClass(qualifiedName(*record));
   }
 
   /// The name the table's class rows use: qualified, without inline

@@ -412,8 +412,11 @@ private:
     // does not see.
     if (CxxKinds::shared(variable->getType()->getAsCXXRecordDecl()))
       return false;
+    // A parameter taken by value is a local too: its own storage, and what
+    // a view parameter owns itself. Only a pointer or reference parameter
+    // stands for the caller's object.
     return !llvm::isa<clang::ParmVarDecl>(variable) ||
-           !kinds.tracked(variable->getType());
+           !CxxKinds::pointerLike(variable->getType());
   }
 
   [[nodiscard]] static Value at(const clang::VarDecl &variable) {
@@ -1135,7 +1138,7 @@ private:
 
   void owners(const Value &objects, clang::SourceLocation at,
               const std::string &what, const clang::NamedDecl *by,
-              const clang::Expr *expression) {
+              const clang::Expr *expression, clang::QualType type) {
     if (objects.reference && globalBase(expression)) {
       error(at, rule::OwnerPath,
             what + " is a global, which every function can reach, and " +
@@ -1158,10 +1161,12 @@ private:
             "WEAVEC_GUARDED");
       return;
     }
-    if (!readOnlyThis)
+    // Amendment 19: what a reference member names is not `*this`'s, and a
+    // member no borrow can point into (a mutex) may be changed.
+    if (!readOnlyThis || !kinds.lends(type))
       return;
     if (llvm::any_of(objects.loans, [](const Loan &loan) {
-          return loan.root.kind == RootKind::This;
+          return loan.root.kind == RootKind::This && !loan.root.beyond;
         }))
       error(at, rule::OwnerPath,
             what + " is changed in a member function that is 'const' or "
@@ -1224,11 +1229,13 @@ private:
       }
       // In the function's own view member, any parameter it borrowed; in
       // what another object keeps, one that could be a temporary.
-      if (viewTarget && parameter != nullptr && !loan.root.beyond &&
+      const bool lent = parameter != nullptr &&
+                        parameter->getType()->isReferenceType() &&
+                        !kinds.tracked(parameter->getType()->getPointeeType());
+      if (viewTarget && lent && !loan.root.beyond &&
           (toThis ||
            parameter->getType()->getPointeeType().isConstQualified()) &&
-          ownLocal(*parameter) && parameter->getType()->isReferenceType() &&
-          !kinds.tracked(parameter->getType()->getPointeeType()) &&
+          ownLocal(*parameter) &&
           !llvm::isa<clang::CXXConstructorDecl>(&function)) {
         error(at, rule::Escape,
               where + " would keep a borrow of the parameter " +
@@ -1430,7 +1437,10 @@ private:
     const bool assigns =
         call.method != nullptr &&
         (call.method->getOverloadedOperator() == clang::OO_Equal ||
-         CxxKinds::resets(*call.method));
+         CxxKinds::resets(*call.method,
+                          call.object != nullptr
+                              ? call.object->IgnoreParenImpCasts()->getType()
+                              : clang::QualType()));
     // Everything is evaluated before anything is changed.
     Value target;
     bool targetChanges = false;
@@ -1498,7 +1508,7 @@ private:
       // RFC 0043 §9: a global is assigned as a whole, moved out and back.
       if (!(assigns && global(call.object)))
         owners(target, call.at, spell(call.object, ast), call.method,
-               call.object);
+               call.object, objectType(call));
       invalidate(flow, target, Ends::Into, End::Why::Changed, call.at,
                  call.method);
     }
@@ -1532,7 +1542,7 @@ private:
                                 ? pointee(flow, given)
                                 : object(flow, given);
       owners(objects, given->getExprLoc(), spell(given, ast), call.callee,
-             given);
+             given, argument.parameter->getType()->getPointeeType());
       invalidate(flow, objects, Ends::Into, End::Why::Called, call.at,
                  call.callee);
       // §7: a view passed where the callee may store the other borrows.
@@ -1545,7 +1555,6 @@ private:
                 borrow.loans.push_back(loan);
       }
     }
-    (void)constructs;
   }
 
   [[nodiscard]] static std::optional<Place>
@@ -1603,7 +1612,10 @@ private:
     if (const auto *member =
             llvm::dyn_cast<clang::CXXMemberCallExpr>(statement);
         member != nullptr && member->getMethodDecl() != nullptr &&
-        CxxKinds::resets(*member->getMethodDecl()))
+        CxxKinds::resets(*member->getMethodDecl(),
+                         member->getImplicitObjectArgument()
+                             ->IgnoreParenImpCasts()
+                             ->getType()))
       target = member->getImplicitObjectArgument();
     if (target != nullptr)
       assigned.insert(target->IgnoreParenImpCasts());
@@ -1737,6 +1749,8 @@ private:
           !variable->getType()->isReferenceType()) {
         flow.borrows[variable->getCanonicalDecl()] = {
             .loans = value.loans, .reference = value.reference, .end = {}};
+        // What was moved out through it was another object's.
+        unmove(flow, {variable->getCanonicalDecl(), nullptr});
         return;
       }
     const Value target = object(flow, left);

@@ -42,7 +42,7 @@ raw pointer member, and trusts the standard library. The stages:
 - [x] **S6 Explanations and the guide.**
 - [x] **S7 on darwin-arm64**: 82 of 110 independently written temporal
       bugs stop the compile for the bug (14 more stop as their fixed twins
-      do, 14 compile and stop when they run); 87 of 90 correct files
+      do, 14 compile and stop when they run); 86 of 90 correct files
       compile unchanged; two ports (an LRU cache, Python's `json`) with
       every function safe, in 1.2 to 1.4 times a Rust agent's time.
 - [ ] **Next**: conversions of existing C++ projects (gate G5), the gates

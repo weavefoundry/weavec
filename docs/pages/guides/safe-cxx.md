@@ -381,6 +381,7 @@ Each of these still stops when it runs, under the guards:
 - an object shared by `std::shared_ptr<T>` that another holder changed under a borrow;
 - a callable that captured `this`, or an object a parameter refers to, and is kept by an object that outlives it; and a stored callable that changes the container it is being called from;
 - an element moved out of a container (`std::move(v[i])`) and used again;
+- the address of a pointer parameter itself (`return &p;`), and views kept in a C array (`std::string_view parts[4]`; a `std::array` of them is followed);
 - a container's iterators passed to a standard algorithm the standard forbids them for (`v.assign(v.begin() + 1, v.end())`);
 - an index or an iterator out of range, a null `std::unique_ptr`, an empty `std::optional`;
 - globals that are not `const`, and data races.

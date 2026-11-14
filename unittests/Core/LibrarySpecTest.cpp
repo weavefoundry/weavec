@@ -412,9 +412,14 @@ TEST(LibrarySpecTest, ClassRowsNameErasedTypes) {
   EXPECT_TRUE(table.resetsClass("std::any", "reset"));
   EXPECT_FALSE(table.resetsClass("std::vector", "pop_back"));
   EXPECT_FALSE(table.resetsClass("std::map", "assign"));
+  // RFC 0044 section 8: shared pointers.
+  EXPECT_TRUE(table.sharedClass("std::shared_ptr"));
+  EXPECT_FALSE(table.sharedClass("std::unique_ptr"));
+  EXPECT_FALSE(table.sharedClass("std::expected"));
   const auto both =
-      LibrarySpec::parse("class a : erased, resets(f, g);\n", error);
+      LibrarySpec::parse("class a : erased, shared, resets(f, g);\n", error);
   ASSERT_TRUE(both.has_value()) << error;
+  EXPECT_TRUE(both->sharedClass("a"));
   EXPECT_TRUE(both->erasedClass("a"));
   EXPECT_TRUE(both->resetsClass("a", "g"));
   EXPECT_FALSE(both->resetsClass("a", "h"));
