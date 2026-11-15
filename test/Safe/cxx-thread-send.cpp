@@ -1,6 +1,6 @@
 // RFC 0046 §2, §3: what a thread start gives the thread by value is
 // sendable (`thread-send`), with accepted and rejected forms.
-// RUN: %weavec_cxx -std=c++20 -fsyntax-only -fweavec-safe -w -ferror-limit=0 -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
+// RUN: %weavec_cxx -std=c++20 %cxx_threads -fsyntax-only -fweavec-safe -w -ferror-limit=0 -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
 #include <atomic>
 #include <functional>
 #include <future>

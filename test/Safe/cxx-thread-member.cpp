@@ -1,7 +1,7 @@
 // RFC 0046 §7: a class that owns the thread that uses `this` is shareable,
 // `final`, neither copyable nor movable, and declares the thread member
 // last (`escape`, `thread-share`).
-// RUN: %weavec_cxx -std=c++20 -fsyntax-only -fweavec-safe -w -ferror-limit=0 -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
+// RUN: %weavec_cxx -std=c++20 %cxx_threads -fsyntax-only -fweavec-safe -w -ferror-limit=0 -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
 #include <atomic>
 #include <memory>
 #include <mutex>

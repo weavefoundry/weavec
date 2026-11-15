@@ -136,13 +136,13 @@ A safe C++ function is also checked against the rules of threads ([RFC 0046](/rf
 
 Then X-A3 and Y-A5 are assumptions about code that is not safe only, and (X1) to (X6) and (Y1) to (Y6) hold for a threaded program whose threads run safe code. Not covered: deadlock and lock order; races that are not data races (a check and an act in two locked calls); what code that is not safe does; signal handlers; Safe C, whose functions may not start a thread (`not-modeled`) and whose globals are not checked (O-A3 stays as it is).
 
-|          | Assumption |
-| -------- | ---------- |
-| **Z-A1** | Code that is not safe does not hand another thread an object safe code confines, uses what safe code shares only as safe code could, and calls a `WEAVEC_SENDS` parameter's function with a callable that may be sent. |
+|          | Assumption                                                                                                                                                                                                                                      |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Z-A1** | Code that is not safe does not hand another thread an object safe code confines, uses what safe code shares only as safe code could, and calls a `WEAVEC_SENDS` parameter's function with a callable that may be sent.                          |
 | **Z-A2** | The standard library is as thread-safe as the standard says: `const` member functions of one object may run at once, distinct objects share no hidden state, and the types the table marks `lock`, `guard` and `shareable` behave as specified. |
-| **Z-A3** | A function of code that is not safe, called through a `const` reference or pointer, writes nothing in an object of frozen type. |
-| **Z-A4** | A thread started by code that is not safe runs safe code only on objects that are shareable or that no other thread uses. |
-| **Z-A5** | A library function with state of its own that the table does not mark `unshared` is not called by two threads at once. |
+| **Z-A3** | A function of code that is not safe, called through a `const` reference or pointer, writes nothing in an object of frozen type.                                                                                                                 |
+| **Z-A4** | A thread started by code that is not safe runs safe code only on objects that are shareable or that no other thread uses.                                                                                                                       |
+| **Z-A5** | A library function with state of its own that the table does not mark `unshared` is not called by two threads at once.                                                                                                                          |
 
 The audit lists what these rest on: the functions that are not safe and start threads or use locks, their `WEAVEC_SENDS` parameters, and the globals that code which is not safe defines and safe code names.
 

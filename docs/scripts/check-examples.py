@@ -102,6 +102,12 @@ with tempfile.TemporaryDirectory() as temp:
         "functional", "future", "initializer_list", "map", "memory", "mutex", "optional", "shared_mutex", "span",
         "string", "string_view", "thread", "unordered_map", "utility", "variant", "vector"))
     weavec_cxx = Path(weavec_cc).with_name("weavec-c++")
+    # RFC 0046: a libc++ older than LLVM 20 (the Xcode 16 SDK's) declares
+    # std::jthread only under _LIBCPP_ENABLE_EXPERIMENTAL.
+    probe = temp / "jthread.cpp"
+    probe.write_text("#include <thread>\nstd::jthread t;\n")
+    threads = next((flags for flags in ([], ["-D_LIBCPP_ENABLE_EXPERIMENTAL"])
+                    if run([weavec_cxx, "-std=c++20", "-fsyntax-only", probe, *flags]).returncode == 0), [])
     checked = 0
     checked_cxx = 0
     for section in rules.read_text().split("\n## ")[1:]:
@@ -120,7 +126,7 @@ with tempfile.TemporaryDirectory() as temp:
         for number, match in enumerate(re.finditer(r"```cpp (accepted|rejected)\n(.*?)```", section, re.S)):
             source = temp / f"rule-{rule}-{number}.cpp"
             source.write_text(cxx_prelude + match.group(2))
-            compiled = run([weavec_cxx, "-std=c++20", "-fsyntax-only", "-w", "-fweavec-safe", source])
+            compiled = run([weavec_cxx, "-std=c++20", *threads, "-fsyntax-only", "-w", "-fweavec-safe", source])
             if match.group(1) == "accepted":
                 assert compiled.returncode == 0, f"{rule} accepted C++ example {number}:\n{compiled.stderr}"
             else:
@@ -136,7 +142,7 @@ with tempfile.TemporaryDirectory() as temp:
     for number, block in enumerate(blocks):
         source = temp / f"guide-{number}.cpp"
         source.write_text(cxx_prelude + block)
-        compiled = run([weavec_cxx, "-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-fweavec-safe",
+        compiled = run([weavec_cxx, "-std=c++20", *threads, "-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-fweavec-safe",
                         source])
         assert compiled.returncode == 0, f"the C++ guide's block {number}:\n{compiled.stderr}"
 

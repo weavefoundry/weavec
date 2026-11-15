@@ -6,13 +6,13 @@
 // starts; the audit lists what (Z1) to (Z6) rest on. Nothing at run time
 // changes (G6): the object is the same with the rules off.
 // RUN: rm -rf %t && mkdir -p %t/ledger
-// RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -fweavec-summary -fweavec-ledger=%t/ledger/ -c %s -o %t/on.o 2>&1 | FileCheck %s --check-prefix=SUMMARY
-// RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -mllvm -weavec-thread-rules=0 -c %s -o %t/off.o
+// RUN: %weavec_cxx -std=c++20 %cxx_threads -O2 -fweavec-safe -fweavec-summary -fweavec-ledger=%t/ledger/ -c %s -o %t/on.o 2>&1 | FileCheck %s --check-prefix=SUMMARY
+// RUN: %weavec_cxx -std=c++20 %cxx_threads -O2 -fweavec-safe -mllvm -weavec-thread-rules=0 -c %s -o %t/off.o
 // RUN: cmp %t/on.o %t/off.o
 // RUN: FileCheck %s --check-prefix=LEDGER < %t/ledger/on.o.ledger.json
 // RUN: %weavec_cc --weavec-audit %t/ledger | FileCheck %s --check-prefix=AUDIT
 // RUN: %weavec_cc --weavec-audit --format=json %t/ledger | FileCheck %s --check-prefix=JSON
-// RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe %s -o %t/program
+// RUN: %weavec_cxx -std=c++20 %cxx_threads -O2 -fweavec-safe %s -o %t/program
 // RUN: %t/program
 #include <functional>
 #include <mutex>

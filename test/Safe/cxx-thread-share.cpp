@@ -2,7 +2,7 @@
 // shareable, immutable, or a lent local (`thread-share`); no
 // `std::shared_ptr<const T>` is made from a `std::shared_ptr<T>`; no
 // function that keeps state of its own is called.
-// RUN: %weavec_cxx -std=c++20 -fsyntax-only -fweavec-safe -w -ferror-limit=0 -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
+// RUN: %weavec_cxx -std=c++20 %cxx_threads -fsyntax-only -fweavec-safe -w -ferror-limit=0 -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
 #include <atomic>
 #include <cstdlib>
 #include <ctime>

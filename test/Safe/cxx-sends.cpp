@@ -1,7 +1,7 @@
 // RFC 0046 §8: WEAVEC_SENDS on a parameter that hands a type-erased callable
 // to another thread (`thread-send`, `bad-annotation`), and a pool of
 // worker threads built on it.
-// RUN: %weavec_cxx -std=c++20 -fsyntax-only -fweavec-safe -w -ferror-limit=0 -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
+// RUN: %weavec_cxx -std=c++20 %cxx_threads -fsyntax-only -fweavec-safe -w -ferror-limit=0 -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
 #include <condition_variable>
 #include <functional>
 #include <mutex>
