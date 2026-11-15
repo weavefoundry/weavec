@@ -1286,7 +1286,6 @@ building it and from what the gates found. They override the body.
     `not-modeled`. Neither the S0 paper review nor the census under
     libstdc++ was done before code: the gates below measured the sets as
     built, and the Linux container ran the test suites.
-
 17. **Constructors that start threads (§6).** A constructor or destructor
     that has started a thread on some path uses the locked members under a
     guard from there on, as one of a class with a thread member does; what
@@ -1307,7 +1306,8 @@ building it and from what the gates found. They override the body.
 ## Measured gates
 
 Measured on darwin-arm64 (Homebrew LLVM 23.1, the `dev` preset) on
-2026-11-14. The evidence is in `build/rfc46/` (not committed): `probe/`
+2026-11-14; after amendments 17 to 19, G1, G2, G3 and H1 were measured
+again on 2026-11-15, and only G1's and H1's figures changed. The evidence is in `build/rfc46/` (not committed): `probe/`
 (the fifteen programs, `check.sh`), `s0/` (the sixty racy programs, their
 fixed twins and the forty correct programs, written by an agent that had
 not seen this RFC and confirmed under ThreadSanitizer and AddressSanitizer;
@@ -1316,7 +1316,7 @@ two ports), `g6.py`, `tests/` (the drafts of the `test/Safe/` tests).
 
 | Gate | Result |
 | --- | --- |
-| G1 Tests | **Pass.** `test/Safe/cxx-thread-send.cpp`, `cxx-thread-share.cpp`, `cxx-thread-lent.cpp`, `cxx-lock-held.cpp`, `cxx-thread-member.cpp`, `cxx-sends.cpp`, `cxx-const-path.cpp` and `cxx-globals.cpp` pin 58 errors beside their accepted forms; `test/Driver/safe-cxx-threads.cpp` the ledger, the summary line, the audit and identical objects with the rules off; `LibrarySpecTest` the new rows and clauses; each new rule page has compiled examples, and the guide's nine thread blocks compile. |
+| G1 Tests | **Pass.** `test/Safe/cxx-thread-send.cpp`, `cxx-thread-share.cpp`, `cxx-thread-lent.cpp`, `cxx-lock-held.cpp`, `cxx-thread-member.cpp`, `cxx-sends.cpp`, `cxx-const-path.cpp` and `cxx-globals.cpp` pin 65 errors beside their accepted forms; `test/Driver/safe-cxx-threads.cpp` the ledger, the summary line, the audit and identical objects with the rules off; `LibrarySpecTest` the new rows and clauses; each new rule page has compiled examples, and the guide's nine thread blocks compile. |
 | G2 Races stop the compile | **Pass.** All fifteen probes stop with a thread rule or a case this RFC adds (`thread-lent` 7, `thread-share` 3, `thread-send` 1, `lock-held` 1, `escape` 3); none compiles. All sixty of S0's racy programs stop; 47 of them with an error their fixed twin does not get, and the other 13 at the raced object itself (a global, a reference capture handed to a pool, a buffer published by release and acquire, `std::vector<bool>` slots, two bitfields), where the twin's fix keeps a shape the rules reject. |
 | G3 Correct programs compile | **Part.** The four correct probes compile. **32 of S0's 40 correct programs (80%) compile unchanged**; the eight rejected: four pools that wait for idle over tasks capturing a local by reference (with `WEAVEC_SENDS` added, which the note names, the pools compile and the callers do not), a release/acquire publication, a `std::function` member its own thread calls, an actor whose members only its thread touches, and a class with two mutexes. Each note names a rewrite. **28 of the 60 fixed twins are rejected (the gate allows 12)**: 12 keep a mutex beside the data in globals or locals rather than in a class; 4 are the pools above; 4 use a member outside the lock (a setting read without it, an accessor after the threads are joined); 2 store a `std::function` without `WEAVEC_SENDS`; 2 publish by release and acquire; and one each a `find` under a shared lock in a member function that is not `const`, `std::vector<bool>` slots, two threads writing two bitfields, and RFC 0044's `index-single` on an array given to `strtok_r`. |
 | G4 The oracle | **Pass, by construction.** No racy program compiles. Every program the rules accept (the correct probes, the 32 correct programs, the 32 fixed twins, the G5 port) is ThreadSanitizer-clean in S0's validation and the port's own runs. |
@@ -1324,4 +1324,4 @@ two ports), `g6.py`, `tests/` (the drafts of the `test/Safe/` tests).
 | G6 Nothing at run time | **Pass.** With the rules on and off, 332 object files (the accepted S0 programs and probes, RFC 0044's correct set and both ports, `test/cases`, `test/Guards` and `test/Safe` C++ files, each in both modes) are byte for byte the same; none differs. |
 | G7 Build | **Pass.** `-O2 -c` of the `json` port's library 1.012 times, the LRU port's 1.006 times, a correct S0 program 1.006 times; `-fsyntax-only` at most 1.027 times. |
 | G8 What was accepted before | **Part.** RFC 0044's sets: 82 of 110 seeded bugs stop (unchanged); 23 fixed twins rejected (21 before) and 85 of 90 correct files compile (86 before), the three new rejections all this RFC's: two write through a `const std::unique_ptr` in `for (const auto &p : owners) p->change()` (D4), one shares an unsynchronized `this` with worker threads that split the work by an atomic index; none is for a global. The LRU and `json` ports compile unchanged. `ctest --preset dev` passes (131 lit tests, the cases, the unit tests). In the Linux container (`weavec-linux:38`, LLVM 23, libstdc++) `ctest --preset ci-release` passes all 49 tests, and every program of S0 and the probes gets the verdict it gets under libc++, but two that do not compile there for a missing `#include <mutex>`: the closures' captures, the threads' decayed arguments and `std::async`'s results look the same to the checker (_Unresolved question_ 11). |
-| H1 Hygiene | **Pass at the amended limit.** Library 24,666 of 24,750 lines (amendment 15); the runtime unchanged at 10,583. |
+| H1 Hygiene | **Pass at the amended limit.** Library 24,712 of 24,750 lines (amendment 15); the runtime unchanged at 10,583. |
