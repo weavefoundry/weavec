@@ -37,7 +37,7 @@ struct WEAVEC_GUARDED Buffer {
   Buffer(const Buffer &) = delete;
   Buffer &operator=(const Buffer &) = delete;
   WEAVEC_SAFE int at(int i) const {
-    return data[i]; // both-error {{a pointer is indexed, and it points to one object [weavec-safe:index-single]}}
+    return data[i]; // both-error {{'data' points to one object and cannot be indexed or offset [weavec-safe:index-single]}}
   }
 };
 

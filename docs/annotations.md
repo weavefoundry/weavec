@@ -7,12 +7,14 @@ in C++, [RFC 0044](rfcs/0044-safe-cxx.md) and
 [its guide](pages/guides/safe-cxx.md)).
 `weavec-cc` puts the header on the system include path
 (`#include <weavec.h>`) and defines `__WEAVEC__` to `1` in every unit it
-compiles with WeaveC enabled. The header is at version 3.2
+compiles with WeaveC enabled. The header is at version 3.3
 (`WEAVEC_H_VERSION_MAJOR`, `WEAVEC_H_VERSION_MINOR`): 3.0 added
 `WEAVEC_OWNED` and made `WEAVEC_SAFE` name the one safe tier
 ([RFC 0043](rfcs/0043-ownership.md)), below; 3.1 adds no macro and gives
 the existing ones their meaning in C++ ([RFC 0044](rfcs/0044-safe-cxx.md),
-_In C++_ below); 3.2 adds `WEAVEC_SENDS` ([RFC 0046](rfcs/0046-thread-safety.md)).
+_In C++_ below); 3.2 adds `WEAVEC_SENDS` ([RFC 0046](rfcs/0046-thread-safety.md));
+3.3 adds `WEAVEC_SAFE_FILE` and `WEAVEC_ALIASED` and gives the bounds their
+meaning in C++ ([RFC 0047](rfcs/0047-conversion-in-place.md)).
 
 `WEAVEC_UNSAFE` expands to `__attribute__((annotate("weavec.unsafe")))`
 under compilers that understand Clang's `annotate` attribute and to nothing
@@ -65,6 +67,7 @@ region too, with no source change.
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `WEAVEC_SAFE`                                              | before a function definition                                                                                                                | The function is safe: checked against Safe C's rules when it compiles, its accesses checked against its pointers' bounds.                                                                                                                                                                                    |
 | `WEAVEC_SAFE`                                              | before a function declaration, in a unit with safe functions                                                                                | The function is defined safe: safe callers call its body, `<name>.weavec.safe`, and the link fails when no unit defines it safe. Elsewhere it is ignored on a declaration.                                                                                                                                   |
+| `WEAVEC_SAFE_FILE`                                         | once, after `#include <weavec.h>`, at the top of a source or header file                                                                    | RFC 0047 §6: every function the file defines after it is safe, in every unit that includes the file, without `-fweavec-safe`; it does not reach the files the file includes. Expands to `_Pragma("weavec safe")` under WeaveC and to nothing elsewhere. |
 | `WEAVEC_GUARDED`                                           | before a function definition                                                                                                                | In a unit compiled with `-fweavec-safe`, the function stays guarded.                                                                                                                                                                                                                                         |
 | `T *WEAVEC_COUNTED_BY(n) p`                                | after a pointer type's `*`                                                                                                                  | `p` points to `n` elements; `n` is an integer parameter or field by name, or a constant.                                                                                                                                                                                                                     |
 | `T *WEAVEC_COUNTED_BY_OR_NULL(n) p`                        | the same                                                                                                                                    | As above, or null.                                                                                                                                                                                                                                                                                           |
@@ -91,7 +94,9 @@ region too, with no source change.
 | `std::function<void()> WEAVEC_SENDS task` | a parameter of a type-erased callable, after its type | RFC 0046 §8: the function may keep the callable and run it on another thread; a safe caller passes a callable that captures by value only what may be sent. The same on every declaration; `bad-annotation` on any other type, and in C. |
 | `T *WEAVEC_BORROWED m` | a pointer member | The member is a borrow, not a reference: its class is a view, as a class with a reference member is. |
 | `WEAVEC_LIFETIMEBOUND` | after a parameter's name | The result points into this argument (Clang's `lifetimebound`); without any, a view result points into every view passed by value, or, when there is none, into the reference arguments. |
-| `WEAVEC_OWNED`, `WEAVEC_DROPS`, the bounds annotations | — | Safe C's. In a safe C++ function's own declaration they are an error (`bad-annotation`): a pointer with a count is a `std::span`, an owner a `std::unique_ptr` or a container. |
+| The bounds annotations | as in C, on parameters, results, data members and globals | RFC 0047 §1: the same as in C. A member's count names a sibling member; a member function's result may be counted by a member of its class. Every declaration of a function, and every override of a virtual one, gives the same bounds. |
+| `class WEAVEC_ALIASED Env { … };` | after `class` or `struct` | RFC 0047 §5: objects of the class, and of the classes derived from it, are changed through pointers other objects keep and through `std::shared_ptr`. The class owns no `std::variant`, `std::any` or `std::function`; `bad-annotation` in C. |
+| `WEAVEC_OWNED`, `WEAVEC_DROPS` | — | Safe C's. In a safe C++ function's own declaration they are an error (`bad-annotation`): an owner is a `std::unique_ptr` or a container. |
 
 The `WEAVEC_SAFE` and `WEAVEC_GUARDED` forms expand to `annotate`
 attributes as `WEAVEC_UNSAFE` does. The pointer annotations expand to

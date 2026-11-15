@@ -33,6 +33,7 @@
 #include "llvm/ADT/StringSet.h"
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -63,6 +64,9 @@ inline constexpr llvm::StringLiteral EscapesAnnotation = "weavec.escapes";
 inline constexpr llvm::StringLiteral BorrowedAnnotation = "weavec.borrowed";
 /// RFC 0046 §8: the function may hand the callable to another thread.
 inline constexpr llvm::StringLiteral SendsAnnotation = "weavec.sends";
+/// RFC 0047 §5: objects of the class are changed through pointers other
+/// objects keep.
+inline constexpr llvm::StringLiteral AliasedAnnotation = "weavec.aliased";
 /// RFC 0043 §2: the one pointer responsible for releasing its block.
 inline constexpr llvm::StringLiteral OwnedAnnotation = "weavec.owned";
 /// RFC 0043 amendment: the function leaves every owner below the parameter
@@ -153,6 +157,11 @@ struct PointerBounds {
   /// RFC 0043 §2: `WEAVEC_OWNED` (a parameter that takes its block, a
   /// result that gives one).
   bool owned = false;
+  /// RFC 0047 §1.1: a member function's result counted by a data member of
+  /// its object: the integer of `memberWidth` bytes at `memberOffset` from
+  /// the first argument (`this`); -1 when the count is not a member.
+  std::int64_t memberOffset = -1;
+  std::uint64_t memberWidth = 0;
 
   [[nodiscard]] bool bounded() const {
     return kind == Kind::Counted || kind == Kind::Ended ||
@@ -199,6 +208,11 @@ struct SafeUnit {
   llvm::StringSet<> cxxTrusted;
   /// RFC 0042 §5: the guard passes run, which read the fields' annotations.
   bool annotates = false;
+  /// RFC 0047 §7: `-fweavec-safe-survey`.
+  bool survey = false;
+  /// RFC 0047 §6: the files that say WEAVEC_SAFE_FILE (by the hash of
+  /// their FileID), and the offset where they say it.
+  std::map<unsigned, unsigned> safeFiles;
   /// RFC 0042 §10: each function the unit defines outside system headers,
   /// its tier (`safe`, `guarded`, `unsafe`; RFC 0043 amendment 17:
   /// `unsettled`), file and line.
@@ -214,6 +228,9 @@ struct SafeUnit {
     unsigned starts = 0;
     bool locks = false;
     bool sends = false;
+    /// RFC 0047 §7: under -fweavec-safe-survey, a function that is not
+    /// safe: the errors the rules would give it, by rule.
+    std::map<std::string, unsigned> survey;
   };
   std::vector<Definition> definitions;
   /// RFC 0043 §11: each pointer field of the structs the unit defines
@@ -260,6 +277,11 @@ struct SafeUnit {
 [[nodiscard]] std::unique_ptr<clang::ASTConsumer>
 createSafeChecker(clang::CompilerInstance &compiler,
                   std::shared_ptr<SafeUnit> out, bool unitSafe);
+
+/// RFC 0047 §6: registers the handler of `#pragma weavec safe`, which
+/// WEAVEC_SAFE_FILE expands to, on the compiler's preprocessor.
+void addSafeFilePragma(const clang::CompilerInstance &compiler,
+                       std::shared_ptr<SafeUnit> unit);
 
 /// RFC 0043 §12: `weavec-cc --weavec-explain [<rule>... | all]`: the
 /// rules' explanations (resources/safe/rules.md); alone, their list.

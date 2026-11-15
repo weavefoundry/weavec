@@ -54,6 +54,9 @@ struct DriverOptions {
   /// `-fweavec-safe-checks=bounds|full` (RFC 0041 §7): whether safe
   /// functions keep their guards beside their bounds checks.
   bool safeFull = false;
+  /// `-f[no-]weavec-safe-survey` (RFC 0047 §7): the rules also run over the
+  /// functions that are not safe, and the ledger counts their errors.
+  bool survey = false;
   /// `-fweavec-ledger=<path>` (RFC 0035 §9).
   std::string ledger;
   /// `-f[no-]weavec-summary`; unset means on exactly when a ledger is

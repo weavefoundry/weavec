@@ -95,23 +95,26 @@ void reset(std::unique_ptr<Item> &p, std::optional<Item> &o) {
 
 // index-single
 int indexed(const int *p) {
-  return p[1]; // expected-error {{a pointer is indexed, and it points to one object [weavec-safe:index-single]}}
+  return p[1]; // expected-error {{'p' points to one object and cannot be indexed or offset [weavec-safe:index-single]}}
 }
 int walked(const int *p) {
-  ++p; // expected-error {{arithmetic on a pointer, which points to one object [weavec-safe:index-single]}}
-  return *(p + 1); // expected-error {{arithmetic on a pointer, which points to one object [weavec-safe:index-single]}}
+  ++p; // expected-error {{'p' points to one object and cannot be indexed or offset [weavec-safe:index-single]}}
+  return *(p + 1); // expected-error {{'p' points to one object and cannot be indexed or offset [weavec-safe:index-single]}}
 }
 const int *stepped(const int *p, std::size_t n) {
-  p += n; // expected-error {{arithmetic on a pointer, which points to one object [weavec-safe:index-single]}}
+  p += n; // expected-error {{'p' points to one object and cannot be indexed or offset [weavec-safe:index-single]}}
   return p;
 }
 int decays(int n) {
   int local[4] = {1, 2, 3, 4};
-  const int *p = local; // expected-error {{an array becomes a pointer that has lost its size [weavec-safe:index-single]}}
-  return *p + local[n & 3]; // an array is indexed in place
+  const int *p = local; // RFC 0047: an array keeps its length as a pointer
+  return p[n & 3] + local[n & 3];
 }
 std::span<int> forged(int *p, std::size_t n) {
-  return std::span<int>(p, n); // expected-error {{a 'span' is made from a pointer and a size nothing checks [weavec-safe:index-single]}}
+  return std::span<int>(p, n); // expected-error {{argument 1 of 'span' must have bounds, and this pointer points to one object [weavec-safe:call-args]}}
+}
+std::span<int> made(int *WEAVEC_COUNTED_BY(n) p, std::size_t n) {
+  return std::span<int>(p, n); // RFC 0047 §1.3: a bound covers the count
 }
 int single(const int *p, const int *q) { return *p + int(q - p) + (p == q ? 1 : 0); }
 int spanned(std::span<const int> s) {
@@ -252,9 +255,9 @@ int statementExpression(int n) {
 }
 
 // bad-annotation
-int counted(const int *WEAVEC_COUNTED_BY(n) p, std::size_t n) { // expected-error {{'weavec.counted_by' is one of Safe C's annotations, which a safe C++ function does not use [weavec-safe:bad-annotation]}}
-  return n != 0 ? *p : 0;
+int counted(const int *WEAVEC_COUNTED_BY(n) p, std::size_t n) { // RFC 0047: a bound is both languages'
+  return n > 1 ? p[1] : 0;
 }
-void owned(int *WEAVEC_OWNED p) { // expected-error {{'weavec.owned' is one of Safe C's annotations, which a safe C++ function does not use [weavec-safe:bad-annotation]}}
+void owned(int *WEAVEC_OWNED p) { // expected-error {{'weavec.owned' is Safe C's, and a safe C++ function does not use it [weavec-safe:bad-annotation]}}
   (void)p;
 }

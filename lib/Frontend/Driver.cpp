@@ -152,6 +152,8 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
     zeroInit = value;
   } else if (name == "weavec-safe") {
     safe = value;
+  } else if (name == "weavec-safe-survey") {
+    survey = value;
   } else if (name == "weavec-typed") {
     // RFC 0043 §1: one safe tier.
     error = "'" + arg.str() +
@@ -205,6 +207,11 @@ llvm::StringRef driverFlagsHelp() {
       Safe functions' accesses are checked against their bounds (bounds,
       the default), or keep their guards as well, so that a use after free
       in safe code is reported as in guarded code (full).
+  -fweavec-safe-survey, -fno-weavec-safe-survey
+      Also run the rules over the functions that are not safe, without
+      printing or failing on their errors: the ledger counts them by rule,
+      and --weavec-audit prints the files ready to mark WEAVEC_SAFE_FILE
+      and what blocks the rest (RFC 0047).
   -fweavec-rpath=<dir>, -fno-weavec-rpath
       Where a linked image finds the runtime's library (libweavec_rt):
       <dir> ($ORIGIN, @loader_path or an installation path) instead of the
@@ -358,8 +365,11 @@ protected:
       consumers.push_back(createUnsafeRegionCollector(compiler, unsafe));
     // RFC 0041: the rules, and the table the passes read at the end of the
     // unit.
-    if (safe)
+    if (safe) {
+      // RFC 0047 §6: `#pragma weavec safe` (WEAVEC_SAFE_FILE).
+      addSafeFilePragma(compiler, safe);
       consumers.push_back(createSafeChecker(compiler, safe, unitSafe));
+    }
     if (asanCompat)
       consumers.push_back(
           std::make_unique<AsanOptionsReset>(compiler.getLangOpts()));
@@ -605,6 +615,7 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   safe->annotates = weavec.enforces() && codegen;
   safe->fast = safe->annotates && weavec.fastSafe();
   safe->cxx = lang.CPlusPlus;
+  safe->survey = weavec.survey;
   if (safe->annotates) {
     unsafe = std::make_shared<UnsafeRegions>();
     ledger = configureEnforcement(*compiler, weavec, unsafe, safe);
@@ -618,14 +629,17 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   success = compiler->ExecuteAction(action);
   if (success && ledger) {
     for (const SafeUnit::Definition &definition : safe->definitions)
-      ledger->functions.push_back({.function = definition.name,
-                                   .tier = definition.tier,
-                                   .file = definition.file,
-                                   .line = definition.line,
-                                   .owns = definition.owns,
-                                   .starts = definition.starts,
-                                   .locks = definition.locks,
-                                   .sends = definition.sends});
+      ledger->functions.push_back(
+          {.function = definition.name,
+           .tier = definition.tier,
+           .file = definition.file,
+           .line = definition.line,
+           .owns = definition.owns,
+           .starts = definition.starts,
+           .locks = definition.locks,
+           .sends = definition.sends,
+           .surveyed = safe->survey && definition.tier == "guarded",
+           .survey = definition.survey});
     for (const SafeUnit::Field &field : safe->fields)
       ledger->fields.push_back({.record = field.record,
                                 .field = field.field,

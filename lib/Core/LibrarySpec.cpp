@@ -885,8 +885,40 @@ bool LibrarySpecParser::parseClass(bool function) {
           return fail("expected 'guard(shared)'");
         spec.traits.emplace(qualified, "guard(shared)");
       }
+    } else if (clause == "counts") {
+      // RFC 0047 §1.1: `counts(data, size)`: what `data` returns has as many
+      // elements as `size` returns.
+      auto pointer = expect('(', "after 'counts'")
+                         ? name("a member function's name")
+                         : std::nullopt;
+      auto count = pointer && expect(',', "after the pointer's member")
+                       ? name("a member function's name")
+                       : std::nullopt;
+      if (!count || !expect(')', "after the count's member"))
+        return false;
+      spec.counts.emplace(std::pair(qualified, *pointer), *count);
+    } else if (clause == "counted" || clause == "ended") {
+      // RFC 0047 §1.3: `counted(member, i, j)`: argument i of `member` (the
+      // class's name for a constructor) points to as many elements as
+      // argument j says, or up to argument j.
+      auto member = expect('(', "after '" + clause + "'")
+                        ? name("a member function's name")
+                        : std::nullopt;
+      auto pointer = member && expect(',', "after the member")
+                         ? index("an argument's index")
+                         : std::nullopt;
+      auto count = pointer && expect(',', "after the pointer's index")
+                       ? index("an argument's index")
+                       : std::nullopt;
+      if (!count || !expect(')', "after the indices"))
+        return false;
+      spec.bounds.emplace(std::pair(qualified, *member),
+                          ArgumentBound{.pointer = *pointer,
+                                        .count = *count,
+                                        .ended = clause == "ended"});
     } else if (clause == "resets" || clause == "joins" ||
-               clause == "detaches" || clause == "locks" || clause == "makes") {
+               clause == "detaches" || clause == "locks" || clause == "makes" ||
+               clause == "strings") {
       if (!expect('(', "after '" + clause + "'"))
         return false;
       do {
@@ -900,7 +932,8 @@ bool LibrarySpecParser::parseClass(bool function) {
     } else {
       return fail("expected 'erased', 'shared', 'thread', 'lock', 'guard', "
                   "'shareable', 'resets(...)', 'joins(...)', 'detaches(...)', "
-                  "'locks(...)' or 'makes(...)'");
+                  "'locks(...)', 'makes(...)', 'counts(...)', 'counted(...)', "
+                  "'ended(...)' or 'strings(...)'");
     }
   } while (accept(','));
   if (!expect(';', "at the end of the entry") || !atEnd())
@@ -1006,6 +1039,26 @@ bool LibrarySpec::classMember(std::string_view qualified,
                               std::string_view member) const {
   return members.contains(std::tuple(std::string(qualified),
                                      std::string(clause), std::string(member)));
+}
+
+std::optional<std::string> LibrarySpec::countOf(std::string_view qualified,
+                                                std::string_view member) const {
+  const auto found =
+      counts.find(std::pair(std::string(qualified), std::string(member)));
+  if (found == counts.end())
+    return std::nullopt;
+  return found->second;
+}
+
+std::vector<ArgumentBound>
+LibrarySpec::argumentBounds(std::string_view qualified,
+                            std::string_view member) const {
+  std::vector<ArgumentBound> found;
+  const auto [first, last] = bounds.equal_range(
+      std::pair(std::string(qualified), std::string(member)));
+  for (auto it = first; it != last; ++it)
+    found.push_back(it->second);
+  return found;
 }
 
 bool LibrarySpec::functionIs(std::string_view qualified,

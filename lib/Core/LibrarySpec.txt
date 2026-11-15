@@ -1391,6 +1391,23 @@ class std::weak_ptr : resets(reset);
 class std::optional : resets(reset), makes(emplace);
 
 #============================================================================
+# C++ classes whose members take or return a pointer with a count (RFC 0047
+# section 1): `counts(data, size)` says what `data()` returns has `size()`
+# elements; `counted(m, i, j)` that argument i of `m` (the class's name for a
+# constructor) points to as many elements as argument j says, `ended(m, i,
+# j)` that it points to those before argument j; `strings(c_str)` that the
+# member returns a string.
+#============================================================================
+
+class std::basic_string : counts(data, size), strings(c_str), counted(basic_string, 0, 1), ended(basic_string, 0, 1), counted(append, 0, 1), ended(append, 0, 1), counted(assign, 0, 1), ended(assign, 0, 1), counted(insert, 1, 2), counted(replace, 2, 3), counted(compare, 2, 3), counted(find, 0, 2), counted(rfind, 0, 2);
+class std::basic_string_view : counts(data, size), counted(basic_string_view, 0, 1), ended(basic_string_view, 0, 1), counted(compare, 2, 3), counted(find, 0, 2), counted(rfind, 0, 2);
+class std::span : counts(data, size), counted(span, 0, 1), ended(span, 0, 1);
+class std::vector : counts(data, size), ended(vector, 0, 1), ended(assign, 0, 1), ended(insert, 1, 2);
+class std::array : counts(data, size);
+class std::basic_ostream : counted(write, 0, 1);
+class std::basic_istream : counted(read, 0, 1), counted(get, 0, 1), counted(getline, 0, 1);
+
+#============================================================================
 # C++ threads, locks and what threads may share (RFC 0046 section 1)
 #============================================================================
 

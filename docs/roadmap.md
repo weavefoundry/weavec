@@ -4,13 +4,41 @@ Rough ordering of the major pieces of work. This page is the one-screen view;
 the design detail and the reasoning live in the [RFCs](rfcs/README.md) each
 milestone links to. Everything here is subject to change as we learn.
 
-The design today is [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
+The design today is [RFC 0047](rfcs/0047-conversion-in-place.md) for converting existing C++, [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
 sweep and colors of [RFC 0037](rfcs/0037-complete-sweep-and-colors.md), the
 reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
 and the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
 milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
+
+## Now: RFC 0047 — Conversion in place
+
+Design: [RFC 0047 — Conversion in place](rfcs/0047-conversion-in-place.md)
+(Accepted, built; its _Implementation amendments_ and _Measured gates_
+say how). Every measurement of the agent loop was a port of a
+specification; RFC 0044's conversion of existing C++ was never run, and
+run now it failed before an agent started: 93% of the errors on four
+corpus projects came from rules that ban raw pointers. RFC 0047 gives
+Safe C++ Safe C's bounds on raw pointers, `WEAVEC_ALIASED` classes that
+may be changed through pointers kept in memory and `std::shared_ptr`
+(closing a hole through the latter), `WEAVEC_SAFE_FILE`, and a survey
+whose audit prints the conversion's plan.
+
+- [x] **The RFC**, accepted as drafted on 2026-11-15.
+- [x] **S1 to S7**: bounds in the checker and the passes, the table's
+      `counts`, `counted`, `ended` and `strings` clauses, byte views and
+      `new` into a smart pointer, aliased classes (rules W, K, S), safe
+      files, the survey, the ledger (version 10), the audit (version 6),
+      the rules' pages and the guide _Convert C++ in place_.
+- [x] **S8 on darwin-arm64**: tinyxml2 and yaml-cpp converted in place by
+      agents (94% and 99% of functions safe, their tests passing, public
+      headers unchanged); a real out-of-bounds read found in yaml-cpp;
+      RFC 0044's and RFC 0046's sets as before but rule W's four.
+- [ ] **Next**: the gates not met: a conversion no faster than a Rust
+      rewrite of tinyxml2 (G4), 1.7 and 2.1 times Clang (G5), `call-args`
+      on library calls (G8); headers whose templates fail in other units;
+      the forty spatial bugs (S0).
 
 ## Now: RFC 0046 — Thread safety
 

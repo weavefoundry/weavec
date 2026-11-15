@@ -96,5 +96,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0044](0044-safe-cxx.md) | Safe C++ | Accepted |
 | [0045](0045-type-stable-memory.md) | Type-stable memory | Accepted |
 | [0046](0046-thread-safety.md) | Thread safety | Accepted |
+| [0047](0047-conversion-in-place.md) | Conversion in place | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

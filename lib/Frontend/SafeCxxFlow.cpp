@@ -113,7 +113,10 @@ struct End {
     Called,
     Destroyed,
     Moved,
-    Unlocked
+    Unlocked,
+    /// RFC 0047 §5.2 (S): the characters of a string the function does not
+    /// own, at a call that may reach the string.
+    Characters
   };
   Why why = Why::None;
   clang::SourceLocation at;
@@ -470,6 +473,12 @@ private:
       note = "released here; take " + name +
              " again under the lock, or copy what is needed while it is "
              "held";
+      break;
+    case End::Why::Characters:
+      message = name + " points at the characters of " + owner +
+                ", which the call to " + called(end.by) + " may have moved";
+      note = "called here; take " + name +
+             " again after the call, or keep an index into the string";
       break;
     case End::Why::None:
       return;
@@ -1279,15 +1288,40 @@ private:
             "or keep this function WEAVEC_GUARDED");
       return;
     }
-    if (objects.reference) {
+    // RFC 0047 §5.2 (W): through a pointer kept in memory or a shared
+    // pointer, only an aliased object is changed, or a library one that
+    // holds no storage that changes type in place.
+    const bool shared =
+        !objects.reference && throughShared(objects, expression);
+    if (objects.reference || shared) {
+      const clang::QualType object = reached(expression);
+      const clang::CXXRecordDecl *record = object->getAsCXXRecordDecl();
+      // A shareable class (one that locks its members) is changed only
+      // under its lock, which a borrow of its members does not outlive.
+      if (record != nullptr &&
+          (CxxKinds::aliased(record) || kinds.shareable(object) ||
+           (isLibrary(*record) &&
+            !kinds.switchesAny(object, /*strings=*/true))))
+        return;
+      const std::string declare =
+          record != nullptr && !isLibrary(*record)
+              ? "declare '" + record->getNameAsString() + "' WEAVEC_ALIASED " +
+                    (shared ? "if its objects are changed while shared; "
+                            : "if its objects are changed through pointers "
+                              "other objects keep; ")
+              : "";
       error(at, rule::OwnerPath,
-            what + " is reached through a pointer kept in memory, and " +
+            what +
+                (shared ? " is reached through a 'std::shared_ptr', and "
+                        : " is reached through a pointer kept in memory, "
+                          "and ") +
                 called(by) + " may change what it owns",
             at,
-            "change an object from what owns it or is passed it: take it as "
-            "a parameter of this function, hold it by 'std::shared_ptr', "
-            "make the member a reference, or keep this function "
-            "WEAVEC_GUARDED");
+            declare + (shared ? "or replace the whole object, or keep this "
+                                "function WEAVEC_GUARDED"
+                              : "or own it, take it as a parameter, make the "
+                                "member a reference, or keep this function "
+                                "WEAVEC_GUARDED"));
       return;
     }
     // Amendment 19: what a reference member names is not `*this`'s, and a
@@ -1307,6 +1341,182 @@ private:
             "change it in a member function that is not 'const' and has no "
             "'const' twin, or in a WEAVEC_GUARDED helper");
   }
+  /// RFC 0047 §5.2 (W): whether `expression` (or the borrow it names) is
+  /// reached through a `std::shared_ptr`.
+  [[nodiscard]] bool throughShared(const Value &objects,
+                                   const clang::Expr *expression) {
+    const auto sharedType = [](clang::QualType type) {
+      return CxxKinds::shared(type.getNonReferenceType()->getAsCXXRecordDecl());
+    };
+    // Into what the handle points to (depth 1 and more), not the handle.
+    if (llvm::any_of(objects.loans, [&](const Loan &loan) {
+          const clang::VarDecl *variable = loan.root.variable();
+          return loan.depth >= 1 &&
+                 ((variable != nullptr && sharedType(variable->getType()) &&
+                   !freshShared(*variable)) ||
+                  (loan.root.field != nullptr &&
+                   sharedType(loan.root.field->getType())));
+        }))
+      return true;
+    for (const clang::Expr *e = expression; e != nullptr;) {
+      e = e->IgnoreParenImpCasts();
+      if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(e)) {
+        e = member->getBase();
+      } else if (const auto *op = llvm::dyn_cast<clang::CXXOperatorCallExpr>(e);
+                 op != nullptr && op->getNumArgs() >= 1 &&
+                 (op->getOperator() == clang::OO_Arrow ||
+                  op->getOperator() == clang::OO_Star)) {
+        if (sharedType(op->getArg(0)->getType()))
+          return !freshShared(op->getArg(0));
+        e = op->getArg(0);
+      } else if (const auto *call = llvm::dyn_cast<clang::CXXMemberCallExpr>(e);
+                 call != nullptr &&
+                 call->getImplicitObjectArgument() != nullptr) {
+        return sharedType(call->getImplicitObjectArgument()->getType()) &&
+               !freshShared(call->getImplicitObjectArgument());
+      } else {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  /// RFC 0047 §5.2 (W): a local handle no other handle shares: made by a
+  /// library function the table calls `fresh` (`std::make_shared`), and
+  /// otherwise only dereferenced or moved; the object is the function's
+  /// until it is published.
+  [[nodiscard]] bool freshShared(const clang::Expr *expression) {
+    const auto *named =
+        llvm::dyn_cast<clang::DeclRefExpr>(expression->IgnoreParenImpCasts());
+    const auto *variable =
+        named == nullptr ? nullptr
+                         : llvm::dyn_cast<clang::VarDecl>(named->getDecl());
+    return variable != nullptr && freshShared(*variable);
+  }
+  [[nodiscard]] bool freshShared(const clang::VarDecl &variable) {
+    const auto known = fresh.find(&variable);
+    if (known != fresh.end())
+      return known->second;
+    bool only =
+        ownLocal(variable) && !llvm::isa<clang::ParmVarDecl>(variable) &&
+        !variable.getType()->isReferenceType() && variable.getInit() != nullptr;
+    if (only) {
+      const auto *call =
+          llvm::dyn_cast<clang::CallExpr>(variable.getInit()->IgnoreImplicit());
+      const clang::FunctionDecl *callee =
+          call == nullptr ? nullptr : call->getDirectCallee();
+      only = callee != nullptr && isLibrary(*callee) &&
+             core::LibrarySpec::shipped().functionIs(
+                 CxxKinds::qualifiedName(*callee), "fresh");
+    }
+    const auto visit = [&](const clang::Stmt *statement, const clang::Stmt *up,
+                           const auto &self) -> void {
+      if (statement == nullptr || !only)
+        return;
+      if (const auto *use = llvm::dyn_cast<clang::DeclRefExpr>(statement);
+          use != nullptr && use->getDecl() == &variable) {
+        const auto *operation =
+            llvm::dyn_cast_or_null<clang::CXXOperatorCallExpr>(up);
+        const auto *moved = llvm::dyn_cast_or_null<clang::CallExpr>(up);
+        only = (operation != nullptr &&
+                (operation->getOperator() == clang::OO_Arrow ||
+                 operation->getOperator() == clang::OO_Star)) ||
+               (moved != nullptr && moved->isCallToStdMove());
+      }
+      for (const clang::Stmt *child : statement->children())
+        self(child,
+             llvm::isa<clang::ImplicitCastExpr, clang::ParenExpr>(statement)
+                 ? up
+                 : statement,
+             self);
+    };
+    visit(&body, nullptr, visit);
+    return fresh[&variable] = only;
+  }
+  llvm::DenseMap<const clang::VarDecl *, bool> fresh;
+
+  /// RFC 0047 §5.2 (W): the object such a change reaches: what the changed
+  /// pointer points to, what is below the last dereference in it, or what
+  /// a borrow names.
+  [[nodiscard]] static clang::QualType reached(const clang::Expr *expression) {
+    const clang::Expr *e = expression->IgnoreParenImpCasts();
+    if (e->getType()->isPointerType())
+      return e->getType()->getPointeeType();
+    for (unsigned depth = 0; depth < 16; ++depth) {
+      if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(e)) {
+        if (member->isArrow())
+          return member->getBase()->getType()->getPointeeType();
+        e = member->getBase()->IgnoreParenImpCasts();
+        continue;
+      }
+      if (const auto *op = llvm::dyn_cast<clang::CXXOperatorCallExpr>(e);
+          op != nullptr && (op->getOperator() == clang::OO_Arrow ||
+                            op->getOperator() == clang::OO_Star))
+        return op->getType()->isPointerType()
+                   ? op->getType()->getPointeeType()
+                   : op->getType().getNonReferenceType();
+      if (const auto *unary = llvm::dyn_cast<clang::UnaryOperator>(e);
+          unary != nullptr && unary->getOpcode() == clang::UO_Deref)
+        return unary->getType();
+      break;
+    }
+    return e->getType().getNonReferenceType();
+  }
+
+  /// RFC 0047 §5.2 (S): a call that may reach a string the function does
+  /// not own ends every writable borrow of its characters: one of the
+  /// program's functions, or a change through a pointer kept in memory or
+  /// a shared pointer.
+  void endCharacters(Flow &flow, const Call &call, bool aliasing) {
+    if (call.callee != nullptr && isLibrary(*call.callee) && !aliasing)
+      return;
+    for (auto &[variable, borrow] : flow.borrows) {
+      if (borrow.end.why != End::Why::None || !writesCharacters(*variable))
+        continue;
+      const auto *hit = llvm::find_if(borrow.loans, [&](const Loan &loan) {
+        if (localRoot(loan.root))
+          return false;
+        if (loan.root.field != nullptr)
+          return CxxKinds::holdsString(loan.root.field->getType());
+        const clang::VarDecl *base = loan.root.variable();
+        if (base == nullptr)
+          return false;
+        const clang::QualType type = base->getType().getNonReferenceType();
+        return CxxKinds::holdsString(
+            type->isPointerType() ? type->getPointeeType() : type);
+      });
+      if (hit == borrow.loans.end())
+        continue;
+      borrow.end = {.why = End::Why::Characters,
+                    .at = call.at,
+                    .root = hit->root,
+                    .by = call.callee};
+    }
+  }
+
+  /// A local through which characters can be written: a pointer or a
+  /// reference to characters that are not `const`, or a span of them.
+  [[nodiscard]] static bool writesCharacters(const clang::VarDecl &variable) {
+    clang::QualType type = variable.getType();
+    if (type->isPointerType() || type->isReferenceType()) {
+      type = type->getPointeeType();
+    } else if (const auto *span = llvm::dyn_cast_or_null<
+                   clang::ClassTemplateSpecializationDecl>(
+                   type->getAsCXXRecordDecl());
+               span != nullptr && isLibrary(*span) &&
+               span->getTemplateArgs().size() != 0 &&
+               span->getTemplateArgs()[0].getKind() ==
+                   clang::TemplateArgument::Type &&
+               core::LibrarySpec::shipped()
+                   .countOf(CxxKinds::qualifiedName(*span), "data")
+                   .has_value()) {
+      type = span->getTemplateArgs()[0].getAsType();
+    } else {
+      return false;
+    }
+    return type->isAnyCharacterType() && !type.isConstQualified();
+  }
+
   /// The function is a `const` member function or an accessor (§6): it
   /// changes nothing `*this` owns.
   bool readOnlyThis = false;
@@ -3298,6 +3508,9 @@ private:
       taken.add(stored(flow, argument, &call));
     alias(flow, call, call.object != nullptr ? &target : nullptr,
           targetChanges);
+    endCharacters(flow, call,
+                  targetChanges &&
+                      (target.reference || throughShared(target, call.object)));
 
     // §5: moves.
     for (const Call::Argument &argument : call.arguments)
@@ -3516,15 +3729,21 @@ private:
             lentUse(flow, *root, named, variable->getType()->isPointerType(),
                     reads);
     }
-    if (assigned.contains(&named))
+    // Assigning a reference writes what it names: a use of the borrow
+    // (RFC 0047 amendment; RFC 0044's flow skipped it).
+    const bool written = assigned.contains(&named);
+    if (written && !variable->getType()->isReferenceType())
       return;
     variable = variable->getCanonicalDecl();
-    usePlace(flow, {variable, nullptr}, named.getLocation(),
-             variable->getNameAsString(), &named);
+    if (!written)
+      usePlace(flow, {variable, nullptr}, named.getLocation(),
+               variable->getNameAsString(), &named);
     const auto found = flow.borrows.find(variable);
     if (found == flow.borrows.end())
       return;
-    if (found->second.end.why != End::Why::None) {
+    // What was moved from may be assigned (X-A5).
+    if (found->second.end.why != End::Why::None &&
+        (!written || found->second.end.why != End::Why::Moved)) {
       reportStale(*variable, named.getLocation(), found->second.end);
       return;
     }

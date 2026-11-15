@@ -24,13 +24,14 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
 namespace weavec::frontend {
 
 /// The version of the `weavec-ledger` JSON this writes.
-inline constexpr unsigned EnforcementLedgerVersion = 9;
+inline constexpr unsigned EnforcementLedgerVersion = 10;
 
 /// What the pass decided for one access.
 struct LedgerRow {
@@ -65,6 +66,10 @@ struct LedgerFunction {
   unsigned starts = 0;
   bool locks = false;
   bool sends = false;
+  /// RFC 0047 §7: under -fweavec-safe-survey, a function that is not safe:
+  /// whether it was surveyed, and the errors the rules gave it, by rule.
+  bool surveyed = false;
+  std::map<std::string, unsigned> survey;
 };
 
 /// RFC 0043 §11: a pointer field of a struct the unit defines, and its
@@ -72,7 +77,9 @@ struct LedgerFunction {
 /// owner a safe function reads in place. RFC 0046 §12: the kinds `lock`,
 /// `locked` and `thread`; `class`, a class the unit defines (no field),
 /// with whether it is sendable and shareable; `thread-global`, a global
-/// that code which is not safe defines and a safe function names.
+/// that code which is not safe defines and a safe function names. RFC 0047
+/// §8: `counted`, a pointer member with a bound (a reference, tested where
+/// safe code loads it); `aliased`, a WEAVEC_ALIASED class (no field).
 struct LedgerField {
   std::string record;
   std::string field;

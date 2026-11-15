@@ -524,6 +524,106 @@ public:
            });
   }
 
+  /// RFC 0047 §5.1: objects of the class are changed through pointers
+  /// other objects keep: it, or a base, is WEAVEC_ALIASED.
+  [[nodiscard]] static bool aliased(const clang::CXXRecordDecl *record,
+                                    unsigned depth = 0) {
+    if (record == nullptr || depth > 12)
+      return false;
+    record = record->getDefinition();
+    return record != nullptr &&
+           (hasAnnotate(*record, AliasedAnnotation) ||
+            llvm::any_of(record->bases(),
+                         [&](const clang::CXXBaseSpecifier &base) {
+                           return aliased(base.getType()->getAsCXXRecordDecl(),
+                                          depth + 1);
+                         }));
+  }
+
+  /// RFC 0047 §5.2 (K): what an object of `type` owns holds storage that
+  /// changes type in place, but for a string's characters: a union of two
+  /// members that are more than placeholders, a callable or `std::any`
+  /// that erases what it holds, or an owned object of a polymorphic class
+  /// that is not aliased, whose derived class could hold one. `strings`:
+  /// a string's characters count too (RFC 0047 §5.2, W).
+  [[nodiscard]] bool switchesAny(clang::QualType type, bool strings = false,
+                                 unsigned depth = 0) {
+    type = type.getNonReferenceType();
+    while (const clang::ArrayType *array = ast.getAsArrayType(type))
+      type = array->getElementType();
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record == nullptr || depth > 12)
+      return false;
+    if (isLibrary(*record)) {
+      const std::string name = qualifiedName(*record);
+      const core::LibrarySpec &table = core::LibrarySpec::shipped();
+      if (table.classMember(name, "strings", "c_str"))
+        return strings;
+      if (shared(record))
+        return false;
+      if (table.classIs(name, "erased") && !table.classIs(name, "thread") &&
+          !table.classMember(name, "joins", "get"))
+        return true;
+      // A template not yet instantiated is known by its arguments.
+      if (const auto *specialization =
+              llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(record))
+        for (const clang::QualType argument : typeArguments(*specialization)) {
+          const clang::CXXRecordDecl *of = argument->getAsCXXRecordDecl();
+          if ((of != nullptr && of->hasDefinition() &&
+               of->getDefinition()->isPolymorphic() && !isLibrary(*of) &&
+               !aliased(of)) ||
+              switchesAny(argument, strings, depth + 1))
+            return true;
+        }
+    }
+    record = record->getDefinition();
+    if (record == nullptr)
+      return false;
+    if (record->isUnion()) {
+      unsigned members = 0;
+      for (const clang::FieldDecl *field : record->fields()) {
+        const clang::CXXRecordDecl *of = field->getType()->getAsCXXRecordDecl();
+        const bool placeholder =
+            of != nullptr && of->hasDefinition() && of->isEmpty();
+        if (!field->getType()->isCharType() && !placeholder)
+          ++members;
+      }
+      if (members >= 2)
+        return true;
+    }
+    return llvm::any_of(record->bases(),
+                        [&](const clang::CXXBaseSpecifier &base) {
+                          return switchesAny(base.getType(), strings,
+                                             depth + 1);
+                        }) ||
+           llvm::any_of(record->fields(), [&](const clang::FieldDecl *field) {
+             return switchesAny(field->getType(), strings, depth + 1);
+           });
+  }
+
+  /// RFC 0047 §5.2 (S): an object of `type` is or holds a library string.
+  [[nodiscard]] static bool holdsString(clang::QualType type,
+                                        unsigned depth = 0) {
+    type = type.getNonReferenceType();
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record == nullptr || depth > 8 || !record->hasDefinition())
+      return false;
+    record = record->getDefinition();
+    if (isLibrary(*record) && core::LibrarySpec::shipped().classMember(
+                                  qualifiedName(*record), "strings", "c_str"))
+      return true;
+    if (const auto *specialization =
+            llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(record);
+        specialization != nullptr && isLibrary(*record))
+      return llvm::any_of(typeArguments(*specialization),
+                          [&](clang::QualType argument) {
+                            return holdsString(argument, depth + 1);
+                          });
+    return llvm::any_of(record->fields(), [&](const clang::FieldDecl *field) {
+      return holdsString(field->getType(), depth + 1);
+    });
+  }
+
   /// An object of `type` is, or holds as a member, an element or a base, a
   /// `pointee`.
   [[nodiscard]] bool contains(clang::QualType type, clang::QualType pointee,

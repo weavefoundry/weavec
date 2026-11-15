@@ -17,6 +17,7 @@
 #include "weavec/Frontend/SafeCheck.h"
 
 #include "SafeCheckImpl.h"
+#include "SafeCxxKinds.h"
 #include "weavec/Core/LibrarySpec.h"
 #include "weavec/Frontend/UnsafeRegions.h"
 
@@ -34,6 +35,7 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Lex/Lexer.h"
 #include "clang/Lex/MacroInfo.h"
+#include "clang/Lex/Pragma.h"
 #include "clang/Lex/Preprocessor.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -77,6 +79,61 @@ constexpr llvm::StringLiteral FieldAddress = "field-address";
 using Origins = llvm::SmallPtrSet<const clang::NamedDecl *, 2>;
 
 } // namespace
+
+bool inSafeFile(const SafeUnit &unit, const clang::SourceManager &sources,
+                clang::SourceLocation at) {
+  if (unit.safeFiles.empty() || at.isInvalid())
+    return false;
+  at = sources.getExpansionLoc(at);
+  const auto found = unit.safeFiles.find(sources.getFileID(at).getHashValue());
+  return found != unit.safeFiles.end() &&
+         sources.getFileOffset(at) >= found->second;
+}
+
+namespace {
+
+/// RFC 0047 §6: `#pragma weavec safe`.
+class SafeFilePragma final : public clang::PragmaHandler {
+public:
+  explicit SafeFilePragma(std::shared_ptr<SafeUnit> unit)
+      : PragmaHandler("weavec"), unit(std::move(unit)) {}
+
+  void HandlePragma(clang::Preprocessor &preprocessor,
+                    clang::PragmaIntroducer introducer,
+                    clang::Token &first) override {
+    clang::Token token;
+    preprocessor.Lex(token);
+    const clang::IdentifierInfo *word = token.getIdentifierInfo();
+    const clang::SourceManager &sources = preprocessor.getSourceManager();
+    if (word != nullptr && word->getName() == "safe") {
+      const clang::SourceLocation at = sources.getExpansionLoc(introducer.Loc);
+      unit->safeFiles.try_emplace(sources.getFileID(at).getHashValue(),
+                                  sources.getFileOffset(at));
+    } else {
+      clang::DiagnosticsEngine &diagnostics = preprocessor.getDiagnostics();
+      diagnostics.Report(
+          first.getLocation(),
+          diagnostics.getCustomDiagID(clang::DiagnosticsEngine::Error,
+                                      "'#pragma weavec' takes 'safe' "
+                                      "(WEAVEC_SAFE_FILE) [weavec-safe:%0]"))
+          << "bad-annotation";
+    }
+    while (token.isNot(clang::tok::eod))
+      preprocessor.Lex(token);
+  }
+
+private:
+  std::shared_ptr<SafeUnit> unit;
+};
+
+} // namespace
+
+void addSafeFilePragma(const clang::CompilerInstance &compiler,
+                       std::shared_ptr<SafeUnit> unit) {
+  if (compiler.hasPreprocessor())
+    compiler.getPreprocessor().AddPragmaHandler(
+        new SafeFilePragma(std::move(unit)));
+}
 
 std::vector<TypeAnnotation> annotationsOf(clang::QualType type,
                                           const clang::ASTContext &ast) {
@@ -304,7 +361,8 @@ public:
   PointerBounds boundsOf(const clang::FunctionDecl &function,
                          clang::QualType type, clang::SourceLocation at) {
     PointerBounds bounds;
-    if (hasAnnotation(annotationsOf(type, ast), SendsAnnotation))
+    if (!ast.getLangOpts().CPlusPlus &&
+        hasAnnotation(annotationsOf(type, ast), SendsAnnotation))
       report(at, rule::BadAnnotation,
              "WEAVEC_SENDS is Safe C++'s, for a callable that may run on "
              "another thread; C has none",
@@ -382,6 +440,8 @@ public:
           bounds.constant = *value;
           continue;
         }
+        if (memberCount(function, type, annotation.argument, bounds))
+          continue;
       }
       if (parameter < 0 ||
           !function.getParamDecl(static_cast<unsigned>(parameter))
@@ -404,6 +464,35 @@ public:
               ->isSignedIntegerType();
     }
     return bounds;
+  }
+
+  /// RFC 0047 §1.1: the result of a member function that is not static,
+  /// counted by an integer data member of its class.
+  bool memberCount(const clang::FunctionDecl &function, clang::QualType type,
+                   llvm::StringRef name, PointerBounds &bounds) const {
+    const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(&function);
+    if (method == nullptr || method->isStatic() ||
+        type != function.getReturnType())
+      return false;
+    const clang::CXXRecordDecl *record = method->getParent();
+    for (const clang::FieldDecl *field : record->fields()) {
+      if (field->getName() != name || field->isBitField() ||
+          !field->getType()->isIntegerType())
+        continue;
+      if (!record->isDependentContext() && record->isCompleteDefinition() &&
+          !record->isInvalidDecl()) {
+        const clang::ASTRecordLayout &layout = ast.getASTRecordLayout(record);
+        bounds.memberOffset = static_cast<std::int64_t>(
+            ast
+                .toCharUnitsFromBits(static_cast<std::int64_t>(
+                    layout.getFieldOffset(field->getFieldIndex())))
+                .getQuantity());
+        bounds.memberWidth = sizeOf(field->getType());
+      }
+      bounds.countSigned = field->getType()->isSignedIntegerType();
+      return true;
+    }
+    return false;
   }
 
   /// A bound that names an object-like macro whose expansion is an integer
@@ -456,6 +545,13 @@ public:
   /// expands to one (their counts are not used at run time, amendment 1,
   /// but a bound that names nothing is a mistake).
   void checkRecord(const clang::RecordDecl &record) {
+    if (!ast.getLangOpts().CPlusPlus &&
+        hasAnnotateAttr(record, AliasedAnnotation))
+      report(record.getLocation(), rule::BadAnnotation,
+             "WEAVEC_ALIASED is Safe C++'s, for a class changed through "
+             "pointers other objects keep; C has none",
+             "remove it; Safe C changes what a struct owns only from its "
+             "owner");
     for (const clang::FieldDecl *field : record.fields())
       for (const TypeAnnotation &annotation :
            annotationsOf(field->getType(), ast)) {
@@ -494,6 +590,29 @@ public:
     }
     table.result =
         boundsOf(function, function.getReturnType(), function.getLocation());
+    // The end a WEAVEC_ENDED_BY names points past the elements, not to an
+    // object: neither its entry nor its callers check it as one.
+    for (std::size_t i = 0; i < table.parameters.size(); ++i)
+      if (const int end = table.parameters[i].end;
+          table.parameters[i].kind == PointerBounds::Kind::Ended && end >= 0 &&
+          static_cast<std::size_t>(end) < table.parameters.size() &&
+          table.parameters[static_cast<std::size_t>(end)].kind ==
+              PointerBounds::Kind::Single) {
+        PointerBounds &past = table.parameters[static_cast<std::size_t>(end)];
+        past.kind = PointerBounds::Kind::None;
+        past.pointeeSize = 0;
+      }
+    // RFC 0047 §1.1: in C++, `main`'s `argv` has `argc` elements.
+    if (ast.getLangOpts().CPlusPlus && function.isMain() &&
+        table.parameters.size() >= 2 &&
+        function.getParamDecl(0)->getType()->isIntegerType() &&
+        table.parameters[1].kind == PointerBounds::Kind::Single) {
+      PointerBounds &arguments = table.parameters[1];
+      arguments.kind = PointerBounds::Kind::Counted;
+      arguments.count = 0;
+      arguments.countSigned = true;
+      arguments.elementSize = arguments.pointeeSize;
+    }
     return table;
   }
 
@@ -517,6 +636,22 @@ public:
     if (record.isInvalidDecl() || record.isDependentType() ||
         record.getDefinition() != &record)
       return;
+    // RFC 0047 §1.4: a C++ class's members are annotated only where one
+    // declares a bound, so that a class without one compiles as before.
+    const bool cxx = ast.getLangOpts().CPlusPlus;
+    // (A string member keeps its guards: amendment 17.)
+    const auto counted = [&](clang::QualType type) {
+      return llvm::any_of(annotationsOf(type, ast), [](const auto &each) {
+        return each.name == CountedByAnnotation ||
+               each.name == CountedByOrNullAnnotation ||
+               each.name == SizedByAnnotation ||
+               each.name == SizedByOrNullAnnotation;
+      });
+    };
+    if (cxx && llvm::none_of(record.fields(), [&](const clang::FieldDecl *f) {
+          return f->getType()->isPointerType() && counted(f->getType());
+        }))
+      return;
     const clang::ASTRecordLayout &layout = ast.getASTRecordLayout(&record);
     auto offsetOf = [&](const clang::FieldDecl &field) {
       return static_cast<std::int64_t>(
@@ -534,7 +669,8 @@ public:
         type = array->getElementType();
         bounds.flags |= FieldBounds::Array;
       }
-      if (!type->isPointerType())
+      if (!type->isPointerType() ||
+          (cxx && ((bounds.flags & FieldBounds::Array) != 0 || !counted(type))))
         continue;
       bounds.elementSize =
           static_cast<std::int64_t>(sizeOf(type->getPointeeType()));
@@ -710,15 +846,40 @@ public:
                 const SafeUnit &unit, Report report)
       : ast(ast), function(function), unit(unit), report(std::move(report)) {}
 
+  /// RFC 0047 §1.2: the rules of bounds only (`index-single`, `call-args`,
+  /// `counted-pair`, `string-index`, `string-write`, `field-address`) over a
+  /// safe C++ function, whose other rules are Safe C++'s; `tableOf` gives a
+  /// callee's bounds from its declaration.
+  FunctionCheck(
+      clang::ASTContext &ast, const clang::FunctionDecl &function,
+      const SafeUnit &unit, Report report,
+      std::function<FunctionBounds(const clang::FunctionDecl &)> tableOf)
+      : ast(ast), function(function), unit(unit), report(std::move(report)),
+        cxx(true), cxxTable(std::move(tableOf)) {}
+
   void run() {
     inferLocals();
+    if (const auto *constructor =
+            llvm::dyn_cast<clang::CXXConstructorDecl>(&function)) {
+      for (const clang::CXXCtorInitializer *initializer : constructor->inits())
+        if (initializer->isWritten())
+          TraverseStmt(initializer->getInit());
+      pairedInitializers(*constructor);
+    }
     TraverseStmt(function.getBody());
   }
+
+  /// RFC 0047 §1.2: whether the function indexes or steps a pointer, passes
+  /// an array as one or names a member with a bound, which the guard passes
+  /// then check against bounds (GuardSafe.cpp).
+  [[nodiscard]] bool usesBounds() const { return usedBounds; }
 
   // RecursiveASTVisitor's names.
   // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
   bool VisitArraySubscriptExpr(clang::ArraySubscriptExpr *subscript) {
     const clang::Expr *base = subscript->getBase();
+    if (cxx && base->getType()->isPointerType() && !decayed(base))
+      usedBounds = true;
     if (base->getType()->isPointerType() && !isZero(subscript->getIdx()) &&
         !bounded(base))
       single(subscript->getExprLoc(), base);
@@ -729,6 +890,10 @@ public:
   }
 
   bool VisitUnaryOperator(clang::UnaryOperator *op) {
+    if (op->isIncrementDecrementOp() &&
+        op->getSubExpr()->getType()->isPointerType())
+      usedBounds =
+          usedBounds || (cxx && !libraryIterator(op->getSubExpr()->getType()));
     if (op->isIncrementDecrementOp() &&
         op->getSubExpr()->getType()->isPointerType() &&
         !bounded(op->getSubExpr()))
@@ -755,6 +920,8 @@ public:
         pointer = op->getRHS();
       const clang::Expr *offset =
           pointer == op->getLHS() ? op->getRHS() : op->getLHS();
+      if (cxx && pointer != nullptr && !libraryIterator(pointer->getType()))
+        usedBounds = true;
       if (pointer != nullptr && !isZero(offset) && !bounded(pointer))
         single(op->getExprLoc(), pointer);
       if (pointer != nullptr && nullTerminated(pointer) &&
@@ -762,8 +929,8 @@ public:
                                        op->getOpcode() == clang::BO_SubAssign))
         stringIndex(op->getExprLoc(), pointer);
     }
-    if (op->getOpcode() == clang::BO_Assign && !isLocalSlot(op->getLHS()) &&
-        !isBorrowedSlot(op->getLHS()))
+    if (!cxx && op->getOpcode() == clang::BO_Assign &&
+        !isLocalSlot(op->getLHS()) && !isBorrowedSlot(op->getLHS()))
       storesBorrowed(op->getRHS(), op->getExprLoc());
     if (op->isAssignmentOp()) {
       writesString(*op->getLHS(), op->getExprLoc());
@@ -785,6 +952,17 @@ public:
   }
 
   bool VisitCastExpr(clang::CastExpr *cast) {
+    // RFC 0047 §1.1: in C++ an array passed as a pointer keeps its length;
+    // Safe C++'s own rules decide the casts.
+    if (cxx) {
+      // (An array of `const` characters was passed as a string before.)
+      if (cast->getCastKind() == clang::CK_ArrayToPointerDecay &&
+          !subscripted.contains(cast) &&
+          !(cast->getType()->getPointeeType().isConstQualified() &&
+            cast->getType()->getPointeeType()->isAnyCharacterType()))
+        usedBounds = true;
+      return true;
+    }
     switch (cast->getCastKind()) {
     case clang::CK_IntegralToPointer:
       report(cast->getExprLoc(), rule::IntToPointer,
@@ -813,6 +991,12 @@ public:
   }
 
   bool VisitMemberExpr(clang::MemberExpr *member) {
+    if (cxx) {
+      usedBounds =
+          usedBounds ||
+          boundedBy(annotationsOf(member->getMemberDecl()->getType(), ast));
+      return true;
+    }
     const clang::QualType base =
         member->isArrow() ? member->getBase()->getType()->getPointeeType()
                           : member->getBase()->getType();
@@ -834,6 +1018,18 @@ public:
     const clang::FunctionDecl *callee = call->getDirectCallee();
     if (callee == nullptr)
       return true;
+    if (cxx) {
+      // A member operator's object is its first argument.
+      const unsigned skip = llvm::isa<clang::CXXOperatorCallExpr>(call) &&
+                                    llvm::isa<clang::CXXMethodDecl>(callee)
+                                ? 1
+                                : 0;
+      llvm::SmallVector<const clang::Expr *, 8> arguments;
+      for (unsigned i = skip; i < call->getNumArgs(); ++i)
+        arguments.push_back(call->getArg(i));
+      checkArguments(*callee, arguments);
+      return true;
+    }
     checkBuiltin(*call, *callee);
     for (unsigned i = 0; i < call->getNumArgs() && i < callee->getNumParams();
          ++i)
@@ -858,24 +1054,8 @@ public:
           table != nullptr && i < table->parameters.size()
               ? &table->parameters[i]
               : nullptr;
-      const bool null = argument->isNullPointerConstant(
-                            ast, clang::Expr::NPC_ValueDependentIsNotNull) !=
-                        clang::Expr::NPCK_NotNull;
-      if (bounds != nullptr && bounds->bounded() && null && !bounds->orNull &&
-          bounds->kind == PointerBounds::Kind::NullTerminated)
-        report(argument->getExprLoc(), rule::CallArgs,
-               "null passed for '" + parameter->getName().str() + "' of '" +
-                   callee->getName().str() + "', which points to a string",
-               "declare the parameter WEAVEC_NULL_TERMINATED_OR_NULL if it "
-               "may be null, or pass a string");
-      if (bounds != nullptr && bounds->bounded() && !bounded(argument) && !null)
-        report(argument->getExprLoc(), rule::CallArgs,
-               "the argument for '" + parameter->getName().str() + "' of '" +
-                   callee->getName().str() +
-                   "' must have bounds, and this pointer points to one object",
-               "pass an array, an allocation, or a pointer whose declaration "
-               "has a bound (WEAVEC_COUNTED_BY, WEAVEC_SIZED_BY, "
-               "WEAVEC_ENDED_BY, WEAVEC_NULL_TERMINATED)");
+      if (bounds != nullptr)
+        callArgument(*argument, *parameter, *callee, *bounds);
       if (bounds != nullptr && bounds->escapes) {
         const Origins origins = originsOf(argument);
         if (!origins.empty())
@@ -891,12 +1071,23 @@ public:
     return true;
   }
 
+  /// RFC 0047 §1.2: a constructor's arguments, as a call's.
+  bool VisitCXXConstructExpr(clang::CXXConstructExpr *construct) {
+    if (!cxx || construct->getConstructor() == nullptr)
+      return true;
+    llvm::SmallVector<const clang::Expr *, 8> arguments(construct->arguments());
+    checkArguments(*construct->getConstructor(), arguments);
+    return true;
+  }
+
   bool VisitReturnStmt(clang::ReturnStmt *statement) {
     const clang::Expr *value = statement->getRetValue();
     if (value == nullptr)
       return true;
     leavesWithFieldAddress(*value);
     singleIntoBound(*value, function.getReturnType(), "the result");
+    if (cxx)
+      return true;
     for (const clang::NamedDecl *origin : originsOf(value))
       if (!origin->hasAttr<clang::LifetimeBoundAttr>() ||
           !llvm::isa<clang::ParmVarDecl>(origin)) {
@@ -915,6 +1106,15 @@ public:
   }
 
   bool VisitVarDecl(clang::VarDecl *variable) {
+    // RFC 0047 §1.2: a reference that could change a bounded member or its
+    // count apart from the other.
+    if (cxx && variable->hasInit() &&
+        variable->getType()->isLValueReferenceType() &&
+        !variable->getType()->getPointeeType().isConstQualified())
+      if (const clang::FieldDecl *field = pairedMember(variable->getInit()))
+        fieldReference(variable->getInit()->getExprLoc(), *field);
+    if (cxx)
+      return true;
     if (variable->hasInit() && !variable->hasLocalStorage())
       storesBorrowed(variable->getInit(), variable->getLocation());
     if (variable->hasInit() && !variable->hasLocalStorage())
@@ -929,9 +1129,11 @@ public:
             ? visited->getSemanticForm()
             : visited;
     const clang::RecordDecl *record = list->getType()->getAsRecordDecl();
-    const bool local = initializesLocal(*list) || initializesLocal(*visited);
     if (record != nullptr && list == visited)
       checkCountedInit(ast, *list, *record, report);
+    if (cxx)
+      return true;
+    const bool local = initializesLocal(*list) || initializesLocal(*visited);
     unsigned index = 0;
     llvm::SmallVector<const clang::FieldDecl *, 8> fields;
     if (record != nullptr && !record->isUnion())
@@ -955,6 +1157,8 @@ public:
   }
 
   bool VisitVAArgExpr(clang::VAArgExpr *argument) {
+    if (cxx)
+      return true;
     if (holdsPointers(argument->getType()))
       report(argument->getExprLoc(), rule::Variadic,
              "a variadic argument read as a type that holds pointers could "
@@ -965,6 +1169,8 @@ public:
   }
 
   bool VisitGCCAsmStmt(clang::GCCAsmStmt *statement) {
+    if (cxx)
+      return true;
     // An empty template is a compiler barrier: it touches no memory itself.
     if (statement->getNumOutputs() == 0 && statement->getNumInputs() == 0 &&
         statement->getAsmString().empty())
@@ -973,19 +1179,27 @@ public:
     return true;
   }
   bool VisitMSAsmStmt(clang::MSAsmStmt *statement) {
+    if (cxx)
+      return true;
     forbidden(statement->getAsmLoc(), "inline assembly");
     return true;
   }
   bool VisitIndirectGotoStmt(clang::IndirectGotoStmt *statement) {
+    if (cxx)
+      return true;
     forbidden(statement->getGotoLoc(), "a computed goto");
     return true;
   }
   bool VisitAddrLabelExpr(clang::AddrLabelExpr *label) {
+    if (cxx)
+      return true;
     forbidden(label->getExprLoc(), "a label's address");
     return true;
   }
 
   bool VisitAttributedStmt(clang::AttributedStmt *statement) {
+    if (cxx)
+      return true;
     for (const clang::Attr *attribute : statement->getAttrs())
       if (const auto *annotate = llvm::dyn_cast<clang::AnnotateAttr>(attribute);
           annotate != nullptr && annotate->getAnnotation() == UnsafeAnnotation)
@@ -1122,6 +1336,27 @@ private:
     const clang::Expr *e = expression->IgnoreParens();
     if (e->isNullPointerConstant(ast, clang::Expr::NPC_ValueDependentIsNotNull))
       return true;
+    if (cxx) {
+      if (const auto *wrapped = llvm::dyn_cast<clang::FullExpr>(e))
+        return bounded(wrapped->getSubExpr());
+      if (const auto *temporary =
+              llvm::dyn_cast<clang::MaterializeTemporaryExpr>(e))
+        return bounded(temporary->getSubExpr());
+      if (libraryIterator(e->getType()) || programArguments(e))
+        return true;
+      // A lambda's copy of a pointer is a pointer to one object.
+      if (const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(e);
+          named != nullptr && named->refersToEnclosingVariableOrCapture())
+        return false;
+      if (const auto *call = llvm::dyn_cast<clang::CallExpr>(e)) {
+        const auto [qualified, member] = libraryMember(*call);
+        if (!qualified.empty() &&
+            (core::LibrarySpec::shipped().countOf(qualified, member) ||
+             core::LibrarySpec::shipped().classMember(qualified, "strings",
+                                                      member)))
+          return true;
+      }
+    }
     if (const auto *cast = llvm::dyn_cast<clang::CastExpr>(e)) {
       if (cast->getCastKind() == clang::CK_ArrayToPointerDecay)
         return true;
@@ -1434,6 +1669,12 @@ private:
       return isStringType(member->getMemberDecl()->getType(), ast);
     if (const auto *call = llvm::dyn_cast<clang::CallExpr>(e)) {
       const clang::FunctionDecl *callee = call->getDirectCallee();
+      if (cxx) {
+        const auto [qualified, member] = libraryMember(*call);
+        if (!qualified.empty() && core::LibrarySpec::shipped().classMember(
+                                      qualified, "strings", member))
+          return true;
+      }
       return callee != nullptr && isStringType(callee->getReturnType(), ast);
     }
     if (const auto *op = llvm::dyn_cast<clang::UnaryOperator>(e))
@@ -1589,6 +1830,8 @@ private:
   static bool sameBase(const clang::Expr *a, const clang::Expr *b) {
     a = a->IgnoreParenImpCasts();
     b = b->IgnoreParenImpCasts();
+    if (llvm::isa<clang::CXXThisExpr>(a) && llvm::isa<clang::CXXThisExpr>(b))
+      return true;
     if (const auto *x = llvm::dyn_cast<clang::DeclRefExpr>(a))
       if (const auto *y = llvm::dyn_cast<clang::DeclRefExpr>(b))
         return x->getDecl() == y->getDecl();
@@ -1699,7 +1942,9 @@ private:
   /// an element of an array of them).
   bool carriesFieldAddress(const clang::Expr &expression) const {
     const clang::Expr *e = expression.IgnoreParens();
-    auto pointerMember = [](const clang::Expr *lvalue, bool array) {
+    auto pointerMember = [this](const clang::Expr *lvalue, bool array) {
+      if (cxx)
+        return !array && pairedMember(lvalue) != nullptr;
       const auto *member =
           llvm::dyn_cast<clang::MemberExpr>(lvalue->IgnoreParens());
       if (member == nullptr)
@@ -1865,9 +2110,14 @@ private:
     report(at, rule::IndexSingle,
            "'" + text(pointer) +
                "' points to one object and cannot be indexed or offset",
-           "give its declaration a bound: 'T *WEAVEC_COUNTED_BY(n) p' (or "
-           "WEAVEC_SIZED_BY, WEAVEC_ENDED_BY, WEAVEC_NULL_TERMINATED), or "
-           "index an array or an allocation");
+           cxx ? "give its declaration a bound: 'const T "
+                 "*WEAVEC_COUNTED_BY(n) p' (or WEAVEC_ENDED_BY, "
+                 "WEAVEC_NULL_TERMINATED), take a 'std::span', or index an "
+                 "array or a container"
+               : "give its declaration a bound: 'T *WEAVEC_COUNTED_BY(n) p' "
+                 "(or WEAVEC_SIZED_BY, WEAVEC_ENDED_BY, "
+                 "WEAVEC_NULL_TERMINATED), or index an array or an "
+                 "allocation");
   }
 
   void forbidden(clang::SourceLocation at, llvm::StringRef what) {
@@ -1889,6 +2139,215 @@ private:
     if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(bare))
       return member->getMemberDecl()->getName().str();
     return "this pointer";
+  }
+
+  //===--------------------------------------------------------------------===//
+  // RFC 0047 §1: bounds in Safe C++
+  //===--------------------------------------------------------------------===//
+
+  bool cxx = false;
+  std::function<FunctionBounds(const clang::FunctionDecl &)> cxxTable;
+  /// What usesBounds says.
+  bool usedBounds = false;
+  /// Arrays that are the base of a subscript: indexed in place.
+  llvm::DenseSet<const clang::Expr *> subscripted;
+
+  /// `call-args` for one argument whose parameter `bounds` describes.
+  void callArgument(const clang::Expr &argument,
+                    const clang::ParmVarDecl &parameter,
+                    const clang::FunctionDecl &callee,
+                    const PointerBounds &bounds) {
+    if (!bounds.bounded())
+      return;
+    // A library's parameters are named by their place.
+    const std::string name =
+        parameter.getName().empty() || (cxx && isLibrary(callee))
+            ? "argument " +
+                  std::to_string(parameter.getFunctionScopeIndex() + 1)
+            : "'" + parameter.getName().str() + "'";
+    const bool null = argument.isNullPointerConstant(
+                          ast, clang::Expr::NPC_ValueDependentIsNotNull) !=
+                      clang::Expr::NPCK_NotNull;
+    if (null && !bounds.orNull &&
+        bounds.kind == PointerBounds::Kind::NullTerminated)
+      report(argument.getExprLoc(), rule::CallArgs,
+             "null passed for " + name + " of '" + callee.getNameAsString() +
+                 "', which points to a string",
+             "declare the parameter WEAVEC_NULL_TERMINATED_OR_NULL if it "
+             "may be null, or pass a string");
+    if (!null && !bounded(&argument))
+      report(argument.getExprLoc(), rule::CallArgs,
+             (name.starts_with('\'') ? "the argument for " + name : name) +
+                 " of '" + callee.getNameAsString() +
+                 "' must have bounds, and this pointer points to one object",
+             cxx ? "pass an array, a container's 'data()', or a pointer whose "
+                   "declaration has a bound (WEAVEC_COUNTED_BY, "
+                   "WEAVEC_ENDED_BY, WEAVEC_NULL_TERMINATED)"
+                 : "pass an array, an allocation, or a pointer whose "
+                   "declaration has a bound (WEAVEC_COUNTED_BY, "
+                   "WEAVEC_SIZED_BY, WEAVEC_ENDED_BY, WEAVEC_NULL_TERMINATED)");
+  }
+
+  /// The arguments of a call or a construction in a safe C++ function.
+  void checkArguments(const clang::FunctionDecl &callee,
+                      llvm::ArrayRef<const clang::Expr *> arguments) {
+    const FunctionBounds table = cxxBoundsOf(callee);
+    for (unsigned i = 0; i < arguments.size() && i < callee.getNumParams();
+         ++i) {
+      const clang::Expr *argument = arguments[i];
+      if (llvm::isa<clang::CXXDefaultArgExpr>(argument))
+        continue;
+      const clang::ParmVarDecl &parameter = *callee.getParamDecl(i);
+      passesString(*argument, parameter, callee);
+      const clang::QualType type = parameter.getType();
+      if (type->isLValueReferenceType() &&
+          !type->getPointeeType().isConstQualified())
+        if (const clang::FieldDecl *field = pairedMember(argument))
+          fieldReference(argument->getExprLoc(), *field);
+      if (i < table.parameters.size())
+        callArgument(*argument, parameter, callee, table.parameters[i]);
+    }
+  }
+
+  /// A callee's bounds: its declaration's, or for a member of a library
+  /// class the table's `counted` and `ended` clauses (§1.3).
+  FunctionBounds cxxBoundsOf(const clang::FunctionDecl &callee) const {
+    if (!isLibrary(callee))
+      return cxxTable(callee);
+    FunctionBounds table;
+    table.parameters.resize(callee.getNumParams());
+    const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(&callee);
+    if (method == nullptr)
+      return table;
+    const std::string member = llvm::isa<clang::CXXConstructorDecl>(method)
+                                   ? method->getParent()->getNameAsString()
+                                   : method->getNameAsString();
+    for (const core::ArgumentBound &bound :
+         core::LibrarySpec::shipped().argumentBounds(
+             CxxKinds::qualifiedName(*method->getParent()), member)) {
+      if (bound.pointer >= callee.getNumParams() ||
+          bound.count >= callee.getNumParams())
+        continue;
+      const clang::QualType pointer =
+          callee.getParamDecl(bound.pointer)->getType();
+      const clang::QualType count = callee.getParamDecl(bound.count)->getType();
+      if (!pointer->isPointerType() ||
+          (bound.ended ? !count->isPointerType() : !count->isIntegerType()))
+        continue;
+      PointerBounds &given = table.parameters[bound.pointer];
+      given.kind = bound.ended ? PointerBounds::Kind::Ended
+                               : PointerBounds::Kind::Counted;
+      (bound.ended ? given.end : given.count) = static_cast<int>(bound.count);
+    }
+    return table;
+  }
+
+  /// The library member `call` calls, by the table's class and member names.
+  static std::pair<std::string, std::string>
+  libraryMember(const clang::CallExpr &call) {
+    const auto *method =
+        llvm::dyn_cast_or_null<clang::CXXMethodDecl>(call.getDirectCallee());
+    if (method == nullptr || !isLibrary(*method) ||
+        method->getIdentifier() == nullptr)
+      return {};
+    return {CxxKinds::qualifiedName(*method->getParent()),
+            method->getName().str()};
+  }
+
+  /// `main`'s `argv`, which has `argc` elements.
+  bool programArguments(const clang::Expr *expression) const {
+    const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(expression);
+    return named != nullptr && function.isMain() &&
+           function.getNumParams() >= 2 &&
+           named->getDecl() == function.getParamDecl(1);
+  }
+
+  /// Whether `base` (a subscript's) is an array indexed in place.
+  bool decayed(const clang::Expr *base) {
+    const auto *cast =
+        llvm::dyn_cast<clang::ImplicitCastExpr>(base->IgnoreParens());
+    if (cast == nullptr || cast->getCastKind() != clang::CK_ArrayToPointerDecay)
+      return false;
+    subscripted.insert(cast);
+    return true;
+  }
+
+  /// A pointer type spelled as a member typedef of a library class (a
+  /// container's `iterator` that happens to be a pointer): arithmetic on it
+  /// is the iterator's, and its accesses keep their guards.
+  bool libraryIterator(clang::QualType type) const {
+    for (unsigned depth = 0; depth < 16 && !type.isNull(); ++depth) {
+      if (const auto *alias =
+              llvm::dyn_cast<clang::TypedefType>(type.getTypePtr())) {
+        const clang::TypedefNameDecl *declaration = alias->getDecl();
+        if (isLibrary(*declaration) &&
+            llvm::isa<clang::CXXRecordDecl>(declaration->getDeclContext()))
+          return true;
+      }
+      const clang::QualType next = type.getSingleStepDesugaredType(ast);
+      if (next == type)
+        break;
+      type = next;
+    }
+    return false;
+  }
+
+  /// The member `expression` names when it is a pointer member with a bound
+  /// or a count of one (through parentheses and qualification only).
+  const clang::FieldDecl *pairedMember(const clang::Expr *expression) const {
+    const clang::Expr *e = expression->IgnoreParens();
+    while (const auto *cast = llvm::dyn_cast<clang::ImplicitCastExpr>(e)) {
+      if (cast->getCastKind() != clang::CK_NoOp)
+        return nullptr;
+      e = cast->getSubExpr()->IgnoreParens();
+    }
+    const auto *member = llvm::dyn_cast<clang::MemberExpr>(e);
+    const auto *field =
+        member == nullptr
+            ? nullptr
+            : llvm::dyn_cast<clang::FieldDecl>(member->getMemberDecl());
+    if (field == nullptr)
+      return nullptr;
+    if (field->getType()->isPointerType() &&
+        boundedBy(annotationsOf(field->getType(), ast)))
+      return field;
+    return countedBy(*field).empty() ? nullptr : field;
+  }
+
+  void fieldReference(clang::SourceLocation at, const clang::FieldDecl &field) {
+    report(at, rule::FieldAddress,
+           "a reference to '" + field.getName().str() + "', which " +
+               (field.getType()->isPointerType() ? "has a bound"
+                                                 : "bounds a pointer") +
+               ", would let one of the two change without the other",
+           "pass the object that holds both, or copy the member into a "
+           "local and assign the pair back");
+  }
+
+  /// `counted-pair` in a constructor's list: a count initialized there is
+  /// initialized with a pointer it bounds.
+  void pairedInitializers(const clang::CXXConstructorDecl &constructor) {
+    llvm::SmallPtrSet<const clang::FieldDecl *, 8> written;
+    for (const clang::CXXCtorInitializer *initializer : constructor.inits())
+      if (initializer->isWritten() && initializer->getMember() != nullptr)
+        written.insert(initializer->getMember());
+    for (const clang::CXXCtorInitializer *initializer : constructor.inits()) {
+      const clang::FieldDecl *count = initializer->getMember();
+      if (!initializer->isWritten() || count == nullptr)
+        continue;
+      const auto pointers = countedBy(*count);
+      if (pointers.empty() ||
+          llvm::any_of(pointers, [&](const clang::FieldDecl *pointer) {
+            return written.contains(pointer);
+          }))
+        continue;
+      report(initializer->getSourceLocation(), rule::CountedPair,
+             "'" + count->getName().str() + "' bounds '" +
+                 pointers.front()->getName().str() +
+                 "' and is initialized without it",
+             "initialize '" + pointers.front()->getName().str() +
+                 "' in the same constructor's list");
+    }
   }
 
   /// An integer constant 0: indexing a single pointer by it is `*p`.
@@ -2096,7 +2555,6 @@ public:
     if (record == nullptr || !out->annotates ||
         tag->getASTContext().getTargetInfo().getPointerWidth(
             clang::LangAS::Default) != 64 ||
-        tag->getASTContext().getLangOpts().CPlusPlus ||
         tag->getASTContext().getSourceManager().isInSystemHeader(
             tag->getLocation()))
       return;
@@ -2104,17 +2562,43 @@ public:
   }
 
   void HandleTranslationUnit(clang::ASTContext &ast) override {
+    // A unit that stopped at a fatal error (a missing header) has an AST the
+    // rules cannot walk.
+    if (compiler.getDiagnostics().hasFatalErrorOccurred())
+      return;
+    Declarations &declarations = declarationsFor(ast);
     if (ast.getLangOpts().CPlusPlus) {
-      // RFC 0044: Safe C++.
-      checkCxx(ast, unitSafe, *out,
-               [this](clang::SourceLocation at, llvm::StringRef rule,
-                      llvm::StringRef message, clang::SourceLocation noteAt,
-                      llvm::StringRef note) {
-                 report(at, rule, message, note, noteAt);
-               });
+      // RFC 0044: Safe C++; RFC 0047: with Safe C's bounds.
+      const auto reportTo =
+          [this](clang::SourceLocation at, llvm::StringRef rule,
+                 llvm::StringRef message,
+                 llvm::StringRef fix) { report(at, rule, message, fix); };
+      BoundsRules bounds;
+      bounds.tableOf = [&](const clang::FunctionDecl &function) {
+        return declarations.tableOf(function);
+      };
+      bounds.check = [&](const clang::FunctionDecl &function) {
+        FunctionCheck check(ast, function, *out, reportTo, bounds.tableOf);
+        check.run();
+        return check.usesBounds();
+      };
+      bounds.checkRecord = [&](const clang::RecordDecl &record) {
+        declarations.checkRecord(record);
+      };
+      bounds.survey = [this](SafeUnit::Definition *definition) {
+        surveyed = definition;
+      };
+      checkCxx(
+          ast, unitSafe, *out,
+          [this](clang::SourceLocation at, llvm::StringRef rule,
+                 llvm::StringRef message, clang::SourceLocation noteAt,
+                 llvm::StringRef note) {
+            report(at, rule, message, note, noteAt);
+          },
+          bounds);
+      out->pointeeSizes = declarations.laterSizes();
       return;
     }
-    Declarations &declarations = declarationsFor(ast);
     out->pointeeSizes = declarations.laterSizes();
     std::vector<const clang::FunctionDecl *> safe;
     std::vector<const clang::RecordDecl *> records;
@@ -2146,6 +2630,28 @@ public:
                        report(at, rule, message, note, noteAt);
                      });
     }
+    // RFC 0047 §7: the guarded functions, as if they were safe; what the
+    // ownership rules record of a function goes to a copy of the unit.
+    if (out->survey)
+      for (const auto &[function, index] : guarded) {
+        surveyed = &out->definitions[index];
+        FunctionCheck(ast, *function, *out,
+                      [this](clang::SourceLocation at, llvm::StringRef rule,
+                             llvm::StringRef message, llvm::StringRef fix) {
+                        report(at, rule, message, fix);
+                      })
+            .run();
+        SafeUnit scratch;
+        scratch.functions = out->functions;
+        checkOwnership(ast, *function, scratch,
+                       [this](clang::SourceLocation at, llvm::StringRef rule,
+                              llvm::StringRef message,
+                              clang::SourceLocation noteAt,
+                              llvm::StringRef note) {
+                         report(at, rule, message, note, noteAt);
+                       });
+        surveyed = nullptr;
+      }
   }
 
 private:
@@ -2230,6 +2736,12 @@ private:
     // place in the file.
     const clang::SourceLocation file =
         at.isValid() ? compiler.getSourceManager().getFileLoc(at) : at;
+    // RFC 0047 §7: a surveyed function's errors are counted, once each.
+    if (surveyed != nullptr) {
+      if (surveyedAt.emplace(file.getRawEncoding(), rule.str()).second)
+        ++surveyed->survey[rule.str()];
+      return;
+    }
     // Ownership's different errors at one place (two owners leaked at one
     // return) are each reported.
     const bool ownership =
@@ -2261,6 +2773,13 @@ private:
     }
   }
   bool explained = false;
+  /// RFC 0047 §7: the function whose errors are being counted, and where
+  /// they were.
+  SafeUnit::Definition *surveyed = nullptr;
+  std::set<std::pair<clang::SourceLocation::UIntTy, std::string>> surveyedAt;
+  /// The definitions that are guarded, for the survey: with their index in
+  /// the unit's definitions.
+  std::vector<std::pair<const clang::FunctionDecl *, std::size_t>> guarded;
 
   Declarations &declarationsFor(clang::ASTContext &ast) {
     if (!unitDeclarations)
@@ -2277,10 +2796,11 @@ private:
               const clang::SourceManager &sources) const {
     if (hasAnnotateAttr(function, SafeAnnotation))
       return true;
-    if (!unitSafe || hasAnnotateAttr(function, GuardedAnnotation) ||
+    if (hasAnnotateAttr(function, GuardedAnnotation) ||
         hasAnnotateAttr(function, UnsafeAnnotation) ||
         function.hasAttr<clang::NoSanitizeAttr>() ||
-        function.hasAttr<clang::DisableSanitizerInstrumentationAttr>())
+        function.hasAttr<clang::DisableSanitizerInstrumentationAttr>() ||
+        (!unitSafe && !inSafeFile(*out, sources, function.getLocation())))
       return false;
     return !sources.isInSystemHeader(function.getLocation());
   }
@@ -2336,8 +2856,11 @@ private:
       if (definesSafe)
         safe.push_back(function);
       if (function->doesThisDeclarationHaveABody() &&
-          !ast.getSourceManager().isInSystemHeader(function->getLocation()))
+          !ast.getSourceManager().isInSystemHeader(function->getLocation())) {
         define(*function, definesSafe, ast.getSourceManager());
+        if (!definesSafe && out->definitions.back().tier == "guarded")
+          guarded.emplace_back(function, out->definitions.size() - 1);
+      }
       if (!function->doesThisDeclarationHaveABody() &&
           hasAnnotateAttr(*function, SafeAnnotation))
         out->functions[function->getName()].declaredTyped = true;
@@ -2373,7 +2896,8 @@ private:
                               }),
          .starts = 0,
          .locks = false,
-         .sends = false});
+         .sends = false,
+         .survey = {}});
   }
 
   void reportMismatch(const clang::FunctionDecl &function,

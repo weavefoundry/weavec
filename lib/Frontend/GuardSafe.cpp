@@ -138,6 +138,28 @@ static llvm::Value *boundCount(const ModuleContext &module,
                                llvm::ArrayRef<llvm::Value *> arguments) {
   if (bounds.kind != PointerBounds::Kind::Counted)
     return nullptr;
+  // RFC 0047 §1.4: a member function's result, counted by its object's
+  // member, read where the bounds are made.
+  if (bounds.count < 0 && bounds.memberOffset >= 0) {
+    const std::uint64_t width = bounds.memberWidth;
+    if (arguments.empty() || !arguments[0]->getType()->isPointerTy() ||
+        (width != 1 && width != 2 && width != 4 && width != 8))
+      return nullptr;
+    llvm::Value *count = builder.CreateLoad(
+        llvm::IntegerType::get(module.context,
+                               static_cast<unsigned>(width * 8)),
+        builder.CreateGEP(
+            module.i8, arguments[0],
+            llvm::ConstantInt::get(
+                module.i64, static_cast<std::uint64_t>(bounds.memberOffset))),
+        "weavec.member.count");
+    return bounds.countSigned
+               ? builder.CreateBinaryIntrinsic(
+                     llvm::Intrinsic::smax,
+                     builder.CreateSExtOrTrunc(count, module.i64),
+                     llvm::ConstantInt::get(module.i64, 0))
+               : builder.CreateZExtOrTrunc(count, module.i64);
+  }
   if (bounds.count < 0)
     return llvm::ConstantInt::get(module.i64, bounds.constant);
   if (static_cast<std::size_t>(bounds.count) >= arguments.size())
@@ -548,12 +570,15 @@ void prepareSafe(ModuleContext &module, llvm::Function &function) {
     for (llvm::Instruction &instruction : block)
       if (auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction))
         gep->setNoWrapFlags(llvm::GEPNoWrapFlags::none());
+  // RFC 0047 §1.4: a C++ local stays in its frame; `escape` and the result
+  // check (RFC 0045 Y4) keep its address in it.
   Scopes scopes;
   std::vector<llvm::AllocaInst *> outliving;
   for (llvm::BasicBlock &block : function)
     for (llvm::Instruction &instruction : block)
       if (auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(&instruction);
-          alloca != nullptr && mayOutlive(module, *alloca, scopes))
+          alloca != nullptr && !module.options.safe->cxx &&
+          mayOutlive(module, *alloca, scopes))
         outliving.push_back(alloca);
   for (llvm::AllocaInst *alloca : outliving)
     placeOnHeap(module, function, *alloca);
