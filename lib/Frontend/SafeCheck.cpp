@@ -62,6 +62,8 @@ constexpr llvm::StringLiteral Variadic = "variadic";
 constexpr llvm::StringLiteral NoAsm = "no-asm";
 constexpr llvm::StringLiteral UnsafeBlock = "unsafe-block";
 constexpr llvm::StringLiteral BadAnnotation = "bad-annotation";
+// RFC 0046 §10.
+constexpr llvm::StringLiteral NotModeled = "not-modeled";
 // RFC 0042 §3.
 constexpr llvm::StringLiteral CountedPair = "counted-pair";
 constexpr llvm::StringLiteral StringIndex = "string-index";
@@ -302,6 +304,11 @@ public:
   PointerBounds boundsOf(const clang::FunctionDecl &function,
                          clang::QualType type, clang::SourceLocation at) {
     PointerBounds bounds;
+    if (hasAnnotation(annotationsOf(type, ast), SendsAnnotation))
+      report(at, rule::BadAnnotation,
+             "WEAVEC_SENDS is Safe C++'s, for a callable that may run on "
+             "another thread; C has none",
+             "remove it; a safe C function does not start threads");
     if (!type->isPointerType())
       return bounds;
     bounds.kind = PointerBounds::Kind::Single;
@@ -2036,6 +2043,18 @@ private:
 
   void checkBuiltin(const clang::CallExpr &call,
                     const clang::FunctionDecl &callee) {
+    // RFC 0046 §10 (D5): Safe C does not follow what a thread it starts is
+    // given.
+    if (const auto match = core::LibrarySpec::shipped().lookup(
+            callee.getName().str(), call.getNumArgs());
+        match.has_value() && match->entry->spawns) {
+      report(call.getExprLoc(), rule::NotModeled,
+             "'" + callee.getName().str() +
+                 "' starts a thread, which Safe C does not check",
+             "start the thread in a WEAVEC_GUARDED function, which the audit "
+             "lists, or write the threaded part in safe C++");
+      return;
+    }
     if (callee.hasAttr<clang::ReturnsTwiceAttr>()) {
       forbidden(call.getExprLoc(), "'" + callee.getName().str() + "'");
       return;
@@ -2195,7 +2214,9 @@ private:
                                .field = field->getName().str(),
                                .kind = kind,
                                .file = at.isValid() ? at.getFilename() : "",
-                               .line = at.isValid() ? at.getLine() : 0});
+                               .line = at.isValid() ? at.getLine() : 0,
+                               .sendable = false,
+                               .shareable = false});
       }
   }
 
@@ -2349,7 +2370,10 @@ private:
                  llvm::any_of(function.parameters(),
                               [&](const clang::ParmVarDecl *parameter) {
                                 return owned(parameter->getType());
-                              })});
+                              }),
+         .starts = 0,
+         .locks = false,
+         .sends = false});
   }
 
   void reportMismatch(const clang::FunctionDecl &function,

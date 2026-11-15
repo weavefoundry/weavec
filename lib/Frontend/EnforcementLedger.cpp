@@ -21,6 +21,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <numeric>
 #include <set>
 #include <string>
 #include <system_error>
@@ -164,14 +165,23 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                            {.K = "tier", .V = function.tier},
                            {.K = "file", .V = function.file},
                            {.K = "line", .V = function.line},
-                           {.K = "owns", .V = function.owns}});
+                           {.K = "owns", .V = function.owns},
+                           {.K = "starts", .V = function.starts},
+                           {.K = "locks", .V = function.locks},
+                           {.K = "sends", .V = function.sends}});
   llvm::json::Array fields;
-  for (const LedgerField &field : ledger.fields)
-    fields.push_back(llvm::json::Object{{.K = "record", .V = field.record},
-                                        {.K = "field", .V = field.field},
-                                        {.K = "kind", .V = field.kind},
-                                        {.K = "file", .V = field.file},
-                                        {.K = "line", .V = field.line}});
+  for (const LedgerField &field : ledger.fields) {
+    llvm::json::Object entry{{.K = "record", .V = field.record},
+                             {.K = "field", .V = field.field},
+                             {.K = "kind", .V = field.kind},
+                             {.K = "file", .V = field.file},
+                             {.K = "line", .V = field.line}};
+    if (field.kind == "class") {
+      entry["sendable"] = field.sendable;
+      entry["shareable"] = field.shareable;
+    }
+    fields.push_back(std::move(entry));
+  }
   llvm::json::Array library;
   for (const LedgerLibrary &entry : ledger.library)
     library.push_back(llvm::json::Object{{.K = "kind", .V = entry.kind},
@@ -248,6 +258,13 @@ std::string enforcementSummary(const EnforcementLedger &ledger,
   };
   os << "; " << kind("owner") << " owner and " << kind("reference")
      << " reference fields";
+  // RFC 0046 §12.
+  const auto starts = std::accumulate(
+      ledger.functions.begin(), ledger.functions.end(), 0U,
+      [](unsigned sum, const auto &function) { return sum + function.starts; });
+  if (kind("lock") != 0 || starts != 0)
+    os << "; " << kind("lock") << " locked classes, " << starts
+       << " thread starts";
   // RFC 0045 §10.
   if (ledger.typedSites != 0 || !ledger.library.empty())
     os << "; " << ledger.typedSites << " typed allocation sites, "
@@ -259,7 +276,7 @@ std::string enforcementSummary(const EnforcementLedger &ledger,
 }
 
 //===----------------------------------------------------------------------===//
-// The audit (RFC 0042 §10, RFC 0043 §11)
+// The audit (RFC 0042 §10, RFC 0043 §11, RFC 0046 §12)
 //===----------------------------------------------------------------------===//
 
 namespace {
@@ -283,6 +300,12 @@ struct Audit {
   /// (once each), and the allocations they could not type.
   llvm::json::Array library;
   llvm::json::Array untyped;
+  /// RFC 0046 §12: what (Z1) to (Z6) rest on: functions that are not safe
+  /// and start threads or use locks, their WEAVEC_SENDS parameters, and the
+  /// globals of code that is not safe that safe code names.
+  llvm::json::Array threads;
+  llvm::json::Array sends;
+  llvm::json::Array threadGlobals;
   std::set<std::string> libraryNames;
   std::set<std::string> fields;
   unsigned safe = 0;
@@ -339,10 +362,16 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
         const std::string tier = function->getString("tier").value_or("").str();
         tiers[name] = tier;
         ++audit.functions;
-        if (tier == "safe")
+        if (tier == "safe") {
           ++audit.safe;
-        else
-          audit.trusted.push_back(llvm::json::Object(*function));
+          continue;
+        }
+        audit.trusted.push_back(llvm::json::Object(*function));
+        if (function->getInteger("starts").value_or(0) != 0 ||
+            function->getBoolean("locks").value_or(false))
+          audit.threads.push_back(llvm::json::Object(*function));
+        if (function->getBoolean("sends").value_or(false))
+          audit.sends.push_back(llvm::json::Object(*function));
       }
     if (const llvm::json::Array *fields = unit->getArray("fields"))
       for (const llvm::json::Value &value : *fields)
@@ -359,6 +388,8 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
             audit.erased.push_back(llvm::json::Object(*field));
           else if (kind == "global")
             audit.globals.push_back(llvm::json::Object(*field));
+          else if (kind == "thread-global")
+            audit.threadGlobals.push_back(llvm::json::Object(*field));
         }
     if (const llvm::json::Array *library = unit->getArray("library"))
       for (const llvm::json::Value &value : *library) {
@@ -424,7 +455,7 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
                         "{0:2}",
                         llvm::json::Value(llvm::json::Object{
                             {.K = "schema", .V = "weavec-audit"},
-                            {.K = "version", .V = 4},
+                            {.K = "version", .V = 5},
                             {.K = "functions", .V = audit.functions},
                             {.K = "safe", .V = audit.safe},
                             {.K = "trusted", .V = std::move(audit.trusted)},
@@ -436,7 +467,11 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
                             {.K = "erased", .V = std::move(audit.erased)},
                             {.K = "globals", .V = std::move(audit.globals)},
                             {.K = "library", .V = std::move(audit.library)},
-                            {.K = "untyped", .V = std::move(audit.untyped)}}))
+                            {.K = "untyped", .V = std::move(audit.untyped)},
+                            {.K = "threads", .V = std::move(audit.threads)},
+                            {.K = "sends", .V = std::move(audit.sends)},
+                            {.K = "threadGlobals",
+                             .V = std::move(audit.threadGlobals)}}))
                  << '\n';
     return ok ? 0 : 1;
   }
@@ -481,6 +516,15 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
        audit.library, "function", "");
   list("allocations fast units could not type (they wait for a sweep)",
        audit.untyped, "function", "reason");
+  list("functions that are not safe and start threads or use locks (safe "
+       "code trusts what they share)",
+       audit.threads, "function", "tier");
+  list("WEAVEC_SENDS parameters of functions that are not safe (their "
+       "callers are trusted to pass what may be sent)",
+       audit.sends, "function", "tier");
+  list("globals of code that is not safe that safe code names (in the "
+       "function named)",
+       audit.threadGlobals, "field", "");
   return ok ? 0 : 1;
 }
 

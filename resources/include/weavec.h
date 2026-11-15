@@ -28,7 +28,7 @@
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 3
-#define WEAVEC_H_VERSION_MINOR 1
+#define WEAVEC_H_VERSION_MINOR 2
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -82,9 +82,9 @@
  * annotations below, safe C++ uses WEAVEC_ESCAPES (the callee keeps the
  * pointer, or a copy of the callable), WEAVEC_BORROWED (a pointer member
  * that is a borrow, which makes its class a view) and
- * WEAVEC_LIFETIMEBOUND; a pointer with a count is a std::span and an owner
- * a std::unique_ptr or a container. The guide is
- * docs/pages/guides/safe-cxx.md. */
+ * WEAVEC_LIFETIMEBOUND, and WEAVEC_SENDS (RFC 0046 §8); a pointer with a
+ * count is a std::span and an owner a std::unique_ptr or a container. The
+ * guide is docs/pages/guides/safe-cxx.md. */
 #define WEAVEC_SAFE WEAVEC_ANNOTATE_("weavec.safe")
 /** In a unit compiled with -fweavec-safe: keeps a function guarded (in C++,
  * a class's member functions too). */
@@ -149,5 +149,12 @@
  * other call given such a pointer, its owners may hold blocks.
  */
 #define WEAVEC_DROPS WEAVEC_TYPE_ANNOTATE_("weavec.drops")
+/**
+ * C++ only (RFC 0046 §8). After the type of a parameter that is a
+ * type-erased callable (`std::function<void()> WEAVEC_SENDS task`): the
+ * function may keep the callable and run it on another thread, so a safe
+ * caller passes one that captures by value only what may be sent.
+ */
+#define WEAVEC_SENDS WEAVEC_TYPE_ANNOTATE_("weavec.sends")
 
 #endif /* WEAVEC_H */

@@ -539,7 +539,7 @@ private:
   }
 
   bool parseEntry();
-  bool parseClass();
+  bool parseClass(bool function);
   std::optional<LibraryParam> parseParam();
   bool parseResult(LibraryEntry &entry);
   bool parseClause(LibraryEntry &entry, const std::string &clause);
@@ -671,6 +671,13 @@ bool LibrarySpecParser::parseClause(LibraryEntry &entry,
     if (entry.wide)
       return fail("duplicate clause 'wide'");
     entry.wide = true;
+    return true;
+  }
+  if (clause == "spawns" || clause == "unshared") {
+    bool &flag = clause == "spawns" ? entry.spawns : entry.unshared;
+    if (flag)
+      return fail("duplicate clause '" + clause + "'");
+    flag = true;
     return true;
   }
   if (clause == "exits" || clause == "unwinds") {
@@ -847,42 +854,57 @@ bool LibrarySpecParser::validateEntry(const LibraryEntry &entry) {
   return true;
 }
 
-/// RFC 0044 §2, §5: `class NAME : erased;`, `class NAME : resets(f, g);`,
-/// NAME qualified with `::`.
-bool LibrarySpecParser::parseClass() {
+/// RFC 0044 §2, §5, RFC 0046 §1: `class NAME : erased;`, `class NAME :
+/// resets(f, g);` and the other class clauses, NAME qualified with `::`;
+/// `function NAME : spawns;` and `: fresh;`.
+bool LibrarySpecParser::parseClass(bool function) {
   std::string qualified;
   do {
-    auto part = name("a class name");
+    auto part = name(function ? "a function name" : "a class name");
     if (!part)
       return false;
     qualified += (qualified.empty() ? "" : "::") + *part;
   } while (accept("::"));
   entryName = qualified;
-  if (!expect(':', "after the class name"))
+  if (!expect(':', "after the name"))
     return false;
   do {
-    const std::string clause = word();
-    if (clause == "erased") {
-      spec.erased.insert(qualified);
-    } else if (clause == "shared") {
-      spec.shared.insert(qualified);
-    } else if (clause == "resets") {
-      if (!expect('(', "after 'resets'"))
+    std::string clause = word();
+    if (function) {
+      if (clause != "spawns" && clause != "fresh")
+        return fail("expected 'spawns' or 'fresh'");
+      spec.functions.emplace(qualified, clause);
+    } else if (clause == "erased" || clause == "shared" || clause == "thread" ||
+               clause == "lock" || clause == "shareable" ||
+               clause == "spawns") {
+      spec.traits.emplace(qualified, clause);
+    } else if (clause == "guard") {
+      spec.traits.emplace(qualified, clause);
+      if (accept('(')) {
+        if (word() != "shared" || !expect(')', "after 'guard(shared'"))
+          return fail("expected 'guard(shared)'");
+        spec.traits.emplace(qualified, "guard(shared)");
+      }
+    } else if (clause == "resets" || clause == "joins" ||
+               clause == "detaches" || clause == "locks" || clause == "makes") {
+      if (!expect('(', "after '" + clause + "'"))
         return false;
       do {
         auto member = name("a member function's name");
         if (!member)
           return false;
-        spec.resets.emplace(qualified, std::move(*member));
+        spec.members.emplace(qualified, clause, std::move(*member));
       } while (accept(','));
       if (!expect(')', "after the member functions"))
         return false;
     } else {
-      return fail("expected 'erased', 'shared' or 'resets(...)'");
+      return fail("expected 'erased', 'shared', 'thread', 'lock', 'guard', "
+                  "'shareable', 'resets(...)', 'joins(...)', 'detaches(...)', "
+                  "'locks(...)' or 'makes(...)'");
     }
   } while (accept(','));
   if (!expect(';', "at the end of the entry") || !atEnd())
-    return fail("unexpected text after the class entry");
+    return fail("unexpected text after the entry");
   entryName.clear();
   return true;
 }
@@ -893,8 +915,8 @@ bool LibrarySpecParser::parseEntry() {
   auto rowName = name("a function name");
   if (!rowName)
     return false;
-  if (*rowName == "class" && !accept('('))
-    return parseClass();
+  if ((*rowName == "class" || *rowName == "function") && !accept('('))
+    return parseClass(*rowName == "function");
   entry.name = *rowName;
   entryName = entry.name;
   if (!expect('(', "after the function name"))
@@ -974,18 +996,22 @@ std::optional<LibrarySpec> LibrarySpec::parse(std::string_view text,
   return spec;
 }
 
-bool LibrarySpec::erasedClass(std::string_view qualified) const {
-  return erased.contains(qualified);
+bool LibrarySpec::classIs(std::string_view qualified,
+                          std::string_view trait) const {
+  return traits.contains(std::pair(std::string(qualified), std::string(trait)));
 }
 
-bool LibrarySpec::sharedClass(std::string_view qualified) const {
-  return shared.contains(qualified);
-}
-
-bool LibrarySpec::resetsClass(std::string_view qualified,
+bool LibrarySpec::classMember(std::string_view qualified,
+                              std::string_view clause,
                               std::string_view member) const {
-  return resets.contains(
-      std::pair(std::string(qualified), std::string(member)));
+  return members.contains(std::tuple(std::string(qualified),
+                                     std::string(clause), std::string(member)));
+}
+
+bool LibrarySpec::functionIs(std::string_view qualified,
+                             std::string_view trait) const {
+  return functions.contains(
+      std::pair(std::string(qualified), std::string(trait)));
 }
 
 const LibraryEntry *LibrarySpec::find(std::string_view name) const {

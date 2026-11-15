@@ -1,6 +1,6 @@
 ---
 title: Write safe C++
-description: Compile a C++ unit with weavec-c++ -fweavec-safe so that a use after std::move, a reference kept across push_back, a string_view of a temporary and a view that outlives its buffer stop the compile, with errors you or an agent can act on.
+description: Compile a C++ unit with weavec-c++ -fweavec-safe so that a use after std::move, a reference kept across push_back, a string_view of a temporary, a view that outlives its buffer and a data race stop the compile, with errors you or an agent can act on.
 ---
 
 `weavec-c++` guards every access of the C++ it compiles, unchanged, and turns the hardened standard library's checks into reports. A **safe C++ function** is also checked when it compiles, against a few rules that are local to the function, as Rust's borrow checker checks safe Rust. The rules reject; they prove nothing. What a safe unit gains at run time comes from its heap, not from the rules: in the fast mode, the default, a block is reused only by its own type, so the accesses a reference or the standard library's own checks already cover need no guard (see [fast and checked builds](#fast-and-checked-builds)).
@@ -377,6 +377,267 @@ std::size_t count_lines(const std::string &path) {
 }
 ```
 
+## Threads
+
+Safe C++ has no data races, and the rules alone say so: nothing at run time checks them, in either build ([RFC 0046](/rfcs/0046-thread-safety/)). Three facts about a type decide what may cross into a thread. A **sendable** type can be handed to another thread: it owns what it holds, and its pointers point to what is shareable. A **shareable** type can be used by two threads at once: an atomic, a condition variable, a mutex, or a class whose members are each shareable, `const`, or guarded by the class's one lock. A **frozen** type is never written through `const`. Then:
+
+- what a `std::jthread`, a `std::thread` or `std::async` is given by value is sendable (`thread-send`);
+- what it reaches by reference is shareable, a `const` local of frozen type, a `std::shared_ptr<const T>`'s object, or a local the function lends it and keeps off until the thread ends (`thread-share`, `thread-lent`);
+- in a class with a `std::mutex` member, the other members are used only under a guard on it, and a borrow of one ends with the guard (`lock-held`);
+- a global is shareable, `const`, or `thread_local`, in every program.
+
+The forms an agent ports first, each one compiled as safe C++:
+
+### Tasks that own their input
+
+A task given what it needs by value, returning its result through a future, shares nothing.
+
+```cpp accepted
+std::size_t longest(std::vector<std::string> lines) {
+  std::size_t best = 0;
+  for (const std::string &line : lines)
+    best = std::max(best, line.size());
+  return best;
+}
+
+std::size_t longest_of_all(std::vector<std::vector<std::string>> batches) {
+  std::vector<std::future<std::size_t>> results;
+  for (std::vector<std::string> &batch : batches)
+    results.push_back(std::async(std::launch::async, longest, std::move(batch)));
+  std::size_t best = 0;
+  for (std::future<std::size_t> &result : results)
+    best = std::max(best, result.get());
+  return best;
+}
+```
+
+### Readers of a `const` local, and a local lent to one worker
+
+A `const` local of frozen type is immutable: any number of threads read it. A local that is not `const` is lent to the thread that borrows it, and the function keeps off it until the thread object ends. Threads that each write their own element of one vector, at the index of the loop that starts them, are lent that element only.
+
+```cpp accepted
+long sum_in_parallel(const std::vector<int> &input) {
+  const std::vector<int> data = input;      // an immutable copy
+  std::vector<long> parts(4);
+  {
+    std::vector<std::jthread> workers;
+    for (int i = 0; i < 4; ++i)
+      workers.emplace_back([&data, &parts, i] {
+        for (std::size_t k = static_cast<std::size_t>(i); k < data.size(); k += 4)
+          parts[static_cast<std::size_t>(i)] += data[k];
+      });
+  }                                         // every worker is joined here
+  long total = 0;
+  for (const long part : parts)
+    total += part;
+  return total;
+}
+
+std::size_t count_words(const std::string &text) {
+  std::size_t words = 0;
+  {
+    std::jthread counter([&words, copy = text] {
+      bool in = false;
+      for (const char c : copy) {
+        if (c != ' ' && !in)
+          ++words;
+        in = c != ' ';
+      }
+    });
+  }                                         // 'words' is the function's again
+  return words;
+}
+```
+
+### An atomic counter
+
+```cpp accepted
+int count_in_parallel(int per_thread) {
+  std::atomic<int> count{0};
+  {
+    std::jthread a([&count, per_thread] { for (int i = 0; i < per_thread; ++i) ++count; });
+    std::jthread b([&count, per_thread] { for (int i = 0; i < per_thread; ++i) ++count; });
+  }
+  return count.load();
+}
+```
+
+### A queue: a class that locks its members
+
+The class's one `std::mutex` guards its other members, so the class is shareable and threads may hold it by reference. A value leaves the lock by copy or by move; a reference into `items_` would outlive the guard and is `escape`.
+
+```cpp accepted
+class Queue {
+public:
+  void push(std::string item) {
+    {
+      const std::lock_guard lock(mu_);
+      items_.push_back(std::move(item));
+    }
+    ready_.notify_one();
+  }
+  std::optional<std::string> pop() {
+    std::unique_lock lock(mu_);
+    ready_.wait(lock, [this] { return closed_ || !items_.empty(); });
+    if (items_.empty())
+      return std::nullopt;
+    std::string item = std::move(items_.front());
+    items_.erase(items_.begin());
+    return item;
+  }
+  void close() {
+    {
+      const std::lock_guard lock(mu_);
+      closed_ = true;
+    }
+    ready_.notify_all();
+  }
+private:
+  std::mutex mu_;
+  std::condition_variable ready_;
+  std::vector<std::string> items_;
+  bool closed_ = false;
+};
+
+std::size_t consume(const std::vector<std::string> &lines) {
+  Queue queue;
+  std::size_t total = 0;
+  {
+    std::jthread worker([&queue, &total] {
+      while (std::optional<std::string> line = queue.pop())
+        total += line->size();
+    });
+    for (const std::string &line : lines)
+      queue.push(line);                     // 'queue' is shareable: not lent
+    queue.close();
+  }
+  return total;
+}
+```
+
+### A class that owns its worker thread
+
+The thread uses `this`, so the class is shareable, cannot be copied or moved away from its thread, and declares the thread last, so that it is joined before the other members are destroyed (a class with virtual functions is `final` too).
+
+```cpp accepted
+class Ticker {
+public:
+  Ticker() : thread_([this](std::stop_token stop) { run(stop); }) {}
+  Ticker(const Ticker &) = delete;
+  Ticker &operator=(const Ticker &) = delete;
+  int ticks() const { return ticks_.load(); }
+private:
+  void run(const std::stop_token &stop) {
+    while (!stop.stop_requested())
+      ++ticks_;
+  }
+  std::atomic<int> ticks_{0};
+  std::jthread thread_;                     // last
+};
+```
+
+### A pool that takes tasks
+
+A `std::function` does not say what it captured. A parameter that keeps one to run on another thread says `WEAVEC_SENDS`, after its type; callers then pass a callable that captures by value only what may be sent.
+
+```cpp accepted
+class Pool {
+public:
+  explicit Pool(int threads) {
+    for (int i = 0; i < threads; ++i)
+      workers_.emplace_back([this] { run(); });
+  }
+  Pool(const Pool &) = delete;
+  Pool &operator=(const Pool &) = delete;
+  ~Pool() {
+    {
+      const std::lock_guard lock(mu_);
+      stop_ = true;
+    }
+    ready_.notify_all();
+  }
+  void submit(std::function<void()> WEAVEC_SENDS task) {
+    {
+      const std::lock_guard lock(mu_);
+      tasks_.push_back(std::move(task));
+    }
+    ready_.notify_one();
+  }
+private:
+  void run() {
+    for (;;) {
+      std::function<void()> task;
+      {
+        std::unique_lock lock(mu_);
+        ready_.wait(lock, [this] { return stop_ || !tasks_.empty(); });
+        if (tasks_.empty())
+          return;
+        task = std::move(tasks_.front());
+        tasks_.pop_front();
+      }
+      task();
+    }
+  }
+  std::mutex mu_;
+  std::condition_variable ready_;
+  std::deque<std::function<void()>> tasks_;
+  bool stop_ = false;
+  std::vector<std::jthread> workers_;
+};
+
+void log_all(Pool &pool, std::vector<std::string> lines) {
+  auto total = std::make_shared<std::atomic<std::size_t>>(0);
+  for (std::string &line : lines)
+    pool.submit([total, line = std::move(line)] { *total += line.size(); });
+}
+```
+
+### A snapshot, and `Locked<T>`
+
+A `std::shared_ptr<const T>` made by `std::make_shared` shares an object no holder can change; the pointer itself is replaced under a lock. `Locked<T>`, ten lines of safe C++, is Rust's `Mutex<T>`: the value is reached only through `with`, under the lock, and a callable that returns a reference into it is `escape` where `with` is instantiated.
+
+```cpp accepted
+struct Routes { std::map<std::string, int> backends; };
+
+class Router {
+public:
+  std::shared_ptr<const Routes> snapshot() const {
+    const std::lock_guard lock(mu_);
+    return routes_;
+  }
+  void add(const std::string &prefix, int backend) {
+    auto next = std::make_shared<Routes>(*snapshot());
+    next->backends[prefix] = backend;
+    const std::lock_guard lock(mu_);
+    routes_ = std::move(next);             // no other handle can change it
+  }
+private:
+  mutable std::mutex mu_;
+  std::shared_ptr<const Routes> routes_ = std::make_shared<const Routes>();
+};
+
+template <class T> class Locked {
+public:
+  explicit Locked(T value) : value_(std::move(value)) {}
+  template <class F> auto with(F f) {
+    const std::lock_guard lock(mu_);
+    return f(value_);
+  }
+private:
+  mutable std::mutex mu_;
+  T value_;
+};
+
+std::size_t record(Locked<std::vector<std::string>> &log, std::string line) {
+  return log.with([&line](std::vector<std::string> &lines) {
+    lines.push_back(std::move(line));
+    return lines.size();
+  });
+}
+```
+
+What the rules reject that is correct: a mutex beside the data it guards in locals or globals (put both in a class); several threads writing one container other than slot by slot; publication by release and acquire; a class with two locks; locking by hand; a `const` member function writing through a `std::unique_ptr`. Each has a rewrite in its error's note, and `weavec-c++ --weavec-explain <rule>` shows it.
+
 ## Coming from Rust
 
 | Rust                                      | Safe C++                                                                                                                                                 |
@@ -393,7 +654,16 @@ std::size_t count_lines(const std::string &path) {
 | `Rc<RefCell<T>>`                          | `std::shared_ptr<T>`: allowed; conflicting borrows are found at run time by the guards, not by a count                                                   |
 | a slice index or `unwrap()` that panics   | a hardened library check (`library-assertion`) or a `null-dereference` report                                                                            |
 | `unsafe`                                  | `WEAVEC_GUARDED` (still guarded at run time), `WEAVEC_UNSAFE` (not)                                                                                      |
-| `Send`, `Sync`                            | nothing yet: data races are not checked                                                                                                                  |
+| `Send`                                    | a sendable type; `thread-send`                                                                                                                           |
+| `Sync`                                    | a shareable type, or a `const` object of a frozen type; `thread-share`                                                                                   |
+| `thread::scope` and a borrowed local      | a `std::jthread` local and a lent local; `thread-lent`                                                                                                   |
+| `thread::spawn` and `'static`             | a thread object that borrows nothing, which may be detached                                                                                              |
+| `Mutex<T>` and its guard                  | a class with a `std::mutex` member, and `std::lock_guard`; `lock-held`                                                                                   |
+| `RwLock<T>`                               | `std::shared_mutex` and `std::shared_lock`                                                                                                               |
+| `Arc<T>`, `Arc<Mutex<T>>`                 | `std::shared_ptr<const T>`, a `std::shared_ptr` to a locked class                                                                                        |
+| `static`, `thread_local!`                 | a shareable or `const` global, `thread_local`                                                                                                            |
+| `Box<dyn FnOnce() + Send>`                | a `std::function<void()> WEAVEC_SENDS` parameter                                                                                                         |
+| `chunks_mut` over a slice                 | threads that write `v[i]` at their own loop index                                                                                                        |
 
 ## What the rules do not see
 
@@ -406,6 +676,6 @@ Each of these stops when it runs in the checked build (`-fweavec-safe-checks=ful
 - the address of a pointer parameter itself (`return &p;`), and views kept in a C array (`std::string_view parts[4]`; a `std::array` of them is followed);
 - a container's iterators passed to a standard algorithm the standard forbids them for (`v.assign(v.begin() + 1, v.end())`);
 - an index or an iterator out of range, a null `std::unique_ptr`, an empty `std::optional`;
-- globals that are not `const`, and data races.
+- races that are not data races (a check and an act in two locked calls), deadlock and lock order, and what code that is not safe does with threads or with what safe code shares.
 
 The [guarantees](/reference/guarantees/) page states exactly what holds, (X1) to (X6), and what it assumes of code that is not safe.

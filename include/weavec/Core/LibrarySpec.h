@@ -35,6 +35,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -219,6 +220,10 @@ struct LibraryEntry {
   /// either.
   bool exits = false;
   bool unwinds = false;
+  /// RFC 0046 §1: `spawns`, the call starts a thread; `unshared`, the
+  /// function keeps state of its own between calls (`strtok`, `localtime`).
+  bool spawns = false;
+  bool unshared = false;
   /// The line of `LibrarySpec.txt` the row starts on.
   unsigned line = 0;
 
@@ -265,17 +270,24 @@ public:
     return rows;
   }
 
-  /// RFC 0044 §2: whether the table has `class <qualified> : erased;`, a
-  /// class that can hold an object of a type its own type does not name.
-  [[nodiscard]] bool erasedClass(std::string_view qualified) const;
-  /// RFC 0044 §8: whether the table has `class <qualified> : shared;`, a
-  /// pointer whose object has other owners the holder does not see.
-  [[nodiscard]] bool sharedClass(std::string_view qualified) const;
-  /// RFC 0044 §5: whether the table has `class <qualified> :
-  /// resets(<member>)`: a member function that leaves the object in a known
-  /// state whatever it held (`clear`, `reset`), as an assignment does.
-  [[nodiscard]] bool resetsClass(std::string_view qualified,
+  /// RFC 0044 §2, §8, RFC 0046 §1: whether the table's row for the class
+  /// `qualified` has the clause `trait`: `erased` (it can hold an object of
+  /// a type its own type does not name), `shared` (a pointer whose object
+  /// has other owners), `thread`, `lock`, `guard` (exclusive or shared),
+  /// `guard(shared)`, `shareable`.
+  [[nodiscard]] bool classIs(std::string_view qualified,
+                             std::string_view trait) const;
+  /// RFC 0044 §5, RFC 0046 §5: whether the row for the class `qualified`
+  /// lists `member` under `clause`: `resets` (it leaves the object in a
+  /// known state, as an assignment does), `joins`, `detaches`, `locks`,
+  /// `makes` (it constructs an element from its arguments).
+  [[nodiscard]] bool classMember(std::string_view qualified,
+                                 std::string_view clause,
                                  std::string_view member) const;
+  /// RFC 0046 §1: whether the table has `function <qualified> : <trait>;`:
+  /// `spawns` (it starts a thread), `fresh` (its result shares no state).
+  [[nodiscard]] bool functionIs(std::string_view qualified,
+                                std::string_view trait) const;
 
   /// The row named exactly `name` (the first, if it has overloads).
   [[nodiscard]] const LibraryEntry *find(std::string_view name) const;
@@ -293,9 +305,11 @@ private:
   /// Alias name to (row index, index into the row's `chk`).
   std::map<std::string, std::pair<std::size_t, std::size_t>, std::less<>>
       byAlias;
-  std::set<std::string, std::less<>> erased;
-  std::set<std::string, std::less<>> shared;
-  std::set<std::pair<std::string, std::string>> resets;
+  /// (class, trait) and (class, clause, member) of the class rows;
+  /// (function, trait) of the function rows.
+  std::set<std::pair<std::string, std::string>> traits;
+  std::set<std::tuple<std::string, std::string, std::string>> members;
+  std::set<std::pair<std::string, std::string>> functions;
   friend class LibrarySpecParser;
 };
 

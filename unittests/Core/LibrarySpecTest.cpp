@@ -123,6 +123,10 @@ static std::string renderClauses(const LibraryEntry &entry) {
     clauses.emplace_back("exits");
   if (entry.unwinds)
     clauses.emplace_back("unwinds");
+  if (entry.spawns)
+    clauses.emplace_back("spawns");
+  if (entry.unshared)
+    clauses.emplace_back("unshared");
   for (const LibraryChk &alias : entry.chk) {
     std::string text = "chk=" + alias.name + ":";
     for (std::size_t i = 0; i < alias.argumentOf.size(); ++i) {
@@ -399,33 +403,96 @@ TEST(LibrarySpecTest, ClassRowsNameErasedTypes) {
   for (const char *name : {"std::function", "std::move_only_function",
                            "std::any", "std::packaged_task", "std::thread",
                            "std::jthread", "std::future", "std::shared_future"})
-    EXPECT_TRUE(table.erasedClass(name)) << name;
-  EXPECT_FALSE(table.erasedClass("std::vector"));
+    EXPECT_TRUE(table.classIs(name, "erased")) << name;
+  EXPECT_FALSE(table.classIs("std::vector", "erased"));
   std::string error;
   const auto parsed = LibrarySpec::parse("class a::b : erased;\n", error);
   ASSERT_TRUE(parsed.has_value()) << error;
-  EXPECT_TRUE(parsed->erasedClass("a::b"));
+  EXPECT_TRUE(parsed->classIs("a::b", "erased"));
   EXPECT_TRUE(parsed->entries().empty());
   EXPECT_FALSE(LibrarySpec::parse("class a : owned;\n", error).has_value());
   EXPECT_NE(error.find("expected 'erased'"), std::string::npos) << error;
   // RFC 0044 section 5: member functions that reset their object.
-  EXPECT_TRUE(table.resetsClass("std::vector", "clear"));
-  EXPECT_TRUE(table.resetsClass("std::basic_string", "assign"));
-  EXPECT_TRUE(table.resetsClass("std::unique_ptr", "reset"));
-  EXPECT_TRUE(table.resetsClass("std::any", "reset"));
-  EXPECT_FALSE(table.resetsClass("std::vector", "pop_back"));
-  EXPECT_FALSE(table.resetsClass("std::map", "assign"));
+  EXPECT_TRUE(table.classMember("std::vector", "resets", "clear"));
+  EXPECT_TRUE(table.classMember("std::basic_string", "resets", "assign"));
+  EXPECT_TRUE(table.classMember("std::unique_ptr", "resets", "reset"));
+  EXPECT_TRUE(table.classMember("std::any", "resets", "reset"));
+  EXPECT_FALSE(table.classMember("std::vector", "resets", "pop_back"));
+  EXPECT_FALSE(table.classMember("std::map", "resets", "assign"));
   // RFC 0044 section 8: shared pointers.
-  EXPECT_TRUE(table.sharedClass("std::shared_ptr"));
-  EXPECT_FALSE(table.sharedClass("std::unique_ptr"));
-  EXPECT_FALSE(table.sharedClass("std::expected"));
+  EXPECT_TRUE(table.classIs("std::shared_ptr", "shared"));
+  EXPECT_FALSE(table.classIs("std::unique_ptr", "shared"));
+  EXPECT_FALSE(table.classIs("std::expected", "shared"));
   const auto both =
       LibrarySpec::parse("class a : erased, shared, resets(f, g);\n", error);
   ASSERT_TRUE(both.has_value()) << error;
-  EXPECT_TRUE(both->sharedClass("a"));
-  EXPECT_TRUE(both->erasedClass("a"));
-  EXPECT_TRUE(both->resetsClass("a", "g"));
-  EXPECT_FALSE(both->resetsClass("a", "h"));
+  EXPECT_TRUE(both->classIs("a", "shared"));
+  EXPECT_TRUE(both->classIs("a", "erased"));
+  EXPECT_TRUE(both->classMember("a", "resets", "g"));
+  EXPECT_FALSE(both->classMember("a", "resets", "h"));
+}
+
+// RFC 0046 section 1: threads, locks, guards and what threads may share.
+TEST(LibrarySpecTest, ClassRowsNameThreadsAndLocks) {
+  const LibrarySpec &table = LibrarySpec::shipped();
+  for (const char *name : {"std::thread", "std::jthread"}) {
+    EXPECT_TRUE(table.classIs(name, "thread")) << name;
+    EXPECT_TRUE(table.classMember(name, "joins", "join")) << name;
+    EXPECT_TRUE(table.classMember(name, "detaches", "detach")) << name;
+  }
+  EXPECT_FALSE(table.classIs("std::future", "thread"));
+  EXPECT_TRUE(table.functionIs("std::async", "spawns"));
+  EXPECT_FALSE(table.functionIs("std::invoke", "spawns"));
+  EXPECT_TRUE(table.functionIs("std::make_shared", "fresh"));
+  EXPECT_FALSE(table.functionIs("std::get", "fresh"));
+  EXPECT_TRUE(table.classMember("std::vector", "makes", "emplace_back"));
+  EXPECT_FALSE(table.classMember("std::vector", "makes", "insert"));
+  for (const char *name : {"std::mutex", "std::timed_mutex",
+                           "std::shared_mutex", "std::shared_timed_mutex"})
+    EXPECT_TRUE(table.classIs(name, "lock")) << name;
+  EXPECT_FALSE(table.classIs("std::recursive_mutex", "lock"));
+  for (const char *name :
+       {"std::lock_guard", "std::scoped_lock", "std::unique_lock"}) {
+    EXPECT_TRUE(table.classIs(name, "guard")) << name;
+    EXPECT_FALSE(table.classIs(name, "guard(shared)")) << name;
+  }
+  EXPECT_TRUE(table.classIs("std::shared_lock", "guard(shared)"));
+  EXPECT_TRUE(table.classMember("std::unique_lock", "resets", "unlock"));
+  EXPECT_TRUE(table.classMember("std::unique_lock", "locks", "lock"));
+  EXPECT_FALSE(table.classMember("std::unique_lock", "locks", "try_lock"));
+  EXPECT_TRUE(table.classMember("std::future", "joins", "get"));
+  EXPECT_TRUE(table.classIs("std::enable_shared_from_this", "shareable"));
+  EXPECT_TRUE(table.classIs("std::execution::parallel_policy", "spawns"));
+  for (const char *name :
+       {"std::atomic", "std::atomic_flag", "std::condition_variable",
+        "std::condition_variable_any", "std::once_flag", "std::stop_source",
+        "std::stop_token", "std::latch", "std::barrier",
+        "std::counting_semaphore"})
+    EXPECT_TRUE(table.classIs(name, "shareable")) << name;
+  EXPECT_FALSE(table.classIs("std::vector", "shareable"));
+  std::string error;
+  const auto parsed =
+      LibrarySpec::parse("class a : thread, joins(j, k), detaches(d);\n"
+                         "class b : guard(shared), lock, shareable;\n"
+                         "function c::d : spawns;\n"
+                         "function c::e : fresh;\n"
+                         "f () -> int spawns unshared;\n",
+                         error);
+  ASSERT_TRUE(parsed.has_value()) << error;
+  EXPECT_TRUE(parsed->classMember("a", "joins", "k"));
+  EXPECT_TRUE(parsed->classIs("b", "guard"));
+  EXPECT_TRUE(parsed->classIs("b", "guard(shared)"));
+  EXPECT_TRUE(parsed->functionIs("c::d", "spawns"));
+  EXPECT_TRUE(parsed->functionIs("c::e", "fresh"));
+  EXPECT_FALSE(parsed->functionIs("c::e", "spawns"));
+  ASSERT_EQ(parsed->entries().size(), 1U);
+  EXPECT_TRUE(parsed->entries()[0].spawns);
+  EXPECT_TRUE(parsed->entries()[0].unshared);
+  EXPECT_FALSE(LibrarySpec::parse("function f : erased;\n", error));
+  EXPECT_NE(error.find("expected 'spawns' or 'fresh'"), std::string::npos)
+      << error;
+  EXPECT_FALSE(LibrarySpec::parse("class a : guard(exclusive);\n", error));
+  EXPECT_FALSE(LibrarySpec::parse("f () -> int spawns spawns;\n", error));
 }
 
 TEST(LibrarySpecTest, OverloadsFollowTheArity) {
@@ -592,9 +659,10 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
     {"strpbrk", "R scan=1, R str", "ptr", ""},
     {"strspn", "R scan=1, R str", "int", ""},
     {"strcspn", "R scan=1, R str", "int", ""},
-    {"strtok", "RW str nullable, R str", "ptr", ""},
+    {"strtok", "RW str nullable, R str", "ptr", "unshared"},
     {"strtok_r", "RW str nullable, R str, RW bytes=8", "ptr", ""},
     {"strsep", "RW, R str", "ptr", ""},
+    {"strerror", "int", "ptr", "unshared"},
     {"strerror_r", "int, W bytes=a2 nullable-if=a2, int", "ptr", ""},
     {"strerror_r#2", "int, W bytes=a2 nullable-if=a2, int", "int", ""},
     {"explicit_bzero", "W bytes=a1 nullable-if=a1, int", "void",
@@ -721,7 +789,7 @@ static constexpr auto StdioExpectations = std::to_array<Expectation>({
     {"remove", "R str", "int", ""},
     {"rename", "R str, R str", "int", ""},
     {"renameat", "int, R str, int, R str", "int", ""},
-    {"tmpnam", "W nullable", "ptr", ""},
+    {"tmpnam", "W nullable", "ptr", "unshared"},
     {"ctermid", "W nullable", "ptr", ""},
 });
 
@@ -747,10 +815,11 @@ static constexpr auto StdlibExpectations = std::to_array<Expectation>({
     {"strtoumax", "R str, W bytes=8 nullable, int", "int",
      "wrapper=strtoumax chk=__isoc23_strtoumax:0/1/2"},
     {"getenv", "R str nullable", "ptr", ""},
+    {"rand", "", "int", "unshared"},
     {"secure_getenv", "R str", "ptr", ""},
-    {"setenv", "R str nullable, R str, int", "int", ""},
-    {"unsetenv", "R str nullable", "int", ""},
-    {"putenv", "R str nullable", "int", ""},
+    {"setenv", "R str nullable, R str, int", "int", "unshared"},
+    {"unsetenv", "R str nullable", "int", "unshared"},
+    {"putenv", "R str nullable", "int", "unshared"},
     {"system", "R str nullable", "int", ""},
     {"qsort", "RW bytes=a1*a2 nullable-if=a1*a2, int, int, fn", "void", ""},
     {"qsort_r", "RW bytes=a1*a2 nullable-if=a1*a2, int, int, fn, none nullable",
@@ -893,10 +962,10 @@ static constexpr auto SystemExpectations = std::to_array<Expectation>({
     {"time", "W nullable", "int", ""},
     {"mktime", "RW", "int", ""},
     {"timegm", "RW", "int", ""},
-    {"asctime", "R", "ptr", ""},
-    {"ctime", "R", "ptr", ""},
-    {"gmtime", "R", "ptr", ""},
-    {"localtime", "R", "ptr", ""},
+    {"asctime", "R", "ptr", "unshared"},
+    {"ctime", "R", "ptr", "unshared"},
+    {"gmtime", "R", "ptr", "unshared"},
+    {"localtime", "R", "ptr", "unshared"},
     {"asctime_r", "R, W bytes=26", "ptr", ""},
     {"ctime_r", "R, W bytes=26", "ptr", ""},
     {"gmtime_r", "R, W", "ptr", "wrapper=gmtime_r"},
@@ -928,15 +997,15 @@ static constexpr auto SystemExpectations = std::to_array<Expectation>({
 
 // Users and groups, locales, iconv, paths, patterns and messages.
 static constexpr auto UsersExpectations = std::to_array<Expectation>({
-    {"getpwnam", "R str", "ptr", ""},
+    {"getpwnam", "R str", "ptr", "unshared"},
     {"getpwnam_r", "R str, W, W bytes=a3, int, W bytes=8", "int", ""},
     {"getpwuid_r", "int, W, W bytes=a3, int, W bytes=8", "int", ""},
-    {"getgrnam", "R str", "ptr", ""},
+    {"getgrnam", "R str", "ptr", "unshared"},
     {"getgrnam_r", "R str, W, W bytes=a3, int, W bytes=8", "int", ""},
     {"getgrgid_r", "int, W, W bytes=a3, int, W bytes=8", "int", ""},
     {"setgroups", "int, R bytes=a0*4 nullable-if=a0", "int", ""},
     {"initgroups", "R str, int", "int", ""},
-    {"setlocale", "int, R str nullable", "ptr", ""},
+    {"setlocale", "int, R str nullable", "ptr", "unshared"},
     {"newlocale", "int, R str nullable, none nullable reallocs", "ptr", ""},
     {"iconv_open", "R str, R str", "ptr", ""},
     {"iconv", "none, RW nullable, RW nullable, RW nullable, RW nullable", "int",
@@ -984,7 +1053,7 @@ static constexpr auto UsersExpectations = std::to_array<Expectation>({
 // <pthread.h>, <threads.h> (§5.3: thread starts and destructors are entry
 // points; once-routines run synchronously).
 static constexpr auto ThreadExpectations = std::to_array<Expectation>({
-    {"pthread_create", "W, R nullable, fn, none nullable", "int", ""},
+    {"pthread_create", "W, R nullable, fn, none nullable", "int", "spawns"},
     {"pthread_join", "other, W nullable", "int", ""},
     {"pthread_setcancelstate", "int, W nullable", "int", ""},
     {"pthread_setcanceltype", "int, W nullable", "int", ""},
@@ -1036,7 +1105,11 @@ static constexpr auto ThreadExpectations = std::to_array<Expectation>({
     {"pthread_setname_np", "other, R str", "int", ""},
     {"pthread_setname_np#2", "R str", "int", ""},
     {"pthread_getname_np", "other, W bytes=a2, int", "int", ""},
-    {"thrd_create", "W, fn, none nullable", "int", ""},
+    {"thrd_create", "W, fn, none nullable", "int", "spawns"},
+    {"dispatch_async", "none, none", "void", "spawns"},
+    {"dispatch_async_f", "none, none nullable, fn", "void", "spawns"},
+    {"dispatch_apply", "int, none, none", "void", "spawns"},
+    {"dispatch_apply_f", "int, none, none nullable, fn", "void", "spawns"},
     {"thrd_join", "other, W nullable", "int", ""},
     {"thrd_sleep", "R, W nullable", "int", ""},
     {"mtx_init", "W, int", "int", ""},
@@ -1152,10 +1225,10 @@ static constexpr auto NetworkExpectations = std::to_array<Expectation>({
      "R bytes=a1 nullable, int, W bytes=a3 nullable, int, W bytes=a5 nullable, "
      "int, int",
      "int", ""},
-    {"gethostbyname", "R str", "ptr", ""},
-    {"gethostbyname2", "R str, int", "ptr", ""},
-    {"gethostbyaddr", "R bytes=a1, int, int", "ptr", ""},
-    {"getservbyname", "R str, R str nullable", "ptr", ""},
+    {"gethostbyname", "R str", "ptr", "unshared"},
+    {"gethostbyname2", "R str, int", "ptr", "unshared"},
+    {"gethostbyaddr", "R bytes=a1, int, int", "ptr", "unshared"},
+    {"getservbyname", "R str, R str nullable", "ptr", "unshared"},
     {"getservbyport", "int, R str nullable", "ptr", ""},
     {"getprotobyname", "R str", "ptr", ""},
     {"herror", "R str nullable", "void", ""},

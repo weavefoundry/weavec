@@ -201,8 +201,8 @@ struct Cache {
     last = &local; // expected-error {{a borrow of 'local' is stored in 'this->last', which outlives it [weavec-safe:escape]}}
   }
 };
-std::string_view currentName;
-std::string ownedName;
+thread_local std::string_view currentName;
+thread_local std::string ownedName;
 void storeGlobalView(std::string_view s) {
   currentName = s; // expected-error {{a borrow is stored in the global 'currentName', which outlives every function [weavec-safe:escape]}}
 }

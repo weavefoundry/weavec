@@ -61,6 +61,8 @@ inline constexpr llvm::StringLiteral NullTerminatedOrNullAnnotation =
     "weavec.null_terminated_or_null";
 inline constexpr llvm::StringLiteral EscapesAnnotation = "weavec.escapes";
 inline constexpr llvm::StringLiteral BorrowedAnnotation = "weavec.borrowed";
+/// RFC 0046 §8: the function may hand the callable to another thread.
+inline constexpr llvm::StringLiteral SendsAnnotation = "weavec.sends";
 /// RFC 0043 §2: the one pointer responsible for releasing its block.
 inline constexpr llvm::StringLiteral OwnedAnnotation = "weavec.owned";
 /// RFC 0043 amendment: the function leaves every owner below the parameter
@@ -207,6 +209,11 @@ struct SafeUnit {
     unsigned line = 0;
     /// RFC 0043 §11: a parameter or the result is `WEAVEC_OWNED`.
     bool owns = false;
+    /// RFC 0046 §12: thread starts, lock or guard objects used, and a
+    /// WEAVEC_SENDS parameter.
+    unsigned starts = 0;
+    bool locks = false;
+    bool sends = false;
   };
   std::vector<Definition> definitions;
   /// RFC 0043 §11: each pointer field of the structs the unit defines
@@ -218,6 +225,9 @@ struct SafeUnit {
     std::string kind;
     std::string file;
     unsigned line = 0;
+    /// RFC 0046 §12: for `kind` `class`.
+    bool sendable = false;
+    bool shareable = false;
   };
   std::vector<Field> fields;
   /// RFC 0043 §9: a global owner that a safe function reads in place.

@@ -3,7 +3,7 @@
 
 Every example in docs/examples must compile. `weavec-cc` must compile
 lookup.c, record the guarded load of `table[i]` in the enforcement ledger
-(`weavec-ledger` version 7, RFC 0035 section 9, RFC 0039 section 8, RFC 0042 section 10, RFC 0043 section 11), link it, run it, and stop
+(`weavec-ledger` version 9, RFC 0035 section 9, RFC 0039 section 8, RFC 0042 section 10, RFC 0043 section 11, RFC 0046 section 12), link it, run it, and stop
 a negative index with an `index-out-of-bounds` report; and it must build
 vec.c and stop a read past its heap block with a `heap-buffer-overflow`
 report, its stack and its summary line (RFC 0035 section 5.3, RFC 0040
@@ -65,7 +65,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert enforcement_summary(compiled.stderr, "lookup.c"), "no summary line:\n" + compiled.stderr
 
     ledger = json.loads((ledgers / "lookup.o.ledger.json").read_text())
-    assert ledger["schema"] == "weavec-ledger" and ledger["version"] == 8, ledger
+    assert ledger["schema"] == "weavec-ledger" and ledger["version"] == 9, ledger
     rows = [row for unit in ledger["units"] for row in unit["rows"]
             if row["function"] == "lookup" and row["line"] == 8 and row["operation"] == "load"]
     assert rows, "no ledger row for the load of table[i]"
@@ -98,9 +98,16 @@ with tempfile.TemporaryDirectory() as temp:
     prelude = "".join(f"#include <{h}>\n" for h in
                       ("weavec.h", "stddef.h", "stdio.h", "stdlib.h", "string.h"))
     cxx_prelude = "".join(f"#include <{h}>\n" for h in (
-        "weavec.h", "algorithm", "cstdarg", "cstdio", "cstdlib", "cstring", "functional", "initializer_list", "map",
-        "memory", "optional", "span", "string", "string_view", "unordered_map", "utility", "variant", "vector"))
+        "weavec.h", "algorithm", "atomic", "condition_variable", "cstdarg", "deque", "cstdio", "cstdlib", "cstring",
+        "functional", "future", "initializer_list", "map", "memory", "mutex", "optional", "shared_mutex", "span",
+        "string", "string_view", "thread", "unordered_map", "utility", "variant", "vector"))
     weavec_cxx = Path(weavec_cc).with_name("weavec-c++")
+    # RFC 0046: a libc++ older than LLVM 20 (the Xcode 16 SDK's) declares
+    # std::jthread only under _LIBCPP_ENABLE_EXPERIMENTAL.
+    probe = temp / "jthread.cpp"
+    probe.write_text("#include <thread>\nstd::jthread t;\n")
+    threads = next((flags for flags in ([], ["-D_LIBCPP_ENABLE_EXPERIMENTAL"])
+                    if run([weavec_cxx, "-std=c++20", "-fsyntax-only", probe, *flags]).returncode == 0), [])
     checked = 0
     checked_cxx = 0
     for section in rules.read_text().split("\n## ")[1:]:
@@ -119,7 +126,7 @@ with tempfile.TemporaryDirectory() as temp:
         for number, match in enumerate(re.finditer(r"```cpp (accepted|rejected)\n(.*?)```", section, re.S)):
             source = temp / f"rule-{rule}-{number}.cpp"
             source.write_text(cxx_prelude + match.group(2))
-            compiled = run([weavec_cxx, "-std=c++20", "-fsyntax-only", "-w", "-fweavec-safe", source])
+            compiled = run([weavec_cxx, "-std=c++20", *threads, "-fsyntax-only", "-w", "-fweavec-safe", source])
             if match.group(1) == "accepted":
                 assert compiled.returncode == 0, f"{rule} accepted C++ example {number}:\n{compiled.stderr}"
             else:
@@ -135,7 +142,7 @@ with tempfile.TemporaryDirectory() as temp:
     for number, block in enumerate(blocks):
         source = temp / f"guide-{number}.cpp"
         source.write_text(cxx_prelude + block)
-        compiled = run([weavec_cxx, "-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-fweavec-safe",
+        compiled = run([weavec_cxx, "-std=c++20", *threads, "-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-fweavec-safe",
                         source])
         assert compiled.returncode == 0, f"the C++ guide's block {number}:\n{compiled.stderr}"
 

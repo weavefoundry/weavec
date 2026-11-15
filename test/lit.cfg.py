@@ -7,11 +7,13 @@ substitutions:
   %weavec_cc      the weavec-cc compiler driver
   %weavec_cxx     weavec-c++, its C++ driver (RFC 0039)
   %resource_dir   directory containing weavec.h
+  %cxx_threads    the flags under which the C++ library has std::jthread
   FileCheck, not, count   LLVM test utilities
 """
 
 import os
 import platform
+import subprocess
 
 import lit.formats
 
@@ -69,3 +71,21 @@ if config.sanitizers:
 
 major = config.llvm_version.split(".")[0]
 config.available_features.add(f"llvm-{major}")
+
+# RFC 0046: the thread tests use std::jthread. A libc++ older than LLVM 20
+# (the Xcode 16 SDK's) declares it only under _LIBCPP_ENABLE_EXPERIMENTAL;
+# `%cxx_threads` names that macro there and nothing elsewhere.
+def jthread_flags():
+    probe = "#include <thread>\nstd::jthread t;\n"
+    for flags in ([], ["-D_LIBCPP_ENABLE_EXPERIMENTAL"]):
+        compiled = subprocess.run(
+            [os.path.join(config.weavec_tools_dir, "weavec-c++"), "-std=c++20", "-fsyntax-only",
+             "-x", "c++", "-", *flags],
+            input=probe, capture_output=True, text=True, check=False,
+        )
+        if compiled.returncode == 0:
+            return " ".join(flags)
+    return ""
+
+
+config.substitutions.append(("%cxx_threads", jthread_flags()))

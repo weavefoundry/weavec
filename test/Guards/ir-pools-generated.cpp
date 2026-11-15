@@ -1,5 +1,5 @@
 // RFC 0045 §3: the functions the compiler makes of a fast unit's own code
-// (here the destructor of a global array, into which the guarded class's
+// (here the destructor of a `thread_local` array, into which the guarded class's
 // destructor is inlined) release as that code does: a guarded class's
 // `delete` keeps its block out of the pools wherever it runs. Nothing in
 // this unit releases from safe code, so no site carries the flag (16).
@@ -12,7 +12,7 @@ struct WEAVEC_GUARDED Holder {
   ~Holder() { delete p; }
 };
 
-Holder table[4];
+thread_local Holder table[4];
 
 // CHECK-NOT: i16 16 }
 // CHECK-LABEL: define internal void @__cxx_global_array_dtor(

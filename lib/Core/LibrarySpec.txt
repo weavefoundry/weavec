@@ -141,7 +141,12 @@
 #
 # CLASSES
 #   entry    ::= 'class' NAME { '::' NAME } ':' cclause { ',' cclause } ';'
+#              | 'function' NAME { '::' NAME } ':' ( 'spawns' | 'fresh' ) ';'
 #   cclause  ::= 'erased' | 'shared' | 'resets' '(' NAME { ',' NAME } ')'
+#              | 'thread' | 'joins' '(' NAME { ',' NAME } ')'
+#              | 'detaches' '(' NAME { ',' NAME } ')' | 'locks' '(' NAME { ',' NAME } ')'
+#              | 'lock' | 'guard' [ '(' 'shared' ')' ] | 'shareable'
+#              | 'spawns' | 'makes' '(' NAME { ',' NAME } ')'
 #   RFC 0044. erased (section 2): a C++ class that can hold an object of a
 #   type its own type does not name (a callable, a value of any type);
 #   Safe C++ treats one made from a view as a view. shared (section 8): a
@@ -151,6 +156,22 @@
 #   held, so that a moved-from object may be used again after one, as
 #   after an assignment. Inline namespaces are not written (std::function,
 #   not std::__1::function).
+#   RFC 0046. thread: an object of the class runs its callable on another
+#   thread, which joins(...) waits for and detaches(...) lets go. lock: a
+#   mutex. guard: an object that holds a lock from its construction until
+#   it is destroyed or reset; guard(shared) holds it to read; locks(...),
+#   the member functions that take it again after a reset. shareable:
+#   two threads may use one object of the class at once (an atomic, a
+#   condition variable). spawns, on a class: an argument of it makes a
+#   library function run its callable on several threads at once (an
+#   execution policy). makes(...): the member functions of a container
+#   that construct an element from their arguments (emplace_back), which
+#   start a thread in a container of thread objects. function NAME :
+#   spawns: a library function that runs a callable on another thread
+#   (std::async); fresh: one whose result shares its object with no other
+#   handle (std::make_shared).
+#   Row clauses spawns (the C function starts a thread) and unshared (it
+#   keeps state of its own between calls) are RFC 0046's too.
 #
 # OVERLOADS
 #   A name may have several rows; a call uses the first whose arity it
@@ -296,10 +317,12 @@ strcasestr (r:scan(strlen(a1)), r:str) -> ptr;
 strpbrk (r:scan, r:str) -> ptr;
 strspn (r:scan, r:str) -> int;
 strcspn (r:scan, r:str) -> int;
-strtok (rw:str:null-ok, r:str) -> ptr;
+strtok (rw:str:null-ok, r:str) -> ptr unshared;
 strtok_r (rw:str:null-ok, r:str, rw:bytes(8)) -> ptr;
 strsep (rw, r:str) -> ptr;
 # GNU: the message is in buf or in static storage. XSI: an int result.
+# RFC 0046 section 1: strerror's result is a buffer every caller shares.
+strerror (int) -> ptr unshared;
 strerror_r (int, w:bytes(a2):null-if-zero(a2), int) -> ptr;
 strerror_r (int, w:bytes(a2):null-if-zero(a2), int) -> int;
 explicit_bzero (w:bytes(a1):null-if-zero(a1), int) -> void \
@@ -420,7 +443,7 @@ vsscanf (r:str, r:str, other) -> int scanf(1,2) wrapper(vsscanf) \
 remove (r:str) -> int;
 rename (r:str, r:str) -> int;
 renameat (int, r:str, int, r:str) -> int;
-tmpnam (w:null-ok) -> ptr;
+tmpnam (w:null-ok) -> ptr unshared;
 ctermid (w:null-ok) -> ptr;
 
 #============================================================================
@@ -445,11 +468,13 @@ strtod (r:str, w:null-ok:bytes(8)) -> int wrapper(strtod);
 strtof (r:str, w:null-ok:bytes(8)) -> int wrapper(strtof);
 strtold (r:str, w:null-ok:bytes(8)) -> int wrapper(strtold);
 getenv (r:str:null-ok) -> ptr;
+# RFC 0046 section 1: one generator every caller shares.
+rand () -> int unshared;
 secure_getenv (r:str) -> ptr;
-setenv (r:str:null-ok, r:str, int) -> int;
-unsetenv (r:str:null-ok) -> int;
+setenv (r:str:null-ok, r:str, int) -> int unshared;
+unsetenv (r:str:null-ok) -> int unshared;
 # The string itself becomes part of the environment.
-putenv (r:str:null-ok) -> int;
+putenv (r:str:null-ok) -> int unshared;
 system (r:str:null-ok) -> int;
 qsort (rw:bytes(a1*a2):null-if-zero(a1*a2), int, int, fn) -> void;
 # glibc (and C2y): compar(a, b, arg). BSD and macOS: compar(thunk, a, b).
@@ -612,10 +637,10 @@ time (w:null-ok) -> int;
 mktime (rw) -> int;
 timegm (rw) -> int;
 # asctime and ctime share one buffer, gmtime and localtime one struct tm.
-asctime (r) -> ptr;
-ctime (r) -> ptr;
-gmtime (r) -> ptr;
-localtime (r) -> ptr;
+asctime (r) -> ptr unshared;
+ctime (r) -> ptr unshared;
+gmtime (r) -> ptr unshared;
+localtime (r) -> ptr unshared;
 asctime_r (r, w:bytes(26)) -> ptr;
 ctime_r (r, w:bytes(26)) -> ptr;
 gmtime_r (r, w) -> ptr wrapper(gmtime_r);
@@ -656,18 +681,18 @@ dladdr (none:null-ok, w) -> int;
 
 # The non-reentrant lookups return static storage that the next lookup of
 # the same database overwrites, and glibc may reallocate it.
-getpwnam (r:str) -> ptr;
+getpwnam (r:str) -> ptr unshared;
 getpwnam_r (r:str, w, w:bytes(a3), int, w:bytes(8)) -> int;
 getpwuid_r (int, w, w:bytes(a3), int, w:bytes(8)) -> int;
 
-getgrnam (r:str) -> ptr;
+getgrnam (r:str) -> ptr unshared;
 getgrnam_r (r:str, w, w:bytes(a3), int, w:bytes(8)) -> int;
 getgrgid_r (int, w, w:bytes(a3), int, w:bytes(8)) -> int;
 setgroups (int, r:bytes(a0*4):null-if-zero(a0)) -> int;
 initgroups (r:str, int) -> int;
 
 # The previous result's storage is freed by glibc when the locale changes.
-setlocale (int, r:str:null-ok) -> ptr;
+setlocale (int, r:str:null-ok) -> ptr unshared;
 # The base locale is reused for the result, or freed, on success only.
 newlocale (int, r:str:null-ok, none:null-ok:realloc) -> ptr;
 
@@ -730,7 +755,7 @@ cfsetospeed (w, int) -> int;
 #============================================================================
 
 # pthread_t, thrd_t: an integer on glibc, a pointer on macOS ('other').
-pthread_create (w, r:null-ok, fn, none:null-ok) -> int;
+pthread_create (w, r:null-ok, fn, none:null-ok) -> int spawns;
 pthread_join (other, w:null-ok) -> int;
 pthread_setcancelstate (int, w:null-ok) -> int;
 pthread_setcanceltype (int, w:null-ok) -> int;
@@ -786,7 +811,12 @@ pthread_setname_np (other, r:str) -> int;
 pthread_setname_np (r:str) -> int;
 pthread_getname_np (other, w:bytes(a2), int) -> int;
 
-thrd_create (w, fn, none:null-ok) -> int;
+thrd_create (w, fn, none:null-ok) -> int spawns;
+# libdispatch (Darwin): the queue and the block or context are not read here.
+dispatch_async (none, none) -> void spawns;
+dispatch_async_f (none, none:null-ok, fn) -> void spawns;
+dispatch_apply (int, none, none) -> void spawns;
+dispatch_apply_f (int, none, none:null-ok, fn) -> void spawns;
 thrd_join (other, w:null-ok) -> int;
 thrd_sleep (r, w:null-ok) -> int;
 mtx_init (w, int) -> int;
@@ -903,10 +933,10 @@ getpeername (int, w, rw) -> int wrapper(getpeername);
 getaddrinfo (r:str:null-ok, r:str:null-ok, r:null-ok, w:bytes(8)) -> int;
 getnameinfo (r:bytes(a1):null-ok, int, w:bytes(a3):null-ok, int, \
     w:bytes(a5):null-ok, int, int) -> int;
-gethostbyname (r:str) -> ptr;
-gethostbyname2 (r:str, int) -> ptr;
-gethostbyaddr (r:bytes(a1), int, int) -> ptr;
-getservbyname (r:str, r:str:null-ok) -> ptr;
+gethostbyname (r:str) -> ptr unshared;
+gethostbyname2 (r:str, int) -> ptr unshared;
+gethostbyaddr (r:bytes(a1), int, int) -> ptr unshared;
+getservbyname (r:str, r:str:null-ok) -> ptr unshared;
 getservbyport (int, r:str:null-ok) -> ptr;
 getprotobyname (r:str) -> ptr;
 herror (r:str:null-ok) -> void;
@@ -1333,29 +1363,68 @@ class std::function : erased;
 class std::move_only_function : erased;
 class std::any : erased, resets(reset);
 class std::packaged_task : erased;
-class std::thread : erased;
-class std::future : erased;
-class std::shared_future : erased;
-class std::jthread : erased;
+class std::thread : erased, thread, joins(join), detaches(detach);
+class std::future : erased, joins(get, wait);
+class std::shared_future : erased, joins(get, wait);
+class std::jthread : erased, thread, joins(join), detaches(detach);
 
 #============================================================================
 # C++ member functions that reset their object (RFC 0044 section 5)
 #============================================================================
 
 class std::basic_string : resets(clear, assign);
-class std::vector : resets(clear, assign);
-class std::deque : resets(clear, assign);
-class std::list : resets(clear, assign);
-class std::forward_list : resets(clear, assign);
-class std::map : resets(clear);
+class std::vector : resets(clear, assign), makes(emplace_back);
+class std::deque : resets(clear, assign), makes(emplace_back, emplace_front);
+class std::list : resets(clear, assign), makes(emplace_back, emplace_front);
+class std::forward_list : resets(clear, assign), makes(emplace_front);
+class std::map : resets(clear), makes(emplace, try_emplace);
 class std::multimap : resets(clear);
 class std::set : resets(clear);
 class std::multiset : resets(clear);
-class std::unordered_map : resets(clear);
+class std::unordered_map : resets(clear), makes(emplace, try_emplace);
 class std::unordered_multimap : resets(clear);
 class std::unordered_set : resets(clear);
 class std::unordered_multiset : resets(clear);
 class std::unique_ptr : resets(reset);
 class std::shared_ptr : shared, resets(reset);
 class std::weak_ptr : resets(reset);
-class std::optional : resets(reset);
+class std::optional : resets(reset), makes(emplace);
+
+#============================================================================
+# C++ threads, locks and what threads may share (RFC 0046 section 1)
+#============================================================================
+
+function std::async : spawns;
+function std::make_shared : fresh;
+function std::allocate_shared : fresh;
+function std::make_shared_for_overwrite : fresh;
+function std::allocate_shared_for_overwrite : fresh;
+class std::mutex : lock;
+class std::timed_mutex : lock;
+class std::shared_mutex : lock;
+class std::shared_timed_mutex : lock;
+class std::lock_guard : guard;
+class std::scoped_lock : guard;
+class std::unique_lock : guard, resets(unlock, release), locks(lock);
+class std::shared_lock : guard(shared), resets(unlock, release), locks(lock);
+class std::atomic : shareable;
+class std::atomic_ref : shareable;
+class std::atomic_flag : shareable;
+class std::condition_variable : shareable;
+class std::condition_variable_any : shareable;
+class std::once_flag : shareable;
+class std::stop_source : shareable;
+class std::stop_token : shareable;
+class std::latch : shareable;
+class std::barrier : shareable;
+class std::counting_semaphore : shareable;
+# Written when the object is made; shared_from_this() only reads it.
+class std::enable_shared_from_this : shareable;
+# An argument of these classes makes an algorithm run its callable on
+# several threads at once (libc++, then libstdc++'s spelling).
+class std::execution::parallel_policy : spawns;
+class std::execution::parallel_unsequenced_policy : spawns;
+class std::execution::unsequenced_policy : spawns;
+class __pstl::execution::parallel_policy : spawns;
+class __pstl::execution::parallel_unsequenced_policy : spawns;
+class __pstl::execution::unsequenced_policy : spawns;

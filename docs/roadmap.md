@@ -4,7 +4,7 @@ Rough ordering of the major pieces of work. This page is the one-screen view;
 the design detail and the reasoning live in the [RFCs](rfcs/README.md) each
 milestone links to. Everything here is subject to change as we learn.
 
-The design today is [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
+The design today is [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
 sweep and colors of [RFC 0037](rfcs/0037-complete-sweep-and-colors.md), the
 reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
 and the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
@@ -12,43 +12,35 @@ milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
-## Now: RFC 0044 — Safe C++
+## Now: RFC 0046 — Thread safety
 
-Design: [RFC 0044 — Safe C++](rfcs/0044-safe-cxx.md) (Accepted, built; its
-_Implementation amendments_ and _Measured gates_ say how). Safe C gives
-an agent compile errors for bounds, conversions and ownership; C++, the
-language a rewrite would more likely target, has only the run-time half:
-`weavec-c++` stops each of twenty probe bugs when a test reaches it and
-rejects none when it compiles, and `-fweavec-safe` is an error in C++. RFC
-0044 makes the flag work: safe C++ functions are checked against local
-rules over owners (objects), borrows and views (references, iterators,
-`std::string_view`, types that hold them) and references (pointer members,
-left to the guards), rejecting a use after `std::move`, a borrow used after
-its container changed or died, a view returned or stored past what it
-points into, and raw `new`, `delete` and pointer arithmetic. Nothing at run
-time changes: safe C++ is a subset, costs what guarded C++ costs until a
-later RFC spends the rules, does not change what an object owns through a
-raw pointer member, and trusts the standard library. The stages:
+Design: [RFC 0046 — Thread safety](rfcs/0046-thread-safety.md) (Accepted,
+built; its _Implementation amendments_ and _Measured gates_ say how). Five
+RFCs gave an agent Rust's loop for memory errors and assumed threads away;
+a safe C++ program with a data race compiled, and in the fast build five of
+twelve seeded races ran clean. RFC 0046 makes Safe C++ free of data races
+by rules alone: kinds *sendable*, *shareable* and *frozen*; what a thread
+start gives a thread is checked; a local borrowed by a thread is lent to
+it; a class's one mutex guards its other members; every global is
+shareable, `const` or `thread_local`. Nothing at run time changes. Safe C
+gets none of it (a safe C function may not start a thread).
 
-- [x] **The RFC**, accepted as drafted on 2026-11-12.
-- [x] **S0 Probes**: twenty bugs, Clang's lifetime analysis as a
-      comparison, the CFG with destructors, temporaries and exceptional
-      edges. The paper review was replaced by the frozen sets below.
-- [x] **S1 The flag in C++**, `WEAVEC_SAFE` on classes, the rule `cxx`
-      deleted, the ledger (version 7) and the audit (version 3). The
-      ownership checker was not split (amendment 1).
-- [x] **S2 Expression rules**; **S3 Kinds of types and moves**;
-      **S4 Borrows**; **S5 Views**.
-- [x] **S6 Explanations and the guide.**
-- [x] **S7 on darwin-arm64**: 82 of 110 independently written temporal
-      bugs stop the compile for the bug (14 more stop as their fixed twins
-      do, 14 compile and stop when they run); 86 of 90 correct files
-      compile unchanged; two ports (an LRU cache, Python's `json`) with
-      every function safe, in 1.2 to 1.4 times a Rust agent's time.
-- [ ] **Next**: conversions of existing C++ projects (gate G5), the gates
-      on linux-aarch64 and linux-x86_64, and the RFC that spends the rules
-      (safe C++ costs what guarded C++ does: 1.45 times the reference on
-      the LRU port, 3.1 on the `json` port).
+- [x] **The RFC**, accepted as drafted on 2026-11-14.
+- [x] **S0**: sixty seeded races with fixed twins and forty correct
+      programs, written by an agent that had not seen the RFC and confirmed
+      under ThreadSanitizer.
+- [x] **S1 to S6**: the table's clauses, the kinds, thread starts and
+      globals, loans and thread lifetime, locks, thread members,
+      `WEAVEC_SENDS`, the `const` path, the ledger (version 9), the audit
+      (version 5), the rules' pages and the guide's "Threads".
+- [x] **S7 on darwin-arm64**: all fifteen probes and all sixty seeded
+      races stop the compile; 32 of 40 correct programs compile unchanged;
+      28 of 60 fixed twins are rejected (gate G3 allows 12; the causes are
+      listed in the RFC); objects identical with the rules off; compile
+      time at most 1.03 times.
+- [ ] **Next**: the fixed twins' causes (a lock beside its data outside a
+      class, pools that wait for idle), the gates in the Linux container,
+      a run-time backstop for the rules in the checked build.
 
 ## Now: RFC 0043 — Ownership
 
@@ -288,6 +280,13 @@ analysis ledger.
 - Concurrency safety beyond assumption A3 (data races between a guard and its access).
 
 ## History
+
+- **RFC 0045 — Type-stable memory** (2026-11-14): a safe unit's blocks are
+  reused at once by their own type; believed references and trusted
+  standard-library clones; the checked mode keeps every guard.
+- **RFC 0044 — Safe C++** (2026-11-13): owners, borrows, views and
+  references; `owner-moved`, `stale-borrow`, `call-alias`, `owner-path`,
+  `escape`; 82 of 110 seeded temporal bugs stop the compile.
 
 The milestones that built the model, the analysis and the guards. RFC 0036
 deletes the analysis and marks the RFCs that specified it (0001–0017, 0031) Superseded; they stay as the record of what was built and measured.
