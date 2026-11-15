@@ -279,13 +279,15 @@ public:
                              std::string_view trait) const;
   /// RFC 0044 §5, RFC 0046 §5: whether the row for the class `qualified`
   /// lists `member` under `clause`: `resets` (it leaves the object in a
-  /// known state, as an assignment does), `joins`, `detaches`.
+  /// known state, as an assignment does), `joins`, `detaches`, `locks`,
+  /// `makes` (it constructs an element from its arguments).
   [[nodiscard]] bool classMember(std::string_view qualified,
                                  std::string_view clause,
                                  std::string_view member) const;
-  /// RFC 0046 §1: whether the table has `function <qualified> : spawns;`,
-  /// a library function that starts a thread.
-  [[nodiscard]] bool spawnsFunction(std::string_view qualified) const;
+  /// RFC 0046 §1: whether the table has `function <qualified> : <trait>;`:
+  /// `spawns` (it starts a thread), `fresh` (its result shares no state).
+  [[nodiscard]] bool functionIs(std::string_view qualified,
+                                std::string_view trait) const;
 
   /// The row named exactly `name` (the first, if it has overloads).
   [[nodiscard]] const LibraryEntry *find(std::string_view name) const;
@@ -303,11 +305,11 @@ private:
   /// Alias name to (row index, index into the row's `chk`).
   std::map<std::string, std::pair<std::size_t, std::size_t>, std::less<>>
       byAlias;
-  /// (class, trait) and (class, clause, member) of the class rows; the
-  /// `spawns` functions.
+  /// (class, trait) and (class, clause, member) of the class rows;
+  /// (function, trait) of the function rows.
   std::set<std::pair<std::string, std::string>> traits;
   std::set<std::tuple<std::string, std::string, std::string>> members;
-  std::set<std::string, std::less<>> spawning;
+  std::set<std::pair<std::string, std::string>> functions;
   friend class LibrarySpecParser;
 };
 

@@ -104,6 +104,15 @@ void slotsStepped() {
     i = i % 2;
   }
 }
+void slotsStepBy(int step) {
+  std::vector<int> out(8);
+  std::vector<std::jthread> pool;
+  for (int i = 0; i < 8; i += 2)
+    pool.emplace_back([&out, i] { out[i] = 1; });
+  // A step that may be zero lends one element to every thread.
+  for (int i = 0; i < 8; i += step)
+    pool.emplace_back([&out, i] { out[i] = 2; }); // expected-error {{'out' is used while the thread 'pool' may be changing it [weavec-safe:thread-lent]}}
+}
 void slotsInner() {
   std::vector<int> out(4);
   std::vector<std::jthread> pool;

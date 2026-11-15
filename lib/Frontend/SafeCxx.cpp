@@ -585,8 +585,8 @@ private:
   }
 
   /// Amendment: a handle no other handle shares: what a library function
-  /// that is given no shared pointer returns (`std::make_shared<T>`), or a
-  /// local made so, moved, and otherwise only dereferenced.
+  /// the table calls `fresh` returns (`std::make_shared<T>`), or a local
+  /// made so, moved, and otherwise only dereferenced.
   [[nodiscard]] bool fresh(const clang::Expr *from) {
     from = from->IgnoreImplicit();
     if (const auto *call = llvm::dyn_cast<clang::CallExpr>(from)) {
@@ -603,12 +603,8 @@ private:
                onlyDereferenced(*local, *named);
       }
       return callee != nullptr && isLibrary(*callee) &&
-             !llvm::isa<clang::CXXMethodDecl>(callee) &&
-             llvm::none_of(call->arguments(), [](const clang::Expr *argument) {
-               return CxxKinds::shared(argument->getType()
-                                           .getNonReferenceType()
-                                           ->getAsCXXRecordDecl());
-             });
+             core::LibrarySpec::shipped().functionIs(
+                 CxxKinds::qualifiedName(*callee), "fresh");
     }
     return false;
   }
@@ -652,13 +648,30 @@ public:
         globals.contains(canonical))
       return;
     const clang::QualType type = variable.getType();
-    // A `const` global whose value is a constant points only at constants
-    // and at other globals, which this rule checks in turn.
-    if ((type.isConstQualified() &&
-         (kinds.frozen(type) || (variable.hasConstantInitialization() &&
-                                 !kinds.holdsMutable(type)))) ||
-        kinds.shareable(type))
+    if (kinds.shareable(type) ||
+        (type.isConstQualified() && kinds.frozen(type)))
       return;
+    // A `const` global whose value is a constant points only at constants
+    // and at other globals: the unit's are checked in turn, and one defined
+    // elsewhere is checked here, as if safe code named it.
+    if (type.isConstQualified() && variable.hasConstantInitialization() &&
+        !kinds.holdsMutable(type)) {
+      const auto visit = [&](const clang::Stmt *statement,
+                             const auto &self) -> void {
+        if (statement == nullptr)
+          return;
+        if (const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(statement))
+          if (const auto *other =
+                  llvm::dyn_cast<clang::VarDecl>(named->getDecl());
+              other != nullptr && other->getDefinition() == nullptr &&
+              !hasAnnotate(*other, GuardedAnnotation))
+            global(*other, at);
+        for (const clang::Stmt *child : statement->children())
+          self(child, self);
+      };
+      visit(variable.getAnyInitializer(), visit);
+      return;
+    }
     globals.insert(canonical);
     report(at, rule::ThreadShare,
            "every thread can reach the global '" + variable.getNameAsString() +
@@ -1074,39 +1087,21 @@ private:
                            const auto &self) -> void {
       if (statement == nullptr)
         return;
-      if (const auto *construct =
-              llvm::dyn_cast<clang::CXXConstructExpr>(statement)) {
-        if (CxxKinds::threadClass(construct->getType()) &&
-            construct->getNumArgs() != 0 &&
-            !CxxKinds::threadClass(construct->getArg(0)->getType()))
+      if (const auto *expression = llvm::dyn_cast<clang::Expr>(statement)) {
+        definition.locks |= CxxKinds::lockClass(expression->getType()) ||
+                            CxxKinds::guardClass(expression->getType());
+        if (kinds.startOf(*expression))
           ++definition.starts;
-        definition.locks |= CxxKinds::guardClass(construct->getType());
-      } else if (const auto *call =
-                     llvm::dyn_cast<clang::CallExpr>(statement)) {
-        // A container of thread objects that makes one (`emplace_back`).
-        if (const auto *member = llvm::dyn_cast<clang::CXXMemberCallExpr>(call);
-            member != nullptr && member->getMethodDecl() != nullptr &&
-            !member->getMethodDecl()->isConst() && call->getNumArgs() != 0 &&
-            isLibrary(*member->getMethodDecl()) &&
-            !CxxKinds::threadClass(
-                member->getImplicitObjectArgument()->getType()) &&
-            kinds.holdsThread(member->getImplicitObjectArgument()->getType()) &&
-            !kinds.holdsThread(call->getArg(0)->getType()))
-          ++definition.starts;
-        if (const clang::FunctionDecl *callee = call->getDirectCallee();
-            callee != nullptr && callee->getIdentifier() != nullptr) {
-          const auto row = core::LibrarySpec::shipped().lookup(
-              callee->getName().str(), call->getNumArgs());
-          if ((isLibrary(*callee) &&
-               core::LibrarySpec::shipped().spawnsFunction(
-                   CxxKinds::qualifiedName(*callee))) ||
-              (callee->isExternC() && row.has_value() && row->entry->spawns))
-            ++definition.starts;
-        }
-      } else if (const auto *expression =
-                     llvm::dyn_cast<clang::Expr>(statement)) {
-        definition.locks |= CxxKinds::lockClass(expression->getType());
       }
+      // A C function that starts a thread (`pthread_create`).
+      if (const auto *call = llvm::dyn_cast<clang::CallExpr>(statement))
+        if (const clang::FunctionDecl *callee = call->getDirectCallee();
+            callee != nullptr && callee->isExternC() &&
+            callee->getIdentifier() != nullptr)
+          if (const auto row = core::LibrarySpec::shipped().lookup(
+                  callee->getName().str(), call->getNumArgs());
+              row.has_value() && row->entry->spawns)
+            ++definition.starts;
       for (const clang::Stmt *child : statement->children())
         self(child, self);
     };
@@ -1256,6 +1251,7 @@ private:
   /// function names, which it trusts to be used as safe code would.
   void threadGlobals(const clang::FunctionDecl &function) {
     llvm::DenseSet<const clang::VarDecl *> seen;
+    llvm::DenseSet<const clang::VarDecl *> followed;
     const auto visit = [&](const clang::Stmt *statement,
                            const auto &self) -> void {
       if (statement == nullptr)
@@ -1283,6 +1279,14 @@ private:
                                  .sendable = false,
                                  .shareable = false});
         }
+      // What a `const` global points at is reached through it.
+      if (const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(statement))
+        if (const auto *variable =
+                llvm::dyn_cast<clang::VarDecl>(named->getDecl());
+            variable != nullptr && variable->hasGlobalStorage() &&
+            variable->getType().isConstQualified() &&
+            followed.insert(variable->getCanonicalDecl()).second)
+          self(variable->getAnyInitializer(), self);
       for (const clang::Stmt *child : statement->children())
         self(child, self);
     };

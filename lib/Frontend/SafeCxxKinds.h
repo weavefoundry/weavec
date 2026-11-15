@@ -39,6 +39,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <optional>
 #include <string>
 
 namespace weavec::frontend {
@@ -133,6 +134,46 @@ public:
                });
   }
 
+  /// §3: the thread start `expression` is, with what it gives the thread:
+  /// a thread object made from a callable, a `spawns` function, or a
+  /// `makes` member of a container of thread objects (`emplace_back`).
+  [[nodiscard]] std::optional<llvm::SmallVector<const clang::Expr *, 4>>
+  startOf(const clang::Expr &expression) {
+    llvm::SmallVector<const clang::Expr *, 4> crossing;
+    if (const auto *construct =
+            llvm::dyn_cast<clang::CXXConstructExpr>(&expression)) {
+      if (!threadClass(construct->getType()) || construct->getNumArgs() == 0 ||
+          threadClass(construct->getArg(0)->getType()))
+        return std::nullopt;
+      crossing.append(construct->arg_begin(), construct->arg_end());
+      return crossing;
+    }
+    const auto *call = llvm::dyn_cast<clang::CallExpr>(&expression);
+    const clang::FunctionDecl *callee =
+        call == nullptr ? nullptr : call->getDirectCallee();
+    if (callee == nullptr || !isLibrary(*callee))
+      return std::nullopt;
+    const auto *member = llvm::dyn_cast<clang::CXXMemberCallExpr>(call);
+    const clang::CXXMethodDecl *method =
+        member == nullptr ? nullptr : member->getMethodDecl();
+    if (method == nullptr && core::LibrarySpec::shipped().functionIs(
+                                 qualifiedName(*callee), "spawns")) {
+      for (const clang::Expr *argument : call->arguments())
+        if (!argument->getType()->isEnumeralType())
+          crossing.push_back(argument);
+      return crossing;
+    }
+    if (method == nullptr || method->isConst() || call->getNumArgs() == 0 ||
+        !core::LibrarySpec::shipped().classMember(
+            qualifiedName(*method->getParent()), "makes",
+            method->getNameAsString()) ||
+        !holdsThread(member->getObjectType()) ||
+        holdsThread(call->getArg(0)->getType()))
+      return std::nullopt;
+    crossing.append(call->arg_begin(), call->arg_end());
+    return crossing;
+  }
+
   /// §2: a value of `type` may be handed to another thread.
   [[nodiscard]] bool sendable(clang::QualType type) {
     return fact(Fact::Sendable, type);
@@ -162,6 +203,10 @@ public:
       return false;
     record = record->getDefinition();
     return record == nullptr ||
+           llvm::any_of(record->bases(),
+                        [&](const clang::CXXBaseSpecifier &base) {
+                          return holdsMutable(base.getType(), depth + 1);
+                        }) ||
            llvm::any_of(record->fields(), [&](const clang::FieldDecl *field) {
              return field->isMutable() ||
                     holdsMutable(field->getType(), depth + 1);

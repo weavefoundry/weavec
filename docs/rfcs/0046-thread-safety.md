@@ -1208,8 +1208,10 @@ building it and from what the gates found. They override the body.
    container only as `v[i]` (an `operator[]` that is an accessor and
    returns a reference, or a C array), with `i` a by-copy capture, unchanged
    in the body, of the counter of the innermost loop around the start, a
-   counter declared in the loop's init, stepped only by its increment and
-   only read anywhere else in it, is lent element `i` only; so is a
+   counter declared in the loop's init, stepped only by its increment
+   (`++i`, `i++`, or `i += n` with `n` a nonzero constant, so that no two
+   iterations name one element) and only read anywhere else in it, is
+   lent element `i` only; so is a
    by-reference init-capture `[&mine = v[i]]`. The same capture lends the
    next element in the next iteration; any other use of the container, a
    second start in the same iteration, a nested loop, or a
@@ -1239,8 +1241,9 @@ building it and from what the gates found. They override the body.
    state the object holds, and takes the object's own borrows (a
    `std::packaged_task`'s captures), not a place in it.
 9. **`std::shared_ptr<const T>` (§2)** may also be made from a handle no
-   other handle shares: what a library function given no shared pointer
-   returns (`std::make_shared<T>`), or `std::move` of a local made so and
+   other handle shares: what a library function the table marks `fresh`
+   returns (`function std::make_shared : fresh;`, and `allocate_shared`
+   and the `_for_overwrite` forms), or `std::move` of a local made so and
    otherwise only dereferenced (`auto next = std::make_shared<T>(...);
    next->x = ...; current_ = std::move(next);`).
 10. **Range-for loops.** A range-for's hidden variables read the range,
@@ -1249,7 +1252,11 @@ building it and from what the gates found. They override the body.
     `mutable` member is immutable even when its pointers point to what is
     not shareable (`const char *const Labels[] = {"a", "b"}`): a constant
     initializer points only at constants and at other globals, which the
-    rule checks in turn. A global marked `WEAVEC_GUARDED` is code that is
+    rule checks in turn; one the unit does not define (an `extern`) is
+    checked as if safe code named it, and the audit lists one of code that
+    is not safe that a safe function reaches through such a global. A
+    `mutable` member of a base counts as one of the class. A global marked
+    `WEAVEC_GUARDED` is code that is
     not safe's: it is not checked, and the audit lists each safe function
     that names it (`thread-global`). An `owner-path` error on a global is
     given only for a `thread_local` one; any other is `thread-share` where
@@ -1264,10 +1271,12 @@ building it and from what the gates found. They override the body.
     whatever RFC 0043 and 0044 called it (`owner`), one row each; a class's
     row has `kind` `class`, an empty `field`, and `sendable` and
     `shareable`. A function's `starts` counts thread constructions with a
-    callable, `spawns` calls and a container of thread objects making one.
+    callable, `spawns` calls and a container of thread objects making one
+    with a member the table lists under `makes(...)` (`emplace_back`,
+    `emplace`); `insert`, `reserve` and `resize` start nothing.
     The audit's JSON keys are `threads`, `sends` and `threadGlobals`.
 15. **The budget (D6)** was about 1,450 lines; the build is about 2,700
-    (21,955 to 24,666), most of the difference amendments 3 to 10 and the
+    (21,955 to 24,712), most of the difference amendments 3 to 10 and the
     read analysis loans to read need (whether a use only reads, through
     accessors, range-for loops and lambdas). The library's limit is
     24,750, not 23,800. This departs from (D6) as the owner accepted it.
@@ -1277,6 +1286,23 @@ building it and from what the gates found. They override the body.
     `not-modeled`. Neither the S0 paper review nor the census under
     libstdc++ was done before code: the gates below measured the sets as
     built, and the Linux container ran the test suites.
+
+17. **Constructors that start threads (§6).** A constructor or destructor
+    that has started a thread on some path uses the locked members under a
+    guard from there on, as one of a class with a thread member does; what
+    it does before the first start needs none.
+18. **Guards through pointers (§6).** A guard taken through a pointer
+    local (`std::lock_guard lock(p->mu_)`) holds on the object the pointer
+    pointed at: assigning the pointer ends it for the members reached
+    through it, and a pointer whose address is taken or that is bound to a
+    reference anywhere in the function (`std::swap(p, q)`) is not followed
+    to its lock (`lock-held`).
+19. **The table (§1)** has two more clauses: `makes(...)` on a container
+    row names the members that build an element from their arguments, and
+    `function NAME : fresh;` names a function whose result shares its
+    object with no other handle. `unsetenv`, `putenv`, `gethostbyaddr` and
+    `getservbyname` are `unshared` like their siblings; a C function the
+    table has no row for is not judged, as in RFC 0044.
 
 ## Measured gates
 

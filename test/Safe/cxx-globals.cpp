@@ -45,6 +45,15 @@ void scratchInPlace() {
   local.push_back(1);
   Scratch = std::move(local);
 }
+extern int elsewhere;
+int *const toElsewhere = &elsewhere; // expected-error {{every thread can reach the global 'elsewhere', and 'int' is not safe to share [weavec-safe:thread-share]}}
+extern const int limit;
+const int *const toLimit = &limit;
+struct Hits {
+  mutable int hits = 0;
+};
+struct Counted : Hits {};
+const Counted Counts{}; // expected-error {{every thread can reach the global 'Counts', and 'Counted' is not safe to share [weavec-safe:thread-share]}}
 int counter() {
   static int calls = 0; // expected-error {{every thread can reach the global 'calls', and 'int' is not safe to share [weavec-safe:thread-share]}}
   return ++calls;

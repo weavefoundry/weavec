@@ -55,6 +55,7 @@ int total() {
   std::vector<int> parts(4);
   {
     std::vector<std::jthread> workers;
+    workers.reserve(4);
     for (int i = 0; i < 4; ++i)
       workers.emplace_back([&parts, i] { parts[i] = i; });
   }

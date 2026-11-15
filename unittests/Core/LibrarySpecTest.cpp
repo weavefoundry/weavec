@@ -441,8 +441,12 @@ TEST(LibrarySpecTest, ClassRowsNameThreadsAndLocks) {
     EXPECT_TRUE(table.classMember(name, "detaches", "detach")) << name;
   }
   EXPECT_FALSE(table.classIs("std::future", "thread"));
-  EXPECT_TRUE(table.spawnsFunction("std::async"));
-  EXPECT_FALSE(table.spawnsFunction("std::invoke"));
+  EXPECT_TRUE(table.functionIs("std::async", "spawns"));
+  EXPECT_FALSE(table.functionIs("std::invoke", "spawns"));
+  EXPECT_TRUE(table.functionIs("std::make_shared", "fresh"));
+  EXPECT_FALSE(table.functionIs("std::get", "fresh"));
+  EXPECT_TRUE(table.classMember("std::vector", "makes", "emplace_back"));
+  EXPECT_FALSE(table.classMember("std::vector", "makes", "insert"));
   for (const char *name : {"std::mutex", "std::timed_mutex",
                            "std::shared_mutex", "std::shared_timed_mutex"})
     EXPECT_TRUE(table.classIs(name, "lock")) << name;
@@ -471,18 +475,22 @@ TEST(LibrarySpecTest, ClassRowsNameThreadsAndLocks) {
       LibrarySpec::parse("class a : thread, joins(j, k), detaches(d);\n"
                          "class b : guard(shared), lock, shareable;\n"
                          "function c::d : spawns;\n"
+                         "function c::e : fresh;\n"
                          "f () -> int spawns unshared;\n",
                          error);
   ASSERT_TRUE(parsed.has_value()) << error;
   EXPECT_TRUE(parsed->classMember("a", "joins", "k"));
   EXPECT_TRUE(parsed->classIs("b", "guard"));
   EXPECT_TRUE(parsed->classIs("b", "guard(shared)"));
-  EXPECT_TRUE(parsed->spawnsFunction("c::d"));
+  EXPECT_TRUE(parsed->functionIs("c::d", "spawns"));
+  EXPECT_TRUE(parsed->functionIs("c::e", "fresh"));
+  EXPECT_FALSE(parsed->functionIs("c::e", "spawns"));
   ASSERT_EQ(parsed->entries().size(), 1U);
   EXPECT_TRUE(parsed->entries()[0].spawns);
   EXPECT_TRUE(parsed->entries()[0].unshared);
   EXPECT_FALSE(LibrarySpec::parse("function f : erased;\n", error));
-  EXPECT_NE(error.find("expected 'spawns'"), std::string::npos) << error;
+  EXPECT_NE(error.find("expected 'spawns' or 'fresh'"), std::string::npos)
+      << error;
   EXPECT_FALSE(LibrarySpec::parse("class a : guard(exclusive);\n", error));
   EXPECT_FALSE(LibrarySpec::parse("f () -> int spawns spawns;\n", error));
 }
@@ -810,8 +818,8 @@ static constexpr auto StdlibExpectations = std::to_array<Expectation>({
     {"rand", "", "int", "unshared"},
     {"secure_getenv", "R str", "ptr", ""},
     {"setenv", "R str nullable, R str, int", "int", "unshared"},
-    {"unsetenv", "R str nullable", "int", ""},
-    {"putenv", "R str nullable", "int", ""},
+    {"unsetenv", "R str nullable", "int", "unshared"},
+    {"putenv", "R str nullable", "int", "unshared"},
     {"system", "R str nullable", "int", ""},
     {"qsort", "RW bytes=a1*a2 nullable-if=a1*a2, int, int, fn", "void", ""},
     {"qsort_r", "RW bytes=a1*a2 nullable-if=a1*a2, int, int, fn, none nullable",
@@ -1219,8 +1227,8 @@ static constexpr auto NetworkExpectations = std::to_array<Expectation>({
      "int", ""},
     {"gethostbyname", "R str", "ptr", "unshared"},
     {"gethostbyname2", "R str, int", "ptr", "unshared"},
-    {"gethostbyaddr", "R bytes=a1, int, int", "ptr", ""},
-    {"getservbyname", "R str, R str nullable", "ptr", ""},
+    {"gethostbyaddr", "R bytes=a1, int, int", "ptr", "unshared"},
+    {"getservbyname", "R str, R str nullable", "ptr", "unshared"},
     {"getservbyport", "int, R str nullable", "ptr", ""},
     {"getprotobyname", "R str", "ptr", ""},
     {"herror", "R str nullable", "void", ""},

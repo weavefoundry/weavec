@@ -186,6 +186,9 @@ struct Flow {
   Lends lends;
   /// §6: the guards held on every path.
   llvm::SmallVector<HeldGuard, 2> guards;
+  /// A thread may have started on some path (a constructor that started
+  /// one is no longer alone with its object).
+  bool started = false;
 };
 
 } // namespace
@@ -226,6 +229,10 @@ static bool join(Flow &into, const Flow &from) {
       into.lends.push_back(entry);
       changed = true;
     }
+  if (from.started && !into.started) {
+    into.started = true;
+    changed = true;
+  }
   const std::size_t guards = into.guards.size();
   llvm::erase_if(into.guards, [&](const HeldGuard &guard) {
     return !llvm::is_contained(from.guards, guard);
@@ -331,6 +338,7 @@ private:
   llvm::DenseSet<const clang::Expr *> assigned;
   /// The variables so assigned anywhere in the function.
   llvm::DenseSet<const clang::VarDecl *> assignedLocals;
+  llvm::DenseSet<const clang::VarDecl *> reseated;
   /// One report for each borrow and what ended it.
   std::set<std::pair<const clang::VarDecl *, unsigned>> reported;
 
@@ -2434,7 +2442,8 @@ private:
   }
 
   /// The loop's counter is declared in its init, stepped only by its
-  /// increment (`++i`, `i++`, `i += n`) and only read anywhere else in it.
+  /// increment (`++i`, `i++`, `i += n`, `n` a nonzero constant) and only
+  /// read anywhere else in it.
   [[nodiscard]] bool countsBy(const clang::ForStmt &loop,
                               const clang::VarDecl &counter) {
     const auto *declaration =
@@ -2453,7 +2462,9 @@ private:
                      increment == nullptr ? nullptr
                                           : increment->IgnoreParens());
              compound != nullptr &&
-             compound->getOpcode() == clang::BO_AddAssign)
+             compound->getOpcode() == clang::BO_AddAssign &&
+             compound->getRHS()->getIntegerConstantExpr(ast).value_or(
+                 llvm::APSInt()) != 0)
       stepped = compound->getLHS();
     const auto *named = llvm::dyn_cast_or_null<clang::DeclRefExpr>(
         stepped == nullptr ? nullptr : stepped->IgnoreParenImpCasts());
@@ -2513,6 +2524,7 @@ private:
       });
     if (holder.kind == Holder::Member)
       threadMember(start, *holder.member);
+    flow.started = true;
     for (const clang::Expr *given : crossing) {
       const clang::LambdaExpr *closure = lambdaOf(given);
       if (closure == nullptr) {
@@ -2669,49 +2681,6 @@ private:
   }
   std::set<std::pair<const clang::VarDecl *, unsigned>> reportedLends;
 
-  /// The thread start an expression is, with what it gives the thread.
-  [[nodiscard]] std::optional<llvm::SmallVector<const clang::Expr *, 4>>
-  startOf(const clang::Expr &expression) {
-    llvm::SmallVector<const clang::Expr *, 4> crossing;
-    if (const auto *construct =
-            llvm::dyn_cast<clang::CXXConstructExpr>(&expression)) {
-      if (!CxxKinds::threadClass(construct->getType()) ||
-          construct->getNumArgs() == 0 ||
-          CxxKinds::threadClass(construct->getArg(0)->getType()))
-        return std::nullopt;
-      for (const clang::Expr *argument : construct->arguments())
-        crossing.push_back(argument);
-      return crossing;
-    }
-    const auto *call = llvm::dyn_cast<clang::CallExpr>(&expression);
-    const clang::FunctionDecl *callee =
-        call == nullptr ? nullptr : call->getDirectCallee();
-    if (callee == nullptr)
-      return std::nullopt;
-    if (isLibrary(*callee) && !llvm::isa<clang::CXXMethodDecl>(callee) &&
-        core::LibrarySpec::shipped().spawnsFunction(
-            CxxKinds::qualifiedName(*callee))) {
-      for (const clang::Expr *argument : call->arguments())
-        if (!argument->getType()->isEnumeralType())
-          crossing.push_back(argument);
-      return crossing;
-    }
-    // A container of thread objects that makes one from its arguments
-    // (`emplace_back`).
-    const auto *member = llvm::dyn_cast<clang::CXXMemberCallExpr>(call);
-    const clang::CXXMethodDecl *method =
-        member == nullptr ? nullptr : member->getMethodDecl();
-    if (method == nullptr || method->isConst() || call->getNumArgs() == 0 ||
-        !isLibrary(*method) ||
-        CxxKinds::threadClass(member->getImplicitObjectArgument()->getType()) ||
-        !kinds.holdsThread(member->getImplicitObjectArgument()->getType()) ||
-        kinds.holdsThread(call->getArg(0)->getType()))
-      return std::nullopt;
-    for (const clang::Expr *argument : call->arguments())
-      crossing.push_back(argument);
-    return crossing;
-  }
-
   /// §5: the loans of the thread object `from` names move to `to`.
   static void moveLends(Flow &flow, const clang::Expr *from,
                         const clang::VarDecl *to) {
@@ -2729,21 +2698,24 @@ private:
   //===--------------------------------------------------------------------===//
 
   /// The object a locked member is reached through: `this` (null), or a
-  /// variable named directly; nothing for any other expression.
-  [[nodiscard]] static std::optional<const clang::VarDecl *>
-  lockedObject(const clang::Expr *base) {
+  /// variable named directly, but not a pointer that may be pointed
+  /// elsewhere unseen; nothing for any other expression.
+  [[nodiscard]] std::optional<const clang::VarDecl *>
+  lockedObject(const clang::Expr *base) const {
     base = base->IgnoreParenImpCasts();
     if (llvm::isa<clang::CXXThisExpr>(base))
       return nullptr;
     if (const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(base))
-      if (const clang::VarDecl *variable = variableOf(*named))
+      if (const clang::VarDecl *variable = variableOf(*named);
+          variable != nullptr &&
+          !reseated.contains(variable->getCanonicalDecl()))
         return variable->getCanonicalDecl();
     return std::nullopt;
   }
 
   /// The lock member a guard is constructed from, and of which object.
-  [[nodiscard]] static std::optional<HeldGuard>
-  guardOn(const clang::Expr *argument) {
+  [[nodiscard]] std::optional<HeldGuard>
+  guardOn(const clang::Expr *argument) const {
     const auto *member =
         llvm::dyn_cast<clang::MemberExpr>(argument->IgnoreParenImpCasts());
     const auto *field =
@@ -2840,13 +2812,14 @@ private:
         lockedObject(member.getBase());
     const bool thread = info->threads.contains(field);
     // A constructor and a destructor run where no other thread has the
-    // object, unless its own thread may already run; member initializers
-    // run before it starts.
+    // object, unless its own thread, or one it started, may already run;
+    // member initializers run before it starts.
     const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(&function);
     if (object.has_value() && *object == nullptr && method != nullptr &&
         llvm::isa<clang::CXXConstructorDecl, clang::CXXDestructorDecl>(
             method) &&
-        (info->threads.empty() || thread || !parents.hasParent(&member)))
+        ((info->threads.empty() && !flow.started) || thread ||
+         !parents.hasParent(&member)))
       return;
     const std::string name = "'" + field->getNameAsString() + "'";
     const std::string lock =
@@ -3057,7 +3030,7 @@ private:
   /// guards, WEAVEC_SENDS arguments.
   void threads(Flow &flow, const Call &call, const clang::Expr &expression) {
     if (const std::optional<llvm::SmallVector<const clang::Expr *, 4>>
-            crossing = startOf(expression))
+            crossing = kinds.startOf(expression))
       threadStart(flow, expression, *crossing);
     lockCall(flow, call, expression);
     // §2 (D4): what an owning pointer reached through a `const` path holds
@@ -3104,7 +3077,8 @@ private:
                   call.method->getOverloadedOperator() == clang::OO_Equal)) {
         if (call.method->getOverloadedOperator() == clang::OO_Equal &&
             !call.arguments.empty() &&
-            startOf(*strip(call.arguments.front().expression)) == std::nullopt)
+            kinds.startOf(*strip(call.arguments.front().expression)) ==
+                std::nullopt)
           llvm::erase_if(flow.lends, [&](const auto &entry) {
             return entry.first == holder;
           });
@@ -3508,6 +3482,18 @@ private:
         if (const clang::VarDecl *variable = variableOf(*named))
           assignedLocals.insert(variable->getCanonicalDecl());
     }
+    // RFC 0046 §6: a pointer used as an lvalue but by an assignment (its
+    // address taken, bound to a reference) may change where the flow does
+    // not see.
+    if (const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(statement))
+      if (const clang::VarDecl *variable = variableOf(*named);
+          variable != nullptr && variable->getType()->isPointerType() &&
+          !assigned.contains(named)) {
+        const auto *cast = llvm::dyn_cast_or_null<clang::ImplicitCastExpr>(
+            parents.getParent(named));
+        if (cast == nullptr || cast->getCastKind() != clang::CK_LValueToRValue)
+          reseated.insert(variable->getCanonicalDecl());
+      }
     for (const clang::Stmt *child : statement->children())
       collectAssigned(child);
   }
@@ -3662,6 +3648,10 @@ private:
           !variable->getType()->isReferenceType()) {
         flow.borrows[variable->getCanonicalDecl()] = {
             .loans = value.loans, .reference = value.reference, .end = {}};
+        // RFC 0046 §6: the guards taken through it were on another object.
+        llvm::erase_if(flow.guards, [&](const HeldGuard &held) {
+          return held.object == variable->getCanonicalDecl();
+        });
         // What was moved out through it was another object's.
         unmove(flow, {variable->getCanonicalDecl(), nullptr});
         return;

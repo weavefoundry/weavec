@@ -856,7 +856,7 @@ bool LibrarySpecParser::validateEntry(const LibraryEntry &entry) {
 
 /// RFC 0044 §2, §5, RFC 0046 §1: `class NAME : erased;`, `class NAME :
 /// resets(f, g);` and the other class clauses, NAME qualified with `::`;
-/// `function NAME : spawns;`.
+/// `function NAME : spawns;` and `: fresh;`.
 bool LibrarySpecParser::parseClass(bool function) {
   std::string qualified;
   do {
@@ -871,9 +871,9 @@ bool LibrarySpecParser::parseClass(bool function) {
   do {
     std::string clause = word();
     if (function) {
-      if (clause != "spawns")
-        return fail("expected 'spawns'");
-      spec.spawning.insert(qualified);
+      if (clause != "spawns" && clause != "fresh")
+        return fail("expected 'spawns' or 'fresh'");
+      spec.functions.emplace(qualified, clause);
     } else if (clause == "erased" || clause == "shared" || clause == "thread" ||
                clause == "lock" || clause == "shareable" ||
                clause == "spawns") {
@@ -886,7 +886,7 @@ bool LibrarySpecParser::parseClass(bool function) {
         spec.traits.emplace(qualified, "guard(shared)");
       }
     } else if (clause == "resets" || clause == "joins" ||
-               clause == "detaches" || clause == "locks") {
+               clause == "detaches" || clause == "locks" || clause == "makes") {
       if (!expect('(', "after '" + clause + "'"))
         return false;
       do {
@@ -899,8 +899,8 @@ bool LibrarySpecParser::parseClass(bool function) {
         return false;
     } else {
       return fail("expected 'erased', 'shared', 'thread', 'lock', 'guard', "
-                  "'shareable', 'resets(...)', 'joins(...)', 'detaches(...)' "
-                  "or 'locks(...)'");
+                  "'shareable', 'resets(...)', 'joins(...)', 'detaches(...)', "
+                  "'locks(...)' or 'makes(...)'");
     }
   } while (accept(','));
   if (!expect(';', "at the end of the entry") || !atEnd())
@@ -1008,8 +1008,10 @@ bool LibrarySpec::classMember(std::string_view qualified,
                                      std::string(clause), std::string(member)));
 }
 
-bool LibrarySpec::spawnsFunction(std::string_view qualified) const {
-  return spawning.contains(qualified);
+bool LibrarySpec::functionIs(std::string_view qualified,
+                             std::string_view trait) const {
+  return functions.contains(
+      std::pair(std::string(qualified), std::string(trait)));
 }
 
 const LibraryEntry *LibrarySpec::find(std::string_view name) const {

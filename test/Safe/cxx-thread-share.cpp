@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 struct Plain {
@@ -73,7 +74,12 @@ void snapshots() {
   std::shared_ptr<const Plain> again = frozen;
   std::jthread t([again] { (void)again->items.size(); });
 }
+void snapshotFromATuple() {
+  auto kept = std::make_tuple(std::make_shared<Plain>());
+  std::shared_ptr<const Plain> view = std::get<0>(kept); // expected-error {{a 'std::shared_ptr<const Plain>' is made from one that can still change the object [weavec-safe:thread-share]}}
+}
 void stateOfItsOwn() {
+  (void)unsetenv("HOME"); // expected-error {{'unsetenv' keeps state of its own that every thread shares [weavec-safe:thread-share]}}
   std::time_t now = 0;
   (void)std::localtime(&now); // expected-error {{'localtime' keeps state of its own that every thread shares [weavec-safe:thread-share]}}
   std::tm parts{};

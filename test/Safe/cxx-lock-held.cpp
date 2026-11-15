@@ -2,7 +2,7 @@
 // locks are taken by guard objects (`lock-held`); a borrow of a locked
 // member ends with its guard (`stale-borrow`) and does not leave it
 // (`escape`).
-// RUN: %weavec_cxx -std=c++20 -fsyntax-only -fweavec-safe -w -ferror-limit=0 -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
+// RUN: %weavec_cxx -std=c++20 %cxx_threads -fsyntax-only -fweavec-safe -w -ferror-limit=0 -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -10,6 +10,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <string>
+#include <thread>
 #include <utility>
 
 class Queue {
@@ -135,3 +136,33 @@ std::size_t useLocked(Locked<std::string> &name) {
   name.with([](std::string &s) { s += "x"; return 0; });
   return name.with([](const std::string &s) { return s.size(); });
 }
+// A constructor that starts a thread on 'this' is no longer alone with it.
+class Started {
+  std::mutex mu_;
+  int value_ = 0;
+
+public:
+  Started() {
+    value_ = 1;
+    std::jthread helper([this] {
+      const std::lock_guard lock(mu_);
+      value_ += 1;
+    });
+    value_ += 2; // expected-error {{'value_' is used without a lock on 'mu_' [weavec-safe:lock-held]}}
+  }
+  // A guard on one object's lock does not follow its pointer to another.
+  static void move(Started &a, Started &b) {
+    Started *p = &a;
+    const std::lock_guard lock(p->mu_);
+    p->value_ += 1;
+    p = &b;
+    p->value_ += 1; // expected-error {{'value_' is used without a lock on 'mu_' [weavec-safe:lock-held]}}
+  }
+  static void swapped(Started &a, Started &b) {
+    Started *p = &a;
+    Started *q = &b;
+    const std::lock_guard lock(p->mu_);
+    std::swap(p, q);
+    p->value_ += 1; // expected-error {{'value_' is reached through an expression the rules do not follow to its lock [weavec-safe:lock-held]}}
+  }
+};

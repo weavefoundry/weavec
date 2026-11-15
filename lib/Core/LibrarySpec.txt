@@ -141,12 +141,12 @@
 #
 # CLASSES
 #   entry    ::= 'class' NAME { '::' NAME } ':' cclause { ',' cclause } ';'
-#              | 'function' NAME { '::' NAME } ':' 'spawns' ';'
+#              | 'function' NAME { '::' NAME } ':' ( 'spawns' | 'fresh' ) ';'
 #   cclause  ::= 'erased' | 'shared' | 'resets' '(' NAME { ',' NAME } ')'
 #              | 'thread' | 'joins' '(' NAME { ',' NAME } ')'
 #              | 'detaches' '(' NAME { ',' NAME } ')' | 'locks' '(' NAME { ',' NAME } ')'
 #              | 'lock' | 'guard' [ '(' 'shared' ')' ] | 'shareable'
-#              | 'spawns'
+#              | 'spawns' | 'makes' '(' NAME { ',' NAME } ')'
 #   RFC 0044. erased (section 2): a C++ class that can hold an object of a
 #   type its own type does not name (a callable, a value of any type);
 #   Safe C++ treats one made from a view as a view. shared (section 8): a
@@ -164,8 +164,12 @@
 #   two threads may use one object of the class at once (an atomic, a
 #   condition variable). spawns, on a class: an argument of it makes a
 #   library function run its callable on several threads at once (an
-#   execution policy). function NAME : spawns: a library function that
-#   runs a callable on another thread (std::async).
+#   execution policy). makes(...): the member functions of a container
+#   that construct an element from their arguments (emplace_back), which
+#   start a thread in a container of thread objects. function NAME :
+#   spawns: a library function that runs a callable on another thread
+#   (std::async); fresh: one whose result shares its object with no other
+#   handle (std::make_shared).
 #   Row clauses spawns (the C function starts a thread) and unshared (it
 #   keeps state of its own between calls) are RFC 0046's too.
 #
@@ -468,9 +472,9 @@ getenv (r:str:null-ok) -> ptr;
 rand () -> int unshared;
 secure_getenv (r:str) -> ptr;
 setenv (r:str:null-ok, r:str, int) -> int unshared;
-unsetenv (r:str:null-ok) -> int;
+unsetenv (r:str:null-ok) -> int unshared;
 # The string itself becomes part of the environment.
-putenv (r:str:null-ok) -> int;
+putenv (r:str:null-ok) -> int unshared;
 system (r:str:null-ok) -> int;
 qsort (rw:bytes(a1*a2):null-if-zero(a1*a2), int, int, fn) -> void;
 # glibc (and C2y): compar(a, b, arg). BSD and macOS: compar(thunk, a, b).
@@ -931,8 +935,8 @@ getnameinfo (r:bytes(a1):null-ok, int, w:bytes(a3):null-ok, int, \
     w:bytes(a5):null-ok, int, int) -> int;
 gethostbyname (r:str) -> ptr unshared;
 gethostbyname2 (r:str, int) -> ptr unshared;
-gethostbyaddr (r:bytes(a1), int, int) -> ptr;
-getservbyname (r:str, r:str:null-ok) -> ptr;
+gethostbyaddr (r:bytes(a1), int, int) -> ptr unshared;
+getservbyname (r:str, r:str:null-ok) -> ptr unshared;
 getservbyport (int, r:str:null-ok) -> ptr;
 getprotobyname (r:str) -> ptr;
 herror (r:str:null-ok) -> void;
@@ -1369,28 +1373,32 @@ class std::jthread : erased, thread, joins(join), detaches(detach);
 #============================================================================
 
 class std::basic_string : resets(clear, assign);
-class std::vector : resets(clear, assign);
-class std::deque : resets(clear, assign);
-class std::list : resets(clear, assign);
-class std::forward_list : resets(clear, assign);
-class std::map : resets(clear);
+class std::vector : resets(clear, assign), makes(emplace_back);
+class std::deque : resets(clear, assign), makes(emplace_back, emplace_front);
+class std::list : resets(clear, assign), makes(emplace_back, emplace_front);
+class std::forward_list : resets(clear, assign), makes(emplace_front);
+class std::map : resets(clear), makes(emplace, try_emplace);
 class std::multimap : resets(clear);
 class std::set : resets(clear);
 class std::multiset : resets(clear);
-class std::unordered_map : resets(clear);
+class std::unordered_map : resets(clear), makes(emplace, try_emplace);
 class std::unordered_multimap : resets(clear);
 class std::unordered_set : resets(clear);
 class std::unordered_multiset : resets(clear);
 class std::unique_ptr : resets(reset);
 class std::shared_ptr : shared, resets(reset);
 class std::weak_ptr : resets(reset);
-class std::optional : resets(reset);
+class std::optional : resets(reset), makes(emplace);
 
 #============================================================================
 # C++ threads, locks and what threads may share (RFC 0046 section 1)
 #============================================================================
 
 function std::async : spawns;
+function std::make_shared : fresh;
+function std::allocate_shared : fresh;
+function std::make_shared_for_overwrite : fresh;
+function std::allocate_shared_for_overwrite : fresh;
 class std::mutex : lock;
 class std::timed_mutex : lock;
 class std::shared_mutex : lock;
