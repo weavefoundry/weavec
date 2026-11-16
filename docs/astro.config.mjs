@@ -66,6 +66,7 @@ export default defineConfig({
             item('Unsafe boundaries', 'guides/unsafe'),
             item('Safe C', 'guides/safe-c'),
             item('Safe C++', 'guides/safe-cxx'),
+            item('Convert C++ in place', 'guides/convert-cxx'),
           ],
         },
         {

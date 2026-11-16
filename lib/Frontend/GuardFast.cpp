@@ -82,9 +82,11 @@ FastCode fastCodeOf(const ModuleContext &module,
                    function.hasFnAttribute("weavec-safe-entry")
                ? FastCode::Safe
                : FastCode::None;
-  const llvm::StringRef name = function.getName();
+  llvm::StringRef name = function.getName();
   if (name.ends_with(TrustedSuffix))
     return FastCode::Trusted;
+  // RFC 0047 §1.4: the body of a safe function split from its entry.
+  name.consume_back(".weavec.safe");
   if (safe.cxxSafe.contains(name))
     return FastCode::Safe;
   // The unit's other functions, and those the compiler makes of its code

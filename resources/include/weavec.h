@@ -28,7 +28,7 @@
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 3
-#define WEAVEC_H_VERSION_MINOR 2
+#define WEAVEC_H_VERSION_MINOR 3
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -82,13 +82,27 @@
  * annotations below, safe C++ uses WEAVEC_ESCAPES (the callee keeps the
  * pointer, or a copy of the callable), WEAVEC_BORROWED (a pointer member
  * that is a borrow, which makes its class a view) and
- * WEAVEC_LIFETIMEBOUND, and WEAVEC_SENDS (RFC 0046 §8); a pointer with a
- * count is a std::span and an owner a std::unique_ptr or a container. The
- * guide is docs/pages/guides/safe-cxx.md. */
+ * WEAVEC_LIFETIMEBOUND, WEAVEC_SENDS (RFC 0046 §8), and, since RFC 0047,
+ * the bounds (a pointer with a count is a std::span or a pointer declared
+ * with one) and WEAVEC_ALIASED; an owner is a std::unique_ptr or a
+ * container. The guides are docs/pages/guides/safe-cxx.md and
+ * convert-cxx.md. */
 #define WEAVEC_SAFE WEAVEC_ANNOTATE_("weavec.safe")
 /** In a unit compiled with -fweavec-safe: keeps a function guarded (in C++,
  * a class's member functions too). */
 #define WEAVEC_GUARDED WEAVEC_ANNOTATE_("weavec.guarded")
+/** RFC 0047 §6. Once, after this header's #include, at the top of a source
+ * or header file: every function whose definition starts in the file after
+ * it is safe, with the member functions of the classes defined there,
+ * whoever includes the file. It does not reach the files the file includes.
+ * WEAVEC_GUARDED and WEAVEC_UNSAFE keep their meaning inside it. The
+ * pragma's spelling must match SafeFilePragmaNamespace and
+ * SafeFilePragmaWord. */
+#if defined(__WEAVEC__)
+#define WEAVEC_SAFE_FILE _Pragma("weavec safe")
+#else
+#define WEAVEC_SAFE_FILE
+#endif
 
 /* A build that must not see `[[…]]` before C23 (-std=c99 -pedantic-errors)
  * defines WEAVEC_TYPE_ANNOTATE_(...) as nothing before including this. */
@@ -156,5 +170,14 @@
  * caller passes one that captures by value only what may be sent.
  */
 #define WEAVEC_SENDS WEAVEC_TYPE_ANNOTATE_("weavec.sends")
+/**
+ * C++ only (RFC 0047 §5). After `class` or `struct` in a class definition
+ * (`class WEAVEC_ALIASED Env { ... };`): objects of the class, and of the
+ * classes derived from it, are changed through pointers other objects keep
+ * and through std::shared_ptr. Such a class owns no std::variant, std::any or
+ * std::function, and a borrow of what it owns is not followed across a call
+ * that may reach it that way: the checked build finds it.
+ */
+#define WEAVEC_ALIASED WEAVEC_ANNOTATE_("weavec.aliased")
 
 #endif /* WEAVEC_H */

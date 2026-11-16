@@ -25,6 +25,7 @@
 #include "clang/AST/ASTLambda.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/Mangle.h"
+#include "clang/AST/ParentMapContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/Basic/Builtins.h"
@@ -66,7 +67,6 @@ namespace {
 
 namespace rule {
 constexpr llvm::StringLiteral RawOwner = "raw-owner";
-constexpr llvm::StringLiteral IndexSingle = "index-single";
 constexpr llvm::StringLiteral IntToPointer = "int-to-pointer";
 constexpr llvm::StringLiteral PointerCast = "pointer-cast";
 constexpr llvm::StringLiteral PointerBytes = "pointer-bytes";
@@ -90,7 +90,6 @@ public:
         sources(ast.getSourceManager()) {}
 
   void run(const clang::FunctionDecl &function) {
-    programArguments = function.isMain();
     body = function.getBody();
     for (const clang::ParmVarDecl *parameter : function.parameters())
       checkAnnotations(parameter->getType(), parameter->getLocation());
@@ -123,7 +122,6 @@ public:
   /// A member's default initializer, which every constructor that does not
   /// name the member runs.
   void run(const clang::FieldDecl &field) {
-    programArguments = false;
     body = nullptr;
     if (field.hasInClassInitializer())
       TraverseStmt(field.getInClassInitializer());
@@ -132,6 +130,8 @@ public:
   // RecursiveASTVisitor's names.
   // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
   bool VisitCXXNewExpr(clang::CXXNewExpr *expression) {
+    if (ownedAtOnce(*expression))
+      return true;
     error(expression->getBeginLoc(), rule::RawOwner,
           "'new' makes a block no object owns",
           expression->isArray()
@@ -185,7 +185,6 @@ public:
     const clang::Expr *first = construct->getArg(0)->IgnoreParenImpCasts();
     const clang::QualType given = first->getType();
     if (!given->isPointerType() || given->isFunctionPointerType() ||
-        argument(first) ||
         llvm::isa<clang::StringLiteral, clang::CXXNullPtrLiteralExpr>(first))
       return true;
     const auto written = static_cast<unsigned>(
@@ -194,28 +193,20 @@ public:
         }));
     const clang::QualType second =
         written > 1 ? construct->getArg(1)->getType() : clang::QualType();
-    if ((record->hasAttr<clang::OwnerAttr>() || CxxKinds::shared(record)) &&
-        !kinds.viewClass(record)) {
-      // A smart pointer made from a raw pointer (and perhaps a deleter).
-      if (!given->getPointeeType().isConstQualified() &&
-          (written == 1 ||
-           !(second->isPointerType() || second->isIntegerType())) &&
-          constructor->getParamDecl(0)->getType()->isPointerType())
-        error(construct->getExprLoc(), rule::RawOwner,
-              "a raw pointer is handed to '" + record->getNameAsString() +
-                  "' to own",
-              "make the block with its owner: 'std::make_unique', "
-              "'std::make_shared'");
-    } else if (record->hasAttr<clang::PointerAttr>() && written > 1 &&
-               (second->isIntegerType() || second->isPointerType())) {
-      // A span or a string view made from a pointer and a count the
-      // library cannot check.
-      error(construct->getExprLoc(), rule::IndexSingle,
-            "a '" + record->getNameAsString() +
-                "' is made from a pointer and a size nothing checks",
-            "make it from the container or the array itself, and narrow it "
-            "with its own functions ('first', 'subspan', 'substr')");
-    }
+    // A smart pointer made from a raw pointer (and perhaps a deleter); a
+    // container or a string copies what it is given. RFC 0047 §4: but for a
+    // block `new` makes in the same expression.
+    if (smartPointer(*record) && !kinds.viewClass(record) &&
+        !given->getPointeeType().isConstQualified() &&
+        (written == 1 ||
+         !(second->isPointerType() || second->isIntegerType())) &&
+        constructor->getParamDecl(0)->getType()->isPointerType() &&
+        !llvm::isa<clang::CXXNewExpr>(first))
+      error(construct->getExprLoc(), rule::RawOwner,
+            "a raw pointer is handed to '" + record->getNameAsString() +
+                "' to own",
+            "make the block with its owner: 'std::make_unique', "
+            "'std::make_shared'");
     return true;
   }
 
@@ -351,45 +342,6 @@ public:
                       "check");
   }
 
-  bool VisitArraySubscriptExpr(clang::ArraySubscriptExpr *subscript) {
-    const clang::Expr *base = subscript->getBase()->IgnoreParens();
-    if (const auto *cast = llvm::dyn_cast<clang::ImplicitCastExpr>(base);
-        cast != nullptr &&
-        cast->getCastKind() == clang::CK_ArrayToPointerDecay) {
-      indexedArrays.insert(cast);
-      return true;
-    }
-    if (base->getType()->isPointerType() && !libraryIterator(base->getType()) &&
-        !argument(base))
-      error(subscript->getRBracketLoc(), rule::IndexSingle,
-            "a pointer is indexed, and it points to one object",
-            "index a 'std::span', a 'std::array' or a container, whose "
-            "bounds are checked");
-    return true;
-  }
-
-  bool VisitBinaryOperator(clang::BinaryOperator *binary) {
-    const bool arithmetic =
-        (binary->isAdditiveOp() || binary->getOpcode() == clang::BO_AddAssign ||
-         binary->getOpcode() == clang::BO_SubAssign);
-    const clang::QualType left = binary->getLHS()->getType();
-    const clang::QualType right = binary->getRHS()->getType();
-    // The difference of two pointers forges nothing.
-    if (arithmetic && (left->isPointerType() != right->isPointerType()) &&
-        !libraryIterator(left->isPointerType() ? left : right) &&
-        !argument(left->isPointerType() ? binary->getLHS() : binary->getRHS()))
-      pointerArithmetic(binary->getOperatorLoc());
-    return true;
-  }
-
-  bool VisitUnaryOperator(clang::UnaryOperator *unary) {
-    const clang::QualType type = unary->getSubExpr()->getType();
-    if (unary->isIncrementDecrementOp() && type->isPointerType() &&
-        !libraryIterator(type) && !argument(unary->getSubExpr()))
-      pointerArithmetic(unary->getOperatorLoc());
-    return true;
-  }
-
   bool VisitCastExpr(clang::CastExpr *cast) {
     const clang::QualType to = cast->getType();
     const clang::QualType from = cast->getSubExpr()->getType();
@@ -398,23 +350,6 @@ public:
       error(cast->getExprLoc(), rule::IntToPointer,
             "an integer cannot become a pointer in a safe function",
             "keep the pointer itself rather than its address as an integer");
-      return true;
-    case clang::CK_ArrayToPointerDecay:
-      // A string literal, and an array of constant characters, is read as
-      // a string.
-      if (!indexedArrays.contains(cast) &&
-          !llvm::isa<clang::StringLiteral, clang::PredefinedExpr>(
-              cast->getSubExpr()->IgnoreParens()) &&
-          !(to->getPointeeType().isConstQualified() &&
-            to->getPointeeType()->isAnyCharacterType()) &&
-          // Where `va_list` is an array (x86-64), naming one decays it;
-          // `variadic` is the rule for it.
-          !clang::ASTContext::hasSameType(cast->getSubExpr()->getType(),
-                                          ast.getBuiltinVaListType()))
-        error(cast->getExprLoc(), rule::IndexSingle,
-              "an array becomes a pointer that has lost its size",
-              "pass a 'std::span' of it, or make it a 'std::array' and "
-              "pass that");
       return true;
     case clang::CK_BaseToDerived:
       if (llvm::isa<clang::ExplicitCastExpr>(cast))
@@ -426,7 +361,8 @@ public:
     case clang::CK_BitCast:
     case clang::CK_LValueBitCast:
       if (llvm::isa<clang::ExplicitCastExpr>(cast) &&
-          (to->isPointerType() || cast->isGLValue()))
+          (to->isPointerType() || cast->isGLValue()) &&
+          !byteView(from, to, cast->isGLValue()))
         castError(cast->getExprLoc(),
                   "a pointer is converted to a pointer to another type",
                   "use the object through its own type; 'std::variant' and "
@@ -443,7 +379,9 @@ public:
                   "take the object as non-'const' where it is changed");
       return true;
     default:
-      if (llvm::isa<clang::CXXReinterpretCastExpr>(cast))
+      if (llvm::isa<clang::CXXReinterpretCastExpr>(cast) &&
+          (cast->getCastKind() != clang::CK_NoOp ||
+           !byteView(from, to, cast->isGLValue())))
         castError(cast->getExprLoc(),
                   "'reinterpret_cast' reads an object as another type",
                   "use the object through its own type, or 'std::bit_cast' for "
@@ -526,18 +464,6 @@ private:
   CxxKinds &kinds;
   const RuleReport &report;
   const clang::SourceManager &sources;
-  /// Decays that are the base of a subscript: the array is indexed in place.
-  llvm::DenseSet<const clang::Expr *> indexedArrays;
-  /// The function is `main`, whose `argv` is the one array a program is
-  /// handed as a pointer and a count.
-  bool programArguments = false;
-
-  [[nodiscard]] bool argument(const clang::Expr *expression) const {
-    const auto *named =
-        llvm::dyn_cast<clang::DeclRefExpr>(expression->IgnoreParenImpCasts());
-    return programArguments && named != nullptr &&
-           llvm::isa<clang::ParmVarDecl>(named->getDecl());
-  }
 
   /// `expanded`: the construct is a library macro's own (`va_start`,
   /// WEAVEC_UNSAFE), reported where the function wrote the macro.
@@ -688,13 +614,6 @@ public:
 private:
   llvm::DenseSet<const clang::VarDecl *> globals;
 
-  void pointerArithmetic(clang::SourceLocation at) {
-    error(at, rule::IndexSingle,
-          "arithmetic on a pointer, which points to one object",
-          "walk a 'std::span' or a container with its iterators or an "
-          "index");
-  }
-
   void castError(clang::SourceLocation at, const std::string &message,
                  const std::string &fix) {
     error(at, rule::PointerCast, message, fix);
@@ -704,6 +623,103 @@ private:
                   const std::string &fix) {
     error(at, rule::NotModeled, what + " is not followed by the rules", fix);
     return true;
+  }
+
+  /// A library smart pointer: an owner the table says `reset` resets
+  /// (`std::unique_ptr`), or a shared one (`std::shared_ptr`).
+  [[nodiscard]] static bool smartPointer(const clang::CXXRecordDecl &record) {
+    return isLibrary(record) &&
+           (CxxKinds::shared(&record) ||
+            (record.hasAttr<clang::OwnerAttr>() &&
+             core::LibrarySpec::shipped().classMember(
+                 CxxKinds::qualifiedName(record), "resets", "reset")));
+  }
+
+  /// RFC 0047 §4: a block `new` makes that a smart pointer takes in the
+  /// same expression (`std::unique_ptr<T>(new T(...))`, `p.reset(new T)`):
+  /// no path leaves it without an owner.
+  [[nodiscard]] bool ownedAtOnce(const clang::Expr &expression) const {
+    const auto smart = [](const clang::FunctionDecl &taker) {
+      const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(&taker);
+      return method != nullptr && smartPointer(*method->getParent()) &&
+             taker.getNumParams() >= 1 &&
+             taker.getParamDecl(0)->getType()->isPointerType();
+    };
+    // The smart pointer deletes as it was declared: `new T[n]` only into
+    // `T[]`, `new T` only into `T`, and a derived object only through a base
+    // whose destructor is virtual.
+    const auto *made = llvm::dyn_cast<clang::CXXNewExpr>(&expression);
+    const auto matches = [&](const clang::FunctionDecl &taker) {
+      const auto *specialization =
+          llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(
+              llvm::cast<clang::CXXMethodDecl>(taker).getParent());
+      if (made == nullptr || specialization == nullptr ||
+          specialization->getTemplateArgs().size() == 0 ||
+          specialization->getTemplateArgs()[0].getKind() !=
+              clang::TemplateArgument::Type)
+        return false;
+      const clang::QualType element =
+          specialization->getTemplateArgs()[0].getAsType();
+      if (element->isArrayType() != made->isArray())
+        return false;
+      const clang::QualType pointee =
+          taker.getParamDecl(0)->getType()->getPointeeType();
+      if (clang::ASTContext::hasSameUnqualifiedType(pointee,
+                                                    made->getAllocatedType()))
+        return true;
+      const clang::CXXRecordDecl *base = pointee->getAsCXXRecordDecl();
+      const clang::CXXDestructorDecl *destructor =
+          base == nullptr || !base->hasDefinition()
+              ? nullptr
+              : base->getDefinition()->getDestructor();
+      return !made->isArray() && destructor != nullptr &&
+             destructor->isVirtual();
+    };
+    const clang::Expr *current = &expression;
+    for (unsigned depth = 0; depth < 6; ++depth) {
+      const auto parents = ast.getParents(*current);
+      if (parents.empty())
+        return false;
+      if (const auto *construct = parents[0].get<clang::CXXConstructExpr>())
+        return construct->getNumArgs() >= 1 &&
+               construct->getArg(0) == current &&
+               smart(*construct->getConstructor()) &&
+               matches(*construct->getConstructor());
+      if (const auto *call = parents[0].get<clang::CXXMemberCallExpr>())
+        return call->getMethodDecl() != nullptr &&
+               call->getMethodDecl()->getName() == "reset" &&
+               call->getNumArgs() >= 1 && call->getArg(0) == current &&
+               smart(*call->getMethodDecl()) && matches(*call->getMethodDecl());
+      const auto *next = parents[0].get<clang::Expr>();
+      if (next == nullptr ||
+          !llvm::isa<clang::ImplicitCastExpr, clang::ParenExpr>(next))
+        return false;
+      current = next;
+    }
+    return false;
+  }
+
+  /// RFC 0047 §3: a pointer to an object viewed as its bytes: `const char`,
+  /// `const unsigned char` or `const std::byte`, and the same without
+  /// `const` for a trivially copyable object that holds no pointer.
+  [[nodiscard]] bool byteView(clang::QualType from, clang::QualType to,
+                              bool glvalue) const {
+    if (!glvalue) {
+      if (!from->isPointerType() || !to->isPointerType())
+        return false;
+      from = from->getPointeeType();
+      to = to->getPointeeType();
+    } else if (to->isReferenceType()) {
+      to = to.getNonReferenceType();
+    }
+    const clang::QualType canonical = to.getCanonicalType();
+    if (!(canonical->isCharType() || canonical->isStdByteType()) ||
+        from->isVoidType() || from->isFunctionType() ||
+        from->isIncompleteType() ||
+        (from.isConstQualified() && !to.isConstQualified()))
+      return false;
+    return to.isConstQualified() ||
+           (from.isTriviallyCopyableType(ast) && !holdsPointer(from));
   }
 
   [[nodiscard]] static bool dropsConst(clang::QualType from, clang::QualType to,
@@ -734,26 +750,6 @@ private:
                         });
   }
 
-  /// A pointer type spelled as a member typedef of a library class (a
-  /// container's `iterator` that happens to be a pointer): arithmetic on
-  /// it is the iterator's.
-  [[nodiscard]] bool libraryIterator(clang::QualType type) const {
-    for (unsigned depth = 0; depth < 16 && !type.isNull(); ++depth) {
-      if (const auto *alias =
-              llvm::dyn_cast<clang::TypedefType>(type.getTypePtr())) {
-        const clang::TypedefNameDecl *declaration = alias->getDecl();
-        if (isLibrary(*declaration) &&
-            llvm::isa<clang::CXXRecordDecl>(declaration->getDeclContext()))
-          return true;
-      }
-      const clang::QualType next = type.getSingleStepDesugaredType(ast);
-      if (next == type)
-        break;
-      type = next;
-    }
-    return false;
-  }
-
   void checkAnnotations(clang::QualType type, clang::SourceLocation at) {
     // RFC 0046 §8: WEAVEC_SENDS is for a callable whose type hides what it
     // captured.
@@ -768,15 +764,15 @@ private:
     }
     if (!type->isPointerType())
       return;
+    // RFC 0047 §4 (D3): ownership is C's; a bound is both languages'.
     for (const TypeAnnotation &annotation : annotationsOf(type, ast))
-      if (annotation.name != EscapesAnnotation &&
-          annotation.name != BorrowedAnnotation) {
+      if (annotation.name == OwnedAnnotation ||
+          annotation.name == DropsAnnotation) {
         error(at, rule::BadAnnotation,
               "'" + annotation.name.str() +
-                  "' is one of Safe C's annotations, which a safe C++ "
-                  "function does not use",
-              "a pointer with a count is a 'std::span'; an owner is a "
-              "'std::unique_ptr' or a container");
+                  "' is Safe C's, and a safe C++ function does not use it",
+              "an owner is a 'std::unique_ptr' or a container; a destructor "
+              "releases what a class owns");
         return;
       }
   }
@@ -909,9 +905,10 @@ private:
 class CxxUnit final : public clang::RecursiveASTVisitor<CxxUnit> {
 public:
   CxxUnit(clang::ASTContext &ast, bool unitSafe, SafeUnit &unit,
-          const RuleReport &report)
-      : ast(ast), unitSafe(unitSafe), unit(unit), report(report), kinds(ast),
-        rules(ast, kinds, report), names(ast), trusted(kinds, unit, names) {
+          const RuleReport &report, const BoundsRules &bounds)
+      : ast(ast), unitSafe(unitSafe), unit(unit), report(report),
+        bounds(bounds), kinds(ast), rules(ast, kinds, report), names(ast),
+        trusted(kinds, unit, names) {
     kinds.threadRules = threadRules;
   }
 
@@ -930,35 +927,69 @@ public:
   }
 
   bool VisitFunctionDecl(clang::FunctionDecl *function) {
-    if (!function->doesThisDeclarationHaveABody() ||
-        function->isDependentContext() || function->isDefaulted() ||
-        function->isImplicit() || isLibrary(*function))
+    if (function->isDependentContext() || function->isImplicit() ||
+        isLibrary(*function))
       return true;
-    if (const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(function);
-        method != nullptr && method->getParent()->isLambda()) {
-      nameAs(*function, isSafe(*function));
+    const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(function);
+    if (method != nullptr && method->getParent()->isLambda()) {
+      if (function->doesThisDeclarationHaveABody())
+        nameAs(*function, isSafe(*function));
+      return true;
+    }
+    // As a class's bounds, a function's matter to safe code only.
+    if (isSafe(*function))
+      agree(*function);
+    if (!function->doesThisDeclarationHaveABody() || function->isDefaulted()) {
+      table(*function, false);
       return true;
     }
     const bool safe = isSafe(*function);
     const std::size_t index = define(*function, safe);
+    usedBounds = false;
+    if (!safe && unit.survey && unit.definitions[index].tier == "guarded") {
+      bounds.survey(&unit.definitions[index].survey);
+      survey(*function);
+      bounds.survey(nullptr);
+    }
     const bool settled = !safe || check(*function);
     if (!settled)
       unit.definitions[index].tier = "unsettled";
     nameAs(*function, safe && settled);
+    table(*function, safe && settled && usedBounds);
     return true;
   }
 
   /// RFC 0046 §4: a global, a static member or a `static` local the unit
   /// defines, in safe code.
   bool VisitVarDecl(clang::VarDecl *variable) {
-    if (kinds.threadRules && variable->hasGlobalStorage() &&
-        !llvm::isa<clang::ParmVarDecl>(variable) &&
-        !hasAnnotate(*variable, GuardedAnnotation) &&
-        variable->isThisDeclarationADefinition() !=
-            clang::VarDecl::DeclarationOnly &&
-        !variable->getDeclContext()->isDependentContext() &&
-        isSafe(*variable->getDeclContext()))
+    if (!kinds.threadRules || !variable->hasGlobalStorage() ||
+        llvm::isa<clang::ParmVarDecl>(variable) ||
+        hasAnnotate(*variable, GuardedAnnotation) ||
+        variable->isThisDeclarationADefinition() ==
+            clang::VarDecl::DeclarationOnly ||
+        variable->getDeclContext()->isDependentContext() ||
+        isLibrary(*variable))
+      return true;
+    if (safeGlobal(*variable)) {
       rules.global(*variable, variable->getLocation());
+      return true;
+    }
+    // RFC 0047 §7: a global of code that is not safe yet, as if it were.
+    if (!unit.survey)
+      return true;
+    std::map<std::string, unsigned> counts;
+    bounds.survey(&counts);
+    CxxRules(ast, kinds, report).global(*variable, variable->getLocation());
+    bounds.survey(nullptr);
+    if (counts.empty())
+      return true;
+    const clang::PresumedLoc at =
+        ast.getSourceManager().getPresumedLoc(variable->getLocation());
+    unit.surveyedGlobals.push_back(
+        {.name = variable->getQualifiedNameAsString(),
+         .file = at.isValid() ? at.getFilename() : "",
+         .line = at.isValid() ? at.getLine() : 0,
+         .survey = std::move(counts)});
     return true;
   }
 
@@ -967,6 +998,12 @@ public:
         !record->isDependentContext() && !isLibrary(*record) &&
         listed.insert(record->getCanonicalDecl()).second) {
       listFields(*record);
+      // A class's bounds matter to safe code only: a guarded unit keeps
+      // compiling whatever its classes say, as a C unit does.
+      if (isSafe(*record)) {
+        bounds.checkRecord(*record);
+        aliasedOwns(*record);
+      }
       if (isSafe(*record))
         for (const clang::FieldDecl *field : record->fields())
           rules.run(*field);
@@ -981,8 +1018,11 @@ private:
   bool unitSafe;
   SafeUnit &unit;
   const RuleReport &report;
+  const BoundsRules &bounds;
   CxxKinds kinds;
   CxxRules rules;
+  /// RFC 0047 §1.2: the function `check` just checked uses bounds.
+  bool usedBounds = false;
   std::set<std::pair<std::string, unsigned>> defined;
   llvm::DenseSet<const clang::CXXRecordDecl *> listed;
   clang::ASTNameGenerator names;
@@ -1014,6 +1054,116 @@ private:
       trusted.members(base.getType());
   }
 
+  /// RFC 0047 §5.2 (K): an aliased class owns no storage that changes type
+  /// in place, but a string's characters.
+  void aliasedOwns(const clang::CXXRecordDecl &record) {
+    if (!CxxKinds::aliased(&record))
+      return;
+    const auto refuse = [&](clang::SourceLocation at, const std::string &what) {
+      report(at, "owner-path",
+             "'" + record.getNameAsString() + "' is WEAVEC_ALIASED and owns " +
+                 what + ", whose contents change type in place",
+             at,
+             "an aliased class holds no 'std::variant', 'std::any' or "
+             "'std::function'; change '" +
+                 record.getNameAsString() +
+                 "' from what owns it instead, and drop WEAVEC_ALIASED");
+    };
+    for (const clang::FieldDecl *field : record.fields())
+      if (kinds.switchesAny(field->getType())) {
+        refuse(field->getLocation(), "'" + field->getNameAsString() + "'");
+        return;
+      }
+    for (const clang::CXXBaseSpecifier &base : record.bases())
+      if (!CxxKinds::aliased(base.getType()->getAsCXXRecordDecl()) &&
+          kinds.switchesAny(base.getType())) {
+        refuse(base.getBeginLoc(),
+               "its base '" + base.getType().getAsString() + "'");
+        return;
+      }
+  }
+
+  /// RFC 0047 §1.1: every declaration of a function, and every function
+  /// that overrides a virtual one, gives the same bounds.
+  void agree(const clang::FunctionDecl &function) {
+    const auto differs = [&](const clang::FunctionDecl &other) {
+      return !bounds.tableOf(function).sameBounds(bounds.tableOf(other));
+    };
+    if (const clang::FunctionDecl *previous = function.getPreviousDecl();
+        previous != nullptr && !isLibrary(*previous) && differs(*previous))
+      report(function.getLocation(), "bad-annotation",
+             "this declaration of '" + function.getNameAsString() +
+                 "' gives its pointers other bounds than an earlier one",
+             previous->getLocation(),
+             "write the same bounds on every declaration of '" +
+                 function.getNameAsString() + "', as here");
+    if (const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(&function))
+      for (const clang::CXXMethodDecl *base : method->overridden_methods())
+        if (differs(*base)) {
+          report(function.getLocation(), "bad-annotation",
+                 "'" + function.getNameAsString() + "' overrides '" +
+                     base->getQualifiedNameAsString() + "' with other bounds",
+                 base->getLocation(),
+                 "give an override the bounds of the function it overrides, "
+                 "as here");
+          break;
+        }
+  }
+
+  /// RFC 0047 §1.4: whether a declaration of `function` gives a pointer a
+  /// bound.
+  [[nodiscard]] bool declaresBounds(const clang::FunctionDecl &function) const {
+    const FunctionBounds table = bounds.tableOf(function);
+    return table.result.bounded() ||
+           llvm::any_of(table.parameters, [](const PointerBounds &parameter) {
+             return parameter.bounded();
+           });
+  }
+
+  /// RFC 0047 §1.4: the bounds the guard passes read, by the symbols the
+  /// function is emitted under: of each function the unit declares with a
+  /// bound, and of each safe function that uses bounds, which the passes
+  /// check. A member function's object is its first parameter there.
+  void table(const clang::FunctionDecl &function, bool safe) {
+    if (!safe && !declaresBounds(function))
+      return;
+    FunctionBounds entry = bounds.tableOf(function);
+    if (const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(&function);
+        method != nullptr && method->isInstance()) {
+      const auto shift = [](PointerBounds &given) {
+        if (given.count >= 0)
+          ++given.count;
+        if (given.end >= 0)
+          ++given.end;
+      };
+      for (PointerBounds &parameter : entry.parameters)
+        shift(parameter);
+      shift(entry.result);
+      entry.parameters.insert(entry.parameters.begin(), PointerBounds{});
+    }
+    // A pointer without a bound is checked by its guards, not at the entry
+    // or the return: in C++ an end (`data_ + size_`) is returned as one.
+    // Nor is a string scanned at the entry, the return or a call: a parser
+    // passes its cursors on at every step (RFC 0047 amendment 17).
+    const auto guardedOnly = [](PointerBounds &given) {
+      given.pointeeSize = 0;
+      if (given.kind == PointerBounds::Kind::NullTerminated)
+        given.kind = PointerBounds::Kind::None;
+    };
+    for (PointerBounds &parameter : entry.parameters)
+      guardedOnly(parameter);
+    guardedOnly(entry.result);
+    entry.safe = safe;
+    llvm::StringSet<> symbols;
+    symbolsOf(function, names, symbols);
+    for (const auto &symbol : symbols) {
+      const auto [found, inserted] =
+          unit.functions.try_emplace(symbol.getKey(), entry);
+      if (!inserted)
+        found->second.safe = found->second.safe || safe;
+    }
+  }
+
   /// §1: what the function or the classes around it say, else the unit.
   [[nodiscard]] bool isSafe(const clang::FunctionDecl &function) const {
     if (hasAnnotate(function, UnsafeAnnotation) ||
@@ -1025,18 +1175,32 @@ private:
 
   /// The same for a class's own code (its members' default initializers).
   [[nodiscard]] bool isSafe(const clang::DeclContext &inner) const {
+    clang::SourceLocation at;
     for (const clang::DeclContext *context = &inner; context != nullptr;
          context = context->getParent()) {
       const auto *declaration = llvm::dyn_cast<clang::Decl>(context);
       if (declaration == nullptr ||
           !llvm::isa<clang::FunctionDecl, clang::CXXRecordDecl>(declaration))
         continue;
+      if (at.isInvalid())
+        at = declaration->getLocation();
       if (hasAnnotate(*declaration, SafeAnnotation))
         return true;
       if (hasAnnotate(*declaration, GuardedAnnotation))
         return false;
     }
-    return unitSafe;
+    // RFC 0047 §6: a file that says WEAVEC_SAFE_FILE.
+    return unitSafe || inSafeFile(unit, ast.getSourceManager(), at);
+  }
+
+  /// A variable's declarations are safe code: its function's or class's,
+  /// or, at namespace scope, the unit's or its file's (RFC 0047 §6).
+  [[nodiscard]] bool safeGlobal(const clang::VarDecl &variable) const {
+    const clang::DeclContext *context = variable.getDeclContext();
+    if (context->isFunctionOrMethod() || context->isRecord())
+      return isSafe(*context);
+    return unitSafe ||
+           inSafeFile(unit, ast.getSourceManager(), variable.getLocation());
   }
 
   [[nodiscard]] static bool unsafe(const clang::FunctionDecl &function) {
@@ -1068,7 +1232,8 @@ private:
                                 .owns = false,
                                 .starts = 0,
                                 .locks = false,
-                                .sends = false});
+                                .sends = false,
+                                .survey = {}});
     threadFacts(function, unit.definitions.back());
     return unit.definitions.size() - 1;
   }
@@ -1127,6 +1292,7 @@ private:
       return true;
     }
     rules.run(function);
+    usedBounds = bounds.check(function) || declaresBounds(function);
     if (kinds.threadRules)
       threadGlobals(function);
     if (unit.fast)
@@ -1150,6 +1316,25 @@ private:
       }
     }
     return settled;
+  }
+
+  /// RFC 0047 §7: the rules over a function that is not safe, whose errors
+  /// the checker counts; nothing else of the unit changes.
+  void survey(const clang::FunctionDecl &function) {
+    const clang::Stmt *body = function.getBody();
+    if (body == nullptr || llvm::isa<clang::CoroutineBodyStmt>(body))
+      return;
+    CxxRules fresh(ast, kinds, report);
+    fresh.run(function);
+    (void)bounds.check(function);
+    (void)checkCxxFlow(ast, kinds, function, *body, nullptr, report);
+    std::vector<const clang::LambdaExpr *> lambdas;
+    collectLambdas(body, lambdas);
+    for (const clang::LambdaExpr *lambda : lambdas)
+      if (const clang::CXXMethodDecl *call = lambda->getCallOperator();
+          call != nullptr && call->hasBody() &&
+          lambda->getDependentCallOperator() == nullptr)
+        (void)checkCxxFlow(ast, kinds, *call, *call->getBody(), lambda, report);
   }
 
   static void collectLambdas(const clang::Stmt *statement,
@@ -1190,6 +1375,15 @@ private:
                            .line = where.isValid() ? where.getLine() : 0,
                            .sendable = kinds.sendable(self),
                            .shareable = kinds.shareable(self)});
+    // RFC 0047 §8.
+    if (CxxKinds::aliased(&record))
+      unit.fields.push_back({.record = record.getQualifiedNameAsString(),
+                             .field = "",
+                             .kind = "aliased",
+                             .file = where.isValid() ? where.getFilename() : "",
+                             .line = where.isValid() ? where.getLine() : 0,
+                             .sendable = false,
+                             .shareable = false});
     const LockedClass &locked = kinds.lockedClass(record);
     for (const clang::FieldDecl *field : record.fields()) {
       const char *kind = nullptr;
@@ -1219,11 +1413,17 @@ private:
       const char *kind = nullptr;
       if (type->isFunctionPointerType())
         continue;
+      const auto annotations = annotationsOf(field->getType(), ast);
       if (type->isReferenceType() || kinds.viewClass(of) ||
           (type->isPointerType() &&
-           hasAnnotation(annotationsOf(field->getType(), ast),
-                         BorrowedAnnotation)))
+           hasAnnotation(annotations, BorrowedAnnotation)))
         kind = "borrowed";
+      else if (type->isPointerType() &&
+               llvm::any_of(annotations, [](const TypeAnnotation &each) {
+                 return each.name != EscapesAnnotation;
+               }))
+        // RFC 0047 §8: a reference with a bound.
+        kind = "counted";
       else if (type->isPointerType())
         kind = "reference";
       else if (kinds.erased(type))
@@ -1264,7 +1464,7 @@ private:
             !isLibrary(*variable) &&
             (hasAnnotate(*variable, GuardedAnnotation) ||
              (variable->getDefinition() != nullptr &&
-              !isSafe(*variable->getDefinition()->getDeclContext()))) &&
+              !safeGlobal(*variable->getDefinition()))) &&
             !(variable->getType().isConstQualified() &&
               kinds.frozen(variable->getType())) &&
             !kinds.shareable(variable->getType()) &&
@@ -1297,8 +1497,8 @@ private:
 } // namespace
 
 void checkCxx(clang::ASTContext &ast, bool unitSafe, SafeUnit &unit,
-              const RuleReport &report) {
-  CxxUnit(ast, unitSafe, unit, report)
+              const RuleReport &report, const BoundsRules &bounds) {
+  CxxUnit(ast, unitSafe, unit, report, bounds)
       .TraverseDecl(ast.getTranslationUnitDecl());
 }
 

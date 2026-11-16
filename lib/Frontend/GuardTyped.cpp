@@ -113,8 +113,10 @@ void readTypedFields(ModuleContext &module, llvm::Module &ir) {
     call->replaceAllUsesWith(call->getArgOperand(0));
     call->eraseFromParent();
   }
-  // §9: a program with a safe function records no heap stacks by default.
-  if (llvm::any_of(ir,
+  // §9: a program with a safe function records no heap stacks by default;
+  // a C++ unit says so by its own mode (RFC 0045 §9).
+  if (module.options.safe != nullptr && !module.options.safe->cxx &&
+      llvm::any_of(ir,
                    [&](const llvm::Function &function) {
                      return isSafe(module, function);
                    }) &&

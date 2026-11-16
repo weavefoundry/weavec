@@ -336,7 +336,8 @@ struct Tree {
   void growParent() {
     parent->kids.push_back(nullptr); // expected-error {{'this->parent->kids' is reached through a pointer kept in memory, and 'push_back' may change what it owns [weavec-safe:owner-path]}}
   }
-  void growShared() { twin->label += "x"; } // a shared object may be changed
+  // RFC 0047 §5.2: a shared object is changed only if its class is aliased.
+  void growShared() { twin->label += "x"; } // expected-error {{'this->twin->label' is reached through a 'std::shared_ptr', and 'operator+=' may change what it owns [weavec-safe:owner-path]}}
   void passDown(Tree &to) { to.label += label; }
 };
 thread_local std::vector<std::string> registry;
@@ -380,3 +381,10 @@ struct Cache {
   }
   const int &slot(std::size_t i) const { return data[i]; }
 };
+
+// RFC 0047 amendment: a write through a reference that went stale.
+void writeStale(std::vector<int> &v) {
+  int &c = v[0];
+  v.push_back(1);
+  c = 2; // expected-error {{'c' points into 'v', which 'push_back' may have changed [weavec-safe:stale-borrow]}}
+}

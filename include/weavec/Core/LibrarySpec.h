@@ -251,6 +251,14 @@ struct LibraryMatch {
   }
 };
 
+/// RFC 0047 §1.3: a library member's pointer argument and the argument
+/// that counts its elements (or, `ended`, points past its last).
+struct ArgumentBound {
+  unsigned pointer = 0;
+  unsigned count = 0;
+  bool ended = false;
+};
+
 /// The parsed table.
 class LibrarySpec {
 public:
@@ -280,10 +288,19 @@ public:
   /// RFC 0044 §5, RFC 0046 §5: whether the row for the class `qualified`
   /// lists `member` under `clause`: `resets` (it leaves the object in a
   /// known state, as an assignment does), `joins`, `detaches`, `locks`,
-  /// `makes` (it constructs an element from its arguments).
+  /// `makes` (it constructs an element from its arguments), `strings` (it
+  /// returns a string: RFC 0047).
   [[nodiscard]] bool classMember(std::string_view qualified,
                                  std::string_view clause,
                                  std::string_view member) const;
+  /// RFC 0047 §1.1: the member that counts what `member` of the class
+  /// returns (`counts(data, size)`), if the table says so.
+  [[nodiscard]] std::optional<std::string>
+  countOf(std::string_view qualified, std::string_view member) const;
+  /// RFC 0047 §1.3: the pointer arguments of `member` (the class's own name
+  /// for a constructor) the table bounds by another argument.
+  [[nodiscard]] std::vector<ArgumentBound>
+  argumentBounds(std::string_view qualified, std::string_view member) const;
   /// RFC 0046 §1: whether the table has `function <qualified> : <trait>;`:
   /// `spawns` (it starts a thread), `fresh` (its result shares no state).
   [[nodiscard]] bool functionIs(std::string_view qualified,
@@ -310,6 +327,10 @@ private:
   std::set<std::pair<std::string, std::string>> traits;
   std::set<std::tuple<std::string, std::string, std::string>> members;
   std::set<std::pair<std::string, std::string>> functions;
+  /// RFC 0047: (class, member) to its count's member; to its arguments'
+  /// bounds.
+  std::map<std::pair<std::string, std::string>, std::string> counts;
+  std::multimap<std::pair<std::string, std::string>, ArgumentBound> bounds;
   friend class LibrarySpecParser;
 };
 

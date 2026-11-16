@@ -18,11 +18,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace weavec::core {
@@ -430,6 +433,69 @@ TEST(LibrarySpecTest, ClassRowsNameErasedTypes) {
   EXPECT_TRUE(both->classIs("a", "erased"));
   EXPECT_TRUE(both->classMember("a", "resets", "g"));
   EXPECT_FALSE(both->classMember("a", "resets", "h"));
+}
+
+// RFC 0047 section 1: members that take or return a pointer with a count.
+TEST(LibrarySpecTest, ClassRowsBoundPointers) {
+  const LibrarySpec &table = LibrarySpec::shipped();
+  for (const char *name : {"std::basic_string", "std::basic_string_view",
+                           "std::span", "std::vector", "std::array"})
+    EXPECT_EQ(table.countOf(name, "data"), std::optional<std::string>("size"))
+        << name;
+  EXPECT_FALSE(table.countOf("std::vector", "begin").has_value());
+  EXPECT_FALSE(table.countOf("std::list", "data").has_value());
+  EXPECT_TRUE(table.classMember("std::basic_string", "strings", "c_str"));
+  EXPECT_FALSE(table.classMember("std::basic_string", "strings", "data"));
+  const auto bounds = [&](const char *name, const char *member) {
+    std::vector<std::tuple<unsigned, unsigned, bool>> found;
+    for (const ArgumentBound &bound : table.argumentBounds(name, member))
+      found.emplace_back(bound.pointer, bound.count, bound.ended);
+    std::ranges::sort(found);
+    return found;
+  };
+  using Bounds = std::vector<std::tuple<unsigned, unsigned, bool>>;
+  EXPECT_EQ(bounds("std::span", "span"), (Bounds{{0, 1, false}, {0, 1, true}}));
+  EXPECT_EQ(bounds("std::basic_string_view", "basic_string_view"),
+            (Bounds{{0, 1, false}, {0, 1, true}}));
+  EXPECT_EQ(bounds("std::basic_string", "basic_string"),
+            (Bounds{{0, 1, false}, {0, 1, true}}));
+  for (const char *member : {"append", "assign"})
+    EXPECT_EQ(bounds("std::basic_string", member),
+              (Bounds{{0, 1, false}, {0, 1, true}}))
+        << member;
+  EXPECT_EQ(bounds("std::basic_string", "insert"), (Bounds{{1, 2, false}}));
+  EXPECT_EQ(bounds("std::basic_string", "replace"), (Bounds{{2, 3, false}}));
+  EXPECT_EQ(bounds("std::basic_string", "compare"), (Bounds{{2, 3, false}}));
+  for (const char *member : {"find", "rfind"}) {
+    EXPECT_EQ(bounds("std::basic_string", member), (Bounds{{0, 2, false}}))
+        << member;
+    EXPECT_EQ(bounds("std::basic_string_view", member), (Bounds{{0, 2, false}}))
+        << member;
+  }
+  EXPECT_EQ(bounds("std::basic_string_view", "compare"),
+            (Bounds{{2, 3, false}}));
+  EXPECT_EQ(bounds("std::vector", "vector"), (Bounds{{0, 1, true}}));
+  EXPECT_EQ(bounds("std::vector", "assign"), (Bounds{{0, 1, true}}));
+  EXPECT_EQ(bounds("std::vector", "insert"), (Bounds{{1, 2, true}}));
+  EXPECT_EQ(bounds("std::basic_ostream", "write"), (Bounds{{0, 1, false}}));
+  for (const char *member : {"read", "get", "getline"})
+    EXPECT_EQ(bounds("std::basic_istream", member), (Bounds{{0, 1, false}}))
+        << member;
+  EXPECT_TRUE(bounds("std::vector", "push_back").empty());
+  std::string error;
+  const auto parsed = LibrarySpec::parse(
+      "class a : counts(p, n), counted(f, 1, 2), ended(a, 0, 1), "
+      "strings(s);\n",
+      error);
+  ASSERT_TRUE(parsed.has_value()) << error;
+  EXPECT_EQ(parsed->countOf("a", "p"), std::optional<std::string>("n"));
+  EXPECT_TRUE(parsed->classMember("a", "strings", "s"));
+  ASSERT_EQ(parsed->argumentBounds("a", "f").size(), 1U);
+  EXPECT_EQ(parsed->argumentBounds("a", "f")[0].count, 2U);
+  ASSERT_EQ(parsed->argumentBounds("a", "a").size(), 1U);
+  EXPECT_TRUE(parsed->argumentBounds("a", "a")[0].ended);
+  EXPECT_FALSE(LibrarySpec::parse("class a : counts(p);\n", error));
+  EXPECT_FALSE(LibrarySpec::parse("class a : counted(f, 1);\n", error));
 }
 
 // RFC 0046 section 1: threads, locks, guards and what threads may share.

@@ -42,7 +42,7 @@ struct Peek {
 
 void sharedMutable() {
   auto state = std::make_shared<State>();
-  std::jthread a([state] { state->names[1] = "a"; }); // expected-error {{'state' is copied into a thread, and 'State' can be changed by two threads at once [weavec-safe:thread-send]}}
+  std::jthread a([state] { state->names[1] = "a"; }); // expected-error {{'state' is copied into a thread, and 'State' can be changed by two threads at once [weavec-safe:thread-send]}} expected-error {{'state->names[1]' is reached through a 'std::shared_ptr', and 'operator=' may change what it owns [weavec-safe:owner-path]}} expected-error {{'state->names' is reached through a 'std::shared_ptr', and 'operator[]' may change what it owns [weavec-safe:owner-path]}}
 }
 void sharedConst() {
   auto state = std::make_shared<const State>();

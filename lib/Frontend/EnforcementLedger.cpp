@@ -21,11 +21,13 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <map>
 #include <numeric>
 #include <set>
 #include <string>
 #include <system_error>
 #include <tuple>
+#include <vector>
 
 namespace weavec::frontend {
 
@@ -159,16 +161,24 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
   for (const LedgerRow &row : ledger.rows)
     rows.push_back(rowJson(row));
   llvm::json::Array functions;
-  for (const LedgerFunction &function : ledger.functions)
-    functions.push_back(
-        llvm::json::Object{{.K = "function", .V = function.function},
-                           {.K = "tier", .V = function.tier},
-                           {.K = "file", .V = function.file},
-                           {.K = "line", .V = function.line},
-                           {.K = "owns", .V = function.owns},
-                           {.K = "starts", .V = function.starts},
-                           {.K = "locks", .V = function.locks},
-                           {.K = "sends", .V = function.sends}});
+  for (const LedgerFunction &function : ledger.functions) {
+    llvm::json::Object entry{{.K = "function", .V = function.function},
+                             {.K = "tier", .V = function.tier},
+                             {.K = "file", .V = function.file},
+                             {.K = "line", .V = function.line},
+                             {.K = "owns", .V = function.owns},
+                             {.K = "starts", .V = function.starts},
+                             {.K = "locks", .V = function.locks},
+                             {.K = "sends", .V = function.sends}};
+    // RFC 0047 §7.
+    if (function.surveyed) {
+      llvm::json::Object survey;
+      for (const auto &[rule, count] : function.survey)
+        survey[rule] = count;
+      entry["survey"] = std::move(survey);
+    }
+    functions.push_back(std::move(entry));
+  }
   llvm::json::Array fields;
   for (const LedgerField &field : ledger.fields) {
     llvm::json::Object entry{{.K = "record", .V = field.record},
@@ -181,6 +191,18 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
       entry["shareable"] = field.shareable;
     }
     fields.push_back(std::move(entry));
+  }
+  // RFC 0047 §7.
+  llvm::json::Array surveyed;
+  for (const LedgerSurveyedGlobal &global : ledger.surveyedGlobals) {
+    llvm::json::Object survey;
+    for (const auto &[rule, count] : global.survey)
+      survey[rule] = count;
+    surveyed.push_back(
+        llvm::json::Object{{.K = "global", .V = global.name},
+                           {.K = "file", .V = global.file},
+                           {.K = "line", .V = global.line},
+                           {.K = "survey", .V = std::move(survey)}});
   }
   llvm::json::Array library;
   for (const LedgerLibrary &entry : ledger.library)
@@ -223,6 +245,7 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                                  ledger.typedSites)}}},
                    {.K = "functions", .V = std::move(functions)},
                    {.K = "fields", .V = std::move(fields)},
+                   {.K = "surveyGlobals", .V = std::move(surveyed)},
                    {.K = "library", .V = std::move(library)},
                    {.K = "rows", .V = std::move(rows)},
                }}},
@@ -310,6 +333,20 @@ struct Audit {
   std::set<std::string> fields;
   unsigned safe = 0;
   unsigned functions = 0;
+  /// RFC 0047 §7: each function once (a header's are listed by each unit
+  /// that includes it), by file, line and name: safe, or the errors the
+  /// survey found; and the aliased classes.
+  struct Surveyed {
+    bool safe = false;
+    bool surveyed = false;
+    std::map<std::string, unsigned> errors;
+  };
+  std::map<std::tuple<std::string, unsigned, std::string>, Surveyed> converted;
+  /// The surveyed globals' errors, each global once.
+  std::map<std::tuple<std::string, unsigned, std::string>,
+           std::map<std::string, unsigned>>
+      globalErrors;
+  llvm::json::Array aliased;
 };
 } // namespace
 
@@ -362,6 +399,21 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
         const std::string tier = function->getString("tier").value_or("").str();
         tiers[name] = tier;
         ++audit.functions;
+        {
+          Audit::Surveyed &entry = audit.converted[{
+              function->getString("file").value_or("").str(),
+              static_cast<unsigned>(function->getInteger("line").value_or(0)),
+              name}];
+          entry.safe = entry.safe || tier == "safe";
+          if (const llvm::json::Object *survey =
+                  function->getObject("survey")) {
+            entry.surveyed = true;
+            for (const auto &[rule, count] : *survey)
+              entry.errors[rule.str()] = std::max<unsigned>(
+                  entry.errors[rule.str()],
+                  static_cast<unsigned>(count.getAsInteger().value_or(0)));
+          }
+        }
         if (tier == "safe") {
           ++audit.safe;
           continue;
@@ -380,7 +432,8 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
             // A header's struct is listed by each unit that includes it.
             audit.fields.insert(llvm::formatv("{0}", value).str()).second) {
           const auto kind = field->getString("kind");
-          if (kind == "reference")
+          // RFC 0047 §8: a member with a bound is a reference too.
+          if (kind == "reference" || kind == "counted")
             audit.references.push_back(llvm::json::Object(*field));
           else if (kind == "shared")
             audit.shared.push_back(llvm::json::Object(*field));
@@ -390,7 +443,25 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
             audit.globals.push_back(llvm::json::Object(*field));
           else if (kind == "thread-global")
             audit.threadGlobals.push_back(llvm::json::Object(*field));
+          else if (kind == "aliased")
+            audit.aliased.push_back(llvm::json::Object(*field));
         }
+    if (const llvm::json::Array *globals = unit->getArray("surveyGlobals"))
+      for (const llvm::json::Value &value : *globals) {
+        const llvm::json::Object *global = value.getAsObject();
+        const llvm::json::Object *survey =
+            global == nullptr ? nullptr : global->getObject("survey");
+        if (survey == nullptr)
+          continue;
+        auto &errors = audit.globalErrors[{
+            global->getString("file").value_or("").str(),
+            static_cast<unsigned>(global->getInteger("line").value_or(0)),
+            global->getString("global").value_or("").str()}];
+        for (const auto &[rule, count] : *survey)
+          errors[rule.str()] = std::max<unsigned>(
+              errors[rule.str()],
+              static_cast<unsigned>(count.getAsInteger().value_or(0)));
+      }
     if (const llvm::json::Array *library = unit->getArray("library"))
       for (const llvm::json::Value &value : *library) {
         const llvm::json::Object *entry = value.getAsObject();
@@ -427,6 +498,70 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
   return true;
 }
 
+/// RFC 0047 §7: a conversion's progress, from the survey: per file, its
+/// functions, how many are safe, and the errors of the others by rule.
+namespace {
+struct FilePlan {
+  std::string file;
+  unsigned functions = 0;
+  unsigned safe = 0;
+  unsigned clean = 0;
+  unsigned errors = 0;
+  bool surveyed = true;
+  std::map<std::string, unsigned> rules;
+};
+} // namespace
+
+static std::vector<FilePlan> conversionPlan(const Audit &audit) {
+  std::map<std::string, FilePlan> files;
+  for (const auto &[key, entry] : audit.converted) {
+    FilePlan &plan = files[std::get<0>(key)];
+    plan.file = std::get<0>(key);
+    ++plan.functions;
+    if (entry.safe) {
+      ++plan.safe;
+      continue;
+    }
+    plan.surveyed = plan.surveyed && entry.surveyed;
+    unsigned errors = 0;
+    for (const auto &[rule, count] : entry.errors) {
+      plan.rules[rule] += count;
+      errors += count;
+    }
+    plan.errors += errors;
+    if (entry.surveyed && errors == 0)
+      ++plan.clean;
+  }
+  for (const auto &[key, errors] : audit.globalErrors) {
+    FilePlan &plan = files[std::get<0>(key)];
+    plan.file = std::get<0>(key);
+    for (const auto &[rule, count] : errors) {
+      plan.rules[rule] += count;
+      plan.errors += count;
+    }
+  }
+  std::vector<FilePlan> plans;
+  plans.reserve(files.size());
+  for (auto &[file, plan] : files)
+    plans.push_back(std::move(plan));
+  // Fewest errors first; then by name.
+  std::ranges::stable_sort(plans, [](const FilePlan &a, const FilePlan &b) {
+    return a.errors < b.errors;
+  });
+  return plans;
+}
+
+static std::string ruleCounts(const std::map<std::string, unsigned> &rules) {
+  std::vector<std::pair<std::string, unsigned>> sorted(rules.begin(),
+                                                       rules.end());
+  std::ranges::stable_sort(
+      sorted, [](const auto &a, const auto &b) { return a.second > b.second; });
+  std::string text;
+  for (const auto &[rule, count] : sorted)
+    text += (text.empty() ? "" : ", ") + rule + " " + std::to_string(count);
+  return text;
+}
+
 static std::string where(const llvm::json::Object &entry) {
   std::string text = entry.getString("file").value_or("").str();
   if (const auto line = entry.getInteger("line"); line && *line != 0)
@@ -450,29 +585,59 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
   bool ok = true;
   for (const std::string &path : paths)
     ok = auditLedger(path, audit) && ok;
+  const std::vector<FilePlan> plans = conversionPlan(audit);
+  const bool surveyed = llvm::any_of(
+      audit.converted, [](const auto &entry) { return entry.second.surveyed; });
   if (json) {
-    llvm::outs() << llvm::formatv(
-                        "{0:2}",
-                        llvm::json::Value(llvm::json::Object{
-                            {.K = "schema", .V = "weavec-audit"},
-                            {.K = "version", .V = 5},
-                            {.K = "functions", .V = audit.functions},
-                            {.K = "safe", .V = audit.safe},
-                            {.K = "trusted", .V = std::move(audit.trusted)},
-                            {.K = "guarded", .V = std::move(audit.guarded)},
-                            {.K = "wrapped", .V = std::move(audit.wrapped)},
-                            {.K = "references",
-                             .V = std::move(audit.references)},
-                            {.K = "shared", .V = std::move(audit.shared)},
-                            {.K = "erased", .V = std::move(audit.erased)},
-                            {.K = "globals", .V = std::move(audit.globals)},
-                            {.K = "library", .V = std::move(audit.library)},
-                            {.K = "untyped", .V = std::move(audit.untyped)},
-                            {.K = "threads", .V = std::move(audit.threads)},
-                            {.K = "sends", .V = std::move(audit.sends)},
-                            {.K = "threadGlobals",
-                             .V = std::move(audit.threadGlobals)}}))
-                 << '\n';
+    llvm::json::Array files;
+    std::map<std::string, unsigned> total;
+    for (const FilePlan &plan : plans) {
+      llvm::json::Object rules;
+      for (const auto &[rule, count] : plan.rules) {
+        rules[rule] = count;
+        total[rule] += count;
+      }
+      files.push_back(
+          llvm::json::Object{{.K = "file", .V = plan.file},
+                             {.K = "functions", .V = plan.functions},
+                             {.K = "safe", .V = plan.safe},
+                             {.K = "clean", .V = plan.clean},
+                             {.K = "errors", .V = plan.errors},
+                             {.K = "ready",
+                              .V = plan.surveyed && plan.errors == 0 &&
+                                   plan.safe < plan.functions},
+                             {.K = "rules", .V = std::move(rules)}});
+    }
+    llvm::json::Object rules;
+    for (const auto &[rule, count] : total)
+      rules[rule] = count;
+    llvm::outs()
+        << llvm::formatv(
+               "{0:2}",
+               llvm::json::Value(llvm::json::Object{
+                   {.K = "schema", .V = "weavec-audit"},
+                   {.K = "version", .V = 6},
+                   {.K = "functions", .V = audit.functions},
+                   {.K = "safe", .V = audit.safe},
+                   {.K = "trusted", .V = std::move(audit.trusted)},
+                   {.K = "guarded", .V = std::move(audit.guarded)},
+                   {.K = "wrapped", .V = std::move(audit.wrapped)},
+                   {.K = "references", .V = std::move(audit.references)},
+                   {.K = "shared", .V = std::move(audit.shared)},
+                   {.K = "erased", .V = std::move(audit.erased)},
+                   {.K = "globals", .V = std::move(audit.globals)},
+                   {.K = "library", .V = std::move(audit.library)},
+                   {.K = "untyped", .V = std::move(audit.untyped)},
+                   {.K = "threads", .V = std::move(audit.threads)},
+                   {.K = "sends", .V = std::move(audit.sends)},
+                   {.K = "threadGlobals", .V = std::move(audit.threadGlobals)},
+                   {.K = "aliased", .V = std::move(audit.aliased)},
+                   {.K = "conversion",
+                    .V = surveyed ? llvm::json::Value(llvm::json::Object{
+                                        {.K = "files", .V = std::move(files)},
+                                        {.K = "rules", .V = std::move(rules)}})
+                                  : llvm::json::Value(nullptr)}}))
+        << '\n';
     return ok ? 0 : 1;
   }
   llvm::raw_ostream &out = llvm::outs();
@@ -495,6 +660,37 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
     }
   };
   out << audit.safe << " of " << audit.functions << " functions safe\n";
+  // RFC 0047 §7: the conversion's plan, when the ledgers were surveyed.
+  if (surveyed) {
+    unsigned functions = 0;
+    unsigned safe = 0;
+    unsigned clean = 0;
+    std::map<std::string, unsigned> total;
+    for (const FilePlan &plan : plans) {
+      functions += plan.functions;
+      safe += plan.safe;
+      clean += plan.clean;
+      for (const auto &[rule, count] : plan.rules)
+        total[rule] += count;
+    }
+    out << "\nconversion: " << safe << " of " << functions
+        << " functions safe ("
+        << (functions == 0 ? 0 : ((100 * safe) + (functions / 2)) / functions)
+        << "%); " << clean << " more have no error\n";
+    out << "ready (mark WEAVEC_SAFE_FILE):\n";
+    for (const FilePlan &plan : plans)
+      if (plan.surveyed && plan.errors == 0 && plan.safe < plan.functions)
+        out << "  " << plan.file << "  " << plan.functions - plan.safe
+            << (plan.functions - plan.safe == 1 ? " function\n"
+                                                : " functions\n");
+    out << "blocked, fewest errors first:\n";
+    for (const FilePlan &plan : plans)
+      if (plan.errors != 0)
+        out << "  " << plan.file << "  " << plan.errors
+            << (plan.errors == 1 ? " error: " : " errors: ")
+            << ruleCounts(plan.rules) << '\n';
+    out << "by rule: " << ruleCounts(total) << '\n';
+  }
   list("functions that are not safe (safe code trusts them; 'owns': a "
        "parameter or the result is WEAVEC_OWNED)",
        audit.trusted, "function", "tier");
@@ -525,6 +721,9 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
   list("globals of code that is not safe that safe code names (in the "
        "function named)",
        audit.threadGlobals, "field", "");
+  list("aliased classes (changed through pointers other objects keep; a "
+       "borrow of what they own is not followed across calls)",
+       audit.aliased, "record", "");
   return ok ? 0 : 1;
 }
 

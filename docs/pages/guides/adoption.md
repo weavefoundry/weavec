@@ -3,7 +3,7 @@ title: Adopt WeaveC incrementally
 description: Introduce WeaveC to an existing C project, run its tests under the guarded build, read what traps, fix it, and measure the cost.
 ---
 
-Start with a component you understand: one with identifiable allocation and cleanup paths and a test suite that exercises them.
+Start with a component you understand: one with identifiable allocation and cleanup paths and a test suite that exercises them. To make existing C++ safe at compile time as well, a file at a time, see [Convert C++ in place](/guides/convert-cxx/).
 
 ## 1. Build and test with weavec-cc
 

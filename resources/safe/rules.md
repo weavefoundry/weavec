@@ -4,7 +4,7 @@ A safe function (`WEAVEC_SAFE`, or every function of a unit compiled with `-fwea
 
 A rule that both languages have says first what it means in C, then, under _In C++_, what it means there. [`safe-cxx`](#safe-cxx) is the page to read before writing safe C++: the kinds of pointer its rules are stated over.
 
-The C examples below include `<weavec.h>`, `<stddef.h>`, `<stdio.h>`, `<stdlib.h>` and `<string.h>`; the C++ ones `<weavec.h>` and the standard library's containers, strings, smart pointers and algorithms, as C++20. The design is in [RFC 0041](/rfcs/0041-safe-c/) (bounds), [RFC 0042](/rfcs/0042-typed-memory/) (typed memory), [RFC 0043](/rfcs/0043-ownership/) (ownership), [RFC 0044](/rfcs/0044-safe-cxx/) (C++) and [RFC 0046](/rfcs/0046-thread-safety/) (threads). The thread examples include `<atomic>`, `<condition_variable>`, `<future>`, `<mutex>`, `<shared_mutex>` and `<thread>` too.
+The C examples below include `<weavec.h>`, `<stddef.h>`, `<stdio.h>`, `<stdlib.h>` and `<string.h>`; the C++ ones `<weavec.h>` and the standard library's containers, strings, smart pointers and algorithms, as C++20. The design is in [RFC 0041](/rfcs/0041-safe-c/) (bounds), [RFC 0042](/rfcs/0042-typed-memory/) (typed memory), [RFC 0043](/rfcs/0043-ownership/) (ownership), [RFC 0044](/rfcs/0044-safe-cxx/) (C++), [RFC 0046](/rfcs/0046-thread-safety/) (threads) and [RFC 0047](/rfcs/0047-conversion-in-place/) (bounds and aliased classes in C++, converting existing code). The thread examples include `<atomic>`, `<condition_variable>`, `<future>`, `<mutex>`, `<shared_mutex>` and `<thread>` too.
 
 ## safe-cxx
 
@@ -15,7 +15,9 @@ Every pointer, reference and object in a safe function is one of four kinds:
 - An **owner** is an object: a local, a member, an element, and what a `std::vector`, a `std::string`, a `std::unique_ptr` or a `std::optional` holds. Destructors release, so a safe function writes no `new` and no `delete` ([`raw-owner`](#raw-owner)).
 - A **borrow** is a reference, a pointer, an iterator, a `std::string_view`, a `std::span` or a lambda that captures by reference, kept in a local or passed down a call. It ends when what it points into is destroyed, moved, assigned, or changed by anything that is not `const`; using it afterwards is [`stale-borrow`](#stale-borrow). A member function that has a `const` overload with the same parameters (`operator[]`, `at`, `begin`, `find`) only gives access and ends nothing.
 - A **view** is an object whose type holds a borrow: a struct with a `std::string_view` or a reference member, a `std::vector<std::string_view>`, a `std::function` made from a lambda that captures by reference. The rules follow it like a borrow: it is not used after what it points into ended, and it is not returned or stored where it would outlive that ([`escape`](#escape)).
-- A **reference** is a raw pointer kept in a member or in a container's element. The rules do not follow it; the guards check it when it is used. What an object owns is not changed through one ([`owner-path`](#owner-path)); `std::shared_ptr` is the way to share an object that changes.
+- A **reference** is a raw pointer kept in a member or in a container's element. The rules do not follow it; the guards check it when it is used. What an object owns is not changed through one, nor through a `std::shared_ptr`, unless its class is declared `WEAVEC_ALIASED` ([`owner-path`](#owner-path)).
+
+A raw pointer points to one object unless its declaration, an array or the library says how many: Safe C's bounds (`WEAVEC_COUNTED_BY(n)`, `WEAVEC_ENDED_BY(e)`, `WEAVEC_NULL_TERMINATED` and the rest) mean the same in C++, on parameters, results, members and globals; an array keeps its length when it becomes a pointer; a container's `data()` has its `size()` elements; `main`'s `argv` has `argc`. Such a pointer is indexed and stepped, and each access is compared with its bound when it runs ([`index-single`](#index-single), [`call-args`](#call-args), [`counted-pair`](#counted-pair), [`field-address`](#field-address)). A `std::span` is the same thing as a type; existing code keeps its pointers and declares their bounds.
 
 The other flow rules are [`owner-moved`](#owner-moved) (an object used after `std::move`) and [`call-alias`](#call-alias). The rules of single expressions are [`index-single`](#index-single), [`pointer-cast`](#pointer-cast), [`pointer-bytes`](#pointer-bytes), [`union-pointer`](#union-pointer), [`int-to-pointer`](#int-to-pointer), [`variadic`](#variadic), [`no-asm`](#no-asm), [`unsafe-block`](#unsafe-block), [`bad-annotation`](#bad-annotation) and [`not-modeled`](#not-modeled). Rules without an _In C++_ part are C's.
 
@@ -62,20 +64,40 @@ Give the declaration a bound (`WEAVEC_COUNTED_BY(n)`, `WEAVEC_SIZED_BY(n)`, `WEA
 
 ### In C++
 
-A raw pointer points to one object: it is not indexed and takes no arithmetic (the difference and the comparison of two pointers are allowed). A pointer with a count is a `std::span`, whose index the library checks. An array is indexed in place and converts only to a `std::span`; a span is made from a container or an array, not from a pointer and a size. `main` may index and wrap its `argv`.
+As in C: a raw pointer without a bound points to one object and is not indexed or stepped (the difference and the comparison of two pointers are allowed). It has a bound when its declaration gives one, when it is an array or was made from one, when it is a container's `data()` (`std::vector`, `std::string`, `std::array`, `std::span`, `std::string_view`), `main`'s `argv`, or a local assigned only such pointers. A lambda's copy of a pointer points to one object: capture a `std::span`. An iterator a library class spells as a pointer (`std::array<T, N>::iterator`) is the library's.
 
 ```cpp rejected
 int third(const int *p) { return p[2]; }
 ```
 
 ```cpp accepted
-int third(std::span<const int> s) { return s[2]; }
-int local() {
-  int a[4] = {1, 2, 3, 4};
-  std::span<int> whole(a);
-  return a[1] + whole[2];
+int third(const int *WEAVEC_COUNTED_BY(n) p, std::size_t n) { return n > 2 ? p[2] : 0; }
+int spanned(std::span<const int> s) { return s[2]; }
+int summed(const std::vector<int> &v) {
+  const int *p = v.data();
+  int total = 0;
+  for (std::size_t i = 0; i < v.size(); ++i)
+    total += p[i];
+  return total;
 }
+unsigned digits(const char *WEAVEC_ENDED_BY(end) p, const char *end) {
+  unsigned value = 0;
+  while (p < end)
+    value = value * 10 + unsigned(*p++ - '0');
+  return value;
+}
+class Slice {
+public:
+  Slice(const char *WEAVEC_COUNTED_BY(n) data, std::size_t n) : data_(data), size_(n) {}
+  char operator[](std::size_t i) const { return data_[i]; }
+  const char *WEAVEC_COUNTED_BY(size_) data() const { return data_; }
+private:
+  const char *WEAVEC_COUNTED_BY(size_) data_;
+  std::size_t size_;
+};
 ```
+
+A member's bound names a sibling member; a member function's result may be counted by a member of its class, as `data()` is above. Every declaration of a function, and every override of a virtual one, gives the same bounds.
 
 ## int-to-pointer
 
@@ -132,7 +154,14 @@ struct node *WEAVEC_OWNED make(void) {
 
 ### In C++
 
-No `reinterpret_cast`, no `const_cast`, no C-style cast that is one of them, no `static_cast` from `void *` or from a base to a derived class. `dynamic_cast` and `std::variant` are the checked forms.
+No `reinterpret_cast`, no `const_cast`, no C-style cast that is one of them, no `static_cast` from `void *` or from a base to a derived class. `dynamic_cast` and `std::variant` are the checked forms. One conversion is allowed ([RFC 0047](/rfcs/0047-conversion-in-place/)): a pointer to an object becomes a pointer to its bytes, `const char`, `const unsigned char` or `const std::byte`, and the same without `const` when the object is trivially copyable and holds no pointer; the bytes are the object's own.
+
+```cpp accepted
+struct Header { std::uint32_t magic; std::uint32_t size; };
+std::string encode(const Header &h) {
+  return std::string(reinterpret_cast<const char *>(&h), sizeof h);
+}
+```
 
 ```cpp rejected
 struct Shape { virtual ~Shape() = default; };
@@ -418,6 +447,20 @@ int four(const int *WEAVEC_COUNTED_BY(4) p) { return sum(p, 4); }
 
 Pass a pointer with bounds (an array, an allocation, a counted parameter), or declare the parameter with the same bound.
 
+### In C++
+
+The same for a function's, a constructor's or a member function's parameters with a bound, and for the library's that take a pointer and a count, or two pointers: `std::span(p, n)`, `std::string_view(p, n)`, `std::string(p, n)`, `append(p, n)`, `assign(p, n)`, `std::vector(first, last)`. Their pointer has a bound that covers the count, checked when it runs.
+
+```cpp rejected
+std::string_view view(const char *p, std::size_t n) { return std::string_view(p, n); }
+```
+
+```cpp accepted
+std::string_view view(const char *WEAVEC_COUNTED_BY(n) p, std::size_t n) {
+  return std::string_view(p, n);
+}
+```
+
 ## variadic
 
 A variadic call is only to a function of the library table whose row describes its format (`printf` is described); `va_start` is not used, nor `va_arg` of a type that holds pointers.
@@ -516,18 +559,29 @@ int sum(const int *WEAVEC_COUNTED_BY(n) v, size_t n);
 
 ### In C++
 
-Safe C's bounds annotations and `WEAVEC_OWNED` are not used by a safe C++ function: a pointer with a count is a `std::span`, and an owner is a `std::unique_ptr` or a container. `WEAVEC_ESCAPES`, `WEAVEC_BORROWED` and `WEAVEC_LIFETIMEBOUND` keep their meaning. `WEAVEC_SENDS` ([`thread-send`](#thread-send)) goes after the type of a parameter that is a type-erased callable, the same in every declaration of the function; in C it is an error.
+Safe C's bounds mean the same in C++. `WEAVEC_OWNED` and `WEAVEC_DROPS` are C's: an owner is a `std::unique_ptr` or a container, and a destructor releases what a class owns. `WEAVEC_ESCAPES`, `WEAVEC_BORROWED` and `WEAVEC_LIFETIMEBOUND` keep their meaning. `WEAVEC_SENDS` ([`thread-send`](#thread-send)) goes after the type of a parameter that is a type-erased callable, the same in every declaration of the function; `WEAVEC_ALIASED` ([`owner-path`](#owner-path)) after `class` or `struct`; in C both are errors. Every declaration of a function, and every function that overrides a virtual one, gives the same bounds.
 
 ```cpp rejected
-int first(const int *WEAVEC_COUNTED_BY(n) p, std::size_t n) { return n != 0 ? *p : 0; }
+void take(int *WEAVEC_OWNED p) { (void)p; }
 ```
 
 ```cpp rejected
 void schedule(int WEAVEC_SENDS delay) { (void)delay; }
 ```
 
+```cpp rejected
+struct Reader {
+  virtual ~Reader() = default;
+  virtual std::size_t read(char *WEAVEC_COUNTED_BY(n) to, std::size_t n) = 0;
+};
+struct Zeros : Reader {
+  std::size_t read(char *to, std::size_t n) override { (void)to; return n; }
+};
+```
+
 ```cpp accepted
-int first(std::span<const int> s) { return s.empty() ? 0 : s[0]; }
+int first(const int *WEAVEC_COUNTED_BY(n) p, std::size_t n) { return n != 0 ? *p : 0; }
+std::unique_ptr<int> take(std::unique_ptr<int> p) { return p; }
 ```
 
 ## counted-pair
@@ -554,6 +608,34 @@ int grow(struct vec *v) {
 
 Allocate into a local first, test it, then assign the pointer and its count in adjacent statements with no call between them.
 
+### In C++
+
+A member that bounds a pointer member is paired with it the same way, in a member function (`data_ = p; size_ = n;`) and in a constructor's list, where both are initialized, in any order. A count stepped down alone (`size_ -= n`) is checked when it runs.
+
+```cpp rejected
+class Slice {
+public:
+  void resize(std::size_t n) { size_ = n; }
+private:
+  const char *WEAVEC_COUNTED_BY(size_) data_ = nullptr;
+  std::size_t size_ = 0;
+};
+```
+
+```cpp accepted
+class Slice {
+public:
+  Slice(const char *WEAVEC_COUNTED_BY(n) data, std::size_t n) : data_(data), size_(n) {}
+  void remove_prefix(std::size_t n) {
+    data_ += n;
+    size_ -= n;
+  }
+private:
+  const char *WEAVEC_COUNTED_BY(size_) data_ = nullptr;
+  std::size_t size_ = 0;
+};
+```
+
 ## string-index
 
 A null-terminated pointer is read at its current byte and stepped forward by constants; an index or offset that is not a constant needs its length first.
@@ -571,9 +653,13 @@ char at(const char *WEAVEC_NULL_TERMINATED s, size_t i) {
 
 `size_t n = strlen(s);` gives `s` the bounds `[s, s + n + 1)` while `s` is not assigned again. Step a string inside the branch that tested the bytes stepped over.
 
+### In C++
+
+The same for a `WEAVEC_NULL_TERMINATED` pointer; a `std::string`'s `c_str()` is one. A `std::string_view` or a `std::string` made from the pointer is the C++ way to index it.
+
 ## string-write
 
-Nothing is stored through a null-terminated pointer, nor passed where the callee may write through it: a string is read-only in safe code. A buffer that is written is counted.
+Nothing is stored through a null-terminated pointer, nor passed where the callee may write through it: a string is read-only in safe code. A buffer that is written is counted. In C++ the same holds for a `WEAVEC_NULL_TERMINATED` pointer; a `std::string`'s `data()` is counted, not a string, and may be written.
 
 ```c rejected
 void trim(char *WEAVEC_NULL_TERMINATED s) { s[0] = 0; }
@@ -596,6 +682,31 @@ struct node *WEAVEC_OWNED *link(struct node *n) { return &n->next; }
 ```
 
 Pass the struct that holds the field, or read the field into a local, pass that, and assign the field back.
+
+### In C++
+
+The address of a pointer member with a bound, or of its count, and a reference that is not `const` to either, does not leave the function and is not passed for a reference parameter: through it one would change without the other. Swap or assign the whole object, or the two members as a pair.
+
+```cpp rejected
+class Slice {
+public:
+  void swap_size(Slice &other) { std::swap(size_, other.size_); }
+private:
+  const char *WEAVEC_COUNTED_BY(size_) data_ = nullptr;
+  std::size_t size_ = 0;
+};
+```
+
+```cpp accepted
+class Slice {
+public:
+  void swap(Slice &other) { std::swap(*this, other); }
+  std::size_t size() const { return size_; }
+private:
+  const char *WEAVEC_COUNTED_BY(size_) data_ = nullptr;
+  std::size_t size_ = 0;
+};
+```
 
 ## owner-moved
 
@@ -730,7 +841,36 @@ Reach the owner from the pointer that owns it (a list's head, a tree's root), or
 
 ### In C++
 
-What an object owns is changed only from what owns it or was lent it: a local, a parameter, `this`, and through members, owners (`std::unique_ptr`, containers) and borrows. Through a raw pointer kept in a member or in a container's element, a safe function reads, calls `const` member functions and assigns members that own nothing; it does not call a member function that is not `const` on an object that owns something, or assign such a member. That is what lets a borrow survive a call that was not handed its owner: no callee can reach the owner through a pointer it kept. The fixes: own the object; take it as a parameter; make the member a reference, which makes the class a view that lives in a local; or hold it by `std::shared_ptr`, through which changes are allowed. A member function that is `const`, or has a `const` twin, changes nothing `*this` owns, `mutable` members included.
+What an object owns is changed only from what owns it or was lent it: a local, a parameter, `this`, and through members, owners (`std::unique_ptr`, containers) and borrows. Through a raw pointer kept in a member or in a container's element, or through a `std::shared_ptr`, a safe function reads, calls `const` member functions and assigns members that own nothing; it changes what an object owns only when the object's class is declared `WEAVEC_ALIASED` (or derives from such a class), is shareable (it locks its members), or is a library type with no storage that changes type in place (a `std::vector<int>`; not a `std::string` or a `std::variant`). A fresh local `std::shared_ptr` from `std::make_shared` that is only dereferenced and moved is the function's own until it is published. That is what lets a borrow survive a call that was not handed its owner: no callee can reach the owner through a pointer it kept, unless the class says it can. A member function that is `const`, or has a `const` twin, changes nothing `*this` owns, `mutable` members included.
+
+`WEAVEC_ALIASED` goes after `class` or `struct`. An aliased class owns no `std::variant`, `std::any` or `std::function`, and no object of a polymorphic class that is not aliased itself, at any depth: changing such storage in place under a borrow reads one type as another, which no check at run time can catch. A string's characters are the exception, which [`stale-borrow`](#stale-borrow) covers. What a borrow points into in an aliased object is not followed across a call that may reach the object: a use after such a change is found when the checked build (`-fweavec-safe-checks=full`) runs, and the audit lists the aliased classes.
+
+```cpp rejected
+struct Doc { std::variant<std::vector<long>, std::string> data; };
+void clobber(const std::shared_ptr<Doc> &doc) { doc->data = std::string("A"); }
+```
+
+```cpp rejected
+struct WEAVEC_ALIASED Doc { std::variant<std::vector<long>, std::string> data; };
+```
+
+```cpp accepted
+class WEAVEC_ALIASED Env {
+public:
+  void open(const std::string &name) { names_.push_back(name); }
+private:
+  std::vector<std::string> names_;
+};
+struct Table {
+  Env *env = nullptr;
+  std::shared_ptr<Env> shared;
+  void load() { env->open("a"); shared->open("b"); }
+};
+struct Doc { std::variant<std::vector<long>, std::string> data; };
+void replace(std::shared_ptr<Doc> &doc) { doc = std::make_shared<Doc>(); }
+```
+
+Without the declaration, the fixes are as before: own the object; take it as a parameter; make the member a reference, which makes the class a view that lives in a local.
 
 What an owning pointer (`std::unique_ptr`, an owner whose `const` access returns a reference that is not `const`) holds is written only through a path that is not `const`: in a `const` member function, `impl_->count++` writes what `impl_` owns, so two threads reading the object at once would race ([RFC 0046](/rfcs/0046-thread-safety/), D4). A raw pointer member is not an owning pointer: writing through one in a `const` member function stays allowed, which is why a class with one is not frozen.
 
@@ -887,6 +1027,26 @@ void rename_all(std::vector<std::string> &names) {
 }
 ```
 
+A string's characters move when the string grows, and a string is in nearly every class, aliased ones included. So a borrow through which the characters of a `std::string` the function does not own can be written (a `char *`, a `char &`, a `std::span<char>`; not its own local, and not a `const` borrow) ends at every call of the program's own functions, and at every change through a pointer kept in memory or a `std::shared_ptr` ([RFC 0047](/rfcs/0047-conversion-in-place/)).
+
+```cpp rejected
+void flush();
+void fill(std::string &name) {
+  char *p = name.data();
+  flush();
+  *p = 'x';
+}
+```
+
+```cpp accepted
+void flush();
+void fill(std::string &name) {
+  flush();
+  char *p = name.data();                   // taken after the call
+  *p = 'x';
+}
+```
+
 Threads add two ends. A borrow of a locked member points into the guard as well ([`lock-held`](#lock-held)), and ends when the guard is destroyed or unlocked, or is handed by reference to a call that may give the lock away for a while, as a condition variable's `wait` does. And a thread object's destruction joins its thread, so it is a use of everything the thread borrowed: a local the thread uses ends after the thread object, or the thread is joined first.
 
 ```cpp rejected
@@ -977,7 +1137,7 @@ void duplicate(std::vector<int> &v) {
 
 ## raw-owner
 
-Safe C++ only. A block is owned by an object, never by a raw pointer: no `new`, no `delete`, no explicit destructor call, no `malloc`, `free` or `strdup`, no `release()` of a smart pointer, no smart pointer made from a raw pointer. `std::make_unique`, `std::make_shared` and the containers make blocks with their owners, and destructors release them, so a double release, a mismatched `delete` and a forgotten release cannot be written. A class that must manage memory itself (a container, an arena, a wrapper of a C library's handle) is `WEAVEC_GUARDED`: it is the implementation of an owner, and safe code uses it as it uses the standard library's.
+Safe C++ only. A block is owned by an object, never by a raw pointer: no `new`, no `delete`, no explicit destructor call, no `malloc`, `free` or `strdup`, no `release()` of a smart pointer, no smart pointer made from a raw pointer. A `new` whose block a smart pointer takes in the same expression has its owner at once and is allowed when the pointer deletes it as it was made: `std::unique_ptr<T>(new T(...))`, `std::unique_ptr<T[]>(new T[n])`, `p.reset(new T)`; a derived object only through a base whose destructor is virtual. A `std::string` or a container made from a raw pointer copies what it points to and is not an owner of it. `std::make_unique`, `std::make_shared` and the containers make blocks with their owners, and destructors release them, so a double release, a mismatched `delete` and a forgotten release cannot be written. A class that must manage memory itself (a container, an arena, a wrapper of a C library's handle) is `WEAVEC_GUARDED`: it is the implementation of an owner, and safe code uses it as it uses the standard library's.
 
 ```cpp rejected
 struct Item { int id = 0; };

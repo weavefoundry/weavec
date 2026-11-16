@@ -24,13 +24,14 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
 namespace weavec::frontend {
 
 /// The version of the `weavec-ledger` JSON this writes.
-inline constexpr unsigned EnforcementLedgerVersion = 9;
+inline constexpr unsigned EnforcementLedgerVersion = 10;
 
 /// What the pass decided for one access.
 struct LedgerRow {
@@ -65,6 +66,10 @@ struct LedgerFunction {
   unsigned starts = 0;
   bool locks = false;
   bool sends = false;
+  /// RFC 0047 §7: under -fweavec-safe-survey, a function that is not safe:
+  /// whether it was surveyed, and the errors the rules gave it, by rule.
+  bool surveyed = false;
+  std::map<std::string, unsigned> survey;
 };
 
 /// RFC 0043 §11: a pointer field of a struct the unit defines, and its
@@ -72,7 +77,9 @@ struct LedgerFunction {
 /// owner a safe function reads in place. RFC 0046 §12: the kinds `lock`,
 /// `locked` and `thread`; `class`, a class the unit defines (no field),
 /// with whether it is sendable and shareable; `thread-global`, a global
-/// that code which is not safe defines and a safe function names.
+/// that code which is not safe defines and a safe function names. RFC 0047
+/// §8: `counted`, a pointer member with a bound (a reference, tested where
+/// safe code loads it); `aliased`, a WEAVEC_ALIASED class (no field).
 struct LedgerField {
   std::string record;
   std::string field;
@@ -81,6 +88,16 @@ struct LedgerField {
   unsigned line = 0;
   bool sendable = false;
   bool shareable = false;
+};
+
+/// RFC 0047 §7: under -fweavec-safe-survey, a global or static local of
+/// code that is not safe yet that the rules would reject, and its errors by
+/// rule.
+struct LedgerSurveyedGlobal {
+  std::string name;
+  std::string file;
+  unsigned line = 0;
+  std::map<std::string, unsigned> survey;
 };
 
 /// RFC 0045 §10: what a fast unit rests on beyond its own code: a library
@@ -104,6 +121,7 @@ struct EnforcementLedger {
   std::vector<LedgerRow> rows;
   std::vector<LedgerFunction> functions;
   std::vector<LedgerField> fields;
+  std::vector<LedgerSurveyedGlobal> surveyedGlobals;
   std::vector<LedgerLibrary> library;
   /// RFC 0045: the typed allocation sites of a fast unit.
   std::uint64_t typedSites = 0;

@@ -23,12 +23,15 @@
 #include "llvm/ADT/ArrayRef.h"
 
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
 namespace clang {
 class ASTContext;
 class FunctionDecl;
+class RecordDecl;
+class SourceManager;
 } // namespace clang
 
 namespace weavec::frontend {
@@ -53,14 +56,37 @@ using RuleReport = std::function<void(
     clang::SourceLocation at, llvm::StringRef rule, llvm::StringRef message,
     clang::SourceLocation noteAt, llvm::StringRef note)>;
 
+/// RFC 0047 §6: whether `at` lies in a file that said WEAVEC_SAFE_FILE,
+/// after it said so.
+[[nodiscard]] bool inSafeFile(const SafeUnit &unit,
+                              const clang::SourceManager &sources,
+                              clang::SourceLocation at);
+
 /// RFC 0043: ownership's rules (§3) for one safe function's body.
 void checkOwnership(clang::ASTContext &ast, const clang::FunctionDecl &function,
                     SafeUnit &unit, const RuleReport &report);
 
+/// RFC 0047 §1: what Safe C's bounds give Safe C++ (SafeCheck.cpp).
+struct BoundsRules {
+  /// The bounds a function's declarations give its parameters (without
+  /// `this`) and its result.
+  std::function<FunctionBounds(const clang::FunctionDecl &)> tableOf;
+  /// §1.2: the rules of bounds over one safe C++ function; whether it uses
+  /// bounds (indexes or steps a pointer, passes an array as one, names a
+  /// member with a bound).
+  std::function<bool(const clang::FunctionDecl &)> check;
+  /// The bounds of a class's members name what they should.
+  std::function<void(const clang::RecordDecl &)> checkRecord;
+  /// RFC 0047 §7: the errors reported until the next call are counted in
+  /// `counts` (a function's or a global's that is not safe), not printed;
+  /// null ends that.
+  std::function<void(std::map<std::string, unsigned> *)> survey;
+};
+
 /// RFC 0044: Safe C++'s rules for a C++ unit, and its functions and
 /// classes' members for the ledger.
 void checkCxx(clang::ASTContext &ast, bool unitSafe, SafeUnit &unit,
-              const RuleReport &report);
+              const RuleReport &report, const BoundsRules &bounds);
 
 } // namespace weavec::frontend
 
