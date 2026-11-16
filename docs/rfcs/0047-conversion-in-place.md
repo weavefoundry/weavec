@@ -1084,7 +1084,7 @@ building it and from what the gates found. They override the body.
 14. **The checker does not run after a fatal error.** A unit that stopped
     at a missing header crashed the rules (on main too); they are skipped
     then.
-15. **Line limit (D6):** the library is 26,028 lines of the 26,500.
+15. **Line limit (D6):** the library is 26,168 lines of the 26,500.
 16. **The forty spatial bugs of S0 (e)** were not written: the agent asked
     to write deliberately buggy programs was stopped by a safety
     classifier before it wrote any, and the set was not attempted again in
@@ -1099,15 +1099,26 @@ building it and from what the gates found. They override the body.
     annotation. The conversion, unchanged, then parses in 628 units against
     the guarded original's 679.
 18. **Globals in a safe file** are safe code's for `thread-share` and the
-    audit (they were taken for guarded code's). The survey covers
-    functions, not globals: tinyxml2's twelve `thread-share` errors on
-    globals were not in its plan.
+    audit (they were taken for guarded code's). The survey covers the
+    unit's globals and static locals too: tinyxml2's twelve `thread-share`
+    errors on globals were missing from its plan in G3 and are counted
+    since (the ledger's `surveyGlobals`, added to their file's errors).
 19. **An index past a container's `size()` through its `data()`**, now
     accepted in safe code, is caught by the checked build
     (`container-overflow`); in the fast build, which RFC 0045 builds
     without the container annotations, a read inside the capacity reads an
     element of the vector's own type and is not reported, as RFC 0045 says
     of `container-overflow` in general.
+20. **From the review of the implementation:** a `new` handed to a smart
+    pointer is accepted only when the pointer deletes it as it was made
+    (`new T[n]` into `T[]`, `new T` into `T`, a derived object through a
+    base only when the base's destructor is virtual); `raw-owner`'s check of
+    a raw pointer handed to an owner applies to smart pointers only (a
+    `std::string` or a container made from a `char *` copies it, which RFC
+    0044 rejected); a constructor may initialize a count to zero without
+    its pointer; and a C++ unit's classes' bounds, rule K and the agreement
+    of declarations are checked in safe code only, so that a guarded unit
+    keeps compiling whatever its classes say, as a C unit does.
 
 ## Measured gates
 
@@ -1135,7 +1146,7 @@ the yaml-cpp agent's did not.
 | G7 What was accepted before | **Pass.** RFC 0044's 110 seeded bugs: 81 stop (81 before). Its fixed twins rejected: 22 (23 before; 4 are accepted now that arrays and pointers have bounds, 3 newly rejected by rule W). Its correct files rejected: 5 (5 before; one accepted, one newly rejected by W). Each of the four newly rejected compiles with one `WEAVEC_ALIASED`. RFC 0046's forty correct programs: none newly rejected; one fixed twin accepted. The LRU, `json` and indexer ports compile as before. |
 | G8 The survey again | **Part.** The four projects, unedited: 2,275 distinct errors become 1,737; none of the 184 for an array used as a pointer remains; `index-single` 1,204 to 811, `owner-path` through a pointer kept in memory 447 to 284, through a `std::shared_ptr` 0 to 69 (yaml-cpp, rule W). `call-args` rises from 0 to 31, the library's pointer-and-count arguments without a bound, which the gate does not allow. |
 | G9 Nothing elsewhere | **Pass but `main`.** 2,038 compiles succeed with main's compiler and this one (RFC 0044's and RFC 0046's sets, `test/cases`, `test/Guards`, C and C++, guarded, fast and checked); 1,843 give the same object. Each of the 195 that differ uses something new: 192 are the safe builds of the 96 units whose `main` takes `argv`, now counted by `argc` and checked (amendment 2); two are `test/Guards/safe-ended-end.c` (amendment 4); one is the guarded build of `test/Guards/cxx-bounds.cpp`, whose classes declare bounds. 34 compiles succeed with one compiler only: RFC 0044's files of G7, the new tests, and three cases that index a container's `data()` (`test/Guards/container-overflow.cpp`, `test/cases/detection/cxx/container-data.cpp`, `deque-past-end.cpp`), now accepted (amendment 19). |
-| H1 Hygiene | **Pass.** Library 26,028 of 26,500 lines; the runtime unchanged at 10,583. |
+| H1 Hygiene | **Pass.** Library 26,168 of 26,500 lines; the runtime unchanged at 10,583. |
 
 What the numbers say about the owner's goal: an existing C++ library
 converts in place. Two projects WeaveC was never tuned on reached 94% and

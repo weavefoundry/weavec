@@ -193,10 +193,10 @@ public:
         }));
     const clang::QualType second =
         written > 1 ? construct->getArg(1)->getType() : clang::QualType();
-    // A smart pointer made from a raw pointer (and perhaps a deleter).
-    // RFC 0047 §4: but for a block `new` makes in the same expression.
-    if ((record->hasAttr<clang::OwnerAttr>() || CxxKinds::shared(record)) &&
-        !kinds.viewClass(record) &&
+    // A smart pointer made from a raw pointer (and perhaps a deleter); a
+    // container or a string copies what it is given. RFC 0047 §4: but for a
+    // block `new` makes in the same expression.
+    if (smartPointer(*record) && !kinds.viewClass(record) &&
         !given->getPointeeType().isConstQualified() &&
         (written == 1 ||
          !(second->isPointerType() || second->isIntegerType())) &&
@@ -625,21 +625,55 @@ private:
     return true;
   }
 
+  /// A library smart pointer: an owner the table says `reset` resets
+  /// (`std::unique_ptr`), or a shared one (`std::shared_ptr`).
+  [[nodiscard]] static bool smartPointer(const clang::CXXRecordDecl &record) {
+    return isLibrary(record) &&
+           (CxxKinds::shared(&record) ||
+            (record.hasAttr<clang::OwnerAttr>() &&
+             core::LibrarySpec::shipped().classMember(
+                 CxxKinds::qualifiedName(record), "resets", "reset")));
+  }
+
   /// RFC 0047 §4: a block `new` makes that a smart pointer takes in the
   /// same expression (`std::unique_ptr<T>(new T(...))`, `p.reset(new T)`):
   /// no path leaves it without an owner.
   [[nodiscard]] bool ownedAtOnce(const clang::Expr &expression) const {
     const auto smart = [](const clang::FunctionDecl &taker) {
       const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(&taker);
-      const clang::CXXRecordDecl *record =
-          method == nullptr ? nullptr : method->getParent();
-      return record != nullptr && isLibrary(*record) &&
-             (record->hasAttr<clang::OwnerAttr>() ||
-              CxxKinds::shared(record)) &&
-             core::LibrarySpec::shipped().classMember(
-                 CxxKinds::qualifiedName(*record), "resets", "reset") &&
+      return method != nullptr && smartPointer(*method->getParent()) &&
              taker.getNumParams() >= 1 &&
              taker.getParamDecl(0)->getType()->isPointerType();
+    };
+    // The smart pointer deletes as it was declared: `new T[n]` only into
+    // `T[]`, `new T` only into `T`, and a derived object only through a base
+    // whose destructor is virtual.
+    const auto *made = llvm::dyn_cast<clang::CXXNewExpr>(&expression);
+    const auto matches = [&](const clang::FunctionDecl &taker) {
+      const auto *specialization =
+          llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(
+              llvm::cast<clang::CXXMethodDecl>(taker).getParent());
+      if (made == nullptr || specialization == nullptr ||
+          specialization->getTemplateArgs().size() == 0 ||
+          specialization->getTemplateArgs()[0].getKind() !=
+              clang::TemplateArgument::Type)
+        return false;
+      const clang::QualType element =
+          specialization->getTemplateArgs()[0].getAsType();
+      if (element->isArrayType() != made->isArray())
+        return false;
+      const clang::QualType pointee =
+          taker.getParamDecl(0)->getType()->getPointeeType();
+      if (clang::ASTContext::hasSameUnqualifiedType(pointee,
+                                                    made->getAllocatedType()))
+        return true;
+      const clang::CXXRecordDecl *base = pointee->getAsCXXRecordDecl();
+      const clang::CXXDestructorDecl *destructor =
+          base == nullptr || !base->hasDefinition()
+              ? nullptr
+              : base->getDefinition()->getDestructor();
+      return !made->isArray() && destructor != nullptr &&
+             destructor->isVirtual();
     };
     const clang::Expr *current = &expression;
     for (unsigned depth = 0; depth < 6; ++depth) {
@@ -649,12 +683,13 @@ private:
       if (const auto *construct = parents[0].get<clang::CXXConstructExpr>())
         return construct->getNumArgs() >= 1 &&
                construct->getArg(0) == current &&
-               smart(*construct->getConstructor());
+               smart(*construct->getConstructor()) &&
+               matches(*construct->getConstructor());
       if (const auto *call = parents[0].get<clang::CXXMemberCallExpr>())
         return call->getMethodDecl() != nullptr &&
                call->getMethodDecl()->getName() == "reset" &&
                call->getNumArgs() >= 1 && call->getArg(0) == current &&
-               smart(*call->getMethodDecl());
+               smart(*call->getMethodDecl()) && matches(*call->getMethodDecl());
       const auto *next = parents[0].get<clang::Expr>();
       if (next == nullptr ||
           !llvm::isa<clang::ImplicitCastExpr, clang::ParenExpr>(next))
@@ -901,7 +936,9 @@ public:
         nameAs(*function, isSafe(*function));
       return true;
     }
-    agree(*function);
+    // As a class's bounds, a function's matter to safe code only.
+    if (isSafe(*function))
+      agree(*function);
     if (!function->doesThisDeclarationHaveABody() || function->isDefaulted()) {
       table(*function, false);
       return true;
@@ -910,7 +947,7 @@ public:
     const std::size_t index = define(*function, safe);
     usedBounds = false;
     if (!safe && unit.survey && unit.definitions[index].tier == "guarded") {
-      bounds.survey(&unit.definitions[index]);
+      bounds.survey(&unit.definitions[index].survey);
       survey(*function);
       bounds.survey(nullptr);
     }
@@ -925,14 +962,34 @@ public:
   /// RFC 0046 §4: a global, a static member or a `static` local the unit
   /// defines, in safe code.
   bool VisitVarDecl(clang::VarDecl *variable) {
-    if (kinds.threadRules && variable->hasGlobalStorage() &&
-        !llvm::isa<clang::ParmVarDecl>(variable) &&
-        !hasAnnotate(*variable, GuardedAnnotation) &&
-        variable->isThisDeclarationADefinition() !=
-            clang::VarDecl::DeclarationOnly &&
-        !variable->getDeclContext()->isDependentContext() &&
-        safeGlobal(*variable))
+    if (!kinds.threadRules || !variable->hasGlobalStorage() ||
+        llvm::isa<clang::ParmVarDecl>(variable) ||
+        hasAnnotate(*variable, GuardedAnnotation) ||
+        variable->isThisDeclarationADefinition() ==
+            clang::VarDecl::DeclarationOnly ||
+        variable->getDeclContext()->isDependentContext() ||
+        isLibrary(*variable))
+      return true;
+    if (safeGlobal(*variable)) {
       rules.global(*variable, variable->getLocation());
+      return true;
+    }
+    // RFC 0047 §7: a global of code that is not safe yet, as if it were.
+    if (!unit.survey)
+      return true;
+    std::map<std::string, unsigned> counts;
+    bounds.survey(&counts);
+    CxxRules(ast, kinds, report).global(*variable, variable->getLocation());
+    bounds.survey(nullptr);
+    if (counts.empty())
+      return true;
+    const clang::PresumedLoc at =
+        ast.getSourceManager().getPresumedLoc(variable->getLocation());
+    unit.surveyedGlobals.push_back(
+        {.name = variable->getQualifiedNameAsString(),
+         .file = at.isValid() ? at.getFilename() : "",
+         .line = at.isValid() ? at.getLine() : 0,
+         .survey = std::move(counts)});
     return true;
   }
 
@@ -941,8 +998,12 @@ public:
         !record->isDependentContext() && !isLibrary(*record) &&
         listed.insert(record->getCanonicalDecl()).second) {
       listFields(*record);
-      bounds.checkRecord(*record);
-      aliasedOwns(*record);
+      // A class's bounds matter to safe code only: a guarded unit keeps
+      // compiling whatever its classes say, as a C unit does.
+      if (isSafe(*record)) {
+        bounds.checkRecord(*record);
+        aliasedOwns(*record);
+      }
       if (isSafe(*record))
         for (const clang::FieldDecl *field : record->fields())
           rules.run(*field);

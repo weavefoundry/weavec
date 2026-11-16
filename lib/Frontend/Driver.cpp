@@ -640,6 +640,11 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
            .sends = definition.sends,
            .surveyed = safe->survey && definition.tier == "guarded",
            .survey = definition.survey});
+    for (const SafeUnit::SurveyedGlobal &global : safe->surveyedGlobals)
+      ledger->surveyedGlobals.push_back({.name = global.name,
+                                         .file = global.file,
+                                         .line = global.line,
+                                         .survey = global.survey});
     for (const SafeUnit::Field &field : safe->fields)
       ledger->fields.push_back({.record = field.record,
                                 .field = field.field,

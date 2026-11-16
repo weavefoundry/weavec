@@ -67,6 +67,10 @@ inline constexpr llvm::StringLiteral SendsAnnotation = "weavec.sends";
 /// RFC 0047 §5: objects of the class are changed through pointers other
 /// objects keep.
 inline constexpr llvm::StringLiteral AliasedAnnotation = "weavec.aliased";
+/// RFC 0047 §6: WEAVEC_SAFE_FILE is `_Pragma("weavec safe")`: the pragma's
+/// namespace and its one word.
+inline constexpr llvm::StringLiteral SafeFilePragmaNamespace = "weavec";
+inline constexpr llvm::StringLiteral SafeFilePragmaWord = "safe";
 /// RFC 0043 §2: the one pointer responsible for releasing its block.
 inline constexpr llvm::StringLiteral OwnedAnnotation = "weavec.owned";
 /// RFC 0043 amendment: the function leaves every owner below the parameter
@@ -255,6 +259,16 @@ struct SafeUnit {
     unsigned line = 0;
   };
   std::vector<InPlace> inPlace;
+  /// RFC 0047 §7: under -fweavec-safe-survey, each global or static local
+  /// of code that is not safe yet that the rules would reject, and its
+  /// errors by rule.
+  struct SurveyedGlobal {
+    std::string name;
+    std::string file;
+    unsigned line = 0;
+    std::map<std::string, unsigned> survey;
+  };
+  std::vector<SurveyedGlobal> surveyedGlobals;
   /// FieldBounds::pointee's sizes (0: still incomplete), by index - 1.
   std::vector<std::uint64_t> pointeeSizes;
 

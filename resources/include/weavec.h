@@ -95,7 +95,9 @@
  * or header file: every function whose definition starts in the file after
  * it is safe, with the member functions of the classes defined there,
  * whoever includes the file. It does not reach the files the file includes.
- * WEAVEC_GUARDED and WEAVEC_UNSAFE keep their meaning inside it. */
+ * WEAVEC_GUARDED and WEAVEC_UNSAFE keep their meaning inside it. The
+ * pragma's spelling must match SafeFilePragmaNamespace and
+ * SafeFilePragmaWord. */
 #if defined(__WEAVEC__)
 #define WEAVEC_SAFE_FILE _Pragma("weavec safe")
 #else

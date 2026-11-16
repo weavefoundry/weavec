@@ -62,3 +62,23 @@ void keep(Node *&out) {
 std::unique_ptr<Node> handed(Node *n) {
   return std::unique_ptr<Node>(n); // expected-error {{a raw pointer is handed to 'unique_ptr' to own [weavec-safe:raw-owner]}}
 }
+// The smart pointer deletes as it was declared.
+std::unique_ptr<int> arrayIntoSingle(std::size_t n) {
+  return std::unique_ptr<int>(new int[n]); // expected-error {{'new' makes a block no object owns [weavec-safe:raw-owner]}}
+}
+std::unique_ptr<int[]> singleIntoArray() {
+  return std::unique_ptr<int[]>(new int); // expected-error {{'new' makes a block no object owns [weavec-safe:raw-owner]}}
+}
+struct Plain {
+  ~Plain() {}
+};
+struct Extended : Plain {
+  int y = 0;
+};
+std::unique_ptr<Plain> sliced() {
+  return std::unique_ptr<Plain>(new Extended); // expected-error {{'new' makes a block no object owns [weavec-safe:raw-owner]}}
+}
+std::unique_ptr<Base> derived() { return std::unique_ptr<Base>(new Derived); }
+std::shared_ptr<Plain> sharedDerived() { return std::shared_ptr<Plain>(new Extended); }
+// A string or a container copies what it is made from.
+std::string copied(char *text) { return std::string(text); }

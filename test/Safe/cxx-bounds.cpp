@@ -4,6 +4,8 @@
 // parameters ask for a bound (`index-single`, `call-args`, `counted-pair`,
 // `field-address`, `bad-annotation`).
 // RUN: %weavec_cxx -std=c++20 -fsyntax-only -fweavec-safe -w -ferror-limit=0 -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
+// A guarded unit keeps compiling whatever its classes' bounds say.
+// RUN: %weavec_cxx -std=c++20 -fsyntax-only -w -DGUARDED %s
 #include <array>
 #include <cstddef>
 #include <cstring>
@@ -42,6 +44,22 @@ public:
 private:
   const char *WEAVEC_COUNTED_BY(size_) data_ = nullptr;
   std::size_t size_ = 0;
+};
+
+#ifndef GUARDED
+struct Misnamed {
+  char *WEAVEC_COUNTED_BY(len + 1) p; // expected-error {{'len + 1' in the bound of field 'p' names no field of the struct [weavec-safe:bad-annotation]}}
+  std::size_t len;
+};
+#endif
+class Emptied {
+public:
+  Emptied() : size_(0) {}
+  explicit Emptied(int) : size_{} {}
+
+private:
+  const char *WEAVEC_COUNTED_BY(size_) data_ = "";
+  std::size_t size_;
 };
 
 class Unpaired {

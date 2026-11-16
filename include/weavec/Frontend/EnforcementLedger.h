@@ -90,6 +90,16 @@ struct LedgerField {
   bool shareable = false;
 };
 
+/// RFC 0047 §7: under -fweavec-safe-survey, a global or static local of
+/// code that is not safe yet that the rules would reject, and its errors by
+/// rule.
+struct LedgerSurveyedGlobal {
+  std::string name;
+  std::string file;
+  unsigned line = 0;
+  std::map<std::string, unsigned> survey;
+};
+
 /// RFC 0045 §10: what a fast unit rests on beyond its own code: a library
 /// function it runs without guards (`trusted`), or an allocation it could
 /// not type (`untyped`, with the reason).
@@ -111,6 +121,7 @@ struct EnforcementLedger {
   std::vector<LedgerRow> rows;
   std::vector<LedgerFunction> functions;
   std::vector<LedgerField> fields;
+  std::vector<LedgerSurveyedGlobal> surveyedGlobals;
   std::vector<LedgerLibrary> library;
   /// RFC 0045: the typed allocation sites of a fast unit.
   std::uint64_t typedSites = 0;

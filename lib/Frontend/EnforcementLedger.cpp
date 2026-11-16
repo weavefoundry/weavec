@@ -192,6 +192,18 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
     }
     fields.push_back(std::move(entry));
   }
+  // RFC 0047 §7.
+  llvm::json::Array surveyed;
+  for (const LedgerSurveyedGlobal &global : ledger.surveyedGlobals) {
+    llvm::json::Object survey;
+    for (const auto &[rule, count] : global.survey)
+      survey[rule] = count;
+    surveyed.push_back(
+        llvm::json::Object{{.K = "global", .V = global.name},
+                           {.K = "file", .V = global.file},
+                           {.K = "line", .V = global.line},
+                           {.K = "survey", .V = std::move(survey)}});
+  }
   llvm::json::Array library;
   for (const LedgerLibrary &entry : ledger.library)
     library.push_back(llvm::json::Object{{.K = "kind", .V = entry.kind},
@@ -233,6 +245,7 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                                  ledger.typedSites)}}},
                    {.K = "functions", .V = std::move(functions)},
                    {.K = "fields", .V = std::move(fields)},
+                   {.K = "surveyGlobals", .V = std::move(surveyed)},
                    {.K = "library", .V = std::move(library)},
                    {.K = "rows", .V = std::move(rows)},
                }}},
@@ -329,6 +342,10 @@ struct Audit {
     std::map<std::string, unsigned> errors;
   };
   std::map<std::tuple<std::string, unsigned, std::string>, Surveyed> converted;
+  /// The surveyed globals' errors, each global once.
+  std::map<std::tuple<std::string, unsigned, std::string>,
+           std::map<std::string, unsigned>>
+      globalErrors;
   llvm::json::Array aliased;
 };
 } // namespace
@@ -429,6 +446,22 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
           else if (kind == "aliased")
             audit.aliased.push_back(llvm::json::Object(*field));
         }
+    if (const llvm::json::Array *globals = unit->getArray("surveyGlobals"))
+      for (const llvm::json::Value &value : *globals) {
+        const llvm::json::Object *global = value.getAsObject();
+        const llvm::json::Object *survey =
+            global == nullptr ? nullptr : global->getObject("survey");
+        if (survey == nullptr)
+          continue;
+        auto &errors = audit.globalErrors[{
+            global->getString("file").value_or("").str(),
+            static_cast<unsigned>(global->getInteger("line").value_or(0)),
+            global->getString("global").value_or("").str()}];
+        for (const auto &[rule, count] : *survey)
+          errors[rule.str()] = std::max<unsigned>(
+              errors[rule.str()],
+              static_cast<unsigned>(count.getAsInteger().value_or(0)));
+      }
     if (const llvm::json::Array *library = unit->getArray("library"))
       for (const llvm::json::Value &value : *library) {
         const llvm::json::Object *entry = value.getAsObject();
@@ -498,6 +531,14 @@ static std::vector<FilePlan> conversionPlan(const Audit &audit) {
     plan.errors += errors;
     if (entry.surveyed && errors == 0)
       ++plan.clean;
+  }
+  for (const auto &[key, errors] : audit.globalErrors) {
+    FilePlan &plan = files[std::get<0>(key)];
+    plan.file = std::get<0>(key);
+    for (const auto &[rule, count] : errors) {
+      plan.rules[rule] += count;
+      plan.errors += count;
+    }
   }
   std::vector<FilePlan> plans;
   plans.reserve(files.size());

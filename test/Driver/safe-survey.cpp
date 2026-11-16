@@ -18,6 +18,7 @@
 int first(const char *p) { return p[0] + p[1]; }
 int *leak() { return new int; }
 int clean(int x) { return x + 1; }
+int hits = 0; // a global that is not safe to share: its error is in the plan
 
 // LEDGER: "kind": "aliased"
 // LEDGER: "field": "data_"
@@ -31,14 +32,17 @@ int clean(int x) { return x + 1; }
 // LEDGER-NEXT: "raw-owner": 1
 // LEDGER: "function": "clean"
 // LEDGER: "survey": {}
+// LEDGER: "surveyGlobals": [
+// LEDGER: "global": "hits"
+// LEDGER: "thread-share": 1
 // LEDGER: "version": 10
 
 // AUDIT: conversion: 3 of 7 functions safe (43%); 2 more have no error
 // AUDIT-NEXT: ready (mark WEAVEC_SAFE_FILE):
 // AUDIT-NEXT: survey-other.cpp  1 function
 // AUDIT-NEXT: blocked, fewest errors first:
-// AUDIT-NEXT: safe-survey.cpp  2 errors: index-single 1, raw-owner 1
-// AUDIT-NEXT: by rule: index-single 1, raw-owner 1
+// AUDIT-NEXT: safe-survey.cpp  3 errors: index-single 1, raw-owner 1, thread-share 1
+// AUDIT-NEXT: by rule: index-single 1, raw-owner 1, thread-share 1
 // AUDIT: reference fields
 // AUDIT-NEXT: survey-slice.h:{{[0-9]+}}: Slice.data_
 // AUDIT: aliased classes

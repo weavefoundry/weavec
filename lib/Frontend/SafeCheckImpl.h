@@ -23,6 +23,7 @@
 #include "llvm/ADT/ArrayRef.h"
 
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -76,10 +77,10 @@ struct BoundsRules {
   std::function<bool(const clang::FunctionDecl &)> check;
   /// The bounds of a class's members name what they should.
   std::function<void(const clang::RecordDecl &)> checkRecord;
-  /// RFC 0047 §7: the errors reported until the next call are counted for
-  /// `definition` (a function that is not safe), not printed; null ends
-  /// that.
-  std::function<void(SafeUnit::Definition *)> survey;
+  /// RFC 0047 §7: the errors reported until the next call are counted in
+  /// `counts` (a function's or a global's that is not safe), not printed;
+  /// null ends that.
+  std::function<void(std::map<std::string, unsigned> *)> survey;
 };
 
 /// RFC 0044: Safe C++'s rules for a C++ unit, and its functions and

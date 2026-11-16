@@ -96,7 +96,7 @@ namespace {
 class SafeFilePragma final : public clang::PragmaHandler {
 public:
   explicit SafeFilePragma(std::shared_ptr<SafeUnit> unit)
-      : PragmaHandler("weavec"), unit(std::move(unit)) {}
+      : PragmaHandler(SafeFilePragmaNamespace), unit(std::move(unit)) {}
 
   void HandlePragma(clang::Preprocessor &preprocessor,
                     clang::PragmaIntroducer introducer,
@@ -105,7 +105,7 @@ public:
     preprocessor.Lex(token);
     const clang::IdentifierInfo *word = token.getIdentifierInfo();
     const clang::SourceManager &sources = preprocessor.getSourceManager();
-    if (word != nullptr && word->getName() == "safe") {
+    if (word != nullptr && word->getName() == SafeFilePragmaWord) {
       const clang::SourceLocation at = sources.getExpansionLoc(introducer.Loc);
       unit->safeFiles.try_emplace(sources.getFileID(at).getHashValue(),
                                   sources.getFileOffset(at));
@@ -2335,6 +2335,14 @@ private:
       const clang::FieldDecl *count = initializer->getMember();
       if (!initializer->isWritten() || count == nullptr)
         continue;
+      // A count of zero is empty, whatever its pointer holds (`n = 0`
+      // alone is allowed in a body too).
+      const clang::Expr *value = initializer->getInit()->IgnoreImplicit();
+      if (const auto *list = llvm::dyn_cast<clang::InitListExpr>(value))
+        value = list->getNumInits() == 1 ? list->getInit(0) : nullptr;
+      if (value == nullptr || llvm::isa<clang::ImplicitValueInitExpr>(value) ||
+          isZero(value))
+        continue;
       const auto pointers = countedBy(*count);
       if (pointers.empty() ||
           llvm::any_of(pointers, [&](const clang::FieldDecl *pointer) {
@@ -2585,8 +2593,8 @@ public:
       bounds.checkRecord = [&](const clang::RecordDecl &record) {
         declarations.checkRecord(record);
       };
-      bounds.survey = [this](SafeUnit::Definition *definition) {
-        surveyed = definition;
+      bounds.survey = [this](std::map<std::string, unsigned> *counts) {
+        surveyed = counts;
       };
       checkCxx(
           ast, unitSafe, *out,
@@ -2634,7 +2642,7 @@ public:
     // ownership rules record of a function goes to a copy of the unit.
     if (out->survey)
       for (const auto &[function, index] : guarded) {
-        surveyed = &out->definitions[index];
+        surveyed = &out->definitions[index].survey;
         FunctionCheck(ast, *function, *out,
                       [this](clang::SourceLocation at, llvm::StringRef rule,
                              llvm::StringRef message, llvm::StringRef fix) {
@@ -2739,7 +2747,7 @@ private:
     // RFC 0047 §7: a surveyed function's errors are counted, once each.
     if (surveyed != nullptr) {
       if (surveyedAt.emplace(file.getRawEncoding(), rule.str()).second)
-        ++surveyed->survey[rule.str()];
+        ++(*surveyed)[rule.str()];
       return;
     }
     // Ownership's different errors at one place (two owners leaked at one
@@ -2773,9 +2781,9 @@ private:
     }
   }
   bool explained = false;
-  /// RFC 0047 §7: the function whose errors are being counted, and where
-  /// they were.
-  SafeUnit::Definition *surveyed = nullptr;
+  /// RFC 0047 §7: the counts of the function or global whose errors are
+  /// being counted, and where they were.
+  std::map<std::string, unsigned> *surveyed = nullptr;
   std::set<std::pair<clang::SourceLocation::UIntTy, std::string>> surveyedAt;
   /// The definitions that are guarded, for the survey: with their index in
   /// the unit's definitions.
