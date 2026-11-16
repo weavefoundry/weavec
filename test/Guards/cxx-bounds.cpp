@@ -19,7 +19,7 @@
 
 class Slice {
 public:
-  Slice(const char *WEAVEC_COUNTED_BY(n) d, std::size_t n) : data_(d), size_(n) {}
+  Slice(const char *WEAVEC_COUNTED_BY(n) WEAVEC_ESCAPES d, std::size_t n) : data_(d), size_(n) {}
   // MEMBER: weavec: pointer-out-of-bounds at {{.*}}cxx-bounds.cpp:[[@LINE+2]]:{{[0-9]+}}: read of 1 bytes at 0x{{[0-9a-f]+}}
   // MEMBER: weavec: 0x{{[0-9a-f]+}} is 2 bytes after the 4-byte bounds of the pointer at 0x{{[0-9a-f]+}}
   char operator[](std::size_t i) const { return data_[i]; }
@@ -44,7 +44,7 @@ unsigned decode(const char *WEAVEC_ENDED_BY(limit) p, const char *limit) {
   return r;
 }
 
-// ENTRY: weavec: global-buffer-overflow at {{.*}}cxx-bounds.cpp:{{[0-9]+}}: read of 100 bytes
+// ENTRY: weavec: global-buffer-overflow at {{.*}}cxx-bounds.cpp:{{[0-9]+}}:{{([0-9]+:)?}} read of 100 bytes
 WEAVEC_GUARDED char lie() {
   static const char text[] = "abcdef";
   Slice s(text, 100);

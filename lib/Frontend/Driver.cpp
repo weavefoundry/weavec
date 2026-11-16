@@ -110,10 +110,12 @@ static bool consumeValueFlag(DriverOptions &options, llvm::StringRef arg,
     else
       error = invalidValue(arg, value, "trap, report, verify or none");
   } else if (flag == "-fweavec-safe-checks") {
-    if (value == "bounds" || value == "full")
+    if (value == "bounds" || value == "full") {
       options.safeFull = value == "full";
-    else
+      options.safeChecksGiven = true;
+    } else {
       error = invalidValue(arg, value, "bounds or full");
+    }
   } else {
     options.ledger = value.str();
   }
@@ -204,9 +206,10 @@ llvm::StringRef driverFlagsHelp() {
       owners; the audit lists it. WEAVEC_GUARDED keeps a function guarded.
       Without the flag, WEAVEC_SAFE marks one function.
   -fweavec-safe-checks=bounds|full
-      Safe functions' accesses are checked against their bounds (bounds,
-      the default), or keep their guards as well, so that a use after free
-      in safe code is reported as in guarded code (full).
+      Safe functions' accesses are checked against what they hold (bounds,
+      the default with -O1 and above), or keep their guards as well, so
+      that a use after free in safe code is reported as in guarded code
+      (full, the default without optimization; RFC 0048).
   -fweavec-safe-survey, -fno-weavec-safe-survey
       Also run the rules over the functions that are not safe, without
       printing or failing on their errors: the ledger counts them by rule,
@@ -571,6 +574,8 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   buffer->FlushDiagnostics(compiler->getDiagnostics());
   if (!success)
     return 1;
+  // RFC 0048 §1: a cc1 line that did not choose a safe unit's mode.
+  weavec.defaultSafeChecks(compiler->getCodeGenOpts().OptimizationLevel > 0);
 
   // A guard's fast path is a shadow load and a branch to its partial-
   // granule check. AArch64's conditional compares fold the two into one
@@ -832,14 +837,21 @@ static bool choosesMacro(llvm::ArrayRef<const char *> args,
 ///   __SANITIZER_DISABLE_CONTAINER_OVERFLOW__
 ///                       a fast safe unit (RFC 0045 §9) in place of the
 ///                       last: no container annotations
+/// Whether a compile's command line optimizes: its last `-O` is not `-O0`.
+static bool optimizes(llvm::ArrayRef<const char *> args) {
+  bool optimizing = false;
+  for (const char *arg : args.drop_front())
+    if (llvm::StringRef(arg).starts_with("-O"))
+      optimizing = llvm::StringRef(arg) != "-O0";
+  return optimizing;
+}
+
 static std::vector<std::string>
 wantsLibraryChecks(llvm::ArrayRef<const char *> args, bool cxx, bool fast) {
   std::string triple = llvm::sys::getDefaultTargetTriple();
-  bool optimizes = false;
+  const bool optimizing = optimizes(args);
   for (std::size_t i = 1; i < args.size(); ++i) {
     llvm::StringRef arg = args[i];
-    if (arg.starts_with("-O"))
-      optimizes = arg != "-O0";
     if (arg.consume_front("--target="))
       triple = arg.str();
     else if ((arg == "-target" || arg == "--target") && i + 1 < args.size())
@@ -847,7 +859,7 @@ wantsLibraryChecks(llvm::ArrayRef<const char *> args, bool cxx, bool fast) {
   }
   std::vector<std::string> macros;
   const llvm::Triple target(llvm::Triple::normalize(triple));
-  if (optimizes && target.isOSLinux() && target.isGNUEnvironment() &&
+  if (optimizing && target.isOSLinux() && target.isGNUEnvironment() &&
       !choosesMacro(args, {"_FORTIFY_SOURCE"}))
     macros.emplace_back("_FORTIFY_SOURCE=3");
   if (cxx && !choosesMacro(args, {"_LIBCPP_HARDENING_MODE",
@@ -1281,6 +1293,15 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
       weavec.checks = DriverOptions::Checks::None;
       weavec.spellings.emplace_back("-fweavec-checks=none");
     }
+  }
+  // RFC 0048 §1 (D5): a safe unit compiled without optimization is checked
+  // unless the command line chose its mode; every cc1 job is told.
+  if (weavec.safe && !weavec.safeChecksGiven) {
+    weavec.defaultSafeChecks(optimizes(clangArgs));
+    weavec.safeChecksGiven = true;
+    weavec.spellings.emplace_back(weavec.safeFull
+                                      ? "-fweavec-safe-checks=full"
+                                      : "-fweavec-safe-checks=bounds");
   }
 
   const auto add = [&](std::string arg) {

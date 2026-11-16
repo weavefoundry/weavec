@@ -31,7 +31,7 @@
 namespace weavec::frontend {
 
 /// The version of the `weavec-ledger` JSON this writes.
-inline constexpr unsigned EnforcementLedgerVersion = 10;
+inline constexpr unsigned EnforcementLedgerVersion = 11;
 
 /// What the pass decided for one access.
 struct LedgerRow {
@@ -125,6 +125,8 @@ struct EnforcementLedger {
   std::vector<LedgerLibrary> library;
   /// RFC 0045: the typed allocation sites of a fast unit.
   std::uint64_t typedSites = 0;
+  /// RFC 0048 §5.1: the locals placed in typed memory.
+  std::uint64_t placedLocals = 0;
   std::uint64_t guarded = 0;
   std::uint64_t proven = 0;
   std::uint64_t unguarded = 0;

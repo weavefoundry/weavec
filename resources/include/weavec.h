@@ -28,7 +28,7 @@
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 3
-#define WEAVEC_H_VERSION_MINOR 3
+#define WEAVEC_H_VERSION_MINOR 4
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -140,7 +140,10 @@
   WEAVEC_TYPE_ANNOTATE_("weavec.null_terminated_or_null")
 /**
  * After the `*` of a parameter's type: the function may keep the pointer
- * after it returns, so the argument must not point into a stack.
+ * after it returns, so the argument must not point into a stack. In C++
+ * also after the `&` of a reference parameter, and after a member
+ * function's parameter list for `this` (RFC 0048): a caller's local whose
+ * address it is given lives in typed memory for its scope.
  */
 #define WEAVEC_ESCAPES WEAVEC_TYPE_ANNOTATE_("weavec.escapes")
 /**

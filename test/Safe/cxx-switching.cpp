@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <variant>
+#include <weavec.h>
 #include <vector>
 
 using Value = std::variant<std::string, std::vector<int>>;
@@ -34,7 +35,8 @@ struct Holder {
   }
   void keepOptional(std::optional<std::vector<std::string>> &o) { list = &*o; }
   void keepElement(std::vector<std::string> &v) { element = &v[0]; }
-  void keepWhole(Value &v) { whole = &v; }
+  // (RFC 0048 §4: what keeps the address of a parameter's object says so.)
+  void keepWhole(Value &WEAVEC_ESCAPES v) { whole = &v; }
   void keepInner(std::vector<std::variant<std::string, long>> &v) {
     name = &std::get<std::string>(v[0]); // expected-error {{a pointer into 'v', whose contents change type}}
   }

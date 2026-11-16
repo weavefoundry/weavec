@@ -83,6 +83,13 @@ struct BoundsRules {
   std::function<void(std::map<std::string, unsigned> *)> survey;
 };
 
+/// RFC 0048 §4, §5.1: marks a C++ function's kept locals with the implicit
+/// `annotate("weavec.placed <type>")` the passes place them by and, in a
+/// safe function, reports `escape` for any other kept address (`report`
+/// null: marks only).
+void keptAddresses(clang::ASTContext &ast, const clang::FunctionDecl &function,
+                   bool safe, const RuleReport *report);
+
 /// RFC 0044: Safe C++'s rules for a C++ unit, and its functions and
 /// classes' members for the ledger.
 void checkCxx(clang::ASTContext &ast, bool unitSafe, SafeUnit &unit,

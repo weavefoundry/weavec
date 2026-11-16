@@ -28,9 +28,15 @@ struct node *WEAVEC_OWNED make(int v) {
 
 void drop(struct node *WEAVEC_OWNED n) { free(n); }
 
+// (Not inlined: the optimizer may otherwise fold the comparison with a
+// released block's pointer, and drop the allocation it compares.)
 static const struct node *kept;
-WEAVEC_GUARDED void keep(const struct node *n) { kept = n; }
-WEAVEC_GUARDED int same(const struct node *n) { return n == kept; }
+WEAVEC_GUARDED __attribute__((noinline)) void keep(const struct node *n) {
+  kept = n;
+}
+WEAVEC_GUARDED __attribute__((noinline)) int same(const struct node *n) {
+  return n == kept;
+}
 WEAVEC_GUARDED int peek(void) { return kept->v; }
 WEAVEC_GUARDED int stale(int argc, char **argv) {
   return argc > 1 && strcmp(argv[1], "stale") == 0;

@@ -56,7 +56,7 @@ int viewed(const struct view *w) { return total(w->of); }
 // LEDGER-NEXT: "starts": 0
 // LEDGER-NEXT: "tier": "guarded"
 // LEDGER: "reason": "reference"
-// LEDGER: "version": 10
+// LEDGER: "version": 11
 
 // AUDIT: 2 of 3 functions safe
 // AUDIT: functions that are not safe (safe code trusts them
@@ -69,7 +69,7 @@ int viewed(const struct view *w) { return total(w->of); }
 // TWICE-NOT: view.of
 // JSON-DAG: "schema": "weavec-audit"
 // JSON-DAG: "safe": 2
-// JSON-DAG: "version": 6
+// JSON-DAG: "version": 7
 
 // TYPED: '-fweavec-typed' was removed: -fweavec-safe makes a unit safe, with typed memory and ownership (RFC 0043)
 WEAVEC_GUARDED int main(void) {

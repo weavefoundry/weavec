@@ -43,8 +43,11 @@ size_t length(const char *WEAVEC_NULL_TERMINATED s) {
 }
 
 // The entries check what code that is not typed passes, the struct's bytes
-// and the string's terminator, then run the body (here inlined).
+// and the string's terminator (RFC 0048 §3: in constant time in a live heap
+// block, inline; the runtime scans any other), then run the body (here
+// inlined).
 // CHECK-LABEL: define {{.*}}i32 @get(
 // CHECK: __weavec_rt_shadow
 // CHECK-LABEL: define {{.*}}i64 @length(
-// CHECK: @__weavec_rt_strlen(
+// CHECK: @__weavec_rt_heap
+// CHECK: @__weavec_rt_string_entry(

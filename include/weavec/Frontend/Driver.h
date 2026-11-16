@@ -52,8 +52,10 @@ struct DriverOptions {
   /// outside system headers is safe unless marked otherwise.
   bool safe = false;
   /// `-fweavec-safe-checks=bounds|full` (RFC 0041 §7): whether safe
-  /// functions keep their guards beside their bounds checks.
+  /// functions keep their guards beside their bounds checks. RFC 0048 §1:
+  /// unset, a unit compiled without optimization is checked (`full`).
   bool safeFull = false;
+  bool safeChecksGiven = false;
   /// `-f[no-]weavec-safe-survey` (RFC 0047 §7): the rules also run over the
   /// functions that are not safe, and the ledger counts their errors.
   bool survey = false;
@@ -85,6 +87,12 @@ struct DriverOptions {
   /// Whether locals are zero-initialized.
   [[nodiscard]] bool zeroInitializes() const {
     return enforces() && zeroInit.value_or(true);
+  }
+  /// RFC 0048 §1 (D5): the mode a safe unit takes when the command line
+  /// does not choose it, by whether the compile optimizes.
+  void defaultSafeChecks(bool optimizes) {
+    if (!safeChecksGiven)
+      safeFull = !optimizes;
   }
 };
 

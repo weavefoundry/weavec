@@ -49,12 +49,12 @@ As in Rust, the fix is one of: take the borrow again after the change, keep an i
 
 ### Fast and checked builds
 
-A safe unit is built one of two ways, as Rust builds a debug and a release binary:
+A safe unit is built one of two ways, as Rust builds a debug and a release binary; without the flag, a compile without optimization is the checked one and a compile with `-O1` and above the fast one (RFC 0048):
 
 | `-fweavec-safe-checks=` | What it is for                                 | At run time                                                                                                                                                                                                                                                                           |
 | ----------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bounds` (the default)  | the build you ship and benchmark               | allocations carry their type and a block safe code releases is reused at once by its own type; no guard on an access through a reference at a constant offset, none in the standard library's functions whose preconditions its hardening checks; indices and iterators still checked |
-| `full`                  | the build you test, and an agent iterates with | exactly a guarded unit: every guard, the quarantine and the sweep, allocation stacks, container annotations; every bug the rules miss stops with a full report                                                                                                                        |
+| `bounds` (the default with `-O1` and above) | the build you ship and benchmark | safe code is checked against what it holds: allocations carry their type and a block safe code releases is reused at once by its own type; no guard on an access at a constant offset through a reference, `this`, a pointer parameter or a pointer it loaded or a project function returned, none on a string's current byte, none in the standard library's functions whose preconditions its hardening checks; its locals in plain frames; indices compared with their bounds; iterators still guarded |
+| `full` (the default without optimization) | the build you test, and an agent iterates with | exactly a guarded unit: every guard, the quarantine and the sweep, allocation stacks, container annotations; every bug the rules miss stops with a full report |
 
 The rules are the same in both, so code that compiles in one compiles in the other. A stale pointer the rules missed stops when it runs in the checked build; in the fast build it reaches memory of its own type, as a stale index does in Rust, and a report of it ends with `weavec: note: built for speed; rebuild with -fweavec-safe-checks=full …`. The one error that rests on the rules alone in the fast build is a borrow into storage that changes type in place, used after the change: a reference into the alternative of a `std::variant` after the variant was assigned another alternative. `stale-borrow` rejects it in the function, and `escape` keeps a pointer into such storage out of members:
 
@@ -68,6 +68,22 @@ struct Holder {
 ```
 
 Keep the index or the key, and look the value up when it is used. `weavec-cc --weavec-audit` lists the library functions a fast unit runs without guards and the allocations it could not type.
+
+### Pointers a function keeps
+
+A function that stores the address of what a parameter refers to, of `this`, or of a local in a member, a container or a global says so ([`escape`](/reference/rules/#escape), RFC 0048): `WEAVEC_ESCAPES` after the parameter's `*` or `&`, or after the parameter list for `this`. An object of a `WEAVEC_ALIASED` class is kept by declaration. A local whose address is kept, and a local of an aliased class, lives in typed memory for its scope, so a pointer left behind by a bug reaches memory of the local's type in the fast build and stops with a report in the checked one, never a frame that returned. A position is not a pointer to one object: an end is `WEAVEC_COUNTED_BY(0)`, a cursor `WEAVEC_ENDED_BY(limit)`, and `&p[i]` an element ([`call-args`](/reference/rules/#call-args)).
+
+```cpp
+struct Registry {
+  std::vector<Counter *> counters;
+  void add(Counter &WEAVEC_ESCAPES c) { counters.push_back(&c); }
+};
+long count(Registry &registry) {
+  Counter mine;                 // its address is kept: a block of its type
+  registry.add(mine);
+  return mine.hits;
+}
+```
 
 ## Building blocks
 
@@ -115,7 +131,7 @@ struct Node {
   std::vector<std::unique_ptr<Node>> children;
   const Node *parent = nullptr;
 
-  Node *add(std::string text) {
+  Node *add(std::string text) WEAVEC_ESCAPES { // keeps `this` in the child
     auto child = std::make_unique<Node>();
     child->label = std::move(text);
     child->parent = this;
@@ -239,7 +255,7 @@ struct Order {
     link->newer = nullptr;
     link->older = nullptr;
   }
-  void push(Link *link) {
+  void push(Link *WEAVEC_ESCAPES link) { // keeps the link
     link->older = newest;
     if (newest != nullptr) newest->newer = link; else oldest = link;
     newest = link;

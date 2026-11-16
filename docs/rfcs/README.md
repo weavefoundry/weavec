@@ -97,5 +97,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0045](0045-type-stable-memory.md) | Type-stable memory | Accepted |
 | [0046](0046-thread-safety.md) | Thread safety | Accepted |
 | [0047](0047-conversion-in-place.md) | Conversion in place | Accepted |
+| [0048](0048-safe-code-without-the-shadow.md) | Safe code without the shadow | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

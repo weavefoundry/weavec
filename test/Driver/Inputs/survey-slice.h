@@ -5,7 +5,7 @@
 WEAVEC_SAFE_FILE
 class WEAVEC_ALIASED Slice {
 public:
-  Slice(const char *WEAVEC_COUNTED_BY(n) d, std::size_t n) : data_(d), size_(n) {}
+  Slice(const char *WEAVEC_COUNTED_BY(n) WEAVEC_ESCAPES d, std::size_t n) : data_(d), size_(n) {}
   char at(std::size_t i) const { return data_[i]; }
   std::size_t size() const { return size_; }
 

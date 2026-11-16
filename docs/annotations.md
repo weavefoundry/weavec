@@ -7,14 +7,16 @@ in C++, [RFC 0044](rfcs/0044-safe-cxx.md) and
 [its guide](pages/guides/safe-cxx.md)).
 `weavec-cc` puts the header on the system include path
 (`#include <weavec.h>`) and defines `__WEAVEC__` to `1` in every unit it
-compiles with WeaveC enabled. The header is at version 3.3
+compiles with WeaveC enabled. The header is at version 3.4
 (`WEAVEC_H_VERSION_MAJOR`, `WEAVEC_H_VERSION_MINOR`): 3.0 added
 `WEAVEC_OWNED` and made `WEAVEC_SAFE` name the one safe tier
 ([RFC 0043](rfcs/0043-ownership.md)), below; 3.1 adds no macro and gives
 the existing ones their meaning in C++ ([RFC 0044](rfcs/0044-safe-cxx.md),
 _In C++_ below); 3.2 adds `WEAVEC_SENDS` ([RFC 0046](rfcs/0046-thread-safety.md));
 3.3 adds `WEAVEC_SAFE_FILE` and `WEAVEC_ALIASED` and gives the bounds their
-meaning in C++ ([RFC 0047](rfcs/0047-conversion-in-place.md)).
+meaning in C++ ([RFC 0047](rfcs/0047-conversion-in-place.md)); 3.4 adds no
+macro and lets `WEAVEC_ESCAPES` follow a reference's `&` and a member
+function's parameter list ([RFC 0048](rfcs/0048-safe-code-without-the-shadow.md)).
 
 `WEAVEC_UNSAFE` expands to `__attribute__((annotate("weavec.unsafe")))`
 under compilers that understand Clang's `annotate` attribute and to nothing
@@ -90,7 +92,9 @@ region too, with no source change.
 | --- | --- | --- |
 | `WEAVEC_SAFE`, `WEAVEC_GUARDED` | before a function definition, or after `struct` or `class` | The function, or every member function the class defines, is safe (in a unit without the flag) or stays guarded (in a unit with it). |
 | `WEAVEC_UNSAFE` | as in C | Unchanged: a function or a block without guards. A safe function holds no such block. |
-| `T *WEAVEC_ESCAPES p`, `F WEAVEC_ESCAPES f` | a parameter | The callee keeps the pointer (as a reference), or a copy of the callable: a safe caller does not pass the address of a local or a callable that captures by reference. |
+| `T *WEAVEC_ESCAPES p`, `T &WEAVEC_ESCAPES r`, `F WEAVEC_ESCAPES f` | a parameter | The callee keeps the pointer or the address of what the reference names (as a reference), or a copy of the callable. A safe function that stores such an address needs it (RFC 0048 §4); a caller's local passed for it is placed in typed memory for its scope; a callable that captures by reference is not passed. |
+| `void f() WEAVEC_ESCAPES;` | after a member function's parameter list | The function keeps `this` (RFC 0048 §4), which an object of a `WEAVEC_ALIASED` class is kept by without it. |
+| `T *WEAVEC_COUNTED_BY(0) end()` | a result, parameter or member | A pointer to no element: an end, compared and subtracted, never read (RFC 0048 §2.2). |
 | `std::function<void()> WEAVEC_SENDS task` | a parameter of a type-erased callable, after its type | RFC 0046 §8: the function may keep the callable and run it on another thread; a safe caller passes a callable that captures by value only what may be sent. The same on every declaration; `bad-annotation` on any other type, and in C. |
 | `T *WEAVEC_BORROWED m` | a pointer member | The member is a borrow, not a reference: its class is a view, as a class with a reference member is. |
 | `WEAVEC_LIFETIMEBOUND` | after a parameter's name | The result points into this argument (Clang's `lifetimebound`); without any, a view result points into every view passed by value, or, when there is none, into the reference arguments. |

@@ -33,7 +33,9 @@ A rewrite into Rust starts over: a new build, bindings at the boundary, tests po
 
 4. **Take the blocked file with the fewest errors.** Compile it with the rules on (`-fweavec-safe`, or mark it and build) and fix what they say. `weavec-c++ --weavec-explain <rule>` prints a rule with a rejected example and its rewrite.
 
-5. **Run the project's tests in the checked build** (`-fweavec-safe-checks=full`): every guard stays, so a mistake the rules do not see stops with a full report. Then repeat from 1.
+5. **Run the project's tests in the checked build** (`-fweavec-safe-checks=full`, the default of a build without optimization): every guard stays, so a mistake the rules do not see stops with a full report. Then repeat from 1.
+
+The errors that come with pointers a fast build believes (RFC 0048) are each one annotation on an existing declaration: a `const char *` handed to `memcpy` with a length, or to `strncmp`, says how many bytes it has (`WEAVEC_COUNTED_BY(n)`) or that it is a string (`WEAVEC_NULL_TERMINATED`); a function that returns or stores an end declares it `WEAVEC_COUNTED_BY(0)`; a function that keeps a parameter's pointer, a reference's address or `this` (a constructor that stores its argument, a `Set(start, end)`, a `push(item)` into a member) declares it `WEAVEC_ESCAPES`, and so does a constructor that keeps the object it makes (a small buffer that points into itself) and each class whose constructor makes one; a pointer member of a short-lived cursor or wrapper that only borrows is `WEAVEC_BORROWED` instead, which keeps nothing. RFC 0047's conversion of tinyxml2 meets 19 such errors, 12 of them strings handed to the C library; yaml-cpp's needed 21 annotations, all but one `WEAVEC_ESCAPES` up four call chains (the emitter's stream, its settings, the graph builder's nodes, `Binary`).
 
 `-fweavec-safe` on a unit's command line makes every file of the unit safe at once and turns on the fast build; use it when a unit's files are all converted.
 
@@ -55,7 +57,8 @@ Arrays keep their length as pointers, a container's `data()` has `size()` elemen
 class Slice {
 public:
   Slice() = default;
-  Slice(const char *WEAVEC_COUNTED_BY(n) data, std::size_t n) : data_(data), size_(n) {}
+  Slice(const char *WEAVEC_COUNTED_BY(n) WEAVEC_ESCAPES data, std::size_t n)
+      : data_(data), size_(n) {}
   Slice(const std::string &s) : data_(s.data()), size_(s.size()) {}
   const char *WEAVEC_COUNTED_BY(size_) data() const { return data_; }
   std::size_t size() const { return size_; }

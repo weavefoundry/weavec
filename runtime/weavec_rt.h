@@ -331,6 +331,9 @@ struct weavecRtHeapObject {
   uint32_t released;
 };
 struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address);
+/* RFC 0048 section 3: whether `address` lies in a live slot's object or on
+ * the byte after it. */
+int weavecRtInLiveBlock(uintptr_t address);
 
 /*===-- Guards (section 5.2) -----------------------------------------------===*/
 
@@ -407,6 +410,11 @@ WEAVEC_RT_API int __weavec_rt_range_ok(uintptr_t address, uint64_t n);
  * `max`). */
 WEAVEC_RT_API uint64_t __weavec_rt_strlen(const char *s, uint64_t max,
                                           const struct __weavec_rt_site *site);
+/* RFC 0048 section 3: a string a fast unit's safe function is handed by
+ * code that is not safe: taken at once in a live heap block, scanned
+ * against the shadow anywhere else. */
+WEAVEC_RT_API void __weavec_rt_string_entry(const char *s,
+                                            const struct __weavec_rt_site *site);
 
 /* A copy whose operands overlap (section 2.5). */
 WEAVEC_RT_API void __weavec_rt_overlap(uintptr_t destination, uintptr_t source,
@@ -840,7 +848,7 @@ void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
 /* The library's interface version (libweavec_rt.so.<abi>,
  * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
  * encoding or a site record changes. */
-#define WEAVEC_RT_ABI 44
+#define WEAVEC_RT_ABI 45
 
 /*===-- Internal -----------------------------------------------------------===*/
 

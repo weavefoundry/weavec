@@ -1,12 +1,19 @@
-// RFC 0045 §1, §9: -fweavec-safe-checks=bounds (the default) is the fast
-// mode, `full` the checked one. A fast C++ unit is compiled without the
-// container annotations (libc++'s __SANITIZER_DISABLE_CONTAINER_OVERFLOW__
-// in place of libstdc++'s _GLIBCXX_SANITIZE_VECTOR); the ledger's config
-// says which mode a safe unit was compiled in.
+// RFC 0045 §1, §9: -fweavec-safe-checks=bounds is the fast mode, `full`
+// the checked one; RFC 0048 §1 (D5): unset, a compile that optimizes is
+// fast and one that does not is checked. A fast C++ unit is compiled
+// without the container annotations (libc++'s
+// __SANITIZER_DISABLE_CONTAINER_OVERFLOW__ in place of libstdc++'s
+// _GLIBCXX_SANITIZE_VECTOR); the ledger's config says which mode a safe
+// unit was compiled in.
 // RUN: rm -rf %t && mkdir -p %t
-// RUN: %weavec_cxx -std=c++20 -fweavec-safe -E -dM %s | FileCheck %s --check-prefix=FAST
-// RUN: %weavec_cxx -std=c++20 -fweavec-safe -fweavec-safe-checks=full -E -dM %s | FileCheck %s --check-prefix=FULL
+// RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -E -dM %s | FileCheck %s --check-prefix=FAST
+// RUN: %weavec_cxx -std=c++20 -fweavec-safe -fweavec-safe-checks=bounds -E -dM %s | FileCheck %s --check-prefix=FAST
+// RUN: %weavec_cxx -std=c++20 -fweavec-safe -E -dM %s | FileCheck %s --check-prefix=FULL
+// RUN: %weavec_cxx -std=c++20 -O0 -fweavec-safe -E -dM %s | FileCheck %s --check-prefix=FULL
+// RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -fweavec-safe-checks=full -E -dM %s | FileCheck %s --check-prefix=FULL
 // RUN: %weavec_cxx -std=c++20 -E -dM %s | FileCheck %s --check-prefix=FULL
+// RUN: %weavec_cxx -std=c++20 -fweavec-safe -c %s -o %t/debug.o -fweavec-ledger=%t/debug.json
+// RUN: FileCheck %s --check-prefix=FULLLEDGER < %t/debug.json
 // RUN: %weavec_cxx -std=c++20 -O1 -fweavec-safe -c %s -o %t/fast.o -fweavec-ledger=%t/fast.json
 // RUN: FileCheck %s --check-prefix=FASTLEDGER < %t/fast.json
 // RUN: %weavec_cxx -std=c++20 -O1 -fweavec-safe -fweavec-safe-checks=full -c %s -o %t/full.o -fweavec-ledger=%t/full.json

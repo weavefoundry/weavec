@@ -1,8 +1,11 @@
 // RFC 0047 §1.4: in a safe C++ function an access through a pointer with a
 // bound is a comparison with the bound, not a guard, and its public entry
-// checks the bound against the shadow; a function that uses no bound
-// compiles as before, and its accesses keep their guards.
+// checks the bound against the shadow. RFC 0048 §2.1: a pointer loaded
+// from a member points to one object of its type, so a fast unit's access
+// at a constant offset through it has no guard; the checked build keeps
+// the guard.
 // RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -S -emit-llvm %s -o - | FileCheck %s
+// RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -fweavec-safe-checks=full -S -emit-llvm %s -o - | FileCheck %s --check-prefix=FULL
 #include <cstddef>
 #include <weavec.h>
 
@@ -24,8 +27,11 @@ struct Node {
 };
 // CHECK-LABEL: define {{.*}}@_Z5valueRK4Node(
 // CHECK-NOT: __weavec_rt_bounds_fail
-// CHECK: call {{.*}}@__weavec_rt_guard
+// CHECK-NOT: call {{.*}}@__weavec_rt_guard
 // CHECK: {{^}$}}
+// FULL-LABEL: define {{.*}}@_Z5valueRK4Node(
+// FULL: call {{.*}}@__weavec_rt_guard
+// FULL: {{^}$}}
 int value(const Node &n) { return n.next != nullptr ? n.next->v : n.v; }
 
 // CHECK-LABEL: define {{.*}}@_Z3sumPKim(
