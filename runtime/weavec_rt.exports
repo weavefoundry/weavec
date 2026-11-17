@@ -94,6 +94,7 @@ __weavec_rt_strcasecmp
 __weavec_rt_strcat
 __weavec_rt_strcmp
 __weavec_rt_strcpy
+__weavec_rt_string_entry
 __weavec_rt_strlen
 __weavec_rt_strncasecmp
 __weavec_rt_strncmp

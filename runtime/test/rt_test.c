@@ -1578,6 +1578,49 @@ static void typedDoubleRelease(void) {
   __weavec_rt_free_at(opaque(p), &typedRelease);
 }
 
+/* RFC 0048 section 3: a string in a live heap block is taken at once, up
+ * to the byte after the block, which is zero; one anywhere else is scanned
+ * against the shadow, and a released block's stops. */
+static void releasedString(void) {
+  char *p = (char *)opaque(malloc(16));
+  free(p);
+  __weavec_rt_string_entry(p, NULL);
+}
+
+static void testStringEntry(void) {
+  char *p = (char *)opaque(malloc(24));
+  CHECK(weavecRtInLiveBlock((uintptr_t)p));
+  CHECK(weavecRtInLiveBlock((uintptr_t)p + 24));
+  memset(p, 'x', 24);
+  __weavec_rt_string_entry(p, NULL);
+  __weavec_rt_string_entry(p + 23, NULL);
+  CHECK(p[24] == 0);
+  free(p);
+  CHECK(!weavecRtInLiveBlock((uintptr_t)p));
+  CHECK(stopsIn(releasedString));
+}
+
+/* RFC 0048 section 8: a pool keeps more free slots of one type than the
+ * 128 Ki each pool had, none of them moved to the quarantine. */
+static struct __weavec_rt_type poolMany = {0x0fedcba987654321ULL, 0};
+static void testPoolKeepsMany(void) {
+  enum { Many = 200000 };
+  void **blocks = (void **)malloc(Many * sizeof(void *));
+  size_t count = 0;
+  size_t bytes = 0;
+  size_t before = 0;
+  unsigned i;
+  CHECK(blocks != NULL);
+  weavecRtPoolStats(&count, &before);
+  for (i = 0; i < Many; ++i)
+    blocks[i] = __weavec_rt_alloc_typed(16, WeavecRtFormMalloc, &poolMany);
+  for (i = 0; i < Many; ++i)
+    __weavec_rt_free_at(blocks[i], &typedRelease);
+  weavecRtPoolStats(&count, &bytes);
+  CHECK(bytes - before >= (size_t)Many * 16 * 9 / 10);
+  free(blocks);
+}
+
 static void testPoolReusesByType(void) {
   /* A typed block safe code released is the next block of its type and
    * class, at once and zeroed; no other type and no untyped allocation gets
@@ -1859,6 +1902,8 @@ static const struct {
     {"threads", testThreads},
     {"thread-caches", testThreadCaches},
     {"pool-reuses-by-type", testPoolReusesByType},
+    {"string-entry", testStringEntry},
+    {"pool-keeps-many", testPoolKeepsMany},
     {"pool-untyped-release", testPoolUntypedRelease},
     {"pool-slots-are-scanned", testPoolSlotsAreScanned},
     {"pool-new", testPoolNew},

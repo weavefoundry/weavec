@@ -819,6 +819,12 @@ void guardLibraryCalls(ModuleContext &module, llvm::Function &function,
     name.consume_back(".inline");
     if (module.isUnsafe(call->getDebugLoc()))
       continue;
+    // RFC 0048 §6.4: a safe function's call whose strings it holds calls
+    // the C library itself.
+    if (late && call->hasMetadata(InHandMetadata)) {
+      call->setMetadata(InHandMetadata, nullptr);
+      continue;
+    }
     const std::optional<core::LibraryMatch> match =
         spec.lookup(name, call->arg_size());
     if (!match || match->entry == nullptr)

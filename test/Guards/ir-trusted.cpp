@@ -6,7 +6,7 @@
 // visitors is copied to name their clones. The ledger and the audit list
 // what a fast unit trusts. -fweavec-safe-checks=full makes no clone.
 // RUN: rm -rf %t && mkdir -p %t
-// RUN: %weavec_cxx -std=c++20 -O0 -fweavec-safe -S -emit-llvm %s -o - | FileCheck %s
+// RUN: %weavec_cxx -std=c++20 -O0 -fweavec-safe -fweavec-safe-checks=bounds -S -emit-llvm %s -o - | FileCheck %s
 // RUN: %weavec_cxx -std=c++20 -O0 -fweavec-safe -fweavec-safe-checks=full -S -emit-llvm %s -o - | FileCheck %s --check-prefix=FULL
 // RUN: %weavec_cxx -std=c++20 -O1 -fweavec-safe -fweavec-summary -fweavec-ledger=%t/ -c %s -o %t/trusted.o 2>&1 | FileCheck %s --check-prefix=SUMMARY
 // RUN: %weavec_cc --weavec-audit %t | FileCheck %s --check-prefix=AUDIT

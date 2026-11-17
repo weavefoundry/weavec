@@ -91,6 +91,12 @@ inline constexpr unsigned MarkerKeep = 1U << 16U;
 inline constexpr unsigned MarkerScan = 1U << 17U;
 /// RFC 0045 §10: verify mode's monitor of an access §4 or §5 believed.
 inline constexpr unsigned MarkerBelieved = 1U << 18U;
+/// RFC 0048 §6.4: a read-only library call of a safe function whose
+/// arguments are strings it holds: called as it is, not redirected.
+inline constexpr llvm::StringLiteral InHandMetadata = "weavec.inhand";
+/// RFC 0048 §3: a string marker at a fast unit's entry: in constant time
+/// when the string is in a live heap block.
+inline constexpr unsigned MarkerHeapString = 1U << 19U;
 
 /// The redzone between a frame's objects and after a global (section 3.2,
 /// section 4): at least 16 bytes, one eighth of the object up to 4 KiB, so
@@ -317,6 +323,13 @@ inline void appendRun(ShadowRuns &runs, std::uint64_t count,
 [[nodiscard]] bool isSafe(const ModuleContext &module,
                           const llvm::Function &function);
 void prepareSafe(ModuleContext &module, llvm::Function &function);
+/// RFC 0048 §5.1: the locals the checker marked `weavec.placed`, in any
+/// function, each given a block for its scope (from its type's pool in a
+/// fast unit).
+void placeLocals(ModuleContext &module, llvm::Function &function);
+/// RFC 0045 §2: the pool key of a type by its name.
+[[nodiscard]] std::uint64_t typeKey(const ModuleContext &module,
+                                    llvm::StringRef name, bool array);
 void boundSafe(ModuleContext &module, llvm::Function &function);
 
 /// RFC 0042 (GuardTyped.cpp). Reads the field annotations of the module's
@@ -521,6 +534,9 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
 enum class FastCode : std::uint8_t { None, Safe, Library, Trusted };
 inline constexpr llvm::StringLiteral TrustedSuffix = ".weavec.t";
 [[nodiscard]] bool fastUnit(const ModuleContext &module);
+/// RFC 0048: a fast unit's safe code is checked against what it holds, not
+/// the shadow.
+[[nodiscard]] bool shadowless(const ModuleContext &module);
 [[nodiscard]] bool fastCxxUnit(const ModuleContext &module);
 [[nodiscard]] FastCode fastCodeOf(const ModuleContext &module,
                                   const llvm::Function &function);

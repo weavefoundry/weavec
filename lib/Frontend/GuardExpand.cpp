@@ -62,6 +62,9 @@ struct Access {
   bool believed = false;
   /// A string the call accepts as null.
   bool nullOk = false;
+  /// RFC 0048 §3: a fast unit's entry's string, in constant time when it
+  /// is in a live heap block.
+  bool heapString = false;
   llvm::Value *nullBase = nullptr;
   unsigned row = 0;
 
@@ -114,6 +117,7 @@ static std::optional<Access> accessOf(llvm::CallInst &call,
   if (marker == MarkerString) {
     access.kind = Access::Kind::String;
     access.nullOk = (bits & MarkerNullOk) != 0;
+    access.heapString = (bits & MarkerHeapString) != 0;
     access.length = call.getArgOperand(1);
     return access;
   }
@@ -362,7 +366,20 @@ static void mergeInBlocks(llvm::Function &function,
 
 /// Whether the alloca's address can reach code other than this function's
 /// own accesses: stored, passed to a call, returned or converted.
-static bool escapes(const llvm::AllocaInst &alloca, bool typed) {
+/// RFC 0048 §5.2: whether a fast unit's safe function hands its local to
+/// code that is not safe (a guarded function, a library function that is
+/// not trusted, an indirect call), whose guards need the local's redzones.
+static bool plainCall(const ModuleContext &module, const llvm::CallBase &call) {
+  const llvm::Function *callee = call.getCalledFunction();
+  if (callee == nullptr || !shadowless(module) || !module.options.safe->cxx)
+    return false;
+  const FastCode code = fastCodeOf(module, *callee);
+  return code == FastCode::Safe || code == FastCode::Trusted ||
+         callee->getName().ends_with(".weavec.safe");
+}
+
+static bool escapes(const ModuleContext &module, const llvm::AllocaInst &alloca,
+                    bool typed, bool plain) {
   llvm::SmallVector<const llvm::Value *, 8> work{&alloca};
   llvm::SmallPtrSet<const llvm::Value *, 16> seen{&alloca};
   while (!work.empty()) {
@@ -402,6 +419,8 @@ static bool escapes(const llvm::AllocaInst &alloca, bool typed) {
         if (typed && call->getCalledFunction() != nullptr &&
             !call->isCallee(&use) &&
             call->getCalledFunction()->getName().ends_with(".weavec.safe"))
+          continue;
+        if (plain && !call->isCallee(&use) && plainCall(module, *call))
           continue;
         if (const auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(call);
             intrinsic &&
@@ -452,6 +471,45 @@ static void expand(FunctionContext &context, const Access &access,
           module.site(marker->getDebugLoc(), 0),
           RootCheck{.root = access.root, .shadow = access.rootShadow});
       builder.SetInsertPoint(marker);
+    }
+    if (access.heapString && marker->use_empty()) {
+      // Inline, a string in a live heap block (in the arena, at a byte the
+      // shadow says is an object's); the runtime decides the rest.
+      builder.SetCurrentDebugLocation(marker->getDebugLoc());
+      llvm::Value *address = builder.CreatePtrToInt(access.pointer, module.i64);
+      llvm::Constant *heap = module.module.getOrInsertGlobal(
+          "__weavec_rt_heap", llvm::ArrayType::get(module.i64, 2));
+      llvm::Value *base = builder.CreateLoad(module.i64, heap);
+      llvm::Value *bytes = builder.CreateLoad(
+          module.i64, builder.CreateConstGEP1_64(module.i8, heap, 8));
+      llvm::Value *inArena =
+          builder.CreateICmpULT(builder.CreateSub(address, base), bytes);
+      llvm::Value *shadow = builder.CreateLoad(
+          module.i8, context.shadowAddress(builder, address));
+      llvm::Value *whole = builder.CreateICmpULT(
+          shadow, llvm::ConstantInt::get(module.i8, 0x80));
+      llvm::Value *part = builder.CreateAnd(
+          builder.CreateICmpULT(shadow,
+                                llvm::ConstantInt::get(module.i8, 0xF0)),
+          builder.CreateICmpULT(
+              builder.CreateTrunc(builder.CreateAnd(address, 15), module.i8),
+              builder.CreateAnd(shadow, 15)));
+      llvm::Value *ok =
+          builder.CreateAnd(inArena, builder.CreateOr(whole, part));
+      llvm::Instruction *slow = llvm::SplitBlockAndInsertIfThen(
+          builder.CreateNot(ok), marker->getIterator(), /*Unreachable=*/false,
+          llvm::MDBuilder(module.context).createUnlikelyBranchWeights());
+      llvm::IRBuilder<> call(slow);
+      llvm::CallInst *check = call.CreateCall(
+          module.runtime(
+              "string_entry",
+              llvm::FunctionType::get(llvm::Type::getVoidTy(module.context),
+                                      {module.ptr, module.ptr}, false)),
+          {access.pointer,
+           module.site(marker->getDebugLoc(), access.nullOk ? SiteNullOk : 0)});
+      check->setDebugLoc(marker->getDebugLoc());
+      marker->eraseFromParent();
+      return;
     }
     // The bound from the marker itself: it may be another string's length,
     // whose marker an earlier expansion replaced.
@@ -961,9 +1019,14 @@ void expandGuards(ModuleContext &module, llvm::Function &function,
     for (llvm::Instruction &instruction : block)
       if (auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(&instruction);
           alloca && !tracked.contains(alloca) &&
-          escapes(*alloca, isSafe(module, function) && !module.verify() &&
-                               !module.options.safe->full &&
-                               !module.options.safe->cxx))
+          escapes(module, *alloca,
+                  isSafe(module, function) && !module.verify() &&
+                      !module.options.safe->full && !module.options.safe->cxx,
+                  // RFC 0048 §5.2: a fast unit's safe function's locals
+                  // that only safe code reaches are in a plain frame (a
+                  // monitored one in verify mode).
+                  !module.verify() &&
+                      fastCodeOf(module, function) == FastCode::Safe))
         tracked.insert(alloca);
 
   for (const Access &access : accesses)

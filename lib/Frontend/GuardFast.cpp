@@ -57,6 +57,18 @@ static llvm::cl::opt<bool> pools("weavec-pools", llvm::cl::init(true),
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 static llvm::cl::opt<bool> believe("weavec-believe", llvm::cl::init(true),
                                    llvm::cl::Hidden);
+// RFC 0048: what checking a fast unit's safe code against what it holds
+// buys (`-mllvm -weavec-shadowless=0`: RFC 0045's fast mode); not a user's
+// switch.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+static llvm::cl::opt<bool> shadowlessOption("weavec-shadowless",
+                                            llvm::cl::init(true),
+                                            llvm::cl::Hidden);
+
+bool shadowless(const ModuleContext &module) {
+  return fastUnit(module) && shadowlessOption &&
+         (!module.options.safe->cxx || believe);
+}
 
 bool fastUnit(const ModuleContext &module) {
   return module.options.safe != nullptr && module.options.safe->fast;
@@ -101,8 +113,8 @@ FastCode fastCodeOf(const ModuleContext &module,
 /// of the unit for a type the name does not identify across units (every
 /// C type, a C++ type in an unnamed namespace or a function); an array
 /// `new`, which may put a cookie before its elements, apart.
-static std::uint64_t typeKey(const ModuleContext &module, llvm::StringRef name,
-                             bool array) {
+std::uint64_t typeKey(const ModuleContext &module, llvm::StringRef name,
+                      bool array) {
   std::uint64_t key = llvm::xxh3_64bits(name);
   if (!module.options.safe->cxx || name.contains('(') ||
       name.contains("anonymous")) {

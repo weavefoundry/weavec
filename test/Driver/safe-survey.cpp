@@ -35,7 +35,7 @@ int hits = 0; // a global that is not safe to share: its error is in the plan
 // LEDGER: "surveyGlobals": [
 // LEDGER: "global": "hits"
 // LEDGER: "thread-share": 1
-// LEDGER: "version": 10
+// LEDGER: "version": 11
 
 // AUDIT: conversion: 3 of 7 functions safe (43%); 2 more have no error
 // AUDIT-NEXT: ready (mark WEAVEC_SAFE_FILE):
@@ -48,7 +48,7 @@ int hits = 0; // a global that is not safe to share: its error is in the plan
 // AUDIT: aliased classes
 // AUDIT-NEXT: survey-slice.h:{{[0-9]+}}: Slice
 
-// JSON-DAG: "version": 6
+// JSON-DAG: "version": 7
 // JSON-DAG: "conversion": {
 // JSON-DAG: "ready": true
 // JSON-DAG: "aliased": [

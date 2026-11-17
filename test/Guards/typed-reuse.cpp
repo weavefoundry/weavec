@@ -1,11 +1,13 @@
-// RFC 0045 §3, §4: in a fast safe C++ program the block a std::unique_ptr
-// releases is the next block of its type; a raw pointer member to it is a
-// reference, tested when it is loaded, so its use before the reuse is
-// still reported, without allocation stacks and with a note; after the
-// reuse it reads the object of the same type that lives there.
+// RFC 0045 §3: in a fast safe C++ program the block a std::unique_ptr
+// releases is the next block of its type. RFC 0048 §2.1: a raw pointer
+// member to it is believed when it is loaded, so its use before the reuse
+// reads the released block, zeroed, and after the reuse the object of the
+// same type that lives there. The checked build reports the use (O4).
 // RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe %s -o %t
 // RUN: %t | FileCheck %s --check-prefix=REUSE
-// RUN: not --crash %t stale 2>&1 | FileCheck %s
+// RUN: %t stale | FileCheck %s --check-prefix=STALE
+// RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -fweavec-safe-checks=full %s -o %t.full
+// RUN: not --crash %t.full stale 2>&1 | FileCheck %s
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -35,10 +37,12 @@ int main(int argc, char **argv) {
   cache.items.back()->v = 7;
   cache.remember();
   drop(cache);
-  if (stale(argc, argv))
+  if (stale(argc, argv)) {
+    // STALE: stale 0
     // CHECK: weavec: heap-use-after-free at {{.*}}typed-reuse.cpp:{{[0-9]+}}:{{[0-9]+}}: read of 4 bytes
-    // CHECK: weavec: note: built for speed
-    return cache.recall();
+    std::printf("stale %d\n", cache.recall());
+    return 0;
+  }
   cache.items.push_back(std::make_unique<Item>());
   cache.items.back()->v = 9;
   // REUSE: 9

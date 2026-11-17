@@ -241,8 +241,10 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                             {.K = "unguarded",
                              .V = static_cast<std::int64_t>(ledger.unguarded)},
                             {.K = "typedSites",
+                             .V = static_cast<std::int64_t>(ledger.typedSites)},
+                            {.K = "placedLocals",
                              .V = static_cast<std::int64_t>(
-                                 ledger.typedSites)}}},
+                                 ledger.placedLocals)}}},
                    {.K = "functions", .V = std::move(functions)},
                    {.K = "fields", .V = std::move(fields)},
                    {.K = "surveyGlobals", .V = std::move(surveyed)},
@@ -295,6 +297,9 @@ std::string enforcementSummary(const EnforcementLedger &ledger,
               ledger.library,
               [](const auto &entry) { return entry.kind == "trusted"; })
        << " trusted library functions";
+  // RFC 0048 §9.
+  if (ledger.placedLocals != 0)
+    os << "; " << ledger.placedLocals << " placed locals";
   return text;
 }
 
@@ -347,6 +352,9 @@ struct Audit {
            std::map<std::string, unsigned>>
       globalErrors;
   llvm::json::Array aliased;
+  /// RFC 0048 §9: the locals placed in typed memory, which the source does
+  /// not show as allocations.
+  std::int64_t placed = 0;
 };
 } // namespace
 
@@ -389,6 +397,8 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
     if (unit == nullptr)
       continue;
     llvm::StringMap<std::string> tiers;
+    if (const llvm::json::Object *summary = unit->getObject("summary"))
+      audit.placed += summary->getInteger("placedLocals").value_or(0);
     if (const llvm::json::Array *functions = unit->getArray("functions"))
       for (const llvm::json::Value &value : *functions) {
         const llvm::json::Object *function = value.getAsObject();
@@ -616,8 +626,9 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
                "{0:2}",
                llvm::json::Value(llvm::json::Object{
                    {.K = "schema", .V = "weavec-audit"},
-                   {.K = "version", .V = 6},
+                   {.K = "version", .V = 7},
                    {.K = "functions", .V = audit.functions},
+                   {.K = "placedLocals", .V = audit.placed},
                    {.K = "safe", .V = audit.safe},
                    {.K = "trusted", .V = std::move(audit.trusted)},
                    {.K = "guarded", .V = std::move(audit.guarded)},
@@ -660,6 +671,9 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
     }
   };
   out << audit.safe << " of " << audit.functions << " functions safe\n";
+  if (audit.placed != 0)
+    out << audit.placed
+        << " locals placed in typed memory (their addresses are kept)\n";
   // RFC 0047 §7: the conversion's plan, when the ledgers were surveyed.
   if (surveyed) {
     unsigned functions = 0;

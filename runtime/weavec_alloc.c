@@ -1954,17 +1954,19 @@ size_t __weavec_rt_size(const void *p) {
  * reuse at once, zeroed; a slot leaves it only through the quarantine. Its
  * slots
  * (slotEntry values) live in the runtime's own memory, never in a released
- * block: each pool has room for PoolSlots of them in one reservation. */
-enum { PoolLimit = 4096, PoolHashSlots = 8192, PoolSlots = 1 << 17 };
+ * block: each pool has room for PoolSlots of them in a reservation of its
+ * own, made when the pool is (RFC 0048 section 8: a type with a million
+ * objects keeps their slots). */
+enum { PoolLimit = 4096, PoolHashSlots = 8192, PoolSlots = 1 << 22 };
 typedef struct {
   WeavecRtLock lock;
   uint32_t cls;
   uint32_t count;
   uint64_t key;
+  uint64_t *slots;
 } __attribute__((aligned(64))) Pool;
 
 static Pool *pools;
-static uint64_t *poolSlots;
 static uint32_t poolCount;
 static uint32_t *poolHash;
 static WeavecRtLock poolLock;
@@ -1975,7 +1977,7 @@ static size_t pooledBytes;
 #define ClaimedWord (((uint32_t)CachedDead << WeavecRtWordShift) | WeavecRtDead)
 
 static inline uint64_t *slotsOfPool(uint32_t index) {
-  return poolSlots + (uintptr_t)(index - 1) * PoolSlots;
+  return pools[index - 1].slots;
 }
 
 static uint64_t poolHashOf(uint64_t key, unsigned c) {
@@ -2003,9 +2005,7 @@ static uint32_t findPool(uint64_t key, unsigned c) {
   take(&poolLock);
   if (poolHash == NULL) {
     pools = (Pool *)mapInternal(PoolLimit * sizeof(Pool));
-    poolSlots = (uint64_t *)mapInternal((size_t)PoolLimit * PoolSlots *
-                                        sizeof(uint64_t));
-    if (pools != NULL && poolSlots != NULL)
+    if (pools != NULL)
       poolHash = (uint32_t *)mapInternal(PoolHashSlots * sizeof(uint32_t));
   }
   if (poolHash == NULL) {
@@ -2016,7 +2016,9 @@ static uint32_t findPool(uint64_t key, unsigned c) {
        at = (at + 1) & (PoolHashSlots - 1)) {
     const uint32_t index = poolHash[at];
     if (index == 0) {
-      if (poolCount < PoolLimit) {
+      if (poolCount < PoolLimit &&
+          (pools[poolCount].slots = (uint64_t *)mapInternal(
+               PoolSlots * sizeof(uint64_t))) != NULL) {
         pools[poolCount].key = key;
         pools[poolCount].cls = c;
         found = poolCount + 1;
@@ -2059,17 +2061,25 @@ static void addPooled(intptr_t bytes) {
   (void)__atomic_add_fetch(&pooledBytes, (size_t)bytes, __ATOMIC_RELAXED);
 }
 
+/* The most the heap held live, for the pools' budget. */
+static size_t peakLive;
+
 /* Moves `n` claimed slots into pool `index`, or into the quarantine those
  * that would take the pools past the larger of the quarantine's budget and
- * the live heap (they no longer count as live either way). */
+ * the most the heap held live (RFC 0048 section 8: a program that frees
+ * what it built keeps its slots for the next build, as an allocator's free
+ * lists do, instead of waiting for a sweep). */
 static void givePooled(uint32_t index, const uint64_t *slots, unsigned n) {
   Pool *pool = &pools[index - 1];
   const size_t slotBytes = __weavec_rt_heap.table[pool->cls].size;
+  const size_t live = liveNow();
   unsigned kept = 0;
   unsigned i;
+  if (live > __atomic_load_n(&peakLive, __ATOMIC_RELAXED))
+    __atomic_store_n(&peakLive, live, __ATOMIC_RELAXED);
   take(&pool->lock);
   if (__atomic_load_n(&pooledBytes, __ATOMIC_RELAXED) <=
-      (quarantineBudget > liveNow() ? quarantineBudget : liveNow())) {
+      (quarantineBudget > peakLive ? quarantineBudget : peakLive)) {
     kept = PoolSlots - pool->count < n ? PoolSlots - pool->count : n;
     memcpy(slotsOfPool(index) + pool->count, slots, kept * sizeof(uint64_t));
     pool->count += kept;
@@ -2255,6 +2265,15 @@ void weavecRtPoolStats(size_t *count, size_t *bytes) {
 }
 
 /*===-- Reports ------------------------------------------------------------===*/
+
+int weavecRtInLiveBlock(uintptr_t address) {
+  if (!inArena(address))
+    return 0;
+  const SlotRef ref = slotOf(address);
+  const uint32_t word = wordOf(ref);
+  return (word & WeavecRtWordState) == WeavecRtLive &&
+         address - ref.base <= weavecRtLiveSize(word);
+}
 
 struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address) {
   struct weavecRtHeapObject object = {0, 0, 0, 0, 0, 0, 0};

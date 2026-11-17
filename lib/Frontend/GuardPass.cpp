@@ -1128,6 +1128,11 @@ llvm::PreservedAnalyses GuardInsertPass::run(llvm::Module &module,
   for (llvm::Function &function : module)
     if (!guard::skips(function) && guard::isSafe(context, function))
       safe.push_back(&function);
+  // RFC 0048 §5.1: the locals whose address is kept, in every function.
+  if (options.safe != nullptr && options.safe->cxx)
+    for (llvm::Function &function : module)
+      if (!guard::skips(function))
+        guard::placeLocals(context, function);
   for (llvm::Function *function : safe)
     guard::prepareSafe(context, *function);
   for (llvm::Function &function : module)

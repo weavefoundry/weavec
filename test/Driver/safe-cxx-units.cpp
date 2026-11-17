@@ -15,8 +15,10 @@
 // RUN: FileCheck %s --check-prefix=LEDGER < %t/ledger/safe.o.ledger.json
 // RUN: %weavec_cc --weavec-audit %t/ledger | FileCheck %s --check-prefix=AUDIT
 // RUN: %weavec_cc --weavec-audit --format=json %t/ledger | FileCheck %s --check-prefix=JSON
-// RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe %s -o %t/program
+// RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -fweavec-safe-checks=full %s -o %t/program
 // RUN: not --crash %t/program 2>&1 | FileCheck %s --check-prefix=REPORT
+// RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe %s -o %t/fast
+// RUN: %t/fast | FileCheck %s --check-prefix=FAST
 #include <cstdio>
 #include <functional>
 #include <memory>
@@ -43,7 +45,9 @@ struct Cache {
 WEAVEC_GUARDED int raw(const int *p) { return p[0]; }
 [[gnu::noinline]] void drop(Cache &cache) { cache.items.pop_back(); }
 
-// A reference is not followed by the rules: the guard stops its use.
+// A reference is not followed by the rules: the checked build's guard stops
+// its use; the fast build reads the released block, zeroed (RFC 0048 §2.1).
+// FAST: 1
 int main() {
   Cache cache;
   cache.items.push_back(std::make_unique<Item>());
@@ -88,7 +92,7 @@ int main() {
 // LEDGER: "tier": "safe"
 // LEDGER: "function": "main"
 // LEDGER: "tier": "safe"
-// LEDGER: "version": 10
+// LEDGER: "version": 11
 // AUDIT: 4 of 5 functions safe
 // AUDIT: functions that are not safe
 // AUDIT-NEXT: safe-cxx-units.cpp:{{[0-9]+}}: raw (guarded)
@@ -99,7 +103,7 @@ int main() {
 // AUDIT: erased members
 // AUDIT-NEXT: safe-cxx-units.cpp:{{[0-9]+}}: Cache.onChange
 // JSON-DAG: "schema": "weavec-audit"
-// JSON-DAG: "version": 6
+// JSON-DAG: "version": 7
 // JSON-DAG: "shared": [
 // JSON-DAG: "erased": [
 // REPORT: weavec: heap-use-after-free at {{.*}}safe-cxx-units.cpp:{{[0-9]+}}:

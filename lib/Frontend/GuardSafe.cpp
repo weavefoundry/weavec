@@ -33,9 +33,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "GuardPassImpl.h"
+#include "weavec/Core/LibrarySpec.h"
 #include "weavec/Frontend/SafeCheck.h"
 
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Dominators.h"
@@ -349,17 +351,46 @@ static std::string localName(const llvm::AllocaInst &alloca) {
 }
 
 /// Replaces `alloca` by a block of the runtime's heap for each of its
-/// scopes, released when the scope (or the function) ends.
+/// scopes, released when the scope (or the function) ends. RFC 0048 §5.1:
+/// in a fast unit, a block of the pool of the local's type, `type` (its
+/// IR type's name when empty), which a release returns there.
 static void placeOnHeap(ModuleContext &module, llvm::Function &function,
-                        llvm::AllocaInst &alloca) {
+                        llvm::AllocaInst &alloca, llvm::StringRef type = {}) {
   llvm::LLVMContext &context = module.context;
   const std::uint64_t alignment = alloca.getAlign().value();
+  const bool typed = fastUnit(module) && alignment <= 16;
   llvm::FunctionCallee allocate = module.module.getOrInsertFunction(
       "calloc", module.ptr, module.i64, module.i64);
   llvm::FunctionCallee alignedAllocate = module.module.getOrInsertFunction(
       "aligned_alloc", module.ptr, module.i64, module.i64);
   llvm::FunctionCallee release = module.module.getOrInsertFunction(
       "free", llvm::Type::getVoidTy(context), module.ptr);
+  llvm::GlobalVariable *record = nullptr;
+  if (typed) {
+    std::string name = type.str();
+    if (name.empty()) {
+      llvm::raw_string_ostream text(name);
+      alloca.getAllocatedType()->print(text);
+    }
+    auto *recordType = llvm::StructType::get(context, {module.i64, module.i64});
+    record = new llvm::GlobalVariable(
+        module.module, recordType, /*isConstant=*/false,
+        llvm::GlobalValue::PrivateLinkage,
+        llvm::ConstantStruct::get(
+            recordType,
+            {llvm::ConstantInt::get(module.i64,
+                                    typeKey(module, name, /*array=*/false)),
+             llvm::ConstantInt::get(module.i64, 0)}),
+        "__weavec.type");
+    record->setAlignment(llvm::Align(16));
+    allocate = module.runtime(
+        "alloc_typed",
+        llvm::FunctionType::get(module.ptr,
+                                {module.i64, module.i32, module.ptr}, false));
+    release = module.runtime(
+        "free_at", llvm::FunctionType::get(llvm::Type::getVoidTy(context),
+                                           {module.ptr, module.ptr}, false));
+  }
 
   llvm::IRBuilder<> entry(&*function.getEntryBlock().getFirstInsertionPt());
   llvm::AllocaInst *slot =
@@ -385,7 +416,10 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
   auto allocateAt = [&](llvm::IRBuilder<> &builder) {
     llvm::Value *bytes = bytesAt(builder);
     llvm::Value *block = nullptr;
-    if (alignment <= 16) {
+    if (typed) {
+      block = builder.CreateCall(
+          allocate, {bytes, llvm::ConstantInt::get(module.i32, 0), record});
+    } else if (alignment <= 16) {
       block = builder.CreateCall(
           allocate, {llvm::ConstantInt::get(module.i64, 1), bytes});
     } else {
@@ -403,7 +437,13 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
     builder.CreateStore(block, slot);
   };
   auto releaseAt = [&](llvm::IRBuilder<> &builder) {
-    builder.CreateCall(release, {builder.CreateLoad(module.ptr, slot)});
+    llvm::Value *block = builder.CreateLoad(module.ptr, slot);
+    if (typed)
+      builder.CreateCall(
+          release,
+          {block, module.site(builder.getCurrentDebugLocation(), SiteTyped)});
+    else
+      builder.CreateCall(release, {block});
     builder.CreateStore(llvm::ConstantPointerNull::get(module.ptr), slot);
   };
 
@@ -463,7 +503,60 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
   remark << "local '" << localName(alloca)
          << "' is placed on the heap: its address may outlive its scope";
   context.diagnose(remark);
+  if (module.options.ledger)
+    ++module.options.ledger->placedLocals;
   alloca.eraseFromParent();
+}
+
+void placeLocals(ModuleContext &module, llvm::Function &function) {
+  std::vector<std::pair<llvm::AllocaInst *, std::string>> placed;
+  std::vector<llvm::IntrinsicInst *> marks;
+  for (llvm::Instruction &instruction : llvm::instructions(function)) {
+    auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction);
+    if (intrinsic == nullptr ||
+        intrinsic->getIntrinsicID() != llvm::Intrinsic::var_annotation)
+      continue;
+    llvm::StringRef text;
+    if (!llvm::getConstantStringInfo(intrinsic->getArgOperand(1), text) ||
+        !text.starts_with(PlacedAnnotation))
+      continue;
+    marks.push_back(intrinsic);
+    if (auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(
+            intrinsic->getArgOperand(0)->stripPointerCasts());
+        alloca != nullptr && llvm::none_of(placed, [&](const auto &each) {
+          return each.first == alloca;
+        }))
+      placed.emplace_back(
+          alloca, text.drop_front(PlacedAnnotation.size()).ltrim().str());
+  }
+  for (llvm::IntrinsicInst *mark : marks)
+    mark->eraseFromParent();
+  for (auto &[alloca, type] : placed)
+    placeOnHeap(module, function, *alloca, type);
+}
+
+/// RFC 0041 §5, RFC 0048 §7: an escaping parameter does not point into the
+/// thread's stack: the runtime decides for an address near the stack
+/// pointer, at most 64 MiB above it.
+static void escapeCheck(ModuleContext &module, llvm::IRBuilder<> &builder,
+                        llvm::Value *pointer, const llvm::DebugLoc &location) {
+  llvm::Value *address = builder.CreatePtrToInt(pointer, module.i64);
+  llvm::Function *stackSave = llvm::Intrinsic::getOrInsertDeclaration(
+      &module.module, llvm::Intrinsic::stacksave, {module.ptr});
+  llvm::Value *low = builder.CreateSub(
+      builder.CreatePtrToInt(builder.CreateCall(stackSave), module.i64),
+      llvm::ConstantInt::get(module.i64, 65536));
+  llvm::Value *near = builder.CreateICmpULT(
+      builder.CreateSub(address, low),
+      llvm::ConstantInt::get(module.i64, std::uint64_t{64} << 20U));
+  llvm::Instruction *slow = llvm::SplitBlockAndInsertIfThen(
+      near, builder.GetInsertPoint(), /*Unreachable=*/false,
+      llvm::MDBuilder(module.context).createUnlikelyBranchWeights());
+  llvm::IRBuilder<> call(slow);
+  call.CreateCall(module.escapeCheckFunction(),
+                  {address, module.site(location, 0)});
+  builder.SetInsertPoint(slow->getParent()->getSingleSuccessor(),
+                         slow->getParent()->getSingleSuccessor()->begin());
 }
 
 /// Amendment 18: the public symbol of a safe function with validated
@@ -474,8 +567,21 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
 /// (SafeBounds::callBody).
 static void splitEntry(ModuleContext &module, llvm::Function &function) {
   const FunctionBounds *table = tableOf(module, function);
+  // RFC 0048 §7: a fast C++ unit's inline functions too (one definition in
+  // each unit that uses it): a unit that compiles one as guarded code emits
+  // the same public symbol, so the linker may keep either, and a fast
+  // unit's safe callers call the body, of a name only fast units give it.
+  const bool inlined = shadowless(module) && module.options.safe->cxx &&
+                       function.hasLinkOnceODRLinkage();
+  // (A `musttail` call stays the caller's tail call: no entry stands
+  // before it.)
   if (table == nullptr || function.isVarArg() ||
-      !(function.hasExternalLinkage() || function.hasLocalLinkage()) ||
+      llvm::any_of(function,
+                   [](const llvm::BasicBlock &block) {
+                     return block.getTerminatingMustTailCall() != nullptr;
+                   }) ||
+      !(function.hasExternalLinkage() || function.hasLocalLinkage() ||
+        inlined) ||
       !hasTypedBody(*table) ||
       sourceArguments(function, table->parameters.size()).size() !=
           table->parameters.size())
@@ -490,7 +596,13 @@ static void splitEntry(ModuleContext &module, llvm::Function &function) {
                              function.getAddressSpace(), name, &module.module);
   entry->copyAttributesFrom(&function);
   function.replaceAllUsesWith(entry);
-  if (!external) {
+  if (inlined) {
+    function.setVisibility(llvm::GlobalValue::HiddenVisibility);
+    if (llvm::Comdat *comdat = function.getComdat()) {
+      entry->setComdat(comdat);
+      function.setComdat(module.module.getOrInsertComdat(function.getName()));
+    }
+  } else if (!external) {
     function.setLinkage(llvm::GlobalValue::InternalLinkage);
     function.setVisibility(llvm::GlobalValue::DefaultVisibility);
     function.setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
@@ -526,16 +638,21 @@ static void splitEntry(ModuleContext &module, llvm::Function &function) {
   arguments = sourceArguments(*entry, table->parameters.size());
   for (std::size_t i = 0; i < arguments.size(); ++i) {
     const PointerBounds &parameter = table->parameters[i];
+    if (parameter.escapes && arguments[i]->getType()->isPointerTy())
+      escapeCheck(module, builder, arguments[i], location);
     if (!typedValidated(parameter) || !arguments[i]->getType()->isPointerTy())
       continue;
     // RFC 0042 §6: a string is scanned against the shadow once, at the
-    // entry from code that is not typed.
+    // entry from code that is not typed. RFC 0048 §3: in a fast unit, in
+    // constant time when it points into a live heap block, which ends in a
+    // zero byte at the latest.
     if (parameter.kind == PointerBounds::Kind::NullTerminated) {
       const unsigned row = module.row(*entry, location, "entry", 0,
                                       LedgerRow::Outcome::Guarded, "string");
       module.insertString(builder, arguments[i],
                           llvm::Constant::getAllOnesValue(module.i64), row,
-                          parameter.orNull ? MarkerNullOk : 0);
+                          (parameter.orNull ? MarkerNullOk : 0) |
+                              (shadowless(module) ? MarkerHeapString : 0));
       continue;
     }
     llvm::Value *bytes =
@@ -670,7 +787,55 @@ public:
     }
     for (llvm::CallInst *call : calls)
       callBody(*call);
+    inHand();
     testReferences();
+  }
+
+  /// Whether `term` measures argument `index` as a string.
+  static bool measures(const core::LibTerm &term, unsigned index) {
+    if (term.kind == core::LibTerm::Kind::StringLength)
+      return term.arg == index;
+    return llvm::any_of(term.operands, [&](const core::LibTerm &operand) {
+      return measures(operand, index);
+    });
+  }
+
+  /// RFC 0048 §6.4: a read-only call of the library table that reads its
+  /// pointer arguments as strings, each of which is a string position or a
+  /// literal here, calls the C library: the late pass neither guards nor
+  /// redirects it.
+  void inHand() {
+    // (Verify mode keeps the wrappers' checks.)
+    if (!shadowless(module) || module.verify())
+      return;
+    for (llvm::Instruction &instruction : llvm::instructions(function)) {
+      auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction);
+      const llvm::Function *callee =
+          call != nullptr ? call->getCalledFunction() : nullptr;
+      if (callee == nullptr || !callee->isDeclarationForLinker())
+        continue;
+      const std::optional<core::LibraryMatch> match =
+          core::LibrarySpec::shipped().lookup(libraryName(callee->getName()),
+                                              call->arg_size());
+      if (!match || match->entry == nullptr || match->alias != nullptr ||
+          !match->entry->wrapper ||
+          match->entry->params.size() != call->arg_size())
+        continue;
+      bool held = true;
+      for (unsigned i = 0; i < call->arg_size() && held; ++i) {
+        const core::LibraryParam &param = match->entry->params[i];
+        if (param.type != core::LibraryParam::Type::Pointer)
+          continue;
+        held = (param.access == core::LibraryParam::Access::Read ||
+                param.access == core::LibraryParam::Access::None) &&
+               param.effect == core::LibraryParam::Effect::Borrow &&
+               (param.string || (param.bytes && measures(*param.bytes, i))) &&
+               stringLike(call->getArgOperand(i));
+      }
+      if (held)
+        call->setMetadata(InHandMetadata,
+                          llvm::MDNode::get(module.context, {}));
+    }
   }
 
 private:
@@ -686,6 +851,10 @@ private:
   /// terminator wherever they are used, and the string roots.
   llvm::DenseSet<const llvm::Value *> stringValues;
   llvm::DenseSet<const llvm::Value *> stringRoots;
+  /// RFC 0048 §2.1: the reference parameters and `this`, each an object
+  /// of its type (whose `dereferenceable` bytes leave out the tail a
+  /// derived class may reuse).
+  llvm::DenseSet<const llvm::Value *> referents;
   /// Accesses through a string that `strlen` measured where they are.
   llvm::DenseMap<const llvm::CallInst *, llvm::CallInst *> measured;
   /// The branches on an `i1` phi (a `&&` or `||`).
@@ -722,6 +891,14 @@ private:
   /// §5: a bounded parameter's bytes are checked against the shadow at
   /// entry, an escaping one against the stack.
   void validateParameters() {
+    // RFC 0048 §2.1: a reference parameter and `this` are objects of their
+    // types (Y-A1); GuardInsert believes their accesses at constant offsets,
+    // and one at a computed offset (a virtual base's) keeps its guard.
+    if (shadowless(module) && module.options.safe->cxx)
+      for (llvm::Argument &argument : function.args())
+        if (argument.getDereferenceableBytes() != 0 &&
+            argument.getType()->isPointerTy())
+          referents.insert(&argument);
     if (table == nullptr)
       return;
     const llvm::SmallVector<llvm::Value *, 8> arguments =
@@ -734,10 +911,10 @@ private:
       llvm::Value *pointer = arguments[i];
       if (!pointer->getType()->isPointerTy())
         continue;
-      if (bounds.escapes)
-        builder.CreateCall(module.escapeCheckFunction(),
-                           {builder.CreatePtrToInt(pointer, module.i64),
-                            module.site(location, 0)});
+      // (A body's safe callers pass no stack address to it: its entry
+      // checks the others.)
+      if (bounds.escapes && !body)
+        escapeCheck(module, builder, pointer, location);
       // RFC 0042: a typed body believes what its entry or its typed
       // callers checked: a single pointer's object, a string.
       if (body && bounds.kind == PointerBounds::Kind::Single &&
@@ -1058,7 +1235,9 @@ private:
       builder.SetCurrentDebugLocation(call->getDebugLoc());
       const Bounds bounds =
           singleBounds(builder, call, callee->result.pointeeSize);
-      if (!trusted)
+      // RFC 0048 §7: a fast unit believes the pointer a project function
+      // that is not safe returns, as it believes a reference (Y-A1).
+      if (!trusted && !shadowless(module))
         guardResult(
             builder, *call,
             builder.CreateSelect(builder.CreateIsNull(call),
@@ -1175,7 +1354,8 @@ private:
           llvm::APInt offset(64, 0);
           if (gep->getPointerOperand() != value ||
               !gep->accumulateConstantOffset(module.layout, offset) ||
-              offset.isNegative() || offset.getZExtValue() > 8)
+              offset.isNegative() ||
+              offset.getZExtValue() > (shadowless(module) ? 32U : 8U))
             continue;
           steps[gep] = offset.getZExtValue();
         } else if (!llvm::isa<llvm::PHINode, llvm::SelectInst>(user)) {
@@ -1194,11 +1374,19 @@ private:
     for (const llvm::Value *value : candidates)
       stringValues.insert(value);
     // A step is a string position where each use it is put to is covered.
+    // RFC 0048 §3: in a fast unit every step is one, the bytes it steps
+    // over tested where it is made when no use is covered.
+    llvm::SmallVector<llvm::GetElementPtrInst *, 8> unchecked;
     for (const auto &[value, step] : steps) {
       const auto *gep = llvm::cast<llvm::GetElementPtrInst>(value);
       for (const llvm::Use &use : gep->uses())
         if (!coveredUse(use, gep->getPointerOperand(), step, tree)) {
-          stringValues.erase(gep);
+          if (shadowless(module))
+            // The pass makes the steps it checks; they are its own.
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+            unchecked.push_back(const_cast<llvm::GetElementPtrInst *>(gep));
+          else
+            stringValues.erase(gep);
           break;
         }
     }
@@ -1211,13 +1399,8 @@ private:
         bool all = true;
         if (const auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(value))
           all = stringValues.contains(gep->getPointerOperand());
-        else if (const auto *phi = llvm::dyn_cast<llvm::PHINode>(value))
-          all = llvm::all_of(phi->incoming_values(), [&](const llvm::Value *v) {
-            return stringValues.contains(v);
-          });
-        else if (const auto *select = llvm::dyn_cast<llvm::SelectInst>(value))
-          all = stringValues.contains(select->getTrueValue()) &&
-                stringValues.contains(select->getFalseValue());
+        else if (llvm::isa<llvm::PHINode, llvm::SelectInst>(value))
+          all = joinsStrings(value);
         if (!all) {
           stringValues.erase(value);
           changed = true;
@@ -1256,6 +1439,32 @@ private:
           break;
         }
       }
+    }
+    // (Last: the checks split blocks.)
+    for (llvm::GetElementPtrInst *gep : unchecked)
+      if (stringValues.contains(gep))
+        checkStep(*gep, steps.lookup(gep));
+  }
+
+  /// RFC 0048 §3: where `gep` steps `step` bytes from a string position,
+  /// each byte stepped over is tested not to be the terminator, in order
+  /// (each read is at or before it, by the one before), so that the step is
+  /// a position too; `pointer-out-of-bounds` at the terminator.
+  void checkStep(llvm::GetElementPtrInst &gep, std::uint64_t step) {
+    llvm::Value *base = gep.getPointerOperand();
+    llvm::Instruction *at = gep.getNextNode();
+    while (llvm::isa<llvm::PHINode>(at))
+      at = at->getNextNode();
+    for (std::uint64_t i = 0; i < step; ++i) {
+      llvm::IRBuilder<> builder(at);
+      builder.SetCurrentDebugLocation(gep.getDebugLoc());
+      llvm::Value *byte = builder.CreateConstGEP1_64(module.i8, base, i);
+      llvm::Value *zero =
+          builder.CreateICmpEQ(builder.CreateLoad(module.i8, byte),
+                               llvm::ConstantInt::get(module.i8, 0));
+      failWhen(*at, zero, module.boundsFailFunction(), byte,
+               llvm::ConstantInt::get(module.i64, 1), {.lo = base, .hi = byte},
+               /*write=*/false);
     }
   }
 
@@ -1395,6 +1604,38 @@ private:
           marker.getArgOperand(1)));
     }
     marker.eraseFromParent();
+  }
+
+  /// Whether each value the phi or select `value` joins is a string
+  /// position or a literal, null or undefined, through other phis and
+  /// selects (a function's result slot, which Clang joins in a chain of
+  /// them on its way to the return).
+  bool joinsStrings(const llvm::Value *value) const {
+    llvm::SmallVector<const llvm::Value *, 8> work;
+    llvm::SmallPtrSet<const llvm::Value *, 8> seen{value};
+    const auto push = [&](const llvm::Value *each) {
+      if (seen.insert(each).second)
+        work.push_back(each);
+    };
+    const auto inputs = [&](const llvm::Value *joined) {
+      if (const auto *phi = llvm::dyn_cast<llvm::PHINode>(joined))
+        for (const llvm::Value *incoming : phi->incoming_values())
+          push(incoming);
+      else if (const auto *select = llvm::dyn_cast<llvm::SelectInst>(joined))
+        for (const llvm::Value *each :
+             {select->getTrueValue(), select->getFalseValue()})
+          push(each);
+    };
+    inputs(value);
+    while (!work.empty()) {
+      const llvm::Value *next = work.pop_back_val();
+      if (stringLike(next) || llvm::isa<llvm::UndefValue>(next))
+        continue;
+      if (!llvm::isa<llvm::PHINode, llvm::SelectInst>(next))
+        return false;
+      inputs(next);
+    }
+    return true;
   }
 
   /// A string position, a string literal (or a constant offset into one
@@ -1615,7 +1856,9 @@ private:
   /// block is not reused while something refers to it, so the test is
   /// exact for the heap.
   void testReferences() {
-    if (!referenceTests)
+    // RFC 0048 §2.1: a fast C++ unit believes what it loads; the checked
+    // mode tests it (O4), and so does Safe C.
+    if (!referenceTests || (shadowless(module) && module.options.safe->cxx))
       return;
     std::vector<llvm::LoadInst *> loads;
     for (llvm::Instruction &instruction : llvm::instructions(function)) {
@@ -1683,6 +1926,21 @@ private:
     if (llvm::isa<llvm::ConstantPointerNull>(value) ||
         llvm::isa<llvm::UndefValue>(value))
       return;
+    // RFC 0048 §3: a string position has its current byte.
+    if (const auto *one = llvm::dyn_cast<llvm::ConstantInt>(bytes);
+        one != nullptr && one->getZExtValue() <= 1 && stringLike(value))
+      return;
+    // RFC 0048 §2.1: a reference parameter or `this` is an object of its
+    // type, as is what typed memory gave (a pointer loaded or a project
+    // function's result), converted to a pointer to it.
+    if (shadowless(module) && module.options.safe->cxx) {
+      llvm::APInt offset(64, 0);
+      const llvm::Value *root = value->stripAndAccumulateConstantOffsets(
+          module.layout, offset, /*AllowNonInbounds=*/true);
+      if (offset.isZero() &&
+          (referents.contains(root) || (!rooted(root) && typedPointer(root))))
+        return;
+    }
     if (!rooted(value)) {
       llvm::IRBuilder<> builder(&before);
       builder.SetCurrentDebugLocation(before.getDebugLoc());
@@ -1715,13 +1973,16 @@ private:
       return;
     llvm::IRBuilder<> builder(&before);
     builder.SetCurrentDebugLocation(before.getDebugLoc());
+    // RFC 0048 §3: in a fast unit, a value in a live heap block is a
+    // string in constant time: it ends in a zero byte at the latest on the
+    // byte after its block.
     if (!rooted(value)) {
       const unsigned row =
           module.row(function, before.getDebugLoc(), "convert", 0,
                      LedgerRow::Outcome::Guarded, "typed-unbounded");
-      module.insertString(builder, value,
-                          llvm::Constant::getAllOnesValue(module.i64), row,
-                          MarkerNullOk);
+      module.insertString(
+          builder, value, llvm::Constant::getAllOnesValue(module.i64), row,
+          MarkerNullOk | (shadowless(module) ? MarkerHeapString : 0));
       return;
     }
     const Bounds bounds = boundsOf(value);
@@ -1852,8 +2113,11 @@ private:
   /// RFC 0042 §6: a typed body returns what its declaration bounds.
   void convertReturn(llvm::ReturnInst &ret) {
     llvm::Value *value = ret.getReturnValue();
+    // (Nothing goes between a `musttail` call and its `ret`: the callee's
+    // own return is checked.)
     if (table == nullptr || value == nullptr ||
-        !value->getType()->isPointerTy())
+        !value->getType()->isPointerTy() ||
+        ret.getParent()->getTerminatingMustTailCall() != nullptr)
       return;
     const PointerBounds &result = table->result;
     if (result.kind == PointerBounds::Kind::Single && result.pointeeSize != 0) {
@@ -1884,6 +2148,10 @@ private:
     const auto *row =
         llvm::cast<llvm::ConstantInt>(marker.getArgOperand(rowArgument));
     const bool guard = ModuleContext::markerOf(marker) == MarkerGuard;
+    if (!rooted(pointer) && typedAccess(marker)) {
+      removeMarker(marker, *flags, *row);
+      return;
+    }
     if (!rooted(pointer)) {
       if (const auto found = measured.find(&marker); found != measured.end()) {
         llvm::CallInst *length = found->second;
@@ -1927,13 +2195,155 @@ private:
     removeMarker(marker, *flags, *row);
   }
 
+  /// The type an access's type tag names: "vtable pointer" for a load of
+  /// an object's vtable pointer ("" without a tag).
+  static llvm::StringRef tagged(const llvm::Value *value) {
+    const auto *access = llvm::dyn_cast_or_null<llvm::Instruction>(value);
+    const llvm::MDNode *tag =
+        access != nullptr ? access->getMetadata(llvm::LLVMContext::MD_tbaa)
+                          : nullptr;
+    const auto *type = tag != nullptr && tag->getNumOperands() != 0
+                           ? llvm::dyn_cast<llvm::MDNode>(tag->getOperand(0))
+                           : nullptr;
+    const auto *name = type != nullptr && type->getNumOperands() != 0
+                           ? llvm::dyn_cast<llvm::MDString>(type->getOperand(0))
+                           : nullptr;
+    return name != nullptr ? name->getString() : "";
+  }
+
+  /// The load or store a guard marker stands before.
+  static const llvm::Instruction *accessAfter(const llvm::CallInst &marker) {
+    const llvm::Value *pointer = marker.getArgOperand(0);
+    for (const llvm::Instruction *next = marker.getNextNode(); next != nullptr;
+         next = next->getNextNode()) {
+      if (const auto *call = llvm::dyn_cast<llvm::CallInst>(next);
+          call != nullptr && ModuleContext::markerOf(*call))
+        continue;
+      if (const auto *load = llvm::dyn_cast<llvm::LoadInst>(next))
+        return load->getPointerOperand() == pointer ? load : nullptr;
+      if (const auto *store = llvm::dyn_cast<llvm::StoreInst>(next))
+        return store->getPointerOperand() == pointer ? store : nullptr;
+      return nullptr;
+    }
+    return nullptr;
+  }
+
+  /// RFC 0048 §2.1: a pointer the function did not compute: loaded from
+  /// memory, a call's result of the program's own code (directly, or
+  /// through a virtual call), a parameter whose entry was checked, or a
+  /// phi or select of those. Typed memory says it is null or points to an
+  /// object of its type (V1).
+  bool typedPointer(const llvm::Value *value) {
+    llvm::SmallVector<const llvm::Value *, 8> work{value};
+    llvm::SmallPtrSet<const llvm::Value *, 8> seen{value};
+    while (!work.empty()) {
+      const llvm::Value *next = work.pop_back_val();
+      if (const auto *phi = llvm::dyn_cast<llvm::PHINode>(next)) {
+        for (const llvm::Value *incoming : phi->incoming_values())
+          if (seen.insert(incoming).second)
+            work.push_back(incoming);
+        continue;
+      }
+      if (const auto *select = llvm::dyn_cast<llvm::SelectInst>(next)) {
+        for (const llvm::Value *each :
+             {select->getTrueValue(), select->getFalseValue()})
+          if (seen.insert(each).second)
+            work.push_back(each);
+        continue;
+      }
+      // (A pointer loaded from the function's own local is the function's
+      // value, which may be a position: not typed memory.)
+      if (const auto *load = llvm::dyn_cast<llvm::LoadInst>(next)) {
+        if (llvm::isa<llvm::AllocaInst>(
+                llvm::getUnderlyingObject(load->getPointerOperand())))
+          return false;
+        continue;
+      }
+      if (llvm::isa<llvm::ConstantPointerNull>(next) || known.contains(next))
+        continue;
+      const auto *call = llvm::dyn_cast<llvm::CallBase>(next);
+      if (call == nullptr || llvm::isa<llvm::IntrinsicInst>(call))
+        return false;
+      const llvm::Function *callee = call->getCalledFunction();
+      // (Of an indirect call, a virtual one's: its target is a slot of the
+      // vtable its object names.)
+      const auto *target =
+          llvm::dyn_cast<llvm::LoadInst>(call->getCalledOperand());
+      llvm::APInt slot(64, 0);
+      if (callee == nullptr) {
+        if (target == nullptr ||
+            tagged(
+                target->getPointerOperand()->stripAndAccumulateConstantOffsets(
+                    module.layout, slot, /*AllowNonInbounds=*/true)) !=
+                "vtable pointer")
+          return false;
+        continue;
+      }
+      const llvm::StringRef name = callee->getName();
+      const SafeUnit &safe = *module.options.safe;
+      if (fastCodeOf(module, *callee) == FastCode::Safe ||
+          safe.cxxOther.contains(name) || safe.find(name) != nullptr)
+        continue;
+      return false;
+    }
+    return true;
+  }
+
+  /// RFC 0048 §2.1: whether the guard `marker` is of a load or store at a
+  /// constant offset through a pointer the function did not compute, that
+  /// the access's type tag places in a member of the class the tag names
+  /// (or at the class's vtable pointer): such a pointer points to one
+  /// object of its type, which holds the member. Within the null page.
+  bool typedAccess(const llvm::CallInst &marker) {
+    if (!shadowless(module) || !module.options.safe->cxx ||
+        ModuleContext::markerOf(marker) != MarkerGuard)
+      return false;
+    const auto *width =
+        llvm::dyn_cast<llvm::ConstantInt>(marker.getArgOperand(1));
+    // A virtual function's slot, at a constant offset in the vtable an
+    // object's vtable pointer names: the class's layout puts it there.
+    llvm::APInt slot(64, 0);
+    if (width != nullptr &&
+        tagged(marker.getArgOperand(0)->stripAndAccumulateConstantOffsets(
+            module.layout, slot, /*AllowNonInbounds=*/true)) ==
+            "vtable pointer" &&
+        !slot.isNegative() &&
+        slot.getZExtValue() + width->getZExtValue() <= NullPage)
+      return true;
+    const llvm::Instruction *access = accessAfter(marker);
+    const llvm::MDNode *tag =
+        access != nullptr ? access->getMetadata(llvm::LLVMContext::MD_tbaa)
+                          : nullptr;
+    const llvm::StringRef name = tagged(access);
+    if (width == nullptr || tag == nullptr || tag->getNumOperands() < 3 ||
+        !(name.starts_with("_ZTS") || name == "vtable pointer"))
+      return false;
+    const auto *tagOffset =
+        llvm::mdconst::dyn_extract<llvm::ConstantInt>(tag->getOperand(2));
+    if (tagOffset == nullptr)
+      return false;
+    llvm::APInt offset(64, 0);
+    const llvm::Value *root =
+        marker.getArgOperand(0)->stripAndAccumulateConstantOffsets(
+            module.layout, offset, /*AllowNonInbounds=*/true);
+    if (offset.isNegative() || offset != tagOffset->getValue() ||
+        offset.getZExtValue() + width->getZExtValue() > NullPage)
+      return false;
+    return typedPointer(root);
+  }
+
   /// A guard a rule made redundant: verify mode's monitor, or gone.
   void removeMarker(llvm::CallInst &marker, const llvm::ConstantInt &flags,
                     const llvm::ConstantInt &row) {
+    // RFC 0048 §9: a fast C++ unit believes what it holds, a released
+    // block of its type included: its monitors are a believed access's.
     if (module.verify()) {
       marker.setArgOperand(
-          2, llvm::ConstantInt::get(module.i32,
-                                    flags.getZExtValue() | MarkerProven));
+          2, llvm::ConstantInt::get(
+                 module.i32, flags.getZExtValue() | MarkerProven |
+                                 (shadowless(module) && module.options.safe->cxx
+                                      ? MarkerBelieved
+                                      : 0)));
       return;
     }
     module.copy(static_cast<unsigned>(row.getZExtValue()), false, "typed");

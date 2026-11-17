@@ -67,6 +67,9 @@ inline constexpr llvm::StringLiteral SendsAnnotation = "weavec.sends";
 /// RFC 0047 §5: objects of the class are changed through pointers other
 /// objects keep.
 inline constexpr llvm::StringLiteral AliasedAnnotation = "weavec.aliased";
+/// RFC 0048 §5.1: the checker's implicit mark on a local the passes place
+/// in typed memory, followed by a space and the local's type.
+inline constexpr llvm::StringLiteral PlacedAnnotation = "weavec.placed";
 /// RFC 0047 §6: WEAVEC_SAFE_FILE is `_Pragma("weavec safe")`: the pragma's
 /// namespace and its one word.
 inline constexpr llvm::StringLiteral SafeFilePragmaNamespace = "weavec";

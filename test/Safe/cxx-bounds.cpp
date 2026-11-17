@@ -19,10 +19,11 @@
 class Slice {
 public:
   Slice() = default;
-  Slice(const char *WEAVEC_COUNTED_BY(n) d, std::size_t n) : data_(d), size_(n) {}
+  Slice(const char *WEAVEC_COUNTED_BY(n) WEAVEC_ESCAPES d, std::size_t n)
+      : data_(d), size_(n) {}
   char operator[](std::size_t i) const { return data_[i]; }
   const char *WEAVEC_COUNTED_BY(size_) data() const { return data_; }
-  const char *end() const { return data_ + size_; }
+  const char *WEAVEC_COUNTED_BY(0) end() const { return data_ + size_; }
   std::size_t size() const { return size_; }
   void remove_prefix(std::size_t n) {
     data_ += n;

@@ -4,18 +4,18 @@ A safe function (`WEAVEC_SAFE`, or every function of a unit compiled with `-fwea
 
 A rule that both languages have says first what it means in C, then, under _In C++_, what it means there. [`safe-cxx`](#safe-cxx) is the page to read before writing safe C++: the kinds of pointer its rules are stated over.
 
-The C examples below include `<weavec.h>`, `<stddef.h>`, `<stdio.h>`, `<stdlib.h>` and `<string.h>`; the C++ ones `<weavec.h>` and the standard library's containers, strings, smart pointers and algorithms, as C++20. The design is in [RFC 0041](/rfcs/0041-safe-c/) (bounds), [RFC 0042](/rfcs/0042-typed-memory/) (typed memory), [RFC 0043](/rfcs/0043-ownership/) (ownership), [RFC 0044](/rfcs/0044-safe-cxx/) (C++), [RFC 0046](/rfcs/0046-thread-safety/) (threads) and [RFC 0047](/rfcs/0047-conversion-in-place/) (bounds and aliased classes in C++, converting existing code). The thread examples include `<atomic>`, `<condition_variable>`, `<future>`, `<mutex>`, `<shared_mutex>` and `<thread>` too.
+The C examples below include `<weavec.h>`, `<stddef.h>`, `<stdio.h>`, `<stdlib.h>` and `<string.h>`; the C++ ones `<weavec.h>` and the standard library's containers, strings, smart pointers and algorithms, as C++20. The design is in [RFC 0041](/rfcs/0041-safe-c/) (bounds), [RFC 0042](/rfcs/0042-typed-memory/) (typed memory), [RFC 0043](/rfcs/0043-ownership/) (ownership), [RFC 0044](/rfcs/0044-safe-cxx/) (C++), [RFC 0046](/rfcs/0046-thread-safety/) (threads), [RFC 0047](/rfcs/0047-conversion-in-place/) (bounds and aliased classes in C++, converting existing code) and [RFC 0048](/rfcs/0048-safe-code-without-the-shadow/) (kept parameters, ends, what a fast build believes). The thread examples include `<atomic>`, `<condition_variable>`, `<future>`, `<mutex>`, `<shared_mutex>` and `<thread>` too.
 
 ## safe-cxx
 
-Not a rule: what the rules of safe C++ are about. `weavec-c++ -fweavec-safe` checks every function the unit defines in its own files (not the standard library's or anything else behind `-isystem`), each lambda, and each instantiation of its templates. A safe C++ function is compiled exactly as without the flag: every guard and every check of the hardened standard library stays, so what the rules do not see still stops when it runs.
+Not a rule: what the rules of safe C++ are about. `weavec-c++ -fweavec-safe` checks every function the unit defines in its own files (not the standard library's or anything else behind `-isystem`), each lambda, and each instantiation of its templates. The checked build (`-fweavec-safe-checks=full`, the default of a compile without optimization) compiles a safe C++ function exactly as without the flag: every guard and every check of the hardened standard library stays, so what the rules do not see still stops when it runs. The fast build, the default with optimization, checks the function against what it holds instead: a pointer's type, a bound, a string's terminator (RFC 0048).
 
 Every pointer, reference and object in a safe function is one of four kinds:
 
 - An **owner** is an object: a local, a member, an element, and what a `std::vector`, a `std::string`, a `std::unique_ptr` or a `std::optional` holds. Destructors release, so a safe function writes no `new` and no `delete` ([`raw-owner`](#raw-owner)).
 - A **borrow** is a reference, a pointer, an iterator, a `std::string_view`, a `std::span` or a lambda that captures by reference, kept in a local or passed down a call. It ends when what it points into is destroyed, moved, assigned, or changed by anything that is not `const`; using it afterwards is [`stale-borrow`](#stale-borrow). A member function that has a `const` overload with the same parameters (`operator[]`, `at`, `begin`, `find`) only gives access and ends nothing.
 - A **view** is an object whose type holds a borrow: a struct with a `std::string_view` or a reference member, a `std::vector<std::string_view>`, a `std::function` made from a lambda that captures by reference. The rules follow it like a borrow: it is not used after what it points into ended, and it is not returned or stored where it would outlive that ([`escape`](#escape)).
-- A **reference** is a raw pointer kept in a member or in a container's element. The rules do not follow it; the guards check it when it is used. What an object owns is not changed through one, nor through a `std::shared_ptr`, unless its class is declared `WEAVEC_ALIASED` ([`owner-path`](#owner-path)).
+- A **reference** is a raw pointer kept in a member or in a container's element. The rules do not follow it: the checked build's guards check it when it is used, and the fast build believes it points to an object of its type, live or released. What an object owns is not changed through one, nor through a `std::shared_ptr`, unless its class is declared `WEAVEC_ALIASED` ([`owner-path`](#owner-path)). A function that keeps the address of what a parameter refers to, or of `this`, says so with `WEAVEC_ESCAPES` ([`escape`](#escape)); a local whose address is kept lives in typed memory for its scope.
 
 A raw pointer points to one object unless its declaration, an array or the library says how many: Safe C's bounds (`WEAVEC_COUNTED_BY(n)`, `WEAVEC_ENDED_BY(e)`, `WEAVEC_NULL_TERMINATED` and the rest) mean the same in C++, on parameters, results, members and globals; an array keeps its length when it becomes a pointer; a container's `data()` has its `size()` elements; `main`'s `argv` has `argc`. Such a pointer is indexed and stepped, and each access is compared with its bound when it runs ([`index-single`](#index-single), [`call-args`](#call-args), [`counted-pair`](#counted-pair), [`field-address`](#field-address)). A `std::span` is the same thing as a type; existing code keeps its pointers and declares their bounds.
 
@@ -88,7 +88,8 @@ unsigned digits(const char *WEAVEC_ENDED_BY(end) p, const char *end) {
 }
 class Slice {
 public:
-  Slice(const char *WEAVEC_COUNTED_BY(n) data, std::size_t n) : data_(data), size_(n) {}
+  Slice(const char *WEAVEC_COUNTED_BY(n) WEAVEC_ESCAPES data, std::size_t n)
+      : data_(data), size_(n) {}
   char operator[](std::size_t i) const { return data_[i]; }
   const char *WEAVEC_COUNTED_BY(size_) data() const { return data_; }
 private:
@@ -98,6 +99,17 @@ private:
 ```
 
 A member's bound names a sibling member; a member function's result may be counted by a member of its class, as `data()` is above. Every declaration of a function, and every override of a virtual one, gives the same bounds.
+
+An end is declared `WEAVEC_COUNTED_BY(0)`: a pointer to no element, compared and subtracted but never read.
+
+```cpp rejected
+struct Range {
+  const int *WEAVEC_COUNTED_BY(n) data;
+  std::size_t n;
+  const int *WEAVEC_COUNTED_BY(0) end() const { return data + n; }
+};
+int past(const Range &r) { return *r.end(); }
+```
 
 ## int-to-pointer
 
@@ -342,6 +354,40 @@ struct Document {
 };
 ```
 
+A function keeps the address of what a pointer or reference parameter, or `this`, refers to only if it says so ([RFC 0048](/rfcs/0048-safe-code-without-the-shadow/)): storing it in a member, an element, a global or through another parameter, or handing it to a parameter that keeps (`push_back` of a container of pointers is one), needs `WEAVEC_ESCAPES` after the parameter's `*` or `&`, or after the member function's parameter list for `this`. A pointer or reference to a `WEAVEC_ALIASED` class keeps by declaration, and so does a template's own parameter type (`T item`, given a pointer by an instantiation), as a container keeps its elements. A caller's local whose address it is given then lives in typed memory for its scope: a pointer kept past the scope reaches memory of the local's type in a fast build, and stops with a report in the checked one. A constructor keeps the object it makes when it says `WEAVEC_ESCAPES` after its parameter list (a small buffer whose pointer points into the object itself) or when it makes a member or base that is kept; a class whose constructor makes one says so too, and its locals are placed, however they are made. A member's default initializer is the code of each constructor that does not name the member, and an implicit constructor whose default initializer points a member into the object keeps it. A store in a `WEAVEC_BORROWED` member, a view's, keeps nothing: the rules for views follow it. A temporary, even one a local reference extends, a parameter taken by value and a `thread_local` are never kept. Without the rule, a pointer member into a frame that returned could be written through when another frame is laid over it.
+
+```cpp rejected
+struct Counter { long hits = 0; };
+struct Registry {
+  std::vector<Counter *> counters;
+  void add(Counter &c) { counters.push_back(&c); }
+};
+```
+
+```cpp rejected
+struct Listener {
+  Listener *self = nullptr;
+  void enroll() { self = this; }
+};
+```
+
+```cpp accepted
+struct Counter { long hits = 0; };
+struct Registry {
+  std::vector<Counter *> counters;
+  void add(Counter &WEAVEC_ESCAPES c) { counters.push_back(&c); }
+};
+long count(Registry &registry) {
+  Counter mine;                              // kept: placed in typed memory
+  registry.add(mine);
+  return mine.hits;
+}
+struct Listener {
+  Listener *self = nullptr;
+  void enroll() WEAVEC_ESCAPES { self = this; }
+};
+```
+
 A raw pointer into storage that changes type in place is not kept in a member or an element either: an alternative of a `std::variant`, the characters of a `std::string` (whose bytes hold its buffer's pointer once it grows). In a fast build such a pointer, used after the change, would read one type as another with no check behind it. A pointer to `const` bytes without pointers (`s.c_str()`) may be kept, and so may a pointer to the variant or the string itself, or to an element of a container.
 
 ```cpp rejected
@@ -458,6 +504,33 @@ std::string_view view(const char *p, std::size_t n) { return std::string_view(p,
 ```cpp accepted
 std::string_view view(const char *WEAVEC_COUNTED_BY(n) p, std::size_t n) {
   return std::string_view(p, n);
+}
+```
+
+A raw pointer without a bound points to one object (RFC 0048), so a position is not one: a pointer computed by arithmetic from a bounded one is not returned, stored or passed where a plain pointer is declared. Declare an end `WEAVEC_COUNTED_BY(0)`, a cursor `WEAVEC_ENDED_BY(limit)` or with a count, or take `&p[i]`, which is compared with the bound. Nor does a C library function access, through a pointer to one object, more bytes than the object has: `memcpy(out, in, n)` needs `in` declared with its count, `strncmp(a, b, n)` both strings declared `WEAVEC_NULL_TERMINATED` or counted.
+
+```cpp rejected
+class Buffer {
+  const char *WEAVEC_COUNTED_BY(size_) data_ = nullptr;
+  std::size_t size_ = 0;
+public:
+  const char *end() const { return data_ + size_; }
+};
+void copy(char *WEAVEC_COUNTED_BY(n) out, const char *in, std::size_t n) {
+  std::memcpy(out, in, n);
+}
+```
+
+```cpp accepted
+class Buffer {
+  const char *WEAVEC_COUNTED_BY(size_) data_ = nullptr;
+  std::size_t size_ = 0;
+public:
+  const char *WEAVEC_COUNTED_BY(0) end() const { return data_ + size_; }
+  const char *at(std::size_t i) const { return &data_[i]; }
+};
+void copy(char *WEAVEC_COUNTED_BY(n) out, const char *WEAVEC_COUNTED_BY(n) in, std::size_t n) {
+  std::memcpy(out, in, n);
 }
 ```
 
@@ -625,7 +698,8 @@ private:
 ```cpp accepted
 class Slice {
 public:
-  Slice(const char *WEAVEC_COUNTED_BY(n) data, std::size_t n) : data_(data), size_(n) {}
+  Slice(const char *WEAVEC_COUNTED_BY(n) WEAVEC_ESCAPES data, std::size_t n)
+      : data_(data), size_(n) {}
   void remove_prefix(std::size_t n) {
     data_ += n;
     size_ -= n;
@@ -917,7 +991,7 @@ struct Node {
   std::vector<std::unique_ptr<Node>> children;
   Node *parent = nullptr;                           // read, never changed through
   int depth() const { return parent != nullptr ? parent->depth() + 1 : 0; }
-  void add(std::unique_ptr<Node> child) {
+  void add(std::unique_ptr<Node> child) WEAVEC_ESCAPES {   // keeps 'this'
     child->parent = this;
     children.push_back(std::move(child));           // changed from its owner
   }

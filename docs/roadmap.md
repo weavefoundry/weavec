@@ -4,13 +4,40 @@ Rough ordering of the major pieces of work. This page is the one-screen view;
 the design detail and the reasoning live in the [RFCs](rfcs/README.md) each
 milestone links to. Everything here is subject to change as we learn.
 
-The design today is [RFC 0047](rfcs/0047-conversion-in-place.md) for converting existing C++, [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
+The design today is [RFC 0048](rfcs/0048-safe-code-without-the-shadow.md) for what a fast safe unit checks and believes, [RFC 0047](rfcs/0047-conversion-in-place.md) for converting existing C++, [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
 sweep and colors of [RFC 0037](rfcs/0037-complete-sweep-and-colors.md), the
 reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
 and the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
 milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
+
+## Now: RFC 0048 — Safe code without the shadow
+
+Design: [RFC 0048 — Safe code without the shadow](rfcs/0048-safe-code-without-the-shadow.md)
+(Accepted, built; its _Implementation amendments_ and _Measured gates_
+say how). The loop was at parity with Rust and the result was not: the
+tinyxml2 conversion, 94% safe, ran 1.7 times Clang, 6% faster than with no
+safe function, because safe code was checked against the shadow as if the
+rules had said nothing; and a pointer member could reach a frame that had
+returned. RFC 0048 checks a fast unit's safe code against what it holds
+(types, bounds, terminators), reads the shadow only where pointers arrive
+from code that is not safe, requires `WEAVEC_ESCAPES` where a function
+keeps a parameter's address, places a kept local in typed memory, makes
+ends `WEAVEC_COUNTED_BY(0)`, and checks a build without optimization by
+default.
+
+- [x] **The RFC**, accepted as drafted on 2026-11-15.
+- [x] **S0 to S8**: belief by type tags and field annotations, string
+      steps checked where made, constant-time heap strings, library calls
+      in hand, kept parameters and placed locals, plain frames, the
+      `call-args` and `index-single` cases for positions and ends, the
+      pools' larger slot lists, the `-O0` default, ledger 11 and audit 7,
+      the rules' pages and guides; tinyxml2's conversion brought back to a
+      clean compile.
+- [ ] **Next**: the gates not met (see the RFC's _Measured gates_); views'
+      trusted members and range-based `for` (§6.1, §6.2), not built; the
+      allocator's fast path.
 
 ## Now: RFC 0047 — Conversion in place
 

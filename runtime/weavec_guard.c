@@ -670,13 +670,22 @@ void __weavec_rt_convert_string(uintptr_t address, uintptr_t hi,
                  hi > address ? hi - address : 0, site);
 }
 
+/* (RFC 0048 section 7: the thread's stack read once, not at each call.) */
 void __weavec_rt_escape_check(uintptr_t address,
                               const struct __weavec_rt_site *site) {
-  uintptr_t low = 0;
-  uintptr_t high = 0;
-  weavecRtOwnStack(&low, &high);
-  if (address >= low && address < high)
+  if (address >= weavecRtStackBottom() && address < weavecRtStackTop())
     weavecRtFail("stack-escape", address, 0, site);
+}
+
+/* RFC 0048 section 3: a string a fast unit's safe function is handed by
+ * code that is not safe. One inside a live heap block ends in a zero byte
+ * at the latest on the byte after the block (RFC 0042 section 8), so it is
+ * taken at once; any other is scanned against the shadow. */
+void __weavec_rt_string_entry(const char *s,
+                              const struct __weavec_rt_site *site) {
+  if (s != NULL && weavecRtInLiveBlock((uintptr_t)s))
+    return;
+  (void)__weavec_rt_strlen(s, ~(uint64_t)0, site);
 }
 
 /* RFC 0045 (Y4): a safe function's result into its own frame. The inline
