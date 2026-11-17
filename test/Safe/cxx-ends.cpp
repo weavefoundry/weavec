@@ -51,6 +51,11 @@ CHECKED void copy(char *WEAVEC_COUNTED_BY(n) out, const char *in, std::size_t n)
   std::memcpy(out, in, n); // expected-error {{'in' points to one object, and 'memcpy' may access more than its 1 byte through it [weavec-safe:call-args]}}
 }
 CHECKED void copyOne(char *out, const char *in) { std::memcpy(out, in, 1); }
+// A project's function named as a C library one is not it.
+namespace io {
+std::size_t write(int fd, const char *data, std::size_t n);
+}
+CHECKED std::size_t send(const char *data, std::size_t n) { return io::write(1, data, n); }
 CHECKED bool equal(const char *WEAVEC_COUNTED_BY(n) a, std::size_t n, const char *b) {
   return std::strncmp(a, b, n) == 0; // expected-error {{'b' points to one object, and 'strncmp' may access more than its 1 byte through it [weavec-safe:call-args]}}
 }

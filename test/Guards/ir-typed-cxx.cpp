@@ -47,6 +47,20 @@ const char *WEAVEC_NULL_TERMINATED header(const char *WEAVEC_NULL_TERMINATED p) 
   return p;
 }
 
+// A virtual call's result is the program's; a plain function pointer's may
+// be any code's, and keeps its guard.
+// CHECK-LABEL: define {{.*}}@_Z6pickedRK6SourcePFP4NodevE.weavec.safe(
+// CHECK: %call = tail call {{.*}}%{{[0-9]+}}(
+// CHECK-NEXT: getelementptr
+// CHECK-NEXT: load i32
+// CHECK: call {{.*}}%other()
+// CHECK: __weavec_rt_guard
+struct Source {
+  virtual ~Source();
+  virtual Node *pick() const;
+};
+int picked(const Source &s, Node *(*other)()) { return s.pick()->value + other()->value; }
+
 __attribute__((noinline)) int sum(const int *WEAVEC_COUNTED_BY(n) a, int n) {
   int s = 0;
   for (int i = 0; i < n; ++i)

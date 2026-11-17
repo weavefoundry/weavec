@@ -1201,6 +1201,16 @@ building it and from what the gates found. They override the body.
     owner for a `new` in one). Without these, yaml-cpp's and tinyxml2's
     test suites stopped with `stack-escape` at entries their callers
     reached with a local that was not placed.
+    From review: a member's default initializer is visited as the code
+    of each constructor that does not name the member, and an implicit
+    constructor whose default initializer points a member into its
+    object keeps it; a local is placed by its class (a constructor of it
+    that keeps its object, or an aliased class), so `auto k = Keeper(r)`
+    and a factory's result are placed as `Keeper k(r)` is; a temporary a
+    local reference extends is `escape`, since the mark names locals
+    only. Of indirect calls, only a virtual call's result is believed
+    (amendment 1), and the C library case of `call-args` is a function of
+    C linkage or a system header's, not a project's of the same name.
 17. **Diagnostics as built.** `escape` reads "the address of 'c' is kept
     by 'push_back', and 'add' only borrows it", with the note "declare the
     parameter WEAVEC_ESCAPES (after its '*' or '&') if 'add' keeps it; a

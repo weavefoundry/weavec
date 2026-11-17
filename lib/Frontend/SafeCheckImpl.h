@@ -21,6 +21,8 @@
 #include "clang/Basic/SourceLocation.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 
 #include <functional>
 #include <map>
@@ -32,6 +34,8 @@ class ASTContext;
 class FunctionDecl;
 class RecordDecl;
 class SourceManager;
+class Stmt;
+class VarDecl;
 } // namespace clang
 
 namespace weavec::frontend {
@@ -82,6 +86,14 @@ struct BoundsRules {
   /// null ends that.
   std::function<void(std::map<std::string, unsigned> *)> survey;
 };
+
+/// RFC 0048 §2.2, §4: the local pointer an expression names; the values
+/// each local pointer of a statement is given, and those stepped in place.
+using LocalValues =
+    llvm::DenseMap<const clang::VarDecl *, std::vector<const clang::Expr *>>;
+const clang::VarDecl *localPointer(const clang::Expr *expression);
+void localValues(const clang::Stmt *statement, LocalValues &values,
+                 llvm::DenseSet<const clang::VarDecl *> *stepped = nullptr);
 
 /// RFC 0048 §4, §5.1: marks a C++ function's kept locals with the implicit
 /// `annotate("weavec.placed <type>")` the passes place them by and, in a

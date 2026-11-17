@@ -129,6 +129,27 @@ CHECKED int readSmall(const Small &small) { return *small.mem; }
 CHECKED int smallTemporary() {
   return readSmall(Small()); // expected-error {{a temporary is kept by its own constructor}}
 }
+// A temporary a local reference extends is no local either.
+CHECKED int smallExtended() {
+  const Small &small = Small(); // expected-error {{a temporary is kept by its own constructor}}
+  return *small.mem;
+}
+// A member's default initializer is each constructor's code that does not
+// name the member; an implicit constructor's keeps its object.
+struct ByDefault {
+  int pool[4] = {};
+  int *mem = pool;
+  CHECKED ByDefault() {} // expected-error {{'this' is kept by 'mem', and 'ByDefault' only borrows it [weavec-safe:escape]}}
+  CHECKED explicit ByDefault(int *WEAVEC_ESCAPES given) : mem(given) {}
+};
+struct ByDefaultImplicitly {
+  int pool[4] = {};
+  int *mem = pool;
+};
+CHECKED int byDefault() {
+  ByDefaultImplicitly made;
+  return *made.mem;
+}
 
 // A view's member (WEAVEC_BORROWED) holds a borrow the view rules follow:
 // storing in it keeps nothing.

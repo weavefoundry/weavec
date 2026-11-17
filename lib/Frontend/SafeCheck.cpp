@@ -2263,50 +2263,9 @@ private:
   /// one.
   llvm::DenseSet<const clang::VarDecl *> steppedLocals;
 
-  static const clang::VarDecl *localOf(const clang::Expr *expression) {
-    const auto *named =
-        llvm::dyn_cast<clang::DeclRefExpr>(expression->IgnoreParenImpCasts());
-    const auto *variable =
-        named != nullptr ? llvm::dyn_cast<clang::VarDecl>(named->getDecl())
-                         : nullptr;
-    return variable != nullptr && variable->hasLocalStorage() &&
-                   variable->getType()->isPointerType()
-               ? variable
-               : nullptr;
-  }
-
   void collectSteps(const clang::Stmt *body) {
-    llvm::DenseMap<const clang::VarDecl *, std::vector<const clang::Expr *>>
-        assigned;
-    const auto walk = [&](const clang::Stmt *statement,
-                          const auto &self) -> void {
-      if (statement == nullptr)
-        return;
-      if (const auto *op = llvm::dyn_cast<clang::UnaryOperator>(statement);
-          op != nullptr && op->isIncrementDecrementOp())
-        if (const clang::VarDecl *variable = localOf(op->getSubExpr()))
-          steppedLocals.insert(variable);
-      if (const auto *op =
-              llvm::dyn_cast<clang::CompoundAssignOperator>(statement);
-          op != nullptr && (op->getOpcode() == clang::BO_AddAssign ||
-                            op->getOpcode() == clang::BO_SubAssign))
-        if (const clang::VarDecl *variable = localOf(op->getLHS()))
-          steppedLocals.insert(variable);
-      if (const auto *op = llvm::dyn_cast<clang::BinaryOperator>(statement);
-          op != nullptr && op->getOpcode() == clang::BO_Assign)
-        if (const clang::VarDecl *variable = localOf(op->getLHS()))
-          assigned[variable].push_back(op->getRHS());
-      if (const auto *declaration = llvm::dyn_cast<clang::DeclStmt>(statement))
-        for (const clang::Decl *each : declaration->decls())
-          if (const auto *variable = llvm::dyn_cast<clang::VarDecl>(each);
-              variable != nullptr && variable->hasInit() &&
-              variable->hasLocalStorage() &&
-              variable->getType()->isPointerType())
-            assigned[variable].push_back(variable->getInit());
-      for (const clang::Stmt *child : statement->children())
-        self(child, self);
-    };
-    walk(body, walk);
+    LocalValues assigned;
+    localValues(body, assigned, &steppedLocals);
     for (bool changed = true; changed;) {
       changed = false;
       for (const auto &[variable, values] : assigned)
@@ -2341,7 +2300,7 @@ private:
             llvm::dyn_cast<clang::AbstractConditionalOperator>(e))
       return stepped(conditional->getTrueExpr()) ||
              stepped(conditional->getFalseExpr());
-    if (const clang::VarDecl *variable = localOf(e))
+    if (const clang::VarDecl *variable = localPointer(e))
       return steppedLocals.contains(variable);
     return false;
   }
@@ -2411,33 +2370,23 @@ private:
   /// `min` of a constant and a string's length is at most the constant).
   static std::optional<std::int64_t>
   upperBound(const core::LibTerm &term, const core::LibTerm::Values &values) {
-    using Kind = core::LibTerm::Kind;
-    switch (term.kind) {
-    case Kind::Min: {
-      const auto left = upperBound(term.operands[0], values);
-      const auto right = upperBound(term.operands[1], values);
-      if (left && right)
-        return std::min(*left, *right);
-      return left ? left : right;
-    }
-    case Kind::Constant:
-    case Kind::Argument:
-    case Kind::StringLength:
-    case Kind::Product:
-    case Kind::Sum:
-    case Kind::Difference:
-    case Kind::Quotient:
+    if (term.kind != core::LibTerm::Kind::Min)
       return term.evaluate(values);
-    }
-    return std::nullopt;
+    const auto left = upperBound(term.operands[0], values);
+    const auto right = upperBound(term.operands[1], values);
+    if (left && right)
+      return std::min(*left, *right);
+    return left ? left : right;
   }
 
   /// `call-args`: a C library function that accesses, through a pointer to
   /// one object, more bytes than it is known to have.
   void libraryAccess(const clang::CallExpr &call,
                      const clang::FunctionDecl &callee) {
+    // (The table's are C functions, not a project's of the same name.)
     if (llvm::isa<clang::CXXMethodDecl>(callee) ||
         callee.getIdentifier() == nullptr ||
+        !(callee.isExternC() || isLibrary(callee)) ||
         ast.getSourceManager().isInSystemMacro(call.getExprLoc()))
       return;
     const auto match = core::LibrarySpec::shipped().lookup(

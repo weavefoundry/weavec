@@ -1009,10 +1009,9 @@ public:
       if (isSafe(*record)) {
         bounds.checkRecord(*record);
         aliasedOwns(*record);
-      }
-      if (isSafe(*record))
         for (const clang::FieldDecl *field : record->fields())
           rules.run(*field);
+      }
       implicitMembers(*record);
     }
     return true;
@@ -1546,49 +1545,31 @@ public:
 
   void run() {
     // Every value a local pointer is given, before any is followed.
-    const auto collect = [&](const clang::Stmt *statement,
-                             const auto &self) -> void {
-      if (statement == nullptr)
-        return;
-      if (const auto *op = llvm::dyn_cast<clang::BinaryOperator>(statement);
-          op != nullptr && op->getOpcode() == clang::BO_Assign)
-        if (const clang::VarDecl *variable =
-                localPointer(op->getLHS()->IgnoreParenImpCasts()))
-          assigned[variable].push_back(op->getRHS());
-      if (const auto *declaration = llvm::dyn_cast<clang::DeclStmt>(statement))
-        for (const clang::Decl *each : declaration->decls())
-          if (const auto *variable = llvm::dyn_cast<clang::VarDecl>(each);
-              variable != nullptr && variable->hasLocalStorage() &&
-              variable->getType()->isPointerType() && variable->hasInit())
-            assigned[variable].push_back(variable->getInit());
-      for (const clang::Stmt *child : statement->children())
-        self(child, self);
-    };
-    collect(function.getBody(), collect);
+    localValues(function.getBody(), assigned);
     if (const auto *constructor =
             llvm::dyn_cast<clang::CXXConstructorDecl>(&function))
       for (const clang::CXXCtorInitializer *initializer :
            constructor->inits()) {
         // A member or base whose constructor keeps its object keeps this
-        // object's address.
-        if (const clang::CXXConstructorDecl *made =
-                constructed(initializer->getInit());
+        // object's address (a default initializer is the constructor's).
+        const clang::Expr *value = initial(*initializer);
+        const clang::SourceLocation at = initializer->isWritten()
+                                             ? initializer->getSourceLocation()
+                                             : constructor->getLocation();
+        if (const clang::CXXConstructorDecl *made = constructed(value);
             made != nullptr && keepsMade(made))
-          kept({.kind = Origin::Kind::This},
-               initializer->isWritten() ? initializer->getSourceLocation()
-                                        : constructor->getLocation(),
+          kept({.kind = Origin::Kind::This}, at,
                "'" + made->getNameAsString() + "'");
-        if (!initializer->isWritten())
+        if (!initializer->isWritten() && value == initializer->getInit())
           continue;
         if (initializer->isAnyMemberInitializer() &&
             initializer->getAnyMember()->getType()->isPointerType() &&
             !borrowed(initializer->getAnyMember()) && safe)
-          keep(valueOrigins(initializer->getInit()),
-               initializer->getSourceLocation(),
+          keep(valueOrigins(value), at,
                "'" + initializer->getAnyMember()->getNameAsString() + "'");
         // A member or base constructed from an argument that it keeps.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-        TraverseStmt(const_cast<clang::Expr *>(initializer->getInit()));
+        TraverseStmt(const_cast<clang::Expr *>(value));
       }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     TraverseStmt(const_cast<clang::Stmt *>(function.getBody()));
@@ -1598,7 +1579,7 @@ public:
   bool VisitVarDecl(clang::VarDecl *variable) {
     if (!variable->hasLocalStorage() || llvm::isa<clang::ParmVarDecl>(variable))
       return true;
-    if (holdsAliased(variable->getType(), 0) ||
+    if (keptType(variable->getType(), 0) ||
         keepsMade(constructed(variable->getInit())))
       place(*variable);
     return true;
@@ -1655,11 +1636,7 @@ public:
         !(keepsMade(constructor) ||
           (safe && CxxKinds::aliased(constructor->getParent()))))
       return true;
-    const auto *extended =
-        llvm::dyn_cast_or_null<clang::VarDecl>(made->getExtendingDecl());
-    if (extended != nullptr && extended->hasLocalStorage())
-      place(*extended);
-    else if (made->getExtendingDecl() == nullptr)
+    if (temporary(*made))
       kept({.kind = Origin::Kind::Temporary}, made->getExprLoc(),
            "its own constructor");
     return true;
@@ -1682,20 +1659,8 @@ private:
   const clang::FunctionDecl &function;
   bool safe;
   const RuleReport *report;
-  llvm::DenseMap<const clang::VarDecl *, std::vector<const clang::Expr *>>
-      assigned;
+  LocalValues assigned;
   std::set<std::pair<Origin, unsigned>> reported;
-
-  static const clang::VarDecl *localPointer(const clang::Expr *expression) {
-    const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(expression);
-    const auto *variable =
-        named != nullptr ? llvm::dyn_cast<clang::VarDecl>(named->getDecl())
-                         : nullptr;
-    return variable != nullptr && variable->hasLocalStorage() &&
-                   variable->getType()->isPointerType()
-               ? variable
-               : nullptr;
-  }
 
   /// §4: a view's member (a `WEAVEC_BORROWED` pointer) holds a borrow the
   /// rules follow (X3, X4); storing in it keeps nothing.
@@ -1713,24 +1678,28 @@ private:
                                             : text.str();
   }
 
-  /// RFC 0047 §5: a class whose objects other objects keep pointers to.
-  bool holdsAliased(clang::QualType type, unsigned depth) const {
+  /// RFC 0047 §5, RFC 0048 §4: a class whose objects other objects keep
+  /// pointers to: aliased, or of a constructor that keeps its object.
+  bool keptType(clang::QualType type, unsigned depth) const {
     while (const clang::ArrayType *array = ast.getAsArrayType(type))
       type = array->getElementType();
     const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
     if (record == nullptr || depth > 8 || !record->hasDefinition())
       return false;
     record = record->getDefinition();
-    if (CxxKinds::aliased(record))
+    if (CxxKinds::aliased(record) ||
+        (!isLibrary(*record) &&
+         llvm::any_of(record->ctors(),
+                      [&](const auto *each) { return keepsMade(each); })))
       return true;
     return llvm::any_of(record->fields(),
                         [&](const clang::FieldDecl *field) {
                           return !field->getType()->isReferenceType() &&
-                                 holdsAliased(field->getType(), depth + 1);
+                                 keptType(field->getType(), depth + 1);
                         }) ||
            llvm::any_of(record->bases(),
                         [&](const clang::CXXBaseSpecifier &base) {
-                          return holdsAliased(base.getType(), depth + 1);
+                          return keptType(base.getType(), depth + 1);
                         });
   }
 
@@ -1744,7 +1713,7 @@ private:
     if (owner == nullptr || isLibrary(*owner))
       return false;
     const clang::FunctionDecl *pattern =
-        owner == nullptr ? nullptr : owner->getTemplateInstantiationPattern();
+        owner->getTemplateInstantiationPattern();
     const unsigned index = parameter.getFunctionScopeIndex();
     if (pattern == nullptr || index >= pattern->getNumParams())
       return false;
@@ -1768,14 +1737,32 @@ private:
   constructed(const clang::Expr *initialization) {
     if (initialization == nullptr)
       return nullptr;
-    const auto *construct = llvm::dyn_cast<clang::CXXConstructExpr>(
-        initialization->IgnoreImplicit());
+    const clang::Expr *made = initialization->IgnoreImplicit();
+    // (`T(x)`, which constructs as `T t(x)` does.)
+    if (const auto *cast = llvm::dyn_cast<clang::CXXFunctionalCastExpr>(made))
+      made = cast->getSubExpr()->IgnoreImplicit();
+    const auto *construct = llvm::dyn_cast<clang::CXXConstructExpr>(made);
     return construct == nullptr ? nullptr : construct->getConstructor();
+  }
+
+  /// What an initializer runs: a member's default initializer, if it is it.
+  static const clang::Expr *initial(const clang::CXXCtorInitializer &each) {
+    const auto *byDefault =
+        llvm::dyn_cast<clang::CXXDefaultInitExpr>(each.getInit());
+    return byDefault != nullptr ? byDefault->getExpr() : each.getInit();
+  }
+
+  /// Whether a temporary is no local (one a local reference extends too).
+  static bool temporary(const clang::MaterializeTemporaryExpr &made) {
+    const auto *extended =
+        llvm::dyn_cast_or_null<clang::VarDecl>(made.getExtendingDecl());
+    return extended == nullptr || extended->hasLocalStorage();
   }
 
   /// Whether a constructor keeps the object it makes: it says
   /// WEAVEC_ESCAPES, or its definition here makes a member or base that is
-  /// kept (a safe one that does not say so is an error where it is made).
+  /// kept, or is implicit and points a member into the object (a safe
+  /// written one that does not say so is an error where it is made).
   bool keepsMade(const clang::CXXConstructorDecl *constructor,
                  unsigned depth = 0) const {
     const clang::FunctionDecl *definition = nullptr;
@@ -1788,7 +1775,13 @@ private:
            llvm::any_of(
                llvm::cast<clang::CXXConstructorDecl>(definition)->inits(),
                [&](const clang::CXXCtorInitializer *each) {
-                 return keepsMade(constructed(each->getInit()), depth + 1);
+                 const clang::FieldDecl *member = each->getAnyMember();
+                 return keepsMade(constructed(initial(*each)), depth + 1) ||
+                        (definition->isImplicit() && member != nullptr &&
+                         member->getType()->isPointerType() &&
+                         !borrowed(member) &&
+                         valueOrigins(initial(*each))
+                             .contains({.kind = Origin::Kind::This}));
                });
   }
 
@@ -1841,9 +1834,8 @@ private:
     if (expression == nullptr || depth > 12)
       return found;
     const clang::Expr *e = expression->IgnoreParenCasts();
-    if (const auto *temporary =
-            llvm::dyn_cast<clang::MaterializeTemporaryExpr>(e))
-      e = temporary->getSubExpr()->IgnoreParenCasts();
+    if (const auto *made = llvm::dyn_cast<clang::MaterializeTemporaryExpr>(e))
+      e = made->getSubExpr()->IgnoreParenCasts();
     if (const auto *cleanups = llvm::dyn_cast<clang::ExprWithCleanups>(e))
       e = cleanups->getSubExpr()->IgnoreParenCasts();
     if (e->getType()->isArrayType()) {
@@ -1897,13 +1889,8 @@ private:
     const clang::Expr *e = expression->IgnoreParens();
     while (const auto *cast = llvm::dyn_cast<clang::ImplicitCastExpr>(e))
       e = cast->getSubExpr()->IgnoreParens();
-    if (const auto *temporary =
-            llvm::dyn_cast<clang::MaterializeTemporaryExpr>(e)) {
-      if (const auto *extended = llvm::dyn_cast_or_null<clang::VarDecl>(
-              temporary->getExtendingDecl());
-          extended != nullptr && extended->hasLocalStorage())
-        found.insert({.kind = Origin::Kind::Local, .variable = extended});
-      else if (temporary->getExtendingDecl() == nullptr)
+    if (const auto *made = llvm::dyn_cast<clang::MaterializeTemporaryExpr>(e)) {
+      if (temporary(*made))
         found.insert({.kind = Origin::Kind::Temporary});
       return found;
     }
@@ -2027,6 +2014,44 @@ private:
 };
 
 } // namespace
+
+const clang::VarDecl *localPointer(const clang::Expr *expression) {
+  const auto *named =
+      llvm::dyn_cast<clang::DeclRefExpr>(expression->IgnoreParenImpCasts());
+  const auto *variable = named != nullptr
+                             ? llvm::dyn_cast<clang::VarDecl>(named->getDecl())
+                             : nullptr;
+  return variable != nullptr && variable->hasLocalStorage() &&
+                 variable->getType()->isPointerType()
+             ? variable
+             : nullptr;
+}
+
+void localValues(const clang::Stmt *statement, LocalValues &values,
+                 llvm::DenseSet<const clang::VarDecl *> *stepped) {
+  if (statement == nullptr)
+    return;
+  const auto *op = llvm::dyn_cast<clang::BinaryOperator>(statement);
+  const auto *unary = llvm::dyn_cast<clang::UnaryOperator>(statement);
+  if (op != nullptr && op->getOpcode() == clang::BO_Assign)
+    if (const clang::VarDecl *variable = localPointer(op->getLHS()))
+      values[variable].push_back(op->getRHS());
+  if (stepped != nullptr &&
+      ((unary != nullptr && unary->isIncrementDecrementOp()) ||
+       (op != nullptr && (op->getOpcode() == clang::BO_AddAssign ||
+                          op->getOpcode() == clang::BO_SubAssign))))
+    if (const clang::VarDecl *variable =
+            localPointer(unary != nullptr ? unary->getSubExpr() : op->getLHS()))
+      stepped->insert(variable);
+  if (const auto *declaration = llvm::dyn_cast<clang::DeclStmt>(statement))
+    for (const clang::Decl *each : declaration->decls())
+      if (const auto *variable = llvm::dyn_cast<clang::VarDecl>(each);
+          variable != nullptr && variable->hasInit() &&
+          variable->hasLocalStorage() && variable->getType()->isPointerType())
+        values[variable].push_back(variable->getInit());
+  for (const clang::Stmt *child : statement->children())
+    localValues(child, values, stepped);
+}
 
 void keptAddresses(clang::ASTContext &ast, const clang::FunctionDecl &function,
                    bool safe, const RuleReport *report) {

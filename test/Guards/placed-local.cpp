@@ -89,6 +89,27 @@ long sow() {
 }
 } // namespace garden
 
+// A local of a class whose constructor keeps its object is placed however
+// it is made, and so is one whose implicit constructor points a member
+// into it.
+struct Tagged {
+  long pool[4] = {};
+  long *mem;
+  explicit Tagged(long first) WEAVEC_ESCAPES : mem(pool) { pool[0] = first; }
+};
+struct Pointed {
+  long pool[4] = {};
+  long *mem = pool;
+};
+// NS-LABEL: define {{.*}}@_Z4madev(
+// NS: call {{.*}}@__weavec_rt_alloc_typed(
+// NS: call {{.*}}@__weavec_rt_alloc_typed(
+long made() {
+  auto tagged = Tagged(3);
+  Pointed pointed;
+  return *tagged.mem + *pointed.mem;
+}
+
 int main() {
   Registry r;
   enroll(r);

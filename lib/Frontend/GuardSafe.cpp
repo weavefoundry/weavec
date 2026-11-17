@@ -2195,6 +2195,22 @@ private:
     removeMarker(marker, *flags, *row);
   }
 
+  /// The type an access's type tag names: "vtable pointer" for a load of
+  /// an object's vtable pointer ("" without a tag).
+  static llvm::StringRef tagged(const llvm::Value *value) {
+    const auto *access = llvm::dyn_cast_or_null<llvm::Instruction>(value);
+    const llvm::MDNode *tag =
+        access != nullptr ? access->getMetadata(llvm::LLVMContext::MD_tbaa)
+                          : nullptr;
+    const auto *type = tag != nullptr && tag->getNumOperands() != 0
+                           ? llvm::dyn_cast<llvm::MDNode>(tag->getOperand(0))
+                           : nullptr;
+    const auto *name = type != nullptr && type->getNumOperands() != 0
+                           ? llvm::dyn_cast<llvm::MDString>(type->getOperand(0))
+                           : nullptr;
+    return name != nullptr ? name->getString() : "";
+  }
+
   /// The load or store a guard marker stands before.
   static const llvm::Instruction *accessAfter(const llvm::CallInst &marker) {
     const llvm::Value *pointer = marker.getArgOperand(0);
@@ -2249,8 +2265,20 @@ private:
       if (call == nullptr || llvm::isa<llvm::IntrinsicInst>(call))
         return false;
       const llvm::Function *callee = call->getCalledFunction();
-      if (callee == nullptr)
+      // (Of an indirect call, a virtual one's: its target is a slot of the
+      // vtable its object names.)
+      const auto *target =
+          llvm::dyn_cast<llvm::LoadInst>(call->getCalledOperand());
+      llvm::APInt slot(64, 0);
+      if (callee == nullptr) {
+        if (target == nullptr ||
+            tagged(
+                target->getPointerOperand()->stripAndAccumulateConstantOffsets(
+                    module.layout, slot, /*AllowNonInbounds=*/true)) !=
+                "vtable pointer")
+          return false;
         continue;
+      }
       const llvm::StringRef name = callee->getName();
       const SafeUnit &safe = *module.options.safe;
       if (fastCodeOf(module, *callee) == FastCode::Safe ||
@@ -2274,39 +2302,25 @@ private:
         llvm::dyn_cast<llvm::ConstantInt>(marker.getArgOperand(1));
     // A virtual function's slot, at a constant offset in the vtable an
     // object's vtable pointer names: the class's layout puts it there.
-    {
-      llvm::APInt slot(64, 0);
-      const auto *vtable = llvm::dyn_cast<llvm::LoadInst>(
-          marker.getArgOperand(0)->stripAndAccumulateConstantOffsets(
-              module.layout, slot, /*AllowNonInbounds=*/true));
-      if (width != nullptr && vtable != nullptr && !slot.isNegative() &&
-          slot.getZExtValue() + width->getZExtValue() <= NullPage)
-        if (const llvm::MDNode *tag =
-                vtable->getMetadata(llvm::LLVMContext::MD_tbaa);
-            tag != nullptr && tag->getNumOperands() != 0)
-          if (const auto *type =
-                  llvm::dyn_cast<llvm::MDNode>(tag->getOperand(0));
-              type != nullptr && type->getNumOperands() != 0)
-            if (const auto *name =
-                    llvm::dyn_cast<llvm::MDString>(type->getOperand(0));
-                name != nullptr && name->getString() == "vtable pointer")
-              return true;
-    }
+    llvm::APInt slot(64, 0);
+    if (width != nullptr &&
+        tagged(marker.getArgOperand(0)->stripAndAccumulateConstantOffsets(
+            module.layout, slot, /*AllowNonInbounds=*/true)) ==
+            "vtable pointer" &&
+        !slot.isNegative() &&
+        slot.getZExtValue() + width->getZExtValue() <= NullPage)
+      return true;
     const llvm::Instruction *access = accessAfter(marker);
     const llvm::MDNode *tag =
         access != nullptr ? access->getMetadata(llvm::LLVMContext::MD_tbaa)
                           : nullptr;
-    if (width == nullptr || tag == nullptr || tag->getNumOperands() < 3)
+    const llvm::StringRef name = tagged(access);
+    if (width == nullptr || tag == nullptr || tag->getNumOperands() < 3 ||
+        !(name.starts_with("_ZTS") || name == "vtable pointer"))
       return false;
-    const auto *type = llvm::dyn_cast<llvm::MDNode>(tag->getOperand(0));
-    const auto *name = type != nullptr && type->getNumOperands() != 0
-                           ? llvm::dyn_cast<llvm::MDString>(type->getOperand(0))
-                           : nullptr;
     const auto *tagOffset =
         llvm::mdconst::dyn_extract<llvm::ConstantInt>(tag->getOperand(2));
-    if (name == nullptr || tagOffset == nullptr ||
-        !(name->getString().starts_with("_ZTS") ||
-          name->getString() == "vtable pointer"))
+    if (tagOffset == nullptr)
       return false;
     llvm::APInt offset(64, 0);
     const llvm::Value *root =
