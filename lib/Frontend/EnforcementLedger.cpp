@@ -19,6 +19,7 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/xxhash.h"
 
@@ -253,6 +254,26 @@ static bool writeFileAtomically(llvm::StringRef path, llvm::StringRef contents,
   return true;
 }
 
+/// Whether the ledger at `path` is the one of `object`.
+static bool sameObject(llvm::StringRef path, llvm::StringRef object) {
+  auto buffer = llvm::MemoryBuffer::getFile(path);
+  if (!buffer)
+    return false;
+  llvm::Expected<llvm::json::Value> parsed =
+      llvm::json::parse((*buffer)->getBuffer());
+  if (!parsed) {
+    llvm::consumeError(parsed.takeError());
+    return false;
+  }
+  const llvm::json::Object *document = parsed->getAsObject();
+  const llvm::json::Array *units =
+      document == nullptr ? nullptr : document->getArray("units");
+  const llvm::json::Object *unit = units == nullptr || units->empty()
+                                       ? nullptr
+                                       : units->front().getAsObject();
+  return unit != nullptr && unit->getString("object") == object;
+}
+
 bool writeEnforcementLedger(const EnforcementLedger &ledger,
                             const EnforcementUnit &unit, llvm::StringRef path,
                             std::string &error) {
@@ -369,10 +390,26 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
   // source and a hash of its path, so that two sources of one name do not
   // share a ledger.
   std::string artifact = unit.object.empty() ? unit.source : unit.object;
+  const auto hashed = [&] {
+    return artifact + "." +
+           llvm::utohexstr(llvm::xxh3_64bits(artifact)).substr(0, 8);
+  };
   if (unit.object.empty() && unit.partial)
-    artifact +=
-        "." + llvm::utohexstr(llvm::xxh3_64bits(unit.source)).substr(0, 8);
-  return writeFileAtomically(ledgerPathFor(path, artifact), text, error);
+    artifact = hashed();
+  std::string chosen = ledgerPathFor(path, artifact);
+  // RFC 0049 §7: two objects of one name in a directory (`pair0/pair.c.o`,
+  // `pair1/pair.c.o`) do not share a ledger: the first claims the name, and
+  // another object's gets a hash of its path.
+  if (isLedgerDirectory(path) && !unit.object.empty()) {
+    int fd = -1;
+    if (!llvm::sys::fs::openFileForWrite(chosen, fd,
+                                         llvm::sys::fs::CD_CreateNew)) {
+      std::ignore = llvm::sys::Process::SafelyCloseFileDescriptor(fd);
+    } else if (!sameObject(chosen, unit.object)) {
+      chosen = ledgerPathFor(path, hashed());
+    }
+  }
+  return writeFileAtomically(chosen, text, error);
 }
 
 std::string enforcementSummary(const EnforcementLedger &ledger,

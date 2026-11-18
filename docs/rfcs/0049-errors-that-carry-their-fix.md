@@ -1136,7 +1136,7 @@ building it and from what the gates found. They override the body.
     whole flow, not one use.
 14. **Line limit (D6).** The planner (`SafeFix.cpp`, ~2,000 lines) and the
     fixer (`Fixer.cpp`, ~1,000) are about 3,000 lines where the design
-    counted 1,700 for everything; the library is 31,450 lines and the limit
+    counted 1,700 for everything; the library is 31,490 lines and the limit
     is raised to that, a departure from (D6)'s 29,300 that the owner has to
     accept.
 15. **From the conversions (G4).** Three of the fixer's mistakes the agents
@@ -1159,6 +1159,12 @@ building it and from what the gates found. They override the body.
 16. **Compile time (G9).** The planner's index of uses skips system
     headers and reads each body once, and a declaration's bound is planned
     once however many errors want it.
+17. **Ledger names (§7), from G5.** In a ledger directory the first object
+    of a name keeps `<object>.ledger.json` (it claims the name as it is
+    written); another object of the same name, from another directory,
+    gets `<object>.<hash of its path>.ledger.json`. nng's six pairs of
+    same-named sources (`pair0/pair.c`, `pair1/pair.c`) overwrote each
+    other's ledgers, so six files were never surveyed, fixed or marked.
 
 ## Measured gates
 
@@ -1178,12 +1184,12 @@ of the compiler (`tc/`, `tc2/`); G4's ran before amendments 15 and 16.
 | G2 What the fixer clears | **Fail.** The five projects, unedited (`gate.py`): 2,457 distinct errors become 2,035 (17%; the gate asks half); `index-single`, `escape` and `call-args` 1,504 become 1,091 (27%; it asks four in five); no project has more errors than before; 69 of the 663 fixes written were withdrawn (10%; it asks at most 5%). By project: snappy 343 to 332, tinyxml2 244 to 207, yaml-cpp 169 to 151, pugixml 882 to 686, leveldb 819 to 659, each in at most 16 s. What is left is not an annotation: owners to rewrite (`raw-owner`), classes to declare aliased (a choice), casts and unions, cursors that are locals given values from two places (snappy's `ip`, `op`), and in-place parsers whose strings are written (tinyxml2, pugixml), whose string bounds are withdrawn as designed. |
 | G3 What the fixer writes is right | **Pass.** Every declaration both the fixer and RFC 0047's or RFC 0048's conversion annotated got the same annotation: tinyxml2 34 of 34, yaml-cpp 28 of 28 (`agree.py`). |
 | G4 The conversions, again | **Fail.** tinyxml2 in 1,015 s (the gate asks 570; RFC 0047's took 1,201), 17 rounds, two of them fixer runs, 403 of 419 functions safe (96.2%; 93.5% before), 517 of 517 checks in both builds. yaml-cpp in 1,341 s (it asks 580; 1,161 before), 21 rounds, two fixer runs, 907 of 912 safe (99.45%; 99.3% before), 1,011 tests in both builds. Both reached a higher share than before, under RFC 0048's stricter rules, but not faster: the agents spent their time on what has no fix (tinyxml2's arena and in-place strings, yaml-cpp's `const` twins and the graph builder) and on reading and correcting the fixer's edits; yaml-cpp's first fixer run failed (a relative ledger path, fixed after, amendment 7). Both found the library defects RFC 0047's found, and tinyxml2's a new one (`XMLPrinter::Write` narrows a `size_t` to `int` for `PushArr`). |
-| G5 Projects no RFC has read | **Recorded.** libzmq 4.3.5 (C++, ~50,000 lines) and nng 1.9.0 (C, ~65,000), chosen and their commits written down before any tool ran. The fixer alone: libzmq 2,299 to 2,055 errors (95 s), nng 1,993 to 1,841 (11 s); their errors are mostly casts, unions, owners and `owner-path`. The two hours of an agent's time on each: see below. |
+| G5 Projects no RFC has read | **Recorded.** libzmq 4.3.5 (C++, ~50,000 lines) and nng 1.9.0 (C, ~65,000), chosen and their commits written down before any tool ran. The fixer alone: libzmq 2,299 to 2,055 errors (95 s), nng 1,993 to 1,841 (11 s); their errors are mostly casts, unions, owners and `owner-path`. Two hours of an agent's time each (with the compiler before amendment 17), both stopping early: **libzmq** 0 to 1,275 of 1,568 functions safe (81%) in 73 minutes, its checked build's tests as at the start (114 of 121; 3 network tests fail on the unconverted library too, 4 fuzzers not built); **nng** 0 to 1,778 of 2,917 (61%; 1,144 of its original 2,152 safe themselves, 1,775 with their bodies in a safe typed function the agent split out of each `void *` callback) in 78 minutes, 85 of 86 tests (one needs the network). Both found real defects: libzmq's proxy `memcmp`s six bytes of a five-byte command; nng's `getsockopt(LOCAL_PEERPID)` is given 76 bytes for a 4-byte `pid_t`, and `nni_msgq_resize` reads one slot past its queue. What cost them most: likely bounds too small for cursors whose count grows (66 tests trapped until reverted, as _Soundness_ says a too-small bound does), `WEAVEC_ESCAPES` that is right for the rules but stops tests that pass stack objects (`stack-escape`), C library calls on pointers without a bound that compile and trap when they run (Safe C checks them then, RFC 0042), and the ledger collision of amendment 17. The fixer added `#include <weavec.h>` to libzmq's public `zmq.h`, which its users then need. |
 | G6 Nothing believed is wrong | **Pass.** Both conversions' tests built fast under `-fweavec-checks=verify`: no `weavec.proven`, no report (tinyxml2 517 checks, yaml-cpp 1,011 tests); built checked: no report. The audit's unchecked bounds were not read one by one. |
 | G7 New code | **Recorded.** The `json` port by a fresh agent: 2 rounds to a clean build (3 before), 5 min 1 s to `check.py`'s result (9 min 7 s before), 645 of 646 as before; it did not need the fixer. The LRU port: 1 round (as before), 3 min 10 s (2 min 18 s before); it kept indices and met no error. One false `stale-borrow` (RFC 0044's: a member vector of a local struct erased then pushed) is in its record. |
 | G8 The tool is safe to run | **Pass.** A second `--weavec-fix` applies nothing (`safe-fix.cpp`), `--dry-run` writes nothing, and both conversions compile with plain Clang (C++17, as their agents built them) with no new diagnostic and pass their tests. |
 | G9 Nothing elsewhere | **Pass.** 2,066 compiles (RFC 0044's and RFC 0046's sets, `test/cases`, `test/Guards`; guarded, fast and checked) give the same object with main's compiler and this one; 1,558 fail with both (the seeded bugs) and none with one only, so §4 newly rejects nothing there. Survey compiles of units with errors take 0.98 to 1.12 times main's (`time.py`, after amendment 16; 1.37 before it). The `dev` tests and the documentation's examples pass; the Linux container's `ci-release` (libstdc++, aarch64, warnings as errors) passes 52 of 52. |
-| H1 Hygiene | **Pass at the raised limit** (amendment 14): library 31,450 lines; runtime unchanged. |
+| H1 Hygiene | **Pass at the raised limit** (amendment 14): library 31,490 lines; runtime unchanged. |
 
 What the numbers say about the owner's goal: the compiler now says what to
 write, and a whole project's mechanical annotations come from one command
