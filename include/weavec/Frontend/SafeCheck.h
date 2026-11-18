@@ -22,10 +22,15 @@
 // the field (`llvm.ptr.annotation`), so that the guard passes know a loaded
 // pointer's bound (§5).
 //
+// RFC 0049: every error is also recorded as data (`SafeUnit::errors`), with
+// the fixes the compiler can propose from the function it is compiling.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef WEAVEC_FRONTEND_SAFECHECK_H
 #define WEAVEC_FRONTEND_SAFECHECK_H
+
+#include "weavec/Frontend/RuleFix.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringMap.h"
@@ -235,9 +240,6 @@ struct SafeUnit {
     unsigned starts = 0;
     bool locks = false;
     bool sends = false;
-    /// RFC 0047 §7: under -fweavec-safe-survey, a function that is not
-    /// safe: the errors the rules would give it, by rule.
-    std::map<std::string, unsigned> survey;
   };
   std::vector<Definition> definitions;
   /// RFC 0043 §11: each pointer field of the structs the unit defines
@@ -262,16 +264,14 @@ struct SafeUnit {
     unsigned line = 0;
   };
   std::vector<InPlace> inPlace;
-  /// RFC 0047 §7: under -fweavec-safe-survey, each global or static local
-  /// of code that is not safe yet that the rules would reject, and its
-  /// errors by rule.
-  struct SurveyedGlobal {
-    std::string name;
-    std::string file;
-    unsigned line = 0;
-    std::map<std::string, unsigned> survey;
-  };
-  std::vector<SurveyedGlobal> surveyedGlobals;
+  /// RFC 0049 §1: every rule error, printed or (under the survey) not.
+  std::vector<RuleError> errors;
+  /// RFC 0049 §5: the declarations other units want facts about (by their
+  /// keys), and what this unit's evidence says of those it sees.
+  std::vector<std::string> wants;
+  std::vector<RuleFix> evidence;
+  /// RFC 0049 §6: the project's files the unit read.
+  std::vector<ReadFile> files;
   /// FieldBounds::pointee's sizes (0: still incomplete), by index - 1.
   std::vector<std::uint64_t> pointeeSizes;
 

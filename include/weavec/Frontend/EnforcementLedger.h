@@ -20,8 +20,11 @@
 #ifndef WEAVEC_FRONTEND_ENFORCEMENTLEDGER_H
 #define WEAVEC_FRONTEND_ENFORCEMENTLEDGER_H
 
+#include "weavec/Frontend/RuleFix.h"
+
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/JSON.h"
 
 #include <cstdint>
 #include <map>
@@ -31,7 +34,7 @@
 namespace weavec::frontend {
 
 /// The version of the `weavec-ledger` JSON this writes.
-inline constexpr unsigned EnforcementLedgerVersion = 11;
+inline constexpr unsigned EnforcementLedgerVersion = 12;
 
 /// What the pass decided for one access.
 struct LedgerRow {
@@ -66,10 +69,9 @@ struct LedgerFunction {
   unsigned starts = 0;
   bool locks = false;
   bool sends = false;
-  /// RFC 0047 §7: under -fweavec-safe-survey, a function that is not safe:
-  /// whether it was surveyed, and the errors the rules gave it, by rule.
+  /// RFC 0047 §7: under -fweavec-safe-survey, a function that is not safe
+  /// was surveyed (its errors are among the unit's, RFC 0049 §7).
   bool surveyed = false;
-  std::map<std::string, unsigned> survey;
 };
 
 /// RFC 0043 §11: a pointer field of a struct the unit defines, and its
@@ -88,16 +90,6 @@ struct LedgerField {
   unsigned line = 0;
   bool sendable = false;
   bool shareable = false;
-};
-
-/// RFC 0047 §7: under -fweavec-safe-survey, a global or static local of
-/// code that is not safe yet that the rules would reject, and its errors by
-/// rule.
-struct LedgerSurveyedGlobal {
-  std::string name;
-  std::string file;
-  unsigned line = 0;
-  std::map<std::string, unsigned> survey;
 };
 
 /// RFC 0045 §10: what a fast unit rests on beyond its own code: a library
@@ -121,7 +113,11 @@ struct EnforcementLedger {
   std::vector<LedgerRow> rows;
   std::vector<LedgerFunction> functions;
   std::vector<LedgerField> fields;
-  std::vector<LedgerSurveyedGlobal> surveyedGlobals;
+  /// RFC 0049 §7: the rule errors, what the unit's evidence says of the
+  /// declarations other units want, and the project's files it read.
+  std::vector<RuleError> errors;
+  std::vector<RuleFix> evidence;
+  std::vector<ReadFile> files;
   std::vector<LedgerLibrary> library;
   /// RFC 0045: the typed allocation sites of a fast unit.
   std::uint64_t typedSites = 0;
@@ -170,6 +166,14 @@ struct EnforcementUnit {
   bool zeroInit = true;
   /// RFC 0045 §1: `fast` or `full` for a unit compiled as safe, else empty.
   std::string safe;
+  /// RFC 0049 §7: the compile's directory and the driver's command line
+  /// (empty for a hand-written `-cc1` line); whether it is the C++ driver.
+  std::string directory;
+  std::vector<std::string> command;
+  bool cxx = false;
+  /// The unit did not reach code generation (-fsyntax-only, or an error):
+  /// the ledger has the checker's part only.
+  bool partial = false;
 };
 
 /// A `-fweavec-ledger` value names a directory when it ends in a path
@@ -188,6 +192,13 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
 /// <f> functions safe; <o> owner and <r> reference fields` (RFC 0043 §11).
 [[nodiscard]] std::string enforcementSummary(const EnforcementLedger &ledger,
                                              llvm::StringRef source);
+
+/// RFC 0049 §7: an error or a fix as the ledger writes it, and read back
+/// (false when `value` is not one).
+[[nodiscard]] llvm::json::Value fixJson(const RuleFix &fix);
+[[nodiscard]] llvm::json::Value errorJson(const RuleError &error);
+bool readFix(const llvm::json::Value &value, RuleFix &fix);
+bool readError(const llvm::json::Value &value, RuleError &error);
 
 /// RFC 0042 §10, RFC 0043 §11: `weavec-cc --weavec-audit [--format=json]
 /// <ledger>...`: what a program's safe functions trust, from its ledgers

@@ -46,6 +46,35 @@ private:
 };
 ```
 
+## fix
+
+Not a rule: what an error's fix is, and how to apply them all ([RFC 0049](/rfcs/0049-errors-that-carry-their-fix/)). When the compiler can write what an error asks for, the note under the error says the text and where, and carries it as a fix-it (`-fdiagnostics-parseable-fixits` prints it; an editor offers it):
+
+```text
+slice.h:13:49: error: 'data_' points to one object and cannot be indexed or offset [weavec-safe:index-single]
+slice.h:24:15: note: fix (likely): declare it 'const char *WEAVEC_COUNTED_BY(size_) data_'; 'size_' is its count in the call to 'memcmp' at line 19
+```
+
+A fix has a level:
+
+- **certain**: it states what the function with the error already does: it keeps the parameter (`WEAVEC_ESCAPES`, [`escape`](#escape)), it returns the end of its own bound (`WEAVEC_COUNTED_BY(0)`, [`call-args`](#call-args)), a global is never assigned (`const`, [`thread-share`](#thread-share)), another declaration of the function says it ([`bad-annotation`](#bad-annotation)).
+- **likely**: a fact about a declaration that every use the compiler read agrees with: a library call that pairs the pointer with a count, a comparison that bounds its index or the pointer, a byte tested against zero, constant indices only, a bound that flows in from what it is set from or out to where it is stored, a result that is always one parameter (`WEAVEC_LIFETIMEBOUND`). Each use is read inside the function it is in; the note says which one.
+- **choice**: two facts disagree, or the edit is a design decision (`WEAVEC_ALIASED` on a class, [`owner-path`](#owner-path)). It is printed, never written.
+
+A pointer member of a class of plain values (no destructor, copy, move, base or virtual function, members that are scalars, pointers and views) that stores a parameter is a view's: the first fix is `WEAVEC_BORROWED` on the member, the second `WEAVEC_ESCAPES` on the parameter. A fix is text in the source and nothing else: the rules check an annotation the compiler wrote as one a person wrote, and nothing at run time trusts it more.
+
+`weavec-cc --weavec-fix` applies them over a project. Survey the build first (`-fweavec-safe-survey -fweavec-ledger=ledger/`), then:
+
+```text
+$ weavec-c++ --weavec-fix -j8 ledger/
+weavec: fix: round 1: 212 edits in 9 files (171 certain, 41 likely), 2 withdrawn; 388 errors after
+weavec: fix: round 2: nothing to apply
+weavec: fix: marked 14 files WEAVEC_SAFE_FILE
+weavec: fix: 214 edits in 11 files; 807 errors before, 388 after: 122 have a choice or a fix withdrawn, 266 have no fix
+```
+
+Or give it a compile command: `weavec-c++ --weavec-fix -- weavec-c++ -std=c++20 -c parser.cpp`. Each round writes the certain fixes and the likely ones every unit agrees on, on every declaration of the function; runs the rules again on the units an edit reached (their recorded commands, with `-fsyntax-only`); and takes out a likely fix that brought an error with no fix (or a round that broke a compile), which is not tried again. When a round applies nothing it marks the files left with no error `WEAVEC_SAFE_FILE`. It refuses a file that changed since its ledger was written. `--dry-run` prints the first round as a diff and writes nothing; `--level=certain` writes no likely fix; `--only=<dir>,...` limits the files it edits; `--no-mark` marks none. `weavec-fix/weavec-fix.json`, beside the ledgers, logs each fix, its evidence, and what was taken out and why; `--weavec-audit weavec-fix/ledger` prints what is left: the choices, most errors first, and the errors with no fix by file. Review the diff (`git diff`) as a person's: a likely bound is a fact the uses agree on, not one the compiler proved, and the audit lists each bound on a member that code which is not safe can write.
+
 ## index-single
 
 A pointer without a bound points to one object: it is dereferenced (`*p`, `p->f`, `p[0]`) but not indexed or offset (`p[i]`, `p + 2`, `p++`).
@@ -62,6 +91,8 @@ int second(const int *WEAVEC_COUNTED_BY(n) p, size_t n) {
 
 Give the declaration a bound (`WEAVEC_COUNTED_BY(n)`, `WEAVEC_SIZED_BY(n)`, `WEAVEC_ENDED_BY(e)`, `WEAVEC_NULL_TERMINATED`), or index an array or an allocation. A struct's pointer field takes the same annotations, naming a sibling field.
 
+
+_Fix_ ([`fix`](#fix)): the bound the uses agree on, on the pointer's declaration (a local's, on the parameter, member or result it comes from): `WEAVEC_COUNTED_BY(n)` when a library call or a loop's comparison counts it by `n`, `WEAVEC_ENDED_BY(e)` when it is compared with `e`, `WEAVEC_NULL_TERMINATED` when a byte of it is tested against zero, `WEAVEC_COUNTED_BY(k + 1)` when only `p[0]` to `p[k]` are read.
 ### In C++
 
 As in C: a raw pointer without a bound points to one object and is not indexed or stepped (the difference and the comparison of two pointers are allowed). It has a bound when its declaration gives one, when it is an array or was made from one, when it is a container's `data()` (`std::vector`, `std::string`, `std::array`, `std::span`, `std::string_view`), `main`'s `argv`, or a local assigned only such pointers. A lambda's copy of a pointer points to one object: capture a `std::span`. An iterator a library class spells as a pointer (`std::array<T, N>::iterator`) is the library's.
@@ -265,6 +296,8 @@ void keep(struct holder *h, int *WEAVEC_ESCAPES p) { h->kept = p; }
 
 `WEAVEC_ESCAPES` after the `*` if the function keeps a reference (callers then cannot pass a stack address); `WEAVEC_LIFETIMEBOUND` after the parameter's name if the function returns it; `WEAVEC_OWNED` if the function takes the block and is responsible for releasing it (see `owner-source`); a `WEAVEC_BORROWED` field of a local struct to carry it down a call tree.
 
+
+_Fix_ ([`fix`](#fix)): `WEAVEC_ESCAPES` on the parameter, or after the parameter list for `this`, on every declaration (certain); a returned parameter that every return gives, `WEAVEC_LIFETIMEBOUND` (likely); a pointer member of a class of plain values, `WEAVEC_BORROWED` first (likely).
 ### In C++
 
 A borrow or a view of a local is not returned, and is not stored where it outlives the function's locals: in a member of `*this`, through a parameter, in a global. That covers a reference or a `std::string_view` of a local, a lambda that captures a local by reference, and a `std::vector` of views into a local buffer. A view member is assigned only from parameters that are themselves views (a `std::string_view`, a `std::span`, a pointer), which callers can see, or bound in the constructor; it is not made to point into another member of the same object, which would break when the object is moved. A `std::function`, a `std::thread` or a `std::any` made from a view is a view. A function that keeps a callable it was passed (in a member, a container, a global) takes it by value, `std::function<void()> handler`, which says so; one that only calls it takes `const std::function<void()> &` or a template parameter. (`WEAVEC_ESCAPES`, written after the type, says "kept" of a parameter taken another way, and of a pointer.) What is passed for a parameter that keeps is not a callable that captures a local by reference, nor the address of a local, unless the object that keeps it is itself a local of the same function, which then counts as a view of what the callable captured. A callable that is returned as a `std::function` owns what it captured.
@@ -493,6 +526,8 @@ int four(const int *WEAVEC_COUNTED_BY(4) p) { return sum(p, 4); }
 
 Pass a pointer with bounds (an array, an allocation, a counted parameter), or declare the parameter with the same bound.
 
+
+_Fix_ ([`fix`](#fix)): the argument's bound, from its uses, on its declaration; for a stored or returned end of its own bound (`data_ + size_`), `WEAVEC_COUNTED_BY(0)` on where it goes (certain).
 ### In C++
 
 The same for a function's, a constructor's or a member function's parameters with a bound, and for the library's that take a pointer and a count, or two pointers: `std::span(p, n)`, `std::string_view(p, n)`, `std::string(p, n)`, `append(p, n)`, `assign(p, n)`, `std::vector(first, last)`. Their pointer has a bound that covers the count, checked when it runs.
@@ -630,6 +665,8 @@ int sum(const int *WEAVEC_COUNTED_BY(count) v, size_t n);
 int sum(const int *WEAVEC_COUNTED_BY(n) v, size_t n);
 ```
 
+
+_Fix_ ([`fix`](#fix)): what one declaration of a function says, written on the other (certain).
 ### In C++
 
 Safe C's bounds mean the same in C++. `WEAVEC_OWNED` and `WEAVEC_DROPS` are C's: an owner is a `std::unique_ptr` or a container, and a destructor releases what a class owns. `WEAVEC_ESCAPES`, `WEAVEC_BORROWED` and `WEAVEC_LIFETIMEBOUND` keep their meaning. `WEAVEC_SENDS` ([`thread-send`](#thread-send)) goes after the type of a parameter that is a type-erased callable, the same in every declaration of the function; `WEAVEC_ALIASED` ([`owner-path`](#owner-path)) after `class` or `struct`; in C both are errors. Every declaration of a function, and every function that overrides a virtual one, gives the same bounds.
@@ -913,6 +950,8 @@ void drop_next(struct node *n) {
 
 Reach the owner from the pointer that owns it (a list's head, a tree's root), or keep the function `WEAVEC_GUARDED`. Move a global owner into a local first (`T *WEAVEC_OWNED s = g; g = NULL;`), change it, and move it back.
 
+
+_Fix_ ([`fix`](#fix)): a choice, `WEAVEC_ALIASED` on the class, which the compiler prints and never writes.
 ### In C++
 
 What an object owns is changed only from what owns it or was lent it: a local, a parameter, `this`, and through members, owners (`std::unique_ptr`, containers) and borrows. Through a raw pointer kept in a member or in a container's element, or through a `std::shared_ptr`, a safe function reads, calls `const` member functions and assigns members that own nothing; it changes what an object owns only when the object's class is declared `WEAVEC_ALIASED` (or derives from such a class), is shareable (it locks its members), or is a library type with no storage that changes type in place (a `std::vector<int>`; not a `std::string` or a `std::variant`). A fresh local `std::shared_ptr` from `std::make_shared` that is only dereferenced and moved is the function's own until it is published. That is what lets a borrow survive a call that was not handed its owner: no callee can reach the owner through a pointer it kept, unless the class says it can. A member function that is `const`, or has a `const` twin, changes nothing `*this` owns, `mutable` members included.
@@ -1360,6 +1399,8 @@ void readers() {
 }
 ```
 
+
+_Fix_ ([`fix`](#fix)): `const` on a global of the unit, or a static local, that is initialized by a constant and never assigned or bound to what is not `const` (certain).
 ## thread-lent
 
 Safe C++ only. A local of the function (not a parameter, not a reference) that a thread borrows is **lent** to the thread object: to read, when its type is frozen and the thread only reads it (the lambda uses it only as `const`, a `std::cref`, a pointer to `const`, a `std::string_view`), else to write. While the thread object holds the loan, the function does not use a local lent to write at all (nor through a reference or a view of it), and does not write, move or lend to write a local lent to read. The loan ends when the thread object is destroyed, when it is joined (`join`, and `get` or `wait` of a `std::async` future), when a container of thread objects is destroyed or cleared, or after a loop that does nothing but join each of its threads (`for (auto &t : threads) t.join();`).

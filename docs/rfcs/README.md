@@ -98,5 +98,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0046](0046-thread-safety.md) | Thread safety | Accepted |
 | [0047](0047-conversion-in-place.md) | Conversion in place | Accepted |
 | [0048](0048-safe-code-without-the-shadow.md) | Safe code without the shadow | Accepted |
+| [0049](0049-errors-that-carry-their-fix.md) | Errors that carry their fix | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

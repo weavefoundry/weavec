@@ -94,6 +94,13 @@ public:
       lambdaGuards;
   /// `-mllvm -weavec-thread-rules=0`: RFC 0046's rules are off.
   bool threadRules = true;
+  /// RFC 0049 §3: the unit's fix planner, which a rule tells what it wants
+  /// before it reports.
+  FixPlanner *fixes = nullptr;
+  void want(clang::SourceLocation at, Want wanted) const {
+    if (fixes != nullptr)
+      fixes->want(at, std::move(wanted));
+  }
 
   /// The library table's row for the class of `type` has `trait`.
   [[nodiscard]] static bool tableIs(clang::QualType type,

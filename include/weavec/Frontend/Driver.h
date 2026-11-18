@@ -61,6 +61,9 @@ struct DriverOptions {
   bool survey = false;
   /// `-fweavec-ledger=<path>` (RFC 0035 §9).
   std::string ledger;
+  /// RFC 0049 §5: `-fweavec-fix-wants=<file>`, which `--weavec-fix` passes
+  /// (not documented): the declarations other units want facts about.
+  std::string fixWants;
   /// `-f[no-]weavec-summary`; unset means on exactly when a ledger is
   /// written.
   std::optional<bool> summary;
@@ -107,6 +110,11 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress);
 /// Runs a `-cc1` command line (`argv` excludes `-cc1`): Clang's compiler
 /// proper with WeaveC's guard passes and unsafe-region collector.
 int runCc1(llvm::ArrayRef<const char *> argv, const char *argv0);
+
+/// RFC 0049 §6: `weavec-cc --weavec-fix [options] <ledger>...` or
+/// `weavec-cc --weavec-fix [options] --` followed by a compile command.
+int runFixer(llvm::ArrayRef<const char *> operands, const char *argv0,
+             void *mainAddress);
 
 /// RFC 0040 §4.2: `weavec-cc --weavec-symbolize [<log>...]`, the runtime's
 /// symbolizer (no operand) or a saved report's rewriter.

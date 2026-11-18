@@ -1,6 +1,6 @@
 weavec_add_unittest(
   WeaveCFrontendTests
-  SOURCES GuardPassTest.cpp
+  SOURCES GuardPassTest.cpp RuleFixTest.cpp
   DEPS weavec::Frontend)
 
 # The guard pass tests parse IR and run the passes on it.

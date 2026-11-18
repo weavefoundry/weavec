@@ -24,14 +24,21 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 
+#include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace clang {
 class ASTContext;
+class CXXRecordDecl;
+class Decl;
+class FieldDecl;
 class FunctionDecl;
+class Preprocessor;
 class RecordDecl;
 class SourceManager;
 class Stmt;
@@ -60,6 +67,55 @@ using RuleReport = std::function<void(
     clang::SourceLocation at, llvm::StringRef rule, llvm::StringRef message,
     clang::SourceLocation noteAt, llvm::StringRef note)>;
 
+/// RFC 0049 §1: whose code the errors reported until the next owner are in.
+struct ErrorOwner {
+  std::string name;
+  std::string file;
+  unsigned line = 0;
+  bool global = false;
+  /// Code that is not safe yet, under the survey: recorded, not printed.
+  bool surveyed = false;
+  /// The function, for the fixes that read its body.
+  const clang::FunctionDecl *function = nullptr;
+};
+
+/// RFC 0049 §3: what an error wants of a declaration, said just before the
+/// error is reported (at the same place); its fixes come from it.
+struct Want {
+  enum class Kind : std::uint8_t {
+    /// A bound on a pointer: `declaration`, or the one `expression` (a
+    /// local's value) comes from (index-single, call-args).
+    Bound,
+    /// The value is the end of its own bound: `WEAVEC_COUNTED_BY(0)` on the
+    /// place it goes, `declaration` (C3).
+    End,
+    /// A parameter, or `this` (`declaration` a member function), is kept
+    /// (C1); `keeper`, the member it is stored in (D5).
+    Escapes,
+    /// A global that never changes (C4).
+    Const,
+    /// A class changed through pointers other objects keep: a choice.
+    Aliased,
+    /// What a function's result borrows from: its parameter (E7).
+    Lifetime,
+    /// The declarations of a function, `declaration` and `subjects[0]`
+    /// (an earlier one, or the function an override overrides), disagree:
+    /// what each states is written on the other (C2).
+    Agree,
+    /// No fix: the declaration (or the one `expression` comes from) is the
+    /// error's subject, for the fixer to withdraw a fix by (§6).
+    Subject,
+  };
+  Kind kind = Kind::Bound;
+  const clang::Decl *declaration = nullptr;
+  const clang::Expr *expression = nullptr;
+  const clang::FieldDecl *keeper = nullptr;
+  /// Other declarations the rule read.
+  std::vector<const clang::Decl *> subjects;
+};
+
+class FixPlanner;
+
 /// RFC 0047 §6: whether `at` lies in a file that said WEAVEC_SAFE_FILE,
 /// after it said so.
 [[nodiscard]] bool inSafeFile(const SafeUnit &unit,
@@ -81,10 +137,11 @@ struct BoundsRules {
   std::function<bool(const clang::FunctionDecl &)> check;
   /// The bounds of a class's members name what they should.
   std::function<void(const clang::RecordDecl &)> checkRecord;
-  /// RFC 0047 §7: the errors reported until the next call are counted in
-  /// `counts` (a function's or a global's that is not safe), not printed;
-  /// null ends that.
-  std::function<void(std::map<std::string, unsigned> *)> survey;
+  /// RFC 0049 §1 (RFC 0047 §7): whose code the errors reported until the
+  /// next call are in; null ends that.
+  std::function<void(const ErrorOwner *)> owner;
+  /// RFC 0049 §3: the unit's fix planner.
+  FixPlanner *fixes = nullptr;
 };
 
 /// RFC 0048 §2.2, §4: the local pointer an expression names; the values
@@ -100,12 +157,52 @@ void localValues(const clang::Stmt *statement, LocalValues &values,
 /// safe function, reports `escape` for any other kept address (`report`
 /// null: marks only).
 void keptAddresses(clang::ASTContext &ast, const clang::FunctionDecl &function,
-                   bool safe, const RuleReport *report);
+                   bool safe, const RuleReport *report,
+                   FixPlanner *fixes = nullptr);
 
 /// RFC 0044: Safe C++'s rules for a C++ unit, and its functions and
 /// classes' members for the ledger.
 void checkCxx(clang::ASTContext &ast, bool unitSafe, SafeUnit &unit,
               const RuleReport &report, const BoundsRules &bounds);
+
+/// RFC 0049: the fixes of a unit's errors. A rule says what it wants just
+/// before it reports; the report takes the want, and the planner turns it
+/// into fixes, from what the declarations and the functions that use them
+/// show (§3), and into the note's text and its fix-its (§2).
+class FixPlanner {
+public:
+  FixPlanner(clang::ASTContext &ast, const clang::Preprocessor *preprocessor);
+  ~FixPlanner();
+  FixPlanner(const FixPlanner &) = delete;
+  FixPlanner &operator=(const FixPlanner &) = delete;
+
+  /// What the error reported next at `at` wants.
+  void want(clang::SourceLocation at, Want wanted);
+  /// A note with its fix-its: where, the text, and the insertions.
+  struct Note {
+    clang::SourceLocation at;
+    std::string text;
+    std::vector<std::pair<clang::SourceLocation, std::string>> insertions;
+  };
+  /// Fills the fixes and subjects of the error reported at `at` from the
+  /// want said for it (else, in `function`, from the error's message); the
+  /// note to print with it, if any fix was found.
+  std::optional<Note> attach(clang::SourceLocation at, RuleError &error,
+                             const clang::FunctionDecl *function);
+  /// C2: the bounds `other` gives that `first` (an earlier declaration of
+  /// the same function) does not, written on `other`, and back.
+  std::optional<Note> agree(const clang::FunctionDecl &first,
+                            const clang::FunctionDecl &other, RuleError &error);
+  /// §5: what this unit's evidence says of the wanted declarations.
+  void evidence(const std::vector<std::string> &wants,
+                std::vector<RuleFix> &out);
+  /// §6: the project's files the unit read.
+  void files(std::vector<ReadFile> &out) const;
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> impl;
+};
 
 } // namespace weavec::frontend
 

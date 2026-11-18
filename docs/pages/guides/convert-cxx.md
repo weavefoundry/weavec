@@ -7,35 +7,52 @@ A rewrite into Rust starts over: a new build, bindings at the boundary, tests po
 
 ## The loop
 
-1. **Survey.** Build the project with `weavec-c++` (or `weavec-cc` for C) and two flags added: `-fweavec-safe-survey` runs the rules over every function that is not safe yet, without printing or failing on their errors, and `-fweavec-ledger=<dir>/` records what they would have been.
+1. **Survey.** Build the project with `weavec-c++` (or `weavec-cc` for C) and two flags added: `-fweavec-safe-survey` runs the rules over every function that is not safe yet, without printing or failing on their errors, and `-fweavec-ledger=<dir>/` records them, each with the fix the compiler can write, and the command that compiled the unit.
 
    ```sh
    cmake -S . -B build-survey -G Ninja -DCMAKE_CXX_COMPILER=weavec-c++ \
      -DCMAKE_CXX_FLAGS="-fweavec-safe-survey -fweavec-ledger=$PWD/ledger/"
    cmake --build build-survey
-   weavec-c++ --weavec-audit ledger/
    ```
 
-2. **Read the plan.** The audit starts with it:
+2. **Let the compiler write its part** ([RFC 0049](/rfcs/0049-errors-that-carry-their-fix/)). Most errors of a conversion ask for one annotation on an existing declaration that the code already implies: a pointer that `memcmp` reads `size_` bytes of is `WEAVEC_COUNTED_BY(size_)`, a parameter stored in a member is kept. `--weavec-fix` writes those, runs the rules again on the units an edit reached (each unit's recorded command, with `-fsyntax-only`), repeats until a round writes nothing, and marks every file left with no error `WEAVEC_SAFE_FILE`:
+
+   ```sh
+   weavec-c++ --weavec-fix -j8 ledger/
+   git diff     # review it as a person's
+   ```
+
+   A likely fix (a bound the uses agree on) that brings an error with no fix is taken out again, and so is a round that breaks a compile. `--dry-run` prints the first round as a diff and writes nothing; `--only=src/` keeps it out of vendored code. `weavec-cc --weavec-explain fix` says what each level of fix means.
+
+3. **Read the plan.** The audit of what the fixer left starts with it:
+
+   ```sh
+   weavec-c++ --weavec-audit weavec-fix/ledger
+   ```
 
    ```text
    conversion: 412 of 1930 functions safe (21%); 388 more have no error
-   ready (mark WEAVEC_SAFE_FILE):
+   fixes: 0 certain, 0 likely ('weavec-cc --weavec-fix <ledger>' applies them)
+   choices, most errors first:
+     declare 'Node' WEAVEC_ALIASED if its objects are changed through pointers other objects keep  46 errors
+     'buf_' is WEAVEC_COUNTED_BY(cap_) (...), or WEAVEC_COUNTED_BY(len_) (...)  9 errors
+   no fix, fewest errors first:
+     table/block.cc  4 errors: pointer-cast 3, raw-owner 1
+     db/memtable.cc  9 errors: raw-owner 6, union-pointer 3
+   ready (marked or to mark WEAVEC_SAFE_FILE):
      util/arena.h  6 functions
-     util/coding.cc  31 functions
-   blocked, fewest errors first:
-     table/block.cc  4 errors: index-single 3, pointer-cast 1
-     db/memtable.cc  9 errors: owner-path 6, raw-owner 3
-   by rule: index-single 211, owner-path 96, raw-owner 80
+   by rule: raw-owner 80, pointer-cast 61, owner-path 46
    ```
 
-3. **Mark the ready files.** Write `WEAVEC_SAFE_FILE` once, after `#include <weavec.h>`, at the top of each. Every function the file defines after it is safe, with the member functions of the classes defined there, in every unit that includes it. It does not reach the files it includes. `WEAVEC_GUARDED` keeps one function or class guarded inside it.
+4. **Decide the choices,** most errors first: each is one annotation the compiler will not write because it is a design decision (a class whose objects are changed through pointers kept elsewhere is `WEAVEC_ALIASED`) or because two uses disagree (one of them is often the bug). Then survey and fix again: what a choice settled often lets the fixer write the next layer.
 
-4. **Take the blocked file with the fewest errors.** Compile it with the rules on (`-fweavec-safe`, or mark it and build) and fix what they say. `weavec-c++ --weavec-explain <rule>` prints a rule with a rejected example and its rewrite.
+5. **Rewrite what has no fix,** the file with the fewest errors first. Compile it with the rules on (`-fweavec-safe`, or mark it and build) and fix what they say; each note says what to write. `weavec-c++ --weavec-explain <rule>` prints a rule with a rejected example and its rewrite. `WEAVEC_GUARDED` keeps one function or class guarded inside a marked file.
 
-5. **Run the project's tests in the checked build** (`-fweavec-safe-checks=full`, the default of a build without optimization): every guard stays, so a mistake the rules do not see stops with a full report. Then repeat from 1.
+6. **Run the project's tests in the checked build** (`-fweavec-safe-checks=full`, the default of a build without optimization): every guard stays, so a mistake the rules do not see stops with a full report. Then repeat from 1.
 
-The errors that come with pointers a fast build believes (RFC 0048) are each one annotation on an existing declaration: a `const char *` handed to `memcpy` with a length, or to `strncmp`, says how many bytes it has (`WEAVEC_COUNTED_BY(n)`) or that it is a string (`WEAVEC_NULL_TERMINATED`); a function that returns or stores an end declares it `WEAVEC_COUNTED_BY(0)`; a function that keeps a parameter's pointer, a reference's address or `this` (a constructor that stores its argument, a `Set(start, end)`, a `push(item)` into a member) declares it `WEAVEC_ESCAPES`, and so does a constructor that keeps the object it makes (a small buffer that points into itself) and each class whose constructor makes one; a pointer member of a short-lived cursor or wrapper that only borrows is `WEAVEC_BORROWED` instead, which keeps nothing. RFC 0047's conversion of tinyxml2 meets 19 such errors, 12 of them strings handed to the C library; yaml-cpp's needed 21 annotations, all but one `WEAVEC_ESCAPES` up four call chains (the emitter's stream, its settings, the graph builder's nodes, `Binary`).
+`WEAVEC_SAFE_FILE`, written once after `#include <weavec.h>`, makes every function the file defines after it safe, with the member functions of the classes defined there, in every unit that includes it. It does not reach the files it includes.
+
+The annotations the fixer writes are the ones a person writes for pointers a fast build believes (RFC 0048): a `const char *` handed to `memcpy` with a length, or to `strncmp`, says how many bytes it has (`WEAVEC_COUNTED_BY(n)`) or that it is a string (`WEAVEC_NULL_TERMINATED`); a function that returns or stores an end declares it `WEAVEC_COUNTED_BY(0)`; a function that keeps a parameter's pointer, a reference's address or `this` (a constructor that stores its argument, a `Set(start, end)`, a `push(item)` into a member) declares it `WEAVEC_ESCAPES`, and so does a constructor that keeps the object it makes (a small buffer that points into itself) and each class whose constructor makes one; a pointer member of a short-lived cursor or wrapper that only borrows is `WEAVEC_BORROWED` instead, which keeps nothing (the fixer's first fix for a class of plain values).
 
 `-fweavec-safe` on a unit's command line makes every file of the unit safe at once and turns on the fast build; use it when a unit's files are all converted.
 
