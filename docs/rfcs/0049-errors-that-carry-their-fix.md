@@ -1137,8 +1137,8 @@ building it and from what the gates found. They override the body.
 14. **Line limit (D6).** The planner (`SafeFix.cpp`, ~2,000 lines) and the
     fixer (`Fixer.cpp`, ~1,000) are about 3,000 lines where the design
     counted 1,700 for everything; the library is 31,490 lines and the limit
-    is raised to that, a departure from (D6)'s 29,300 that the owner has to
-    accept.
+    is raised to that, a departure from (D6)'s 29,300 that the owner
+    accepted on 2026-11-18.
 15. **From the conversions (G4).** Three of the fixer's mistakes the agents
     reverted are fixed: a count from the allocation (`new T[n]` through a
     local, or an array a constructor sets the member to, beside a member set
@@ -1189,7 +1189,7 @@ of the compiler (`tc/`, `tc2/`); G4's ran before amendments 15 and 16.
 | G7 New code | **Recorded.** The `json` port by a fresh agent: 2 rounds to a clean build (3 before), 5 min 1 s to `check.py`'s result (9 min 7 s before), 645 of 646 as before; it did not need the fixer. The LRU port: 1 round (as before), 3 min 10 s (2 min 18 s before); it kept indices and met no error. One false `stale-borrow` (RFC 0044's: a member vector of a local struct erased then pushed) is in its record. |
 | G8 The tool is safe to run | **Pass.** A second `--weavec-fix` applies nothing (`safe-fix.cpp`), `--dry-run` writes nothing, and both conversions compile with plain Clang (C++17, as their agents built them) with no new diagnostic and pass their tests. |
 | G9 Nothing elsewhere | **Pass.** 2,066 compiles (RFC 0044's and RFC 0046's sets, `test/cases`, `test/Guards`; guarded, fast and checked) give the same object with main's compiler and this one; 1,558 fail with both (the seeded bugs) and none with one only, so §4 newly rejects nothing there. Survey compiles of units with errors take 0.98 to 1.12 times main's (`time.py`, after amendment 16; 1.37 before it). The `dev` tests and the documentation's examples pass; the Linux container's `ci-release` (libstdc++, aarch64, warnings as errors) passes 52 of 52. |
-| H1 Hygiene | **Pass at the raised limit** (amendment 14): library 31,490 lines; runtime unchanged. |
+| H1 Hygiene | **Pass at the raised limit** (amendment 14, accepted by the owner): library 31,490 lines; runtime unchanged. |
 
 What the numbers say about the owner's goal: the compiler now says what to
 write, and a whole project's mechanical annotations come from one command
