@@ -30,6 +30,7 @@ __weavec_rt_dirname_r
 __weavec_rt_dprintf
 __weavec_rt_escape_check
 __weavec_rt_fast_program
+__weavec_rt_verify_program
 __weavec_rt_fprintf
 __weavec_rt_frame_escape
 __weavec_rt_frame_shadow

@@ -3,11 +3,18 @@
 // member to it is believed when it is loaded, so its use before the reuse
 // reads the released block, zeroed, and after the reuse the object of the
 // same type that lives there. The checked build reports the use (O4).
+// RFC 0050 §3.1 (D3): the pooled slot keeps its object's shadow, so that
+// guarded code reads it as the zeroed object it is, too; the checked build
+// reports that use, and so does a program with a unit in verify mode.
 // RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe %s -o %t
 // RUN: %t | FileCheck %s --check-prefix=REUSE
 // RUN: %t stale | FileCheck %s --check-prefix=STALE
+// RUN: %t guarded | FileCheck %s --check-prefix=GUARDED
 // RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -fweavec-safe-checks=full %s -o %t.full
 // RUN: not --crash %t.full stale 2>&1 | FileCheck %s
+// RUN: not --crash %t.full guarded 2>&1 | FileCheck %s --check-prefix=PEEK
+// RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -fweavec-checks=verify %s -o %t.verify
+// RUN: not --crash %t.verify guarded 2>&1 | FileCheck %s --check-prefix=PEEK
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -27,8 +34,11 @@ struct Cache {
 };
 
 [[gnu::noinline]] void drop(Cache &cache) { cache.items.pop_back(); }
-WEAVEC_GUARDED bool stale(int argc, char **argv) {
-  return argc > 1 && std::strcmp(argv[1], "stale") == 0;
+WEAVEC_GUARDED bool asked(int argc, char **argv, const char *mode) {
+  return argc > 1 && std::strcmp(argv[1], mode) == 0;
+}
+WEAVEC_GUARDED [[gnu::noinline]] int peek(const Cache &cache) {
+  return cache.last->v;
 }
 
 int main(int argc, char **argv) {
@@ -37,7 +47,13 @@ int main(int argc, char **argv) {
   cache.items.back()->v = 7;
   cache.remember();
   drop(cache);
-  if (stale(argc, argv)) {
+  if (asked(argc, argv, "guarded")) {
+    // GUARDED: guarded 0
+    // PEEK: weavec: heap-use-after-free at {{.*}}typed-reuse.cpp:{{[0-9]+}}:{{[0-9]+}}: read of 4 bytes
+    std::printf("guarded %d\n", peek(cache));
+    return 0;
+  }
+  if (asked(argc, argv, "stale")) {
     // STALE: stale 0
     // CHECK: weavec: heap-use-after-free at {{.*}}typed-reuse.cpp:{{[0-9]+}}:{{[0-9]+}}: read of 4 bytes
     std::printf("stale %d\n", cache.recall());

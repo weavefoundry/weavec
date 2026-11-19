@@ -13,6 +13,9 @@ char copy(char *WEAVEC_COUNTED_BY(n) to, const char *from, size_t n) {
   memcpy(to, from, n);
   return from[1];
 }
+// RFC 0050 §5.1: the call itself, as in safe C++.
+// CHECK: error: 'from' points to one object, and 'memcpy' may access more than its 1 byte through it [weavec-safe:call-args]
+// CHECK: note: fix (likely): declare it 'const char *WEAVEC_COUNTED_BY(n) from'; 'n' is its count in the call to 'memcpy' at line 13
 // CHECK: error: 'from' points to one object and cannot be indexed or offset [weavec-safe:index-single]
 // CHECK: note: fix (likely): declare it 'const char *WEAVEC_COUNTED_BY(n) from'; 'n' is its count in the call to 'memcpy' at line 13
 // CHECK: fix-it:"{{.*}}fix-bounds.c":{12:54-12:54}:"WEAVEC_COUNTED_BY(n) "
@@ -24,7 +27,7 @@ int sum(const int *values, size_t count) {
   return total;
 }
 // CHECK: error: 'values' points to one object and cannot be indexed or offset [weavec-safe:index-single]
-// CHECK: note: fix (likely): declare it 'const int *WEAVEC_COUNTED_BY(count) values'; 'count' bounds its index at line 22
+// CHECK: note: fix (likely): declare it 'const int *WEAVEC_COUNTED_BY(count) values'; 'count' bounds its index at line 25
 
 size_t span(const char *s) {
   size_t n = 0;
@@ -33,7 +36,7 @@ size_t span(const char *s) {
   return n;
 }
 // CHECK: error: 's' points to one object and cannot be indexed or offset [weavec-safe:index-single]
-// CHECK: note: fix (likely): declare it 'const char *WEAVEC_NULL_TERMINATED s'; a byte of it is tested against zero at line 31
+// CHECK: note: fix (likely): declare it 'const char *WEAVEC_NULL_TERMINATED s'; a byte of it is tested against zero at line 34
 
 struct holder {
   int *kept;
@@ -45,5 +48,5 @@ void keep(struct holder *h, int *value) { h->kept = value; }
 const char *same(const char *p) { return p; }
 // CHECK: error: 'p' is borrowed for this call and cannot be returned [weavec-safe:escape]
 // CHECK: note: fix (likely): declare it 'const char *p WEAVEC_LIFETIMEBOUND'; every return of 'same' gives 'p'
-// CHECK: fix-it:"{{.*}}fix-bounds.c":{45:31-45:31}:" WEAVEC_LIFETIMEBOUND"
-// CHECK: note: 5 of 5 errors carry a fix; 'weavec-cc --weavec-fix -- <this command>' applies them
+// CHECK: fix-it:"{{.*}}fix-bounds.c":{48:31-48:31}:" WEAVEC_LIFETIMEBOUND"
+// CHECK: note: 6 of 6 errors carry a fix; 'weavec-cc --weavec-fix -- <this command>' applies them

@@ -55,7 +55,7 @@ A safe unit is built one of two ways, as Rust builds a debug and a release binar
 
 | `-fweavec-safe-checks=`                     | What it is for                                 | At run time                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ------------------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bounds` (the default with `-O1` and above) | the build you ship and benchmark               | safe code is checked against what it holds: allocations carry their type and a block safe code releases is reused at once by its own type; no guard on an access at a constant offset through a reference, `this`, a pointer parameter or a pointer it loaded or a project function returned, none on a string's current byte, none in the standard library's functions whose preconditions its hardening checks; its locals in plain frames; indices compared with their bounds; iterators still guarded |
+| `bounds` (the default with `-O1` and above) | the build you ship and benchmark               | safe code is checked against what it holds: allocations carry their type and a block safe code releases is reused at once by its own type; no guard on an access at a constant offset through a reference, `this`, a pointer parameter or a pointer it loaded or a project function returned, none on a string's current byte, none in the standard library's functions whose preconditions its hardening checks, a `std::string_view`'s and a `std::span`'s index and slices among them, nor on the element a range-based `for` reads; its locals in plain frames; indices compared with their bounds; iterators held in variables still guarded |
 | `full` (the default without optimization)   | the build you test, and an agent iterates with | exactly a guarded unit: every guard, the quarantine and the sweep, allocation stacks, container annotations; every bug the rules miss stops with a full report                                                                                                                                                                                                                                                                                                                                            |
 
 The rules are the same in both, so code that compiles in one compiles in the other. A stale pointer the rules missed stops when it runs in the checked build; in the fast build it reaches memory of its own type, as a stale index does in Rust, and a report of it ends with `weavec: note: built for speed; rebuild with -fweavec-safe-checks=full …`. The one error that rests on the rules alone in the fast build is a borrow into storage that changes type in place, used after the change: a reference into the alternative of a `std::variant` after the variant was assigned another alternative. `stale-borrow` rejects it in the function, and `escape` keeps a pointer into such storage out of members:
@@ -70,6 +70,16 @@ struct Holder {
 ```
 
 Keep the index or the key, and look the value up when it is used. `weavec-cc --weavec-audit` lists the library functions a fast unit runs without guards and the allocations it could not type.
+
+A pointer and a length are a `std::string_view` or a `std::span` in safe C++, and the fast build checks them once: the library compares an index with the view's size, as Rust's slices do, and nothing reads the shadow again ([RFC 0050](/rfcs/0050-checked-once/)). A view made from a pointer and a count is checked where it is made, so a view one element too long stops there. A range-based `for` reads its elements unchecked; an iterator kept in a variable and stepped by hand is guarded:
+
+```cpp
+std::size_t skipDigits(std::string_view text, std::size_t at) {
+  while (at < text.size() && text[at] >= '0' && text[at] <= '9')   // no guard
+    ++at;
+  return at;
+}
+```
 
 ### Pointers a function keeps
 

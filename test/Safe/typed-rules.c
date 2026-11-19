@@ -132,10 +132,21 @@ int views(struct small *s, char *WEAVEC_SIZED_BY(n) bytes, size_t n) {
 }
 
 // pointer-bytes: whole objects only
-void clear(struct node *n, size_t k) {
+void clear(struct node *WEAVEC_COUNTED_BY(k) n, size_t k) {
   memset(n, 0, sizeof *n);
   memset(n, 0, k * sizeof *n);
   memset(n, 0, 4); // expected-error {{writing 'struct node' as bytes could forge the pointers it holds [weavec-safe:pointer-bytes]}}
+}
+
+// RFC 0050 §5.1 (D4): a C library call that may access more through a
+// pointer to one object than the object has (it stopped when it ran).
+void clearOne(struct node *n, size_t k) {
+  memset(n, 0, sizeof *n);
+  memset(n, 0, k * sizeof *n); // expected-error {{'n' points to one object, and 'memset' may access more than its 16 bytes through it [weavec-safe:call-args]}}
+}
+void copyFixed(char *to, const char *from) {
+  memcpy(to, from, 1);
+  memcpy(to, from, 2); // expected-error {{'to' points to one object, and 'memcpy' may access more than its 1 byte through it [weavec-safe:call-args]}} expected-error {{'from' points to one object, and 'memcpy' may access more than its 1 byte through it [weavec-safe:call-args]}}
 }
 
 // counted-pair: a pair under a case label, and in a nested struct.

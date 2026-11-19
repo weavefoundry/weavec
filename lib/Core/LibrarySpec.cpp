@@ -876,7 +876,7 @@ bool LibrarySpecParser::parseClass(bool function) {
       spec.functions.emplace(qualified, clause);
     } else if (clause == "erased" || clause == "shared" || clause == "thread" ||
                clause == "lock" || clause == "shareable" ||
-               clause == "spawns") {
+               clause == "spawns" || clause == "checked") {
       spec.traits.emplace(qualified, clause);
     } else if (clause == "guard") {
       spec.traits.emplace(qualified, clause);
@@ -931,7 +931,8 @@ bool LibrarySpecParser::parseClass(bool function) {
         return false;
     } else {
       return fail("expected 'erased', 'shared', 'thread', 'lock', 'guard', "
-                  "'shareable', 'resets(...)', 'joins(...)', 'detaches(...)', "
+                  "'shareable', 'checked', 'resets(...)', 'joins(...)', "
+                  "'detaches(...)', "
                   "'locks(...)', 'makes(...)', 'counts(...)', 'counted(...)', "
                   "'ended(...)' or 'strings(...)'");
     }

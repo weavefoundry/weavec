@@ -282,7 +282,8 @@ public:
   /// `qualified` has the clause `trait`: `erased` (it can hold an object of
   /// a type its own type does not name), `shared` (a pointer whose object
   /// has other owners), `thread`, `lock`, `guard` (exclusive or shared),
-  /// `guard(shared)`, `shareable`.
+  /// `guard(shared)`, `shareable`, `checked` (a view whose element access
+  /// and slicing the library's hardening checks: RFC 0050 §2).
   [[nodiscard]] bool classIs(std::string_view qualified,
                              std::string_view trait) const;
   /// RFC 0044 §5, RFC 0046 §5: whether the row for the class `qualified`

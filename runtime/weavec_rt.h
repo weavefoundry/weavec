@@ -277,6 +277,10 @@ WEAVEC_RT_API void __weavec_rt_frame_escape(uintptr_t address,
  * container annotations of every unit are ignored. */
 WEAVEC_RT_API void __weavec_rt_fast_program(void);
 extern int weavecRtFastProgram;
+/* RFC 0050 section 3.1: called by each unit compiled with
+ * -fweavec-checks=verify: a pooled slot's shadow says released. */
+WEAVEC_RT_API void __weavec_rt_verify_program(void);
+extern int weavecRtVerifyProgram;
 /* Allocates as `allocForm` does, from the pool of `type` when it has one. */
 void *weavecRtAllocTyped(size_t size, unsigned form,
                          struct __weavec_rt_type *type);
@@ -351,7 +355,10 @@ enum {
   WeavecRtSiteTyped = 16,
   /* Section 10: verify mode's monitor of a believed access, which a released
    * heap block passes (its pointer reaches memory of its type). */
-  WeavecRtSiteBelieved = 32
+  WeavecRtSiteBelieved = 32,
+  /* RFC 0050 section 3.1: a release by safe C++ in a fast unit, whose pooled
+   * slot keeps the shadow of its object (Safe C's reference test reads it). */
+  WeavecRtSiteShadowed = 64
 };
 /* RFC 0037 section 11: the file name lies `file` bytes from the record (0:
  * none), so that the records and the names are read-only data without a
@@ -848,7 +855,7 @@ void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
 /* The library's interface version (libweavec_rt.so.<abi>,
  * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
  * encoding or a site record changes. */
-#define WEAVEC_RT_ABI 45
+#define WEAVEC_RT_ABI 46
 
 /*===-- Internal -----------------------------------------------------------===*/
 

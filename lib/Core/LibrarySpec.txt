@@ -1404,6 +1404,15 @@ class std::basic_string_view : counts(data, size), counted(basic_string_view, 0,
 class std::span : counts(data, size), counted(span, 0, 1), ended(span, 0, 1);
 class std::vector : counts(data, size), ended(vector, 0, 1), ended(assign, 0, 1), ended(insert, 1, 2);
 class std::array : counts(data, size);
+
+# RFC 0050 section 2: views whose element access and slicing the library's
+# hardening checks (`operator[]`, `front`, `back`, `first`, `last`,
+# `subspan`, `substr`, `remove_prefix`, `remove_suffix`), in libc++'s `fast`
+# mode and under `_GLIBCXX_ASSERTIONS`. In a fast safe unit their members
+# that take no pointer, iterator or callable are trusted, and so are the
+# library's functions that take one of them.
+class std::basic_string_view : checked;
+class std::span : checked;
 class std::basic_ostream : counted(write, 0, 1);
 class std::basic_istream : counted(read, 0, 1), counted(get, 0, 1), counted(getline, 0, 1);
 

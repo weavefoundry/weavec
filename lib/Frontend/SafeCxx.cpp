@@ -26,6 +26,7 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/Mangle.h"
 #include "clang/AST/ParentMapContext.h"
+#include "clang/AST/RecordLayout.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/Basic/Builtins.h"
@@ -34,7 +35,9 @@
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Path.h"
 
+#include <functional>
 #include <set>
 #include <tuple>
 
@@ -45,6 +48,11 @@ namespace weavec::frontend {
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 static llvm::cl::opt<bool> threadRules("weavec-thread-rules",
                                        llvm::cl::init(true), llvm::cl::Hidden);
+// RFC 0050 §2: what trusting the library's checked views buys (`-mllvm
+// -weavec-trust-views=0`: RFC 0048's fast mode); not a user's switch.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+static llvm::cl::opt<bool> trustViews("weavec-trust-views",
+                                      llvm::cl::init(true), llvm::cl::Hidden);
 
 /// RFC 0045 §4: the symbols of `function` as the IR names them: the
 /// mangled names without the target's label prefix (Darwin's `_`).
@@ -790,11 +798,15 @@ private:
 /// namespace `std` with a name the standard does not reserve, of a class
 /// that is no view, none of whose parameters is a pointer, a view or a
 /// callable; and the destruction, the copy and the move of what the
-/// function holds.
+/// function holds. RFC 0050 §2.1, §2.2: a view whose element access the
+/// library checks (the table's `checked` classes) is as an owner: its
+/// members are trusted, and so is a function that takes one. Nothing is
+/// trusted in a unit whose library does not check (§2.5).
 class TrustedCalls final : public clang::RecursiveASTVisitor<TrustedCalls> {
 public:
-  TrustedCalls(CxxKinds &kinds, SafeUnit &unit, clang::ASTNameGenerator &names)
-      : kinds(kinds), unit(unit), names(names) {}
+  TrustedCalls(clang::ASTContext &ast, CxxKinds &kinds, SafeUnit &unit,
+               clang::ASTNameGenerator &names)
+      : ast(ast), kinds(kinds), unit(unit), names(names) {}
 
   // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
   bool VisitCallExpr(clang::CallExpr *call) {
@@ -804,8 +816,10 @@ public:
   }
   bool VisitCXXConstructExpr(clang::CXXConstructExpr *construct) {
     if (const clang::CXXConstructorDecl *constructor =
-            construct->getConstructor())
+            construct->getConstructor()) {
       consider(*constructor);
+      madeView(*constructor);
+    }
     destroyed(construct->getType());
     return true;
   }
@@ -817,6 +831,10 @@ public:
     if (const clang::CXXDestructorDecl *destructor =
             temporary->getTemporary()->getDestructor())
       consider(*destructor);
+    return true;
+  }
+  bool VisitCXXForRangeStmt(clang::CXXForRangeStmt *loop) {
+    rangeFor(*loop);
     return true;
   }
   // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
@@ -840,9 +858,150 @@ public:
   }
 
 private:
+  clang::ASTContext &ast;
   CxxKinds &kinds;
   SafeUnit &unit;
   clang::ASTNameGenerator &names;
+
+  /// RFC 0050 §2.3: a checked view made by a constructor that is not
+  /// trusted (from a pointer or an iterator, and a count or an end): where
+  /// the view keeps its pointer and count, so that the view is guarded once
+  /// where it is made.
+  void madeView(const clang::CXXConstructorDecl &constructor) {
+    const clang::CXXRecordDecl *record = constructor.getParent();
+    if (!unit.hardened || !checkedView(record) || constructor.isDeleted() ||
+        constructor.isDependentContext() ||
+        llvm::none_of(constructor.parameters(),
+                      [this](const clang::ParmVarDecl *parameter) {
+                        return forbiddenParameter(parameter->getType());
+                      }))
+      return;
+    const std::optional<SafeUnit::ViewLayout> layout = viewLayout(record);
+    if (!layout)
+      return;
+    llvm::StringSet<> symbols;
+    symbolsOf(constructor, names, symbols);
+    for (const auto &symbol : symbols)
+      unit.viewMakers[symbol.getKey()] = *layout;
+  }
+
+  /// Where a view of `record` keeps its pointer and its count, in it or in
+  /// a member of it (libstdc++ keeps a `std::span`'s count in an extent's
+  /// storage); none when either is not found, and then the view is not
+  /// trusted.
+  static std::optional<SafeUnit::ViewLayout>
+  viewLayout(const clang::CXXRecordDecl *record) {
+    if (record != nullptr)
+      record = record->getDefinition();
+    if (record == nullptr || record->isDependentType() ||
+        record->isInvalidDecl())
+      return std::nullopt;
+    const clang::ASTContext &ast = record->getASTContext();
+    SafeUnit::ViewLayout layout;
+    bool pointer = false;
+    const std::function<void(const clang::RecordDecl &, std::uint64_t)> walk =
+        [&](const clang::RecordDecl &in, std::uint64_t base) {
+          const clang::ASTRecordLayout &laid = ast.getASTRecordLayout(&in);
+          for (const clang::FieldDecl *field : in.fields()) {
+            const clang::QualType type = field->getType();
+            const std::uint64_t offset =
+                base + (laid.getFieldOffset(field->getFieldIndex()) /
+                        ast.getCharWidth());
+            if (type->isPointerType() && !pointer) {
+              pointer = true;
+              layout.pointerOffset = offset;
+              const clang::QualType element = type->getPointeeType();
+              if (!element->isIncompleteType() && !element->isVoidType())
+                layout.elementSize = static_cast<std::uint64_t>(
+                    ast.getTypeSizeInChars(element).getQuantity());
+            } else if (type->isIntegerType() && layout.countOffset < 0) {
+              layout.countOffset = static_cast<std::int64_t>(offset);
+              layout.countWidth = ast.getTypeSize(type) / ast.getCharWidth();
+            } else if (const clang::RecordDecl *member =
+                           type->getAsRecordDecl();
+                       member != nullptr &&
+                       member->getDefinition() != nullptr &&
+                       !member->isDependentType()) {
+              walk(*member->getDefinition(), offset);
+            }
+          }
+        };
+    walk(*record, 0);
+    // A view whose count is its type's (a `std::span` of a static extent);
+    // a dynamic extent (all ones) is no count.
+    if (layout.countOffset < 0)
+      if (const auto *specialization =
+              llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(record))
+        for (const clang::TemplateArgument &argument :
+             specialization->getTemplateArgs().asArray())
+          if (argument.getKind() == clang::TemplateArgument::Integral &&
+              !argument.getAsIntegral().isAllOnes())
+            layout.constant = argument.getAsIntegral().getZExtValue();
+    if (!pointer || (layout.countOffset < 0 && layout.constant == 0))
+      return std::nullopt;
+    return layout;
+  }
+
+  /// RFC 0050 §2.4: a range-based `for` over an array, a library container
+  /// or a checked view reads an element only after comparing its iterator
+  /// with the end, and `stale-borrow` keeps the range from changing in the
+  /// loop: the iterator's calls the loop makes (at its colon, where Clang
+  /// puts them) are trusted call sites.
+  void rangeFor(const clang::CXXForRangeStmt &loop) {
+    const clang::SourceLocation colon = loop.getColonLoc();
+    const clang::Expr *range = loop.getRangeInit();
+    if (!unit.hardened || colon.isInvalid() || colon.isMacroID() ||
+        range == nullptr || loop.getBeginStmt() == nullptr)
+      return;
+    const clang::QualType type = range->getType().getNonReferenceType();
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (!type->isArrayType() &&
+        (record == nullptr || !isLibrary(*record) || reserved(*record) ||
+         (!checkedView(record) && kinds.viewClass(record))))
+      return;
+    const clang::PresumedLoc at = ast.getSourceManager().getPresumedLoc(colon);
+    if (at.isInvalid())
+      return;
+    const std::string place =
+        (llvm::sys::path::filename(at.getFilename()) + ":" +
+         llvm::Twine(at.getLine()) + ":" + llvm::Twine(at.getColumn()))
+            .str();
+    const auto *begin = llvm::dyn_cast_or_null<clang::VarDecl>(
+        loop.getBeginStmt()->getSingleDecl());
+    if (begin != nullptr && begin->getType()->isPointerType())
+      unit.rangeLoops.insert(place);
+    // The begin, the end, the comparison and the step: their calls; the
+    // element: the dereference alone, not what the loop's variable makes of
+    // it.
+    for (const clang::Stmt *part :
+         {static_cast<const clang::Stmt *>(loop.getBeginStmt()),
+          static_cast<const clang::Stmt *>(loop.getEndStmt()),
+          static_cast<const clang::Stmt *>(loop.getCond()),
+          static_cast<const clang::Stmt *>(loop.getInc())})
+      rangeCalls(part, colon, place, /*element=*/false);
+    if (const clang::VarDecl *variable = loop.getLoopVariable();
+        variable != nullptr && variable->getInit() != nullptr)
+      rangeCalls(variable->getInit(), colon, place, /*element=*/true);
+  }
+  void rangeCalls(const clang::Stmt *statement, clang::SourceLocation colon,
+                  const std::string &place, bool element) {
+    if (statement == nullptr)
+      return;
+    const auto *call = llvm::dyn_cast<clang::CallExpr>(statement);
+    const auto *star = llvm::dyn_cast<clang::CXXOperatorCallExpr>(statement);
+    if (call != nullptr && call->getExprLoc() == colon &&
+        (!element ||
+         (star != nullptr && star->getOperator() == clang::OO_Star)))
+      if (const clang::FunctionDecl *callee = call->getDirectCallee();
+          callee != nullptr && isLibrary(*callee)) {
+        llvm::StringSet<> symbols;
+        symbolsOf(*callee, names, symbols);
+        for (const auto &symbol : symbols)
+          unit.rangeLoops.insert(place + ":" + symbol.getKey().str());
+      }
+    for (const clang::Stmt *child : statement->children())
+      rangeCalls(child, colon, place, element);
+  }
 
   void destroyed(clang::QualType type) {
     type = type.getNonReferenceType();
@@ -864,19 +1023,30 @@ private:
            (name.size() > 1 && name[0] == '_' && llvm::isUpper(name[1]));
   }
 
+  /// RFC 0050 §2: a library view the table says the library checks, whose
+  /// pointer and count the compiler can find (§2.3).
+  [[nodiscard]] static bool checkedView(const clang::CXXRecordDecl *record) {
+    return trustViews && record != nullptr && isLibrary(*record) &&
+           core::LibrarySpec::shipped().classIs(
+               CxxKinds::qualifiedName(*record), "checked") &&
+           viewLayout(record).has_value();
+  }
+
   [[nodiscard]] bool forbiddenParameter(clang::QualType type) {
     const clang::QualType object = type.getNonReferenceType();
     if (object->isPointerType() || object->isFunctionType() ||
         object->isMemberPointerType())
       return true;
     const clang::CXXRecordDecl *record = object->getAsCXXRecordDecl();
+    if (checkedView(record))
+      return false;
     return record != nullptr &&
            (record->isLambda() || kinds.viewClass(record) ||
             kinds.erased(object) || CxxKinds::pointerClass(object));
   }
 
   void consider(const clang::FunctionDecl &function) {
-    if (!isLibrary(function) || function.isDeleted() ||
+    if (!unit.hardened || !isLibrary(function) || function.isDeleted() ||
         function.isDependentContext() || reserved(function))
       return;
     const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(&function);
@@ -886,8 +1056,9 @@ private:
       return;
     if (method != nullptr) {
       const clang::CXXRecordDecl *record = method->getParent();
-      if (reserved(*record) || kinds.viewClass(record) ||
-          record->hasAttr<clang::PointerAttr>() || record->isLambda())
+      if (reserved(*record) || record->isLambda() ||
+          (!checkedView(record) &&
+           (kinds.viewClass(record) || record->hasAttr<clang::PointerAttr>())))
         return;
       // A nested class of another (an iterator of a container) only if its
       // enclosing classes are not reserved either.
@@ -915,7 +1086,7 @@ public:
           const RuleReport &report, const BoundsRules &bounds)
       : ast(ast), unitSafe(unitSafe), unit(unit), report(report),
         bounds(bounds), kinds(ast), rules(ast, kinds, report), names(ast),
-        trusted(kinds, unit, names) {
+        trusted(ast, kinds, unit, names) {
     kinds.threadRules = threadRules;
     kinds.fixes = bounds.fixes;
   }

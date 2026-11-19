@@ -345,6 +345,41 @@ static void checkCountedInit(clang::ASTContext &ast,
   }
 }
 
+/// RFC 0050 §2.5: whether the unit's C++ library checks its preconditions:
+/// libc++ in a hardening mode other than `none` (the macro's value read
+/// through the macros it names), libstdc++ with its assertions.
+static bool libraryHardened(const clang::Preprocessor &preprocessor) {
+  // The tokens a macro finally names, as text.
+  const auto spelled = [&](llvm::StringRef name) {
+    std::string text(name);
+    for (int depth = 0; depth < 4; ++depth) {
+      const clang::MacroInfo *macro =
+          preprocessor.getMacroInfo(preprocessor.getIdentifierInfo(text));
+      if (macro == nullptr)
+        return text;
+      if (macro->getNumTokens() == 1 &&
+          macro->getReplacementToken(0).is(clang::tok::identifier)) {
+        text = preprocessor.getSpelling(macro->getReplacementToken(0));
+        continue;
+      }
+      std::string tokens;
+      for (const clang::Token &token : macro->tokens())
+        tokens += preprocessor.getSpelling(token) + " ";
+      return tokens;
+    }
+    return text;
+  };
+  const auto defined = [&](llvm::StringRef name) {
+    return preprocessor.getMacroInfo(preprocessor.getIdentifierInfo(name)) !=
+           nullptr;
+  };
+  if (defined("_LIBCPP_VERSION"))
+    return defined("_LIBCPP_HARDENING_MODE") &&
+           spelled("_LIBCPP_HARDENING_MODE") !=
+               spelled("_LIBCPP_HARDENING_MODE_NONE");
+  return defined("_GLIBCXX_ASSERTIONS");
+}
+
 namespace {
 
 /// The parameters' and result's bounds a declaration gives (§2).
@@ -1079,6 +1114,9 @@ public:
       return true;
     }
     checkBuiltin(*call, *callee);
+    // RFC 0050 §5.1 (D4): Safe C rejects when it compiles what it stopped
+    // when it ran, as safe C++ has since RFC 0048.
+    libraryAccess(*call, *callee);
     for (unsigned i = 0; i < call->getNumArgs() && i < callee->getNumParams();
          ++i)
       passesString(*call->getArg(i), *callee->getParamDecl(i), *callee);
@@ -2458,28 +2496,44 @@ private:
   /// one object, more bytes than it is known to have.
   void libraryAccess(const clang::CallExpr &call,
                      const clang::FunctionDecl &callee) {
-    // (The table's are C functions, not a project's of the same name.)
+    // (The table's are C functions, not a project's of the same name.
+    // RFC 0050 §5.1: a C library's fortified macro, `memcpy` as
+    // `__builtin___memcpy_chk`, is the program's call; its arguments are
+    // the program's.)
+    const clang::SourceManager &sources = ast.getSourceManager();
     if (llvm::isa<clang::CXXMethodDecl>(callee) ||
         callee.getIdentifier() == nullptr ||
-        !(callee.isExternC() || isLibrary(callee)) ||
-        ast.getSourceManager().isInSystemMacro(call.getExprLoc()))
+        (!callee.isExternC() && !isLibrary(callee) &&
+         callee.getBuiltinID() == 0))
       return;
     const auto match = core::LibrarySpec::shipped().lookup(
         callee.getName().str(), call.getNumArgs());
-    if (!match || match->entry == nullptr)
+    if (!match || match->entry == nullptr ||
+        (sources.isInSystemMacro(call.getExprLoc()) && match->alias == nullptr))
       return;
+    // The call's argument that carries the row's argument `i`.
+    const auto argumentOf = [&](unsigned i) -> const clang::Expr * {
+      const int at = match->callArgument(i);
+      return at >= 0 && std::cmp_less(at, call.getNumArgs())
+                 ? call.getArg(static_cast<unsigned>(at))
+                 : nullptr;
+    };
     core::LibTerm::Values values;
     values.argument = [&](unsigned i) -> std::optional<std::int64_t> {
       clang::Expr::EvalResult result;
-      if (i < call.getNumArgs() && !call.getArg(i)->isValueDependent() &&
-          call.getArg(i)->EvaluateAsInt(result, ast))
+      const clang::Expr *argument = argumentOf(i);
+      if (argument != nullptr && !argument->isValueDependent() &&
+          argument->EvaluateAsInt(result, ast))
         return result.Val.getInt().getExtValue();
       return std::nullopt;
     };
     const std::vector<core::LibraryParam> &params = match->entry->params;
-    for (unsigned i = 0; i < params.size() && i < call.getNumArgs(); ++i) {
+    for (unsigned i = 0; i < params.size(); ++i) {
       const core::LibraryParam &param = params[i];
-      const clang::Expr *argument = call.getArg(i);
+      const clang::Expr *argument = argumentOf(i);
+      if (argument == nullptr ||
+          sources.isInSystemMacro(argument->getExprLoc()))
+        continue;
       if (param.type != core::LibraryParam::Type::Pointer ||
           param.access == core::LibraryParam::Access::None || !param.bytes ||
           !oneObject(argument))
@@ -2504,7 +2558,7 @@ private:
                                     .subjects = {}});
       report(argument->getExprLoc(), rule::CallArgs,
              "'" + text(argument) + "' points to one object, and '" +
-                 callee.getName().str() + "' may access more than its " +
+                 match->entry->name + "' may access more than its " +
                  std::to_string(size) + (size == 1 ? " byte" : " bytes") +
                  " through it",
              "give its declaration a bound (WEAVEC_COUNTED_BY(n), "
@@ -2941,6 +2995,8 @@ public:
         owner = each == nullptr ? std::nullopt : std::optional(*each);
       };
       bounds.fixes = &fixes();
+      out->hardened = compiler.hasPreprocessor() &&
+                      libraryHardened(compiler.getPreprocessor());
       checkCxx(
           ast, unitSafe, *out,
           [this](clang::SourceLocation at, llvm::StringRef rule,

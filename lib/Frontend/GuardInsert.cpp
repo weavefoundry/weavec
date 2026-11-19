@@ -252,7 +252,11 @@ void insertGuards(ModuleContext &module, llvm::Function &function) {
     }
     // RFC 0045 §4, §5: a believed pointer's bytes, and a trusted clone's
     // accesses (verify mode keeps them as monitors).
-    const bool trusted = code == FastCode::Trusted;
+    // RFC 0050 §2.4: the element of a range-based `for` whose iterator is a
+    // pointer, read where the loop compared it with the end.
+    const bool trusted = code == FastCode::Trusted ||
+                         (!access.write && access.length == nullptr &&
+                          rangeElement(module, function, *access.instruction));
     if (trusted ||
         (access.length == nullptr &&
          believedAccess(module, function, access.pointer, access.width))) {
@@ -289,6 +293,7 @@ void insertGuards(ModuleContext &module, llvm::Function &function) {
                          nullBaseOf(access.pointer, module.layout), row);
   }
   guardLibraryCalls(module, function, /*late=*/false);
+  guardMadeViews(module, function);
   dropUnsafeBoundsChecks(module, function);
   addScopes(module, function);
 }
