@@ -206,6 +206,10 @@ bool readError(const llvm::json::Value &value, RuleError &error);
 /// or 1 when a ledger cannot be read.
 int runAudit(llvm::ArrayRef<const char *> operands);
 
+/// The ledgers `operand` names: a file, or a directory's `*.ledger.json`
+/// (not those under the fixer's `weavec-fix`), added to `paths`, sorted.
+void ledgersOf(llvm::StringRef operand, std::vector<std::string> &paths);
+
 } // namespace weavec::frontend
 
 #endif // WEAVEC_FRONTEND_ENFORCEMENTLEDGER_H

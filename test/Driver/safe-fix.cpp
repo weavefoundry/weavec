@@ -4,11 +4,14 @@
 // an edit reached; takes out a likely fix that brought an error with no
 // fix; stops when a round applies nothing; marks the files left with no
 // error WEAVEC_SAFE_FILE; writes its log; and refuses a file that changed
-// since its ledger was written. A dry run writes nothing.
+// since its ledger was written, writing nothing and its log. A dry run
+// writes nothing.
 // RUN: rm -rf %t && mkdir -p %t && cp %S/Inputs/fix-buffer.h %S/Inputs/fix-count.cpp %t/ && cp %s %t/main.cpp
 // RUN: cd %t && %weavec_cxx -std=c++20 -fweavec-safe-survey -fweavec-ledger=%t/ledger/ -fsyntax-only main.cpp fix-count.cpp
 // RUN: cd %t && %weavec_cxx --weavec-fix --dry-run %t/ledger | FileCheck %s --check-prefix=DRY
 // RUN: cmp %S/Inputs/fix-buffer.h %t/fix-buffer.h
+// An earlier run's ledger left in the fixer's run directory is not read.
+// RUN: mkdir -p %t/weavec-fix/run-1 && echo '{"units": [{"source": "ghost.cpp", "command": {"directory": "/", "arguments": ["cc"]}, "errors": [{"rule": "index-single", "file": "/ghost.cpp", "line": 1, "message": "ghost", "fixes": []}]}]}' > %t/weavec-fix/run-1/ghost.ledger.json
 // RUN: cd %t && %weavec_cxx --weavec-fix -j2 %t/ledger | FileCheck %s --check-prefix=FIX
 // RUN: FileCheck %s --check-prefix=HEADER < %t/fix-buffer.h
 // RUN: FileCheck %s --check-prefix=COUNT < %t/fix-count.cpp
@@ -24,6 +27,7 @@
 // RUN: mkdir -p %t/s && cd %t/s && echo 'int pair(const int *p) { return p[0] + p[1]; }' > stale.cpp
 // RUN: cd %t/s && %weavec_cxx -std=c++20 -fweavec-safe-survey -fweavec-ledger=%t/s/ledger/ -fsyntax-only stale.cpp && echo "// edited" >> stale.cpp
 // RUN: cd %t/s && not %weavec_cxx --weavec-fix %t/s/ledger 2>&1 | FileCheck %s --check-prefix=STALE
+// RUN: FileCheck %s --check-prefix=STALELOG < %t/s/weavec-fix/weavec-fix.json
 #include "fix-buffer.h"
 #include <cctype>
 #include <cstdio>
@@ -88,3 +92,4 @@ int main() {
 // AGAIN: weavec: fix: round 1: nothing to apply
 
 // STALE: weavec: fix: '{{.*}}stale.cpp' changed since its ledger was written; build again with -fweavec-safe-survey
+// STALELOG: "status": 1

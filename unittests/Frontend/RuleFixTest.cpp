@@ -44,7 +44,6 @@ TEST(RuleFixTest, ErrorsRoundTrip) {
   fix.evidence = "'size_' is its count in the call to 'memcmp' at line 19";
   fix.edits.push_back({.file = "/src/slice.h",
                        .offset = 412,
-                       .length = 0,
                        .text = "WEAVEC_COUNTED_BY(size_) ",
                        .needsInclude = true});
   error.fixes.push_back(fix);

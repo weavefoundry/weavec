@@ -1562,7 +1562,6 @@ struct FixPlanner::Impl {
     for (const auto &[at, text] : planned.insertions)
       planned.fix.edits.push_back({.file = path(at),
                                    .offset = sources.getFileOffset(at),
-                                   .length = 0,
                                    .text = text,
                                    .needsInclude = !defined(at)});
     return planned;
@@ -1919,7 +1918,6 @@ struct FixPlanner::Impl {
     for (const auto &[at, text] : insertions)
       planned.fix.edits.push_back({.file = path(at),
                                    .offset = sources.getFileOffset(at),
-                                   .length = 0,
                                    .text = text,
                                    .needsInclude = !defined(at)});
     return planned;

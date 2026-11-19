@@ -23,12 +23,11 @@
 
 namespace weavec::frontend {
 
-/// An edit of a source file: `length` bytes at `offset` replaced by `text`.
+/// An edit of a source file: `text` inserted at `offset` (a fix only adds).
 struct FixEdit {
   /// An absolute path.
   std::string file;
   unsigned offset = 0;
-  unsigned length = 0;
   std::string text;
   /// The file does not define WeaveC's macros where the edit is (no
   /// `weavec.h` before it): the fixer adds the include with it.

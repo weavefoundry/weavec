@@ -110,7 +110,6 @@ llvm::json::Value fixJson(const RuleFix &fix) {
     edits.push_back(
         llvm::json::Object{{.K = "file", .V = edit.file},
                            {.K = "offset", .V = edit.offset},
-                           {.K = "length", .V = edit.length},
                            {.K = "text", .V = edit.text},
                            {.K = "needsInclude", .V = edit.needsInclude}});
   return llvm::json::Object{{.K = "level", .V = fix.level},
@@ -168,7 +167,6 @@ bool readFix(const llvm::json::Value &value, RuleFix &fix) {
         fix.edits.push_back(
             {.file = text(*edit, "file"),
              .offset = number(*edit, "offset"),
-             .length = number(*edit, "length"),
              .text = text(*edit, "text"),
              .needsInclude = edit->getBoolean("needsInclude").value_or(false)});
   return true;
@@ -387,12 +385,14 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
   if (!path.empty() && llvm::sys::path::is_separator(path.back()))
     std::ignore = llvm::sys::fs::create_directories(path);
   // RFC 0049 §7: a unit with no object (-fsyntax-only) is named by its
-  // source and a hash of its path, so that two sources of one name do not
-  // share a ledger.
+  // source and a hash of its absolute path, so that two sources of one
+  // name (in one directory or in two) do not share a ledger.
   std::string artifact = unit.object.empty() ? unit.source : unit.object;
   const auto hashed = [&] {
+    llvm::SmallString<256> full(artifact);
+    std::ignore = llvm::sys::fs::make_absolute(full);
     return artifact + "." +
-           llvm::utohexstr(llvm::xxh3_64bits(artifact)).substr(0, 8);
+           llvm::utohexstr(llvm::xxh3_64bits(full.str())).substr(0, 8);
   };
   if (unit.object.empty() && unit.partial)
     artifact = hashed();
@@ -509,9 +509,7 @@ struct Audit {
 };
 } // namespace
 
-/// The ledgers `operand` names: a file, or a directory's `*.ledger.json`.
-static void ledgersOf(llvm::StringRef operand,
-                      std::vector<std::string> &paths) {
+void ledgersOf(llvm::StringRef operand, std::vector<std::string> &paths) {
   if (!llvm::sys::fs::is_directory(operand)) {
     paths.push_back(operand.str());
     return;
@@ -519,7 +517,9 @@ static void ledgersOf(llvm::StringRef operand,
   std::error_code error;
   for (llvm::sys::fs::recursive_directory_iterator it(operand, error), end;
        it != end && !error; it.increment(error))
-    if (llvm::StringRef(it->path()).ends_with(".ledger.json"))
+    if (llvm::sys::path::filename(it->path()) == "weavec-fix")
+      it.no_push(); // RFC 0049 §6: the fixer's runs are not the project's.
+    else if (llvm::StringRef(it->path()).ends_with(".ledger.json"))
       paths.push_back(it->path());
   std::ranges::sort(paths);
 }

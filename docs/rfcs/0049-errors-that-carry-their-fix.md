@@ -1165,6 +1165,38 @@ building it and from what the gates found. They override the body.
     gets `<object>.<hash of its path>.ledger.json`. nng's six pairs of
     same-named sources (`pair0/pair.c`, `pair1/pair.c`) overwrote each
     other's ledgers, so six files were never surveyed, fixed or marked.
+    A ledger written with no object (`-fsyntax-only`, as every one of the
+    fixer's runs is) is named by its source and a hash of the source's
+    *absolute* path: with the path as written, `a/x.c` and `b/x.c`
+    compiled in their own directories shared one.
+18. **From review of the fixer.** Merging reads every unit's proposals
+    before any unit's evidence (§5), so what a unit's evidence says does
+    not depend on the order of the units; the edits of several units are
+    written once, with the include if any of them needs it (a unit that
+    saw `weavec.h` before a header needs none, one that did not does); and
+    two facts for one declaration are a choice even when both are certain.
+    Before a round writes anything every file it edits is checked against
+    its ledger, and a changed one stops the fixer (§6 step 2); a file was
+    skipped and the rest of the round written. A round that breaks a
+    compile is taken out: its likely fixes are withdrawn, its certain ones
+    are tried again without them, and only a round of certain fixes that
+    breaks a compile alone has them withdrawn (the one case that departs
+    from step 5, which said certain fixes are never withdrawn; without it
+    the fixer would not stop). Every exit after the first round writes
+    `weavec-fix.json`, with `status` and the `choices` left. Each run
+    empties its `run-N` directories first, the fixer's directory is
+    beside the ledgers' directory for a ledger operand too, and neither
+    the fixer nor the audit reads a `weavec-fix` directory under one it
+    walks. An edit is an insertion only (§1's length is gone: the fixer
+    never wrote one). G2 and G3 measured again after it: unchanged.
+19. **Round 1 sees no other unit's evidence.** The survey a fixer reads
+    was compiled without the wants of §5 (no one knew them yet), so the
+    first round's likely fixes are merged from the errors alone, and
+    evidence from a unit with no error on a declaration arrives with that
+    round's runs, after the fix is written. Nothing written is believed,
+    so a wrong bound is an error or a trap, not a hole; holding back the
+    likely fixes on a header's declarations to round 2, or surveying once
+    with the wants, is future work.
 
 ## Measured gates
 
@@ -1181,8 +1213,8 @@ of the compiler (`tc/`, `tc2/`); G4's ran before amendments 15 and 16.
 | Gate | Result |
 | --- | --- |
 | G1 Tests | **Pass.** `test/Safe/fix-bounds.cpp`, `fix-bounds.c`, `fix-escapes.cpp` (C1 on parameters and `this` after `noexcept`, D5, C4, C2, the aliased choice), `notes.c` and `declarations.c` (the notes as they read now), §4 in `fix-bounds.cpp`; `test/Driver/safe-fix.cpp` (two units and a header: the dry run, rounds, a withdrawal, the marks, a second run that applies nothing, a stale file refused, the log), `safe-fix-command.cpp` (the `--` form), `safe-survey.cpp` (ledger 12, audit 8); `unittests/Frontend/RuleFixTest.cpp`. `ctest --preset dev` passes 52 of 52; lit 149 of 149. |
-| G2 What the fixer clears | **Fail.** The five projects, unedited (`gate.py`): 2,457 distinct errors become 2,035 (17%; the gate asks half); `index-single`, `escape` and `call-args` 1,504 become 1,091 (27%; it asks four in five); no project has more errors than before; 69 of the 663 fixes written were withdrawn (10%; it asks at most 5%). By project: snappy 343 to 332, tinyxml2 244 to 207, yaml-cpp 169 to 151, pugixml 882 to 686, leveldb 819 to 659, each in at most 16 s. What is left is not an annotation: owners to rewrite (`raw-owner`), classes to declare aliased (a choice), casts and unions, cursors that are locals given values from two places (snappy's `ip`, `op`), and in-place parsers whose strings are written (tinyxml2, pugixml), whose string bounds are withdrawn as designed. |
-| G3 What the fixer writes is right | **Pass.** Every declaration both the fixer and RFC 0047's or RFC 0048's conversion annotated got the same annotation: tinyxml2 34 of 34, yaml-cpp 28 of 28 (`agree.py`). |
+| G2 What the fixer clears | **Fail.** The five projects, unedited (`gate.py`): 2,457 distinct errors become 2,035 (17%; the gate asks half); `index-single`, `escape` and `call-args` 1,504 become 1,091 (27%; it asks four in five); no project has more errors than before; 69 of the 663 fixes written were withdrawn (10%; it asks at most 5%). By project: snappy 343 to 332, tinyxml2 244 to 207, yaml-cpp 169 to 151, pugixml 882 to 686, leveldb 819 to 659, each in at most 16 s; measured again after amendment 18, the same. What is left is not an annotation: owners to rewrite (`raw-owner`), classes to declare aliased (a choice), casts and unions, cursors that are locals given values from two places (snappy's `ip`, `op`), and in-place parsers whose strings are written (tinyxml2, pugixml), whose string bounds are withdrawn as designed. |
+| G3 What the fixer writes is right | **Pass.** Every declaration both the fixer and RFC 0047's or RFC 0048's conversion annotated got the same annotation: tinyxml2 34 of 34, yaml-cpp 28 of 28 (`agree.py`), and again after amendment 18. |
 | G4 The conversions, again | **Fail.** tinyxml2 in 1,015 s (the gate asks 570; RFC 0047's took 1,201), 17 rounds, two of them fixer runs, 403 of 419 functions safe (96.2%; 93.5% before), 517 of 517 checks in both builds. yaml-cpp in 1,341 s (it asks 580; 1,161 before), 21 rounds, two fixer runs, 907 of 912 safe (99.45%; 99.3% before), 1,011 tests in both builds. Both reached a higher share than before, under RFC 0048's stricter rules, but not faster: the agents spent their time on what has no fix (tinyxml2's arena and in-place strings, yaml-cpp's `const` twins and the graph builder) and on reading and correcting the fixer's edits; yaml-cpp's first fixer run failed (a relative ledger path, fixed after, amendment 7). Both found the library defects RFC 0047's found, and tinyxml2's a new one (`XMLPrinter::Write` narrows a `size_t` to `int` for `PushArr`). |
 | G5 Projects no RFC has read | **Recorded.** libzmq 4.3.5 (C++, ~50,000 lines) and nng 1.9.0 (C, ~65,000), chosen and their commits written down before any tool ran. The fixer alone: libzmq 2,299 to 2,055 errors (95 s), nng 1,993 to 1,841 (11 s); their errors are mostly casts, unions, owners and `owner-path`. Two hours of an agent's time each (with the compiler before amendment 17), both stopping early: **libzmq** 0 to 1,275 of 1,568 functions safe (81%) in 73 minutes, its checked build's tests as at the start (114 of 121; 3 network tests fail on the unconverted library too, 4 fuzzers not built); **nng** 0 to 1,778 of 2,917 (61%; 1,144 of its original 2,152 safe themselves, 1,775 with their bodies in a safe typed function the agent split out of each `void *` callback) in 78 minutes, 85 of 86 tests (one needs the network). Both found real defects: libzmq's proxy `memcmp`s six bytes of a five-byte command; nng's `getsockopt(LOCAL_PEERPID)` is given 76 bytes for a 4-byte `pid_t`, and `nni_msgq_resize` reads one slot past its queue. What cost them most: likely bounds too small for cursors whose count grows (66 tests trapped until reverted, as _Soundness_ says a too-small bound does), `WEAVEC_ESCAPES` that is right for the rules but stops tests that pass stack objects (`stack-escape`), C library calls on pointers without a bound that compile and trap when they run (Safe C checks them then, RFC 0042), and the ledger collision of amendment 17. The fixer added `#include <weavec.h>` to libzmq's public `zmq.h`, which its users then need. |
 | G6 Nothing believed is wrong | **Pass.** Both conversions' tests built fast under `-fweavec-checks=verify`: no `weavec.proven`, no report (tinyxml2 517 checks, yaml-cpp 1,011 tests); built checked: no report. The audit's unchecked bounds were not read one by one. |

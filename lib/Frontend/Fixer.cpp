@@ -195,20 +195,6 @@ struct Fixer {
     return true;
   }
 
-  static void ledgersOf(llvm::StringRef operand,
-                        std::vector<std::string> &paths) {
-    if (!llvm::sys::fs::is_directory(operand)) {
-      paths.push_back(operand.str());
-      return;
-    }
-    std::error_code error;
-    for (llvm::sys::fs::recursive_directory_iterator it(operand, error), end;
-         it != end && !error; it.increment(error))
-      if (llvm::StringRef(it->path()).ends_with(".ledger.json"))
-        paths.push_back(it->path());
-    std::ranges::sort(paths);
-  }
-
   //===--------------------------------------------------------------------===//
   // Running the rules again
   //===--------------------------------------------------------------------===//
@@ -252,7 +238,9 @@ struct Fixer {
   using Commands =
       std::vector<std::pair<std::string, std::vector<std::string>>>;
   bool runAll(const Commands &commands) {
+    // Emptied first: an earlier fixer run's ledgers are not this one's.
     const std::string dir = work + "/run-" + std::to_string(++run) + "/";
+    std::ignore = llvm::sys::fs::remove_directories(dir);
     std::ignore = llvm::sys::fs::create_directories(dir);
     llvm::SmallString<256> start;
     std::ignore = llvm::sys::fs::current_path(start);
@@ -361,21 +349,21 @@ struct Fixer {
   std::map<std::string, RuleFix>
   merge(std::map<std::string, std::string> &choices) {
     std::map<std::string, std::vector<const RuleFix *>> proposed;
-    for (const auto &[key, unit] : units) {
-      for (const RuleError &error : unit.errors) {
-        if (error.fixes.empty())
-          continue;
-        const RuleFix &first = error.fixes.front();
-        if (first.level == "choice" || withdrawn.contains(keyOf(first)) ||
-            applied.contains(keyOf(first)) ||
-            (certainOnly && first.level != "certain"))
-          continue;
-        proposed[keyOf(first)].push_back(&first);
-      }
+    for (const auto &[key, unit] : units)
+      for (const RuleError &error : unit.errors)
+        if (!error.fixes.empty()) {
+          const RuleFix &first = error.fixes.front();
+          if (first.level != "choice" && !withdrawn.contains(keyOf(first)) &&
+              !applied.contains(keyOf(first)) &&
+              (!certainOnly || first.level == "certain"))
+            proposed[keyOf(first)].push_back(&first);
+        }
+    // Every unit's evidence, once every proposal is known (§5).
+    for (const auto &[key, unit] : units)
       for (const RuleFix &fix : unit.evidence)
-        if (proposed.contains(keyOf(fix)))
-          proposed[keyOf(fix)].push_back(&fix);
-    }
+        if (const auto found = proposed.find(keyOf(fix));
+            found != proposed.end())
+          found->second.push_back(&fix);
     std::map<std::string, RuleFix> merged;
     for (auto &[key, fixes] : proposed) {
       std::map<std::string, const RuleFix *> facts;
@@ -385,31 +373,34 @@ struct Fixer {
       if (facts.contains("null_terminated") &&
           facts.contains("null_terminated_or_null"))
         facts.erase("null_terminated");
-      const bool certain = llvm::all_of(
-          fixes, [](const RuleFix *fix) { return fix->level == "certain"; });
-      if (facts.size() == 1 || certain) {
-        RuleFix fix = *facts.begin()->second;
-        // The edits of every unit (a header's declaration and a source's)
-        // that states the same, once each.
-        for (const RuleFix *each : fixes)
-          if (certain || each->fact == fix.fact)
-            for (const FixEdit &edit : each->edits)
-              if (llvm::none_of(fix.edits, [&](const FixEdit &have) {
-                    return have.file == edit.file &&
-                           have.offset == edit.offset && have.text == edit.text;
-                  }))
-                fix.edits.push_back(edit);
-        if (llvm::all_of(
-                fix.edits,
-                [&](const FixEdit &edit) { return allowed(edit.file); }) &&
-            !fix.edits.empty())
-          merged.emplace(key, std::move(fix));
+      // Two facts, certain ones too, are a choice.
+      if (facts.size() != 1) {
+        std::string text;
+        for (const auto &[fact, fix] : facts)
+          text += (text.empty() ? "" : ", or ") + fact;
+        choices[key] = "'" + facts.begin()->second->name + "': " + text;
         continue;
       }
-      std::string text;
-      for (const auto &[fact, fix] : facts)
-        text += (text.empty() ? "" : ", or ") + fact;
-      choices[key] = "'" + facts.begin()->second->name + "': " + text;
+      // The edits of every unit (a header's declaration and a source's),
+      // once each, with an include if any unit needs one there.
+      RuleFix fix = *facts.begin()->second;
+      for (const RuleFix *each : fixes)
+        for (const FixEdit &edit : each->edits) {
+          if (each->fact != fix.fact)
+            break;
+          auto have = llvm::find_if(fix.edits, [&](const FixEdit &other) {
+            return other.file == edit.file && other.offset == edit.offset &&
+                   other.text == edit.text;
+          });
+          if (have == fix.edits.end())
+            fix.edits.push_back(edit);
+          else
+            have->needsInclude = have->needsInclude || edit.needsInclude;
+        }
+      if (!fix.edits.empty() &&
+          llvm::all_of(fix.edits,
+                       [&](const FixEdit &edit) { return allowed(edit.file); }))
+        merged.emplace(key, std::move(fix));
     }
     return merged;
   }
@@ -542,8 +533,6 @@ struct Fixer {
       }
     std::set<std::string> changed;
     for (auto &[file, edits] : byFile) {
-      if (!unchanged(file))
-        continue;
       // Identical edits from several units, once.
       std::ranges::sort(edits, [](const auto &a, const auto &b) {
         return std::tie(a.first, a.second.text) <
@@ -562,10 +551,7 @@ struct Fixer {
       changed.insert(file);
     }
     for (const auto &[key, fix] : fixes)
-      if (llvm::all_of(fix.edits, [&](const FixEdit &edit) {
-            return changed.contains(edit.file);
-          }))
-        applied[key] = fix;
+      applied[key] = fix;
     return changed;
   }
 
@@ -815,14 +801,15 @@ int runFixer(llvm::ArrayRef<const char *> operands, const char *argv0,
       if (llvm::to_integer(value, n) && n != 0)
         fixer.jobs = n;
     } else {
-      Fixer::ledgersOf(arg, paths);
+      ledgersOf(arg, paths);
     }
   }
   llvm::SmallString<256> work;
   if (!paths.empty()) {
-    // Beside the ledgers' directory, so that neither the fixer nor the
-    // audit reads its runs as the project's ledgers.
-    llvm::StringRef first = paths.front();
+    // Beside the ledgers' directory (a directory operand, or the first
+    // ledger's), so that neither the fixer nor the audit reads its runs as
+    // the project's ledgers.
+    llvm::StringRef first = llvm::sys::path::parent_path(paths.front());
     for (const char *operand : operands)
       if (llvm::sys::fs::is_directory(operand) &&
           first.starts_with(llvm::StringRef(operand).rtrim("/")))
@@ -870,8 +857,50 @@ int runFixer(llvm::ArrayRef<const char *> operands, const char *argv0,
     return 1;
   }
   const std::size_t before = fixer.errors().size();
+  std::map<std::string, std::string> choices;
+  // §6: on every exit once a round may have written, the units as the
+  // rules last left them (one ledger the audit reads) and the log.
+  const std::string log = fixer.work + "/weavec-fix.json";
+  const auto leave = [&](int status) {
+    llvm::json::Array latest;
+    for (auto &[key, unit] : fixer.units)
+      latest.push_back(unit.raw);
+    std::ignore = llvm::sys::fs::create_directories(fixer.work + "/ledger");
+    std::error_code ec;
+    llvm::raw_fd_ostream ledger(fixer.work + "/ledger/fixed.ledger.json", ec);
+    ledger << llvm::formatv("{0:2}",
+                            llvm::json::Value(llvm::json::Object{
+                                {.K = "schema", .V = "weavec-ledger"},
+                                {.K = "version", .V = EnforcementLedgerVersion},
+                                {.K = "units", .V = std::move(latest)}}))
+           << '\n';
+    llvm::json::Array withdrawn;
+    for (const auto &[key, fact] : fixer.withdrawn)
+      withdrawn.push_back(
+          llvm::json::Object{{.K = "fix", .V = key}, {.K = "fact", .V = fact}});
+    llvm::json::Object chosen; // each declaration's facts
+    for (const auto &[key, text] : choices)
+      chosen[key] = text;
+    llvm::raw_fd_ostream out(log, ec);
+    out << llvm::formatv(
+               "{0:2}",
+               llvm::json::Value(llvm::json::Object{
+                   {.K = "schema", .V = "weavec-fix"},
+                   {.K = "version", .V = 1},
+                   {.K = "status", .V = status},
+                   {.K = "rounds", .V = llvm::json::Array(fixer.log)},
+                   {.K = "withdrawn", .V = std::move(withdrawn)},
+                   {.K = "choices", .V = std::move(chosen)},
+                   {.K = "marked", .V = llvm::json::Array(fixer.marked)},
+                   {.K = "errorsBefore",
+                    .V = static_cast<std::int64_t>(before)},
+                   {.K = "errorsAfter",
+                    .V = static_cast<std::int64_t>(fixer.errors().size())}}))
+        << '\n';
+    return status;
+  };
   for (unsigned round = 1; round <= fixer.rounds; ++round) {
-    std::map<std::string, std::string> choices;
+    choices.clear();
     const std::map<std::string, RuleFix> fixes = fixer.merge(choices);
     if (fixer.dryRun) {
       fixer.diff(fixes);
@@ -881,24 +910,28 @@ int runFixer(llvm::ArrayRef<const char *> operands, const char *argv0,
       llvm::outs() << "weavec: fix: round " << round << ": nothing to apply\n";
       break;
     }
+    // §6 step 2: a file changed since its ledger stops the fixer before
+    // anything of the round is written.
+    for (const auto &[key, fix] : fixes)
+      for (const FixEdit &edit : fix.edits)
+        if (!fixer.unchanged(edit.file))
+          return leave(1);
     const std::multiset<std::string> open = fixer.withoutFix();
-    std::set<std::string> changed = fixer.apply(fixes, round);
-    if (changed.empty())
-      return 1;
+    const std::set<std::string> changed = fixer.apply(fixes, round);
     if (!fixer.save(changed))
-      return 1;
+      return leave(1);
     if (!fixer.rerun(changed)) {
       // The rules could not be run: the round is taken out again.
       for (const auto &[key, fix] : fixes)
         std::ignore = fixer.takeOut(key);
       std::ignore = fixer.takeOut("include@" + std::to_string(round));
       std::ignore = fixer.save(changed);
-      return 1;
+      return leave(1);
     }
-    // §6 step 5: a likely fix that brought an error with no fix; every fix
-    // of the round, when a unit no longer compiles.
+    // §6 step 5: a likely fix that brought an error with no fix.
     llvm::json::Array reasons;
     std::set<std::string> blame = fixer.blamed(open, reasons);
+    std::set<std::string> back;
     if (!fixer.broken.empty()) {
       llvm::errs() << "weavec: fix: round " << round
                    << " broke a compile, and is taken out: " << fixer.broken
@@ -913,17 +946,28 @@ int runFixer(llvm::ArrayRef<const char *> operands, const char *argv0,
                                  error);
         out << fixer.texts[file];
       }
-      for (const auto &[key, fix] : fixes)
+      // Its likely fixes are withdrawn and its certain ones tried again
+      // without them; certain ones that break a compile alone, withdrawn.
+      const bool likely = llvm::any_of(fixes, [](const auto &each) {
+        return each.second.level == "likely";
+      });
+      for (const auto &[key, fix] : fixes) {
+        if (likely && fix.level == "certain") {
+          fixer.applied.erase(key);
+          back.merge(fixer.takeOut(key));
+          continue;
+        }
         blame.insert(key);
-      blame.insert("include@" + std::to_string(round));
+        reasons.push_back(llvm::json::Object{
+            {.K = "fix", .V = key}, {.K = "broke", .V = fixer.broken}});
+      }
+      back.merge(fixer.takeOut("include@" + std::to_string(round)));
     }
-    std::set<std::string> back;
     for (const std::string &key : blame) {
       fixer.withdrawn[key] =
           fixer.applied.contains(key) ? fixer.applied[key].fact : "";
       fixer.applied.erase(key);
-      for (const std::string &file : fixer.takeOut(key))
-        back.insert(file);
+      back.merge(fixer.takeOut(key));
     }
     // An include the fixer added where no fix of its is left.
     for (const std::string &file : back)
@@ -933,11 +977,11 @@ int runFixer(llvm::ArrayRef<const char *> operands, const char *argv0,
         for (unsigned each = 1; each <= round; ++each)
           std::ignore = fixer.takeOut("include@" + std::to_string(each), file);
     if (!back.empty() && (!fixer.save(back) || !fixer.rerun(back)))
-      return 1;
+      return leave(1);
     if (!fixer.broken.empty()) {
       llvm::errs() << "weavec: fix: a compile still fails: " << fixer.broken
                    << '\n';
-      return 1;
+      return leave(1);
     }
     unsigned certain = 0;
     unsigned edits = 0;
@@ -961,20 +1005,15 @@ int runFixer(llvm::ArrayRef<const char *> operands, const char *argv0,
   if (fixer.mark) {
     const std::set<std::string> changed = fixer.markReady();
     if (!changed.empty() && (!fixer.save(changed) || !fixer.rerun(changed)))
-      return 1;
+      return leave(1);
     llvm::outs() << "weavec: fix: marked " << changed.size()
                  << " files WEAVEC_SAFE_FILE\n";
   }
-  // The summary, and the log.
   unsigned choice = 0;
   unsigned none = 0;
   const auto after = fixer.errors();
-  for (const auto &[key, error] : after) {
-    if (error->fixes.empty())
-      ++none;
-    else
-      ++choice;
-  }
+  for (const auto &[key, error] : after)
+    ++(error->fixes.empty() ? none : choice);
   std::size_t edits = 0;
   std::set<std::string> files;
   for (const auto &[file, record] : fixer.inserted) {
@@ -986,48 +1025,10 @@ int runFixer(llvm::ArrayRef<const char *> operands, const char *argv0,
                << " files; " << before << " errors before, " << after.size()
                << " after: " << choice << " have a choice or a fix withdrawn, "
                << none << " have no fix\n";
-  // The units as the rules last left them, in one ledger the audit reads.
-  llvm::json::Array latest;
-  for (auto &[key, unit] : fixer.units)
-    latest.push_back(std::move(unit.raw));
-  const std::string ledger = fixer.work + "/ledger/fixed.ledger.json";
-  std::ignore = llvm::sys::fs::create_directories(fixer.work + "/ledger");
-  {
-    std::error_code error;
-    llvm::raw_fd_ostream out(ledger, error);
-    out << llvm::formatv("{0:2}",
-                         llvm::json::Value(llvm::json::Object{
-                             {.K = "schema", .V = "weavec-ledger"},
-                             {.K = "version", .V = EnforcementLedgerVersion},
-                             {.K = "units", .V = std::move(latest)}}))
-        << '\n';
-  }
-  llvm::json::Array marked;
-  for (const std::string &file : fixer.marked)
-    marked.push_back(file);
-  llvm::json::Array withdrawn;
-  for (const auto &[key, fact] : fixer.withdrawn)
-    withdrawn.push_back(
-        llvm::json::Object{{.K = "fix", .V = key}, {.K = "fact", .V = fact}});
-  const std::string log = fixer.work + "/weavec-fix.json";
-  std::error_code ec;
-  llvm::raw_fd_ostream out(log, ec);
-  out << llvm::formatv(
-             "{0:2}",
-             llvm::json::Value(llvm::json::Object{
-                 {.K = "schema", .V = "weavec-fix"},
-                 {.K = "version", .V = 1},
-                 {.K = "rounds", .V = std::move(fixer.log)},
-                 {.K = "withdrawn", .V = std::move(withdrawn)},
-                 {.K = "marked", .V = std::move(marked)},
-                 {.K = "errorsBefore", .V = static_cast<std::int64_t>(before)},
-                 {.K = "errorsAfter",
-                  .V = static_cast<std::int64_t>(after.size())}}))
-      << '\n';
   llvm::outs() << "weavec: fix: '" << llvm::sys::path::filename(argv0)
                << " --weavec-audit " << fixer.work << "/ledger"
                << "' prints what is left; " << log << " is the log\n";
-  return 0;
+  return leave(0);
 }
 
 } // namespace weavec::frontend
