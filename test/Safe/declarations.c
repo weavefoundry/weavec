@@ -17,8 +17,9 @@ struct counted {
 #define SIZE 4
 #define LATER 4
 
-int first(const int *WEAVEC_COUNTED_BY(n) p, size_t n); // expected-note {{write the same bounds}}
-WEAVEC_SAFE int first(const int *p, size_t n) { // expected-error {{this declaration of 'first' gives its pointers other bounds than an earlier one [weavec-safe:bad-annotation]}}
+int first(const int *WEAVEC_COUNTED_BY(n) p, size_t n);
+// RFC 0049 (C2): the note writes what the earlier declaration says.
+WEAVEC_SAFE int first(const int *p, size_t n) { // expected-error {{this declaration of 'first' gives its pointers other bounds than an earlier one [weavec-safe:bad-annotation]}} expected-note {{fix (certain): write WEAVEC_COUNTED_BY(n) on 'p'}}
   (void)n;
   return *p;
 }

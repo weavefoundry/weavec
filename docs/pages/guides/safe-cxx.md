@@ -27,6 +27,8 @@ grow.cpp:6:10: note: 'weavec-c++ --weavec-explain stale-borrow' explains this ru
 
 `weavec-c++ --weavec-explain safe-cxx` prints the model on one page, `--weavec-explain <rule>` a rule with a rejected example and its rewrite, and `--weavec-explain all` everything: the brief to give an agent before it writes or converts code. The [rules reference](/reference/rules/) is the same text.
 
+When the compiler can write what an error asks for, its note says the text and where, as a fix-it: `note: fix (likely): declare it 'const char *WEAVEC_COUNTED_BY(size_) data_'; 'size_' is its count in the call to 'memcmp' at line 19`. `weavec-c++ --weavec-fix -- <the compile command>` applies every such fix, runs the rules again and repeats until nothing changes ([`fix`](/reference/rules/#fix), RFC 0049); [Convert C++ in place](/guides/convert-cxx/) uses it over a whole project.
+
 ## Owners, borrows, views and references
 
 - An **owner** is an object: a local, a member, an element of a container, what a `std::unique_ptr` or a `std::optional` holds. Destructors release, so safe C++ writes no `new` and no `delete` (`raw-owner`).

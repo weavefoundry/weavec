@@ -56,7 +56,12 @@ refers to only if it says `WEAVEC_ESCAPES` (or the class is aliased), a
 local whose address is kept is placed in typed memory for its scope (the
 checker marks it `weavec.placed` before the function's code is made), and
 a position is not a plain pointer (an end is `WEAVEC_COUNTED_BY(0)`).
-Without optimization a safe unit is checked (`full`) by default. Nothing
+Without optimization a safe unit is checked (`full`) by default. Since
+RFC 0049 every rule error is data with the fixes the compiler can write
+(`lib/Frontend/SafeFix.cpp`: certain, likely from the uses one function
+shows, or a choice it never writes), its note says the text as a fix-it,
+and `weavec-cc --weavec-fix` (`lib/Frontend/Fixer.cpp`) applies them over
+a survey's ledgers, runs the rules again and repeats. Nothing
 rests on the rules but that: a stale pointer reaches memory of its own
 type. Safe C++ has no
 data races (*thread safety*, RFC 0046), by rules alone: what a thread start
@@ -85,7 +90,10 @@ enforcement ledger, the compiler driver). `tools/weavec-cc` is Clang's
 driver with WeaveC inside; there is no other tool, and no analysis beyond
 Safe C's rules, each decided inside one function. Full
 picture: `docs/architecture.md`. Design and the reasoning behind it:
-`docs/rfcs/`. Read `0048-safe-code-without-the-shadow.md` first (what a fast
+`docs/rfcs/`. Read `0049-errors-that-carry-their-fix.md` first (errors as
+data, the evidence a fix is proposed from, the fixer's rounds and
+withdrawals; its *Implementation amendments* and *Measured gates*), then
+`0048-safe-code-without-the-shadow.md` (what a fast
 unit believes and where the shadow is still read; kept parameters and
 placed locals; ends; the `-O0` default; its *Implementation amendments*
 and *Measured gates*), then `0046-thread-safety.md` (sendable, shareable
@@ -213,7 +221,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
    (the guards read it through `GuardLibrary.cpp`), never in
    `name == "…"` tests; nothing under `lib/` names a corpus project; the
    library code (`lib/`, `include/`, `tools/`) stays within its line budget
-   (27,600, RFC 0048), and so does the runtime (`runtime/` without `runtime/test/`
+   (31,490, RFC 0049), and so does the runtime (`runtime/` without `runtime/test/`
    and its export list, counted apart: 11,000). The runtime is C and
    includes no WeaveC header but its own `weavec_rt.h`, and every runtime
    entry point the passes declare (and every `wrapper(NAME)` of the table)
@@ -264,6 +272,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Change thread safety (sendable, shareable and frozen types, locked classes, thread starts, loans, guards, globals, `WEAVEC_SENDS`, the `const` path) | `CxxKinds::sendable`, `shareable`, `frozen`, `lockedClass`, `holdsThread` in `lib/Frontend/SafeCxxKinds.h`; in `lib/Frontend/SafeCxxFlow.cpp` `threadStart`, `cross`, `crossCopy`, `slotOf`, `joinsEach`, `lentUse`, `lockedUse`, `lockCall`, `declareGuard`, `threadMember`, `sendsArgument`, `ended`; `global`, `constView` and the `spawns`/`unshared` rows in `lib/Frontend/SafeCxx.cpp`; `threadFacts` and `threadGlobals` for the ledger; the class rows of `lib/Core/LibrarySpec.txt` (`thread`, `joins(…)`, `detaches(…)`, `lock`, `guard`, `locks(…)`, `shareable`, `spawns`; `function std::async : spawns;`), `SendsAnnotation` (RFC 0046); tests `test/Safe/cxx-thread-*.cpp`, `cxx-lock-held.cpp`, `cxx-sends.cpp`, `cxx-const-path.cpp`, `cxx-globals.cpp`, `test/Driver/safe-cxx-threads.cpp`; the guide's "Threads", `docs/pages/reference/guarantees.md` (Z1)–(Z6) |
 | Change the fast mode (typed allocations and pools, believed pointers, trusted library functions and their clones, frames that share no bytes, the result check, the switching-storage case of `escape`) | `lib/Frontend/GuardFast.cpp` (`markAllocations`, `typeAllocations`, `believedAccess`, `cloneTrusted`, `checkResults`); the symbol lists and `TrustedCalls` in `lib/Frontend/SafeCxx.cpp`; `switchingStore` in `SafeCxxFlow.cpp`, `switches` in `SafeCxxKinds.h`; the `typed(…)` clause of `lib/Core/LibrarySpec.txt`; the pools in `runtime/weavec_alloc.c` (`poolAlloc`, `poolRelease`, `givePooled`), `__weavec_rt_new_typed` in `weavec_cxx.c`, `__weavec_rt_fast_program` in `weavec_asan.c`, `__weavec_rt_frame_escape` in `weavec_guard.c` (RFC 0045); tests `test/Guards/ir-pools.c`, `ir-believed.cpp`, `ir-trusted.cpp`, `typed-reuse.c`, `typed-reuse.cpp`, `stack-escape-result.cpp`, `test/Safe/cxx-switching.cpp`, `test/Driver/safe-checks-modes.cpp`, `rt_test` `pool-*`; the guides' "Fast and checked builds", `docs/pages/reference/guarantees.md` (Y1)–(Y6) |
 | Change what a fast unit believes, kept parameters or placed locals (RFC 0048) | `typedAccess`, `typedPointer`, `checkStep`, `inHand`, `escapeCheck`, `placeLocals` and the split of inline functions in `lib/Frontend/GuardSafe.cpp`; `shadowless` in `GuardFast.cpp`; the plain frames in `escapes` (`GuardExpand.cpp`); the heap string check in `expand` (`GuardExpand.cpp`) and `__weavec_rt_string_entry` in `runtime/weavec_guard.c`; `Kept` and `keptAddresses` in `lib/Frontend/SafeCxx.cpp`, the placement marks in `SafeChecker` (`SafeCheck.cpp`); the `call-args` and `index-single` cases `positionIntoSingle`, `libraryAccess`, `readsEnd` in `SafeCheck.cpp`; the pools' slot lists in `runtime/weavec_alloc.c`; tests `test/Safe/cxx-kept.cpp`, `cxx-ends.cpp`, `test/Guards/placed-local.cpp`, `ir-typed-cxx.cpp`, `ir-strings.c`, `stack-escape-entry.cpp`, `test/Driver/safe-checks-modes.cpp` |
+| Change the fixes errors carry, the evidence, or `--weavec-fix` (RFC 0049) | `FixPlanner` in `lib/Frontend/SafeFix.cpp` (wants, evidence E1–E7, edits, notes), the `want(...)` calls beside the rules' reports in `SafeCheck.cpp`, `SafeCxx.cpp`, `SafeCxxFlow.cpp`; `include/weavec/Frontend/RuleFix.h`; the fixer in `lib/Frontend/Fixer.cpp`; the ledger's `errors`, `evidence`, `command`, `files` and the audit's plan in `EnforcementLedger.cpp`; tests `test/Safe/fix-*.c*`, `notes.c`, `test/Driver/safe-fix*.cpp`, `safe-survey.cpp`, `unittests/Frontend/RuleFixTest.cpp`; the rules' page `fix` |
 | Add an annotation                    | Don't, without an RFC: `WEAVEC_UNSAFE` and Safe C's are the only ones (`UnsafeRegions.h`, `SafeCheck.h`, `weavec.h`, `docs/annotations.md`) |
 | Change build flags / warnings        | `cmake/WeaveCWarnings.cmake`, `cmake/WeaveCLLVM.cmake` |
 | Add a CI job                         | `.github/workflows/ci.yml`                             |

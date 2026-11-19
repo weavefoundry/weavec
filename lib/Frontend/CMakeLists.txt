@@ -19,6 +19,9 @@ weavec_add_library(
           # RFC 0045: type-stable memory in fast safe units.
           GuardFast.cpp
           SafeCheck.cpp
+          # RFC 0049: the fixes of the rules' errors, and --weavec-fix.
+          SafeFix.cpp
+          Fixer.cpp
           # RFC 0043: ownership's rules.
           SafeOwnership.cpp
           # RFC 0044: Safe C++.

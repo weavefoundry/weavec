@@ -4,13 +4,40 @@ Rough ordering of the major pieces of work. This page is the one-screen view;
 the design detail and the reasoning live in the [RFCs](rfcs/README.md) each
 milestone links to. Everything here is subject to change as we learn.
 
-The design today is [RFC 0048](rfcs/0048-safe-code-without-the-shadow.md) for what a fast safe unit checks and believes, [RFC 0047](rfcs/0047-conversion-in-place.md) for converting existing C++, [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
+The design today is [RFC 0049](rfcs/0049-errors-that-carry-their-fix.md) for the fixes errors carry and `--weavec-fix`, [RFC 0048](rfcs/0048-safe-code-without-the-shadow.md) for what a fast safe unit checks and believes, [RFC 0047](rfcs/0047-conversion-in-place.md) for converting existing C++, [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
 sweep and colors of [RFC 0037](rfcs/0037-complete-sweep-and-colors.md), the
 reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
 and the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
 milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
+
+## Now: RFC 0049 — Errors that carry their fix
+
+Design: [RFC 0049 — Errors that carry their fix](rfcs/0049-errors-that-carry-their-fix.md)
+(Accepted, built; its _Implementation amendments_ and _Measured gates_
+say how). A conversion in place took an agent as long as a rewrite into
+Rust, and most of what it wrote said what the code already does: a bound
+a `memcmp` implies, a parameter a constructor stores. RFC 0049 makes every
+rule error data with the fixes the compiler can write from the uses it
+reads inside one function (certain, likely, or a choice it prints and
+never writes), says the text in each note as a fix-it, and adds
+`weavec-cc --weavec-fix`, which applies them over a project from a
+survey's ledgers, runs the rules again, takes out a likely fix that
+brought an error with no fix, repeats, and marks the files left with no
+error safe. Ledger 12, audit 8.
+
+- [x] **The RFC**, accepted as drafted on 2026-11-17.
+- [x] **S1 to S6**: errors as data, the certain fixes and the mark, the
+      evidence and the likely bounds, a constructor's initializer checked
+      as an assignment is, `WEAVEC_LIFETIMEBOUND` and members that borrow,
+      the fixer, the audit's plan, the `fix` page and the guides.
+- [x] **The gates** on darwin-arm64 and the Linux container: the fixer's
+      annotations agree with the earlier conversions' every time (G3); it
+      clears 17% of the five projects' errors (G2 asks half), and two fresh
+      conversions took 1,015 s and 1,341 s (G4 asks 570 and 580).
+- [ ] **Next**: fixes that rewrite (owners, `const` twins, in-place
+      strings), the errors the fixer leaves.
 
 ## Now: RFC 0048 — Safe code without the shadow
 

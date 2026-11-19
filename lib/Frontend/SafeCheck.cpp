@@ -859,8 +859,9 @@ public:
                                     llvm::StringRef, llvm::StringRef)>;
 
   FunctionCheck(clang::ASTContext &ast, const clang::FunctionDecl &function,
-                const SafeUnit &unit, Report report)
-      : ast(ast), function(function), unit(unit), report(std::move(report)) {}
+                const SafeUnit &unit, Report report, FixPlanner *fixes)
+      : ast(ast), function(function), unit(unit), report(std::move(report)),
+        fixes(fixes) {}
 
   /// RFC 0047 §1.2: the rules of bounds only (`index-single`, `call-args`,
   /// `counted-pair`, `string-index`, `string-write`, `field-address`) over a
@@ -869,9 +870,10 @@ public:
   FunctionCheck(
       clang::ASTContext &ast, const clang::FunctionDecl &function,
       const SafeUnit &unit, Report report,
-      std::function<FunctionBounds(const clang::FunctionDecl &)> tableOf)
+      std::function<FunctionBounds(const clang::FunctionDecl &)> tableOf,
+      FixPlanner *fixes)
       : ast(ast), function(function), unit(unit), report(std::move(report)),
-        cxx(true), cxxTable(std::move(tableOf)) {}
+        fixes(fixes), cxx(true), cxxTable(std::move(tableOf)) {}
 
   void run() {
     inferLocals();
@@ -882,11 +884,18 @@ public:
       for (const clang::CXXCtorInitializer *initializer : constructor->inits())
         if (initializer->isWritten()) {
           TraverseStmt(initializer->getInit());
+          // RFC 0049 §4: as an assignment to the member is.
+          if (initializer->isAnyMemberInitializer())
+            singleIntoBound(
+                *initializer->getInit(), initializer->getAnyMember()->getType(),
+                "field '" + initializer->getAnyMember()->getName().str() + "'",
+                initializer->getAnyMember());
           if (cxx && initializer->isAnyMemberInitializer())
             positionIntoSingle(
                 *initializer->getInit(), initializer->getAnyMember()->getType(),
                 "stored in '" + initializer->getAnyMember()->getName().str() +
-                    "'");
+                    "'",
+                initializer->getAnyMember());
         }
       pairedInitializers(*constructor);
     }
@@ -975,11 +984,13 @@ public:
                 op->getLHS()->IgnoreParenImpCasts())) {
           singleIntoBound(*op->getRHS(), member->getMemberDecl()->getType(),
                           "field '" + member->getMemberDecl()->getName().str() +
-                              "'");
+                              "'",
+                          member->getMemberDecl());
           if (cxx)
             positionIntoSingle(
                 *op->getRHS(), member->getMemberDecl()->getType(),
-                "stored in '" + member->getMemberDecl()->getName().str() + "'");
+                "stored in '" + member->getMemberDecl()->getName().str() + "'",
+                member->getMemberDecl());
         }
     }
     return true;
@@ -1096,6 +1107,12 @@ public:
       if (bounds != nullptr && bounds->escapes) {
         const Origins origins = originsOf(argument);
         if (!origins.empty())
+          want(argument->getExprLoc(), {.kind = Want::Kind::Escapes,
+                                        .declaration = *origins.begin(),
+                                        .expression = nullptr,
+                                        .keeper = nullptr,
+                                        .subjects = {parameter}});
+        if (!origins.empty())
           report(argument->getExprLoc(), rule::Escape,
                  borrowed(**origins.begin()) +
                      " and cannot be passed to the escaping parameter '" +
@@ -1122,14 +1139,21 @@ public:
     if (value == nullptr)
       return true;
     leavesWithFieldAddress(*value);
-    singleIntoBound(*value, function.getReturnType(), "the result");
+    singleIntoBound(*value, function.getReturnType(), "the result", &function);
     if (cxx) {
-      positionIntoSingle(*value, function.getReturnType(), "returned");
+      positionIntoSingle(*value, function.getReturnType(), "returned",
+                         &function);
       return true;
     }
     for (const clang::NamedDecl *origin : originsOf(value))
       if (!origin->hasAttr<clang::LifetimeBoundAttr>() ||
           !llvm::isa<clang::ParmVarDecl>(origin)) {
+        if (llvm::isa<clang::ParmVarDecl>(origin))
+          want(value->getExprLoc(), {.kind = Want::Kind::Lifetime,
+                                     .declaration = origin,
+                                     .expression = nullptr,
+                                     .keeper = nullptr,
+                                     .subjects = {}});
         report(value->getExprLoc(), rule::Escape,
                borrowed(*origin) + " and cannot be returned",
                llvm::isa<clang::ParmVarDecl>(origin)
@@ -1255,6 +1279,8 @@ private:
   const clang::FunctionDecl &function;
   const SafeUnit &unit;
   Report report;
+  /// RFC 0049: the unit's fix planner (null: no fixes).
+  FixPlanner *fixes = nullptr;
   /// Locals that may hold a pointer to more than one object.
   llvm::DenseMap<const clang::VarDecl *, bool> localBounded;
   llvm::DenseMap<const clang::VarDecl *, Origins> localOrigins;
@@ -1761,6 +1787,11 @@ private:
     if (variable != nullptr && measuredStrings.contains(variable) &&
         !reassigned.contains(variable))
       return;
+    want(at, {.kind = Want::Kind::Subject,
+              .declaration = nullptr,
+              .expression = pointer,
+              .keeper = nullptr,
+              .subjects = {}});
     report(at, rule::StringIndex,
            "'" + text(pointer) +
                "' points into a string and is indexed or moved by a "
@@ -1786,6 +1817,11 @@ private:
     if (base == nullptr || !base->getType()->isPointerType() ||
         !nullTerminated(base))
       return;
+    want(at, {.kind = Want::Kind::Subject,
+              .declaration = nullptr,
+              .expression = base,
+              .keeper = nullptr,
+              .subjects = {}});
     report(at, rule::StringWrite,
            "store through '" + text(base) +
                "', which points into a string: safe code only reads a "
@@ -1797,12 +1833,17 @@ private:
   /// RFC 0042 `call-args`: a pointer to one object
   /// stored where a declaration bounds it, or returned as a bounded result.
   void singleIntoBound(const clang::Expr &value, clang::QualType place,
-                       const std::string &what) {
+                       const std::string &what, const clang::Decl *placed) {
     if (!place->isPointerType() || !boundedBy(annotationsOf(place, ast)) ||
         value.isNullPointerConstant(ast,
                                     clang::Expr::NPC_ValueDependentIsNotNull) ||
         bounded(&value))
       return;
+    want(value.getExprLoc(), {.kind = Want::Kind::Bound,
+                              .declaration = nullptr,
+                              .expression = &value,
+                              .keeper = nullptr,
+                              .subjects = {placed}});
     report(value.getExprLoc(), rule::CallArgs,
            "'" + text(&value) + "' points to one object, and " + what +
                " has a bound",
@@ -1830,6 +1871,11 @@ private:
                   " of '" + callee.getName().str() + "'"
             : "'" + parameter.getName().str() + "' of '" +
                   callee.getName().str() + "'";
+    want(argument.getExprLoc(), {.kind = Want::Kind::Subject,
+                                 .declaration = nullptr,
+                                 .expression = &argument,
+                                 .keeper = nullptr,
+                                 .subjects = {&parameter}});
     report(argument.getExprLoc(), rule::StringWrite,
            "'" + text(&argument) + "' points into a string, and " + name +
                " may write through it: safe code only reads a string",
@@ -2130,6 +2176,12 @@ private:
     if (origins.empty())
       return;
     const bool field = llvm::isa<clang::FieldDecl>(**origins.begin());
+    if (!field)
+      want(at, {.kind = Want::Kind::Escapes,
+                .declaration = *origins.begin(),
+                .expression = nullptr,
+                .keeper = nullptr,
+                .subjects = {}});
     report(at, rule::Escape,
            borrowed(**origins.begin()) +
                " and cannot be stored where it outlives the call",
@@ -2146,6 +2198,11 @@ private:
     // the program's to annotate; its access keeps its guard.
     if (ast.getSourceManager().isInSystemMacro(at))
       return;
+    want(at, {.kind = Want::Kind::Bound,
+              .declaration = nullptr,
+              .expression = pointer,
+              .keeper = nullptr,
+              .subjects = {}});
     report(at, rule::IndexSingle,
            "'" + text(pointer) +
                "' points to one object and cannot be indexed or offset",
@@ -2157,6 +2214,12 @@ private:
                  "(or WEAVEC_SIZED_BY, WEAVEC_ENDED_BY, "
                  "WEAVEC_NULL_TERMINATED), or index an array or an "
                  "allocation");
+  }
+
+  /// RFC 0049 §3: what the error reported next at `at` wants.
+  void want(clang::SourceLocation at, Want wanted) {
+    if (fixes != nullptr)
+      fixes->want(at, std::move(wanted));
   }
 
   void forbidden(clang::SourceLocation at, llvm::StringRef what) {
@@ -2215,6 +2278,12 @@ private:
              "declare the parameter WEAVEC_NULL_TERMINATED_OR_NULL if it "
              "may be null, or pass a string");
     if (!null && !bounded(&argument))
+      want(argument.getExprLoc(), {.kind = Want::Kind::Bound,
+                                   .declaration = nullptr,
+                                   .expression = &argument,
+                                   .keeper = nullptr,
+                                   .subjects = {&parameter}});
+    if (!null && !bounded(&argument))
       report(argument.getExprLoc(), rule::CallArgs,
              (name.starts_with('\'') ? "the argument for " + name : name) +
                  " of '" + callee.getNameAsString() +
@@ -2251,7 +2320,8 @@ private:
           table.parameters[i].kind == PointerBounds::Kind::Single)
         positionIntoSingle(*argument, type,
                            "passed for '" + parameter.getName().str() +
-                               "' of '" + callee.getNameAsString() + "'");
+                               "' of '" + callee.getNameAsString() + "'",
+                           &parameter);
     }
   }
 
@@ -2308,7 +2378,7 @@ private:
   /// `call-args`: a position stored, returned or passed where a pointer to
   /// one object is declared.
   void positionIntoSingle(const clang::Expr &value, clang::QualType place,
-                          const std::string &what) {
+                          const std::string &what, const clang::Decl *placed) {
     if (!place->isPointerType() || boundedBy(annotationsOf(place, ast)) ||
         hasAnnotation(annotationsOf(place, ast), NullTerminatedAnnotation) ||
         hasAnnotation(annotationsOf(place, ast),
@@ -2316,6 +2386,11 @@ private:
         !stepped(&value) || !bounded(&value) || nullTerminated(&value) ||
         ast.getSourceManager().isInSystemMacro(value.getExprLoc()))
       return;
+    want(value.getExprLoc(), {.kind = Want::Kind::End,
+                              .declaration = placed,
+                              .expression = &value,
+                              .keeper = nullptr,
+                              .subjects = {}});
     report(value.getExprLoc(), rule::CallArgs,
            "'" + text(&value) + "' is a position, " + what +
                " where a pointer to one object is declared",
@@ -2422,6 +2497,11 @@ private:
       if (bytes && std::cmp_greater_equal(*bytes, 0) &&
           std::cmp_less_equal(*bytes, size))
         continue;
+      want(argument->getExprLoc(), {.kind = Want::Kind::Bound,
+                                    .declaration = nullptr,
+                                    .expression = argument,
+                                    .keeper = nullptr,
+                                    .subjects = {}});
       report(argument->getExprLoc(), rule::CallArgs,
              "'" + text(argument) + "' points to one object, and '" +
                  callee.getName().str() + "' may access more than its " +
@@ -2849,16 +2929,18 @@ public:
         return declarations.tableOf(function);
       };
       bounds.check = [&](const clang::FunctionDecl &function) {
-        FunctionCheck check(ast, function, *out, reportTo, bounds.tableOf);
+        FunctionCheck check(ast, function, *out, reportTo, bounds.tableOf,
+                            &fixes());
         check.run();
         return check.usesBounds();
       };
       bounds.checkRecord = [&](const clang::RecordDecl &record) {
         declarations.checkRecord(record);
       };
-      bounds.survey = [this](std::map<std::string, unsigned> *counts) {
-        surveyed = counts;
+      bounds.owner = [this](const ErrorOwner *each) {
+        owner = each == nullptr ? std::nullopt : std::optional(*each);
       };
+      bounds.fixes = &fixes();
       checkCxx(
           ast, unitSafe, *out,
           [this](clang::SourceLocation at, llvm::StringRef rule,
@@ -2868,6 +2950,7 @@ public:
           },
           bounds);
       out->pointeeSizes = declarations.laterSizes();
+      finish();
       return;
     }
     out->pointeeSizes = declarations.laterSizes();
@@ -2886,11 +2969,13 @@ public:
     if (!safe.empty())
       listFields(records, ast);
     for (const clang::FunctionDecl *function : safe) {
-      FunctionCheck(ast, *function, *out,
-                    [this](clang::SourceLocation at, llvm::StringRef rule,
-                           llvm::StringRef message, llvm::StringRef fix) {
-                      report(at, rule, message, fix);
-                    })
+      owner = ownerOf(*function, false);
+      FunctionCheck(
+          ast, *function, *out,
+          [this](clang::SourceLocation at, llvm::StringRef rule,
+                 llvm::StringRef message,
+                 llvm::StringRef fix) { report(at, rule, message, fix); },
+          &fixes())
           .run();
       // RFC 0043: ownership's rules.
       checkOwnership(ast, *function, *out,
@@ -2905,12 +2990,13 @@ public:
     // ownership rules record of a function goes to a copy of the unit.
     if (out->survey)
       for (const auto &[function, index] : guarded) {
-        surveyed = &out->definitions[index].survey;
-        FunctionCheck(ast, *function, *out,
-                      [this](clang::SourceLocation at, llvm::StringRef rule,
-                             llvm::StringRef message, llvm::StringRef fix) {
-                        report(at, rule, message, fix);
-                      })
+        owner = ownerOf(*function, true);
+        FunctionCheck(
+            ast, *function, *out,
+            [this](clang::SourceLocation at, llvm::StringRef rule,
+                   llvm::StringRef message,
+                   llvm::StringRef fix) { report(at, rule, message, fix); },
+            &fixes())
             .run();
         SafeUnit scratch;
         scratch.functions = out->functions;
@@ -2921,8 +3007,9 @@ public:
                               llvm::StringRef note) {
                          report(at, rule, message, note, noteAt);
                        });
-        surveyed = nullptr;
       }
+    owner.reset();
+    finish();
   }
 
 private:
@@ -3007,10 +3094,23 @@ private:
     // place in the file.
     const clang::SourceLocation file =
         at.isValid() ? compiler.getSourceManager().getFileLoc(at) : at;
-    // RFC 0047 §7: a surveyed function's errors are counted, once each.
-    if (surveyed != nullptr) {
+    // RFC 0049 §1: the error as data, with its fixes.
+    RuleError error;
+    error.rule = rule.str();
+    error.message = message.str();
+    if (owner) {
+      error.owner = owner->name;
+      error.ownerFile = owner->file;
+      error.ownerLine = owner->line;
+      error.global = owner->global;
+      error.surveyed = owner->surveyed;
+    }
+    const std::optional<FixPlanner::Note> fixed =
+        fixes().attach(at, error, owner ? owner->function : nullptr);
+    // RFC 0047 §7: a surveyed function's errors are recorded, once each.
+    if (owner && owner->surveyed) {
       if (surveyedAt.emplace(file.getRawEncoding(), rule.str()).second)
-        ++(*surveyed)[rule.str()];
+        out->errors.push_back(std::move(error));
       return;
     }
     // Ownership's different errors at one place (two owners leaked at one
@@ -3029,10 +3129,11 @@ private:
         at, diagnostics.getCustomDiagID(clang::DiagnosticsEngine::Error,
                                         "%0 [weavec-safe:%1]"))
         << message << rule;
-    diagnostics.Report(
-        noteAt.isValid() ? noteAt : at,
-        diagnostics.getCustomDiagID(clang::DiagnosticsEngine::Note, "%0"))
-        << fix;
+    note(fixed, noteAt.isValid() ? noteAt : at, fix);
+    ++printed;
+    if (!error.fixes.empty())
+      ++printedFixes;
+    out->errors.push_back(std::move(error));
     if (!explained) {
       explained = true;
       diagnostics.Report(at, diagnostics.getCustomDiagID(
@@ -3044,10 +3145,67 @@ private:
     }
   }
   bool explained = false;
-  /// RFC 0047 §7: the counts of the function or global whose errors are
-  /// being counted, and where they were.
-  std::map<std::string, unsigned> *surveyed = nullptr;
+  /// RFC 0049 §1: whose code the errors are in; the surveyed errors'
+  /// places, each recorded once; the errors printed, and those with a fix.
+  std::optional<ErrorOwner> owner;
   std::set<std::pair<clang::SourceLocation::UIntTy, std::string>> surveyedAt;
+  unsigned printed = 0;
+  unsigned printedFixes = 0;
+  std::unique_ptr<FixPlanner> planner;
+
+  FixPlanner &fixes() {
+    if (!planner)
+      planner = std::make_unique<FixPlanner>(
+          compiler.getASTContext(),
+          compiler.hasPreprocessor() ? &compiler.getPreprocessor() : nullptr);
+    return *planner;
+  }
+
+  /// RFC 0049 §2: the note under an error: its fix, with its fix-its, or
+  /// what the rule says to write.
+  void note(const std::optional<FixPlanner::Note> &fixed,
+            clang::SourceLocation at, llvm::StringRef text) {
+    clang::DiagnosticsEngine &diagnostics = compiler.getDiagnostics();
+    const unsigned id =
+        diagnostics.getCustomDiagID(clang::DiagnosticsEngine::Note, "%0");
+    if (!fixed) {
+      diagnostics.Report(at, id) << text;
+      return;
+    }
+    clang::DiagnosticBuilder builder = diagnostics.Report(fixed->at, id);
+    builder << fixed->text;
+    for (const auto &[place, inserted] : fixed->insertions)
+      builder << clang::FixItHint::CreateInsertion(place, inserted);
+  }
+
+  /// RFC 0049 §1: a function as the owner of the errors in its code.
+  ErrorOwner ownerOf(const clang::FunctionDecl &function, bool surveyed) {
+    const clang::PresumedLoc at =
+        compiler.getSourceManager().getPresumedLoc(function.getLocation());
+    return {.name = function.getName().str(),
+            .file = at.isValid() ? at.getFilename() : "",
+            .line = at.isValid() ? at.getLine() : 0,
+            .global = false,
+            .surveyed = surveyed,
+            .function = &function};
+  }
+
+  /// RFC 0049 §2, §5, §6: the closing note, what the unit says of the
+  /// declarations other units want, and the files it read.
+  void finish() {
+    if (printedFixes != 0) {
+      clang::DiagnosticsEngine &diagnostics = compiler.getDiagnostics();
+      diagnostics.Report(diagnostics.getCustomDiagID(
+          clang::DiagnosticsEngine::Note,
+          "%0 of %1 errors carry a fix; '%2 --weavec-fix -- <this command>' "
+          "applies them"))
+          << printedFixes << printed
+          << (compiler.getLangOpts().CPlusPlus ? "weavec-c++" : "weavec-cc");
+    }
+    fixes().evidence(out->wants, out->evidence);
+    if (out->survey)
+      fixes().files(out->files);
+  }
   /// The definitions that are guarded, for the survey: with their index in
   /// the unit's definitions.
   std::vector<std::pair<const clang::FunctionDecl *, std::size_t>> guarded;
@@ -3140,13 +3298,13 @@ private:
         // rules would otherwise each read a different one.
         if ((annotated || definesSafe) &&
             !out->functions[function->getName()].sameBounds(table))
-          reportMismatch(*function, earlier->second);
+          reportMismatch(*function, *earlier->second);
       } else if (annotated) {
         FunctionBounds &entry = out->functions[function->getName()];
         const bool wasSafe = entry.safe;
         entry = table;
         entry.safe = wasSafe;
-        annotatedAt[function->getName()] = function->getLocation();
+        annotatedAt[function->getName()] = function;
       } else if (definesSafe) {
         out->functions[function->getName()] = table;
       }
@@ -3193,30 +3351,39 @@ private:
                               }),
          .starts = 0,
          .locks = false,
-         .sends = false,
-         .survey = {}});
+         .sends = false});
   }
 
   void reportMismatch(const clang::FunctionDecl &function,
-                      clang::SourceLocation earlier) {
+                      const clang::FunctionDecl &earlier) {
     clang::DiagnosticsEngine &diagnostics = compiler.getDiagnostics();
     const std::string name = function.getName().str();
+    RuleError error;
+    error.rule = rule::BadAnnotation.str();
+    error.message = "this declaration of '" + name +
+                    "' gives its pointers other bounds than an earlier one";
+    // RFC 0049 (C2): what one declaration says, written on the other.
+    const std::optional<FixPlanner::Note> fixed =
+        fixes().attach(function.getLocation(), error, nullptr);
+    const std::optional<FixPlanner::Note> agreed =
+        fixes().agree(earlier, function, error);
     diagnostics.Report(
         function.getLocation(),
         diagnostics.getCustomDiagID(clang::DiagnosticsEngine::Error,
                                     "%0 [weavec-safe:%1]"))
-        << "this declaration of '" + name +
-               "' gives its pointers other bounds than an earlier one"
-        << rule::BadAnnotation;
-    diagnostics.Report(earlier, diagnostics.getCustomDiagID(
-                                    clang::DiagnosticsEngine::Note, "%0"))
-        << "write the same bounds (WEAVEC_COUNTED_BY, WEAVEC_ESCAPES, "
-           "WEAVEC_LIFETIMEBOUND and the rest) on every declaration of '" +
-               name + "', as here";
+        << error.message << rule::BadAnnotation;
+    note(agreed ? agreed : fixed, earlier.getLocation(),
+         "write the same bounds (WEAVEC_COUNTED_BY, WEAVEC_ESCAPES, "
+         "WEAVEC_LIFETIMEBOUND and the rest) on every declaration of '" +
+             name + "', as here");
+    ++printed;
+    if (!error.fixes.empty())
+      ++printedFixes;
+    out->errors.push_back(std::move(error));
   }
 
-  /// Where each function's first declaration with bounds is.
-  llvm::StringMap<clang::SourceLocation> annotatedAt;
+  /// Each function's first declaration with bounds.
+  llvm::StringMap<const clang::FunctionDecl *> annotatedAt;
 };
 
 } // namespace
@@ -3237,8 +3404,8 @@ int runExplain(llvm::ArrayRef<const char *> operands) {
   llvm::raw_ostream &out = llvm::outs();
   if (operands.empty()) {
     out << "The rules of Safe C and Safe C++ ('safe-cxx' introduces the C++ "
-           "ones); '--weavec-explain <rule>' explains one, '--weavec-explain "
-           "all' every one:\n";
+           "ones, 'fix' the fixes errors carry); '--weavec-explain <rule>' "
+           "explains one, '--weavec-explain all' every one:\n";
     for (const llvm::StringRef id : order)
       out << "  " << id << '\n';
     return 0;

@@ -11,6 +11,7 @@
 #include "weavec/Config/Version.h"
 
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/Support/FileSystem.h"
@@ -18,7 +19,9 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/xxhash.h"
 
 #include <algorithm>
 #include <map>
@@ -101,6 +104,101 @@ static llvm::json::Value rowJson(const LedgerRow &row) {
   };
 }
 
+llvm::json::Value fixJson(const RuleFix &fix) {
+  llvm::json::Array edits;
+  for (const FixEdit &edit : fix.edits)
+    edits.push_back(
+        llvm::json::Object{{.K = "file", .V = edit.file},
+                           {.K = "offset", .V = edit.offset},
+                           {.K = "text", .V = edit.text},
+                           {.K = "needsInclude", .V = edit.needsInclude}});
+  return llvm::json::Object{{.K = "level", .V = fix.level},
+                            {.K = "declaration", .V = fix.declaration},
+                            {.K = "name", .V = fix.name},
+                            {.K = "aspect", .V = fix.aspect},
+                            {.K = "fact", .V = fix.fact},
+                            {.K = "text", .V = fix.text},
+                            {.K = "evidence", .V = fix.evidence},
+                            {.K = "edits", .V = std::move(edits)}};
+}
+
+llvm::json::Value errorJson(const RuleError &error) {
+  llvm::json::Array subjects;
+  for (const std::string &subject : error.subjects)
+    subjects.push_back(subject);
+  llvm::json::Array fixes;
+  for (const RuleFix &fix : error.fixes)
+    fixes.push_back(fixJson(fix));
+  return llvm::json::Object{{.K = "rule", .V = error.rule},
+                            {.K = "file", .V = error.file},
+                            {.K = "line", .V = error.line},
+                            {.K = "column", .V = error.column},
+                            {.K = "message", .V = error.message},
+                            {.K = "owner", .V = error.owner},
+                            {.K = "ownerFile", .V = error.ownerFile},
+                            {.K = "ownerLine", .V = error.ownerLine},
+                            {.K = "global", .V = error.global},
+                            {.K = "surveyed", .V = error.surveyed},
+                            {.K = "subjects", .V = std::move(subjects)},
+                            {.K = "fixes", .V = std::move(fixes)}};
+}
+
+static std::string text(const llvm::json::Object &object, llvm::StringRef key) {
+  return object.getString(key).value_or("").str();
+}
+static unsigned number(const llvm::json::Object &object, llvm::StringRef key) {
+  return static_cast<unsigned>(object.getInteger(key).value_or(0));
+}
+
+bool readFix(const llvm::json::Value &value, RuleFix &fix) {
+  const llvm::json::Object *object = value.getAsObject();
+  if (object == nullptr)
+    return false;
+  fix.level = text(*object, "level");
+  fix.declaration = text(*object, "declaration");
+  fix.name = text(*object, "name");
+  fix.aspect = text(*object, "aspect");
+  fix.fact = text(*object, "fact");
+  fix.text = text(*object, "text");
+  fix.evidence = text(*object, "evidence");
+  if (const llvm::json::Array *edits = object->getArray("edits"))
+    for (const llvm::json::Value &each : *edits)
+      if (const llvm::json::Object *edit = each.getAsObject())
+        fix.edits.push_back(
+            {.file = text(*edit, "file"),
+             .offset = number(*edit, "offset"),
+             .text = text(*edit, "text"),
+             .needsInclude = edit->getBoolean("needsInclude").value_or(false)});
+  return true;
+}
+
+bool readError(const llvm::json::Value &value, RuleError &error) {
+  const llvm::json::Object *object = value.getAsObject();
+  if (object == nullptr)
+    return false;
+  error.rule = text(*object, "rule");
+  error.file = text(*object, "file");
+  error.line = number(*object, "line");
+  error.column = number(*object, "column");
+  error.message = text(*object, "message");
+  error.owner = text(*object, "owner");
+  error.ownerFile = text(*object, "ownerFile");
+  error.ownerLine = number(*object, "ownerLine");
+  error.global = object->getBoolean("global").value_or(false);
+  error.surveyed = object->getBoolean("surveyed").value_or(false);
+  if (const llvm::json::Array *subjects = object->getArray("subjects"))
+    for (const llvm::json::Value &each : *subjects)
+      if (const auto subject = each.getAsString())
+        error.subjects.push_back(subject->str());
+  if (const llvm::json::Array *fixes = object->getArray("fixes"))
+    for (const llvm::json::Value &each : *fixes) {
+      RuleFix fix;
+      if (readFix(each, fix))
+        error.fixes.push_back(std::move(fix));
+    }
+  return true;
+}
+
 bool isLedgerDirectory(llvm::StringRef value) {
   if (value.empty())
     return false;
@@ -154,6 +252,26 @@ static bool writeFileAtomically(llvm::StringRef path, llvm::StringRef contents,
   return true;
 }
 
+/// Whether the ledger at `path` is the one of `object`.
+static bool sameObject(llvm::StringRef path, llvm::StringRef object) {
+  auto buffer = llvm::MemoryBuffer::getFile(path);
+  if (!buffer)
+    return false;
+  llvm::Expected<llvm::json::Value> parsed =
+      llvm::json::parse((*buffer)->getBuffer());
+  if (!parsed) {
+    llvm::consumeError(parsed.takeError());
+    return false;
+  }
+  const llvm::json::Object *document = parsed->getAsObject();
+  const llvm::json::Array *units =
+      document == nullptr ? nullptr : document->getArray("units");
+  const llvm::json::Object *unit = units == nullptr || units->empty()
+                                       ? nullptr
+                                       : units->front().getAsObject();
+  return unit != nullptr && unit->getString("object") == object;
+}
+
 bool writeEnforcementLedger(const EnforcementLedger &ledger,
                             const EnforcementUnit &unit, llvm::StringRef path,
                             std::string &error) {
@@ -171,12 +289,8 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                              {.K = "locks", .V = function.locks},
                              {.K = "sends", .V = function.sends}};
     // RFC 0047 §7.
-    if (function.surveyed) {
-      llvm::json::Object survey;
-      for (const auto &[rule, count] : function.survey)
-        survey[rule] = count;
-      entry["survey"] = std::move(survey);
-    }
+    if (function.surveyed)
+      entry["surveyed"] = true;
     functions.push_back(std::move(entry));
   }
   llvm::json::Array fields;
@@ -192,18 +306,21 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
     }
     fields.push_back(std::move(entry));
   }
-  // RFC 0047 §7.
-  llvm::json::Array surveyed;
-  for (const LedgerSurveyedGlobal &global : ledger.surveyedGlobals) {
-    llvm::json::Object survey;
-    for (const auto &[rule, count] : global.survey)
-      survey[rule] = count;
-    surveyed.push_back(
-        llvm::json::Object{{.K = "global", .V = global.name},
-                           {.K = "file", .V = global.file},
-                           {.K = "line", .V = global.line},
-                           {.K = "survey", .V = std::move(survey)}});
-  }
+  // RFC 0049 §7.
+  llvm::json::Array errors;
+  for (const RuleError &each : ledger.errors)
+    errors.push_back(errorJson(each));
+  llvm::json::Array evidence;
+  for (const RuleFix &fix : ledger.evidence)
+    evidence.push_back(fixJson(fix));
+  llvm::json::Array files;
+  for (const ReadFile &file : ledger.files)
+    files.push_back(llvm::json::Object{{.K = "path", .V = file.path},
+                                       {.K = "size", .V = file.size},
+                                       {.K = "hash", .V = file.hash}});
+  llvm::json::Array command;
+  for (const std::string &argument : unit.command)
+    command.push_back(argument);
   llvm::json::Array library;
   for (const LedgerLibrary &entry : ledger.library)
     library.push_back(llvm::json::Object{{.K = "kind", .V = entry.kind},
@@ -247,7 +364,16 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                                  ledger.placedLocals)}}},
                    {.K = "functions", .V = std::move(functions)},
                    {.K = "fields", .V = std::move(fields)},
-                   {.K = "surveyGlobals", .V = std::move(surveyed)},
+                   {.K = "partial", .V = unit.partial},
+                   {.K = "command",
+                    .V =
+                        llvm::json::Object{
+                            {.K = "directory", .V = unit.directory},
+                            {.K = "arguments", .V = std::move(command)},
+                            {.K = "cxx", .V = unit.cxx}}},
+                   {.K = "files", .V = std::move(files)},
+                   {.K = "errors", .V = std::move(errors)},
+                   {.K = "evidence", .V = std::move(evidence)},
                    {.K = "library", .V = std::move(library)},
                    {.K = "rows", .V = std::move(rows)},
                }}},
@@ -258,9 +384,32 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
   // `-fweavec-ledger=out/` names a directory, made if it is missing.
   if (!path.empty() && llvm::sys::path::is_separator(path.back()))
     std::ignore = llvm::sys::fs::create_directories(path);
-  return writeFileAtomically(
-      ledgerPathFor(path, unit.object.empty() ? unit.source : unit.object),
-      text, error);
+  // RFC 0049 §7: a unit with no object (-fsyntax-only) is named by its
+  // source and a hash of its absolute path, so that two sources of one
+  // name (in one directory or in two) do not share a ledger.
+  std::string artifact = unit.object.empty() ? unit.source : unit.object;
+  const auto hashed = [&] {
+    llvm::SmallString<256> full(artifact);
+    std::ignore = llvm::sys::fs::make_absolute(full);
+    return artifact + "." +
+           llvm::utohexstr(llvm::xxh3_64bits(full.str())).substr(0, 8);
+  };
+  if (unit.object.empty() && unit.partial)
+    artifact = hashed();
+  std::string chosen = ledgerPathFor(path, artifact);
+  // RFC 0049 §7: two objects of one name in a directory (`pair0/pair.c.o`,
+  // `pair1/pair.c.o`) do not share a ledger: the first claims the name, and
+  // another object's gets a hash of its path.
+  if (isLedgerDirectory(path) && !unit.object.empty()) {
+    int fd = -1;
+    if (!llvm::sys::fs::openFileForWrite(chosen, fd,
+                                         llvm::sys::fs::CD_CreateNew)) {
+      std::ignore = llvm::sys::Process::SafelyCloseFileDescriptor(fd);
+    } else if (!sameObject(chosen, unit.object)) {
+      chosen = ledgerPathFor(path, hashed());
+    }
+  }
+  return writeFileAtomically(chosen, text, error);
 }
 
 std::string enforcementSummary(const EnforcementLedger &ledger,
@@ -339,28 +488,28 @@ struct Audit {
   unsigned safe = 0;
   unsigned functions = 0;
   /// RFC 0047 §7: each function once (a header's are listed by each unit
-  /// that includes it), by file, line and name: safe, or the errors the
-  /// survey found; and the aliased classes.
+  /// that includes it), by file, line and name: safe, or surveyed; and the
+  /// aliased classes.
   struct Surveyed {
     bool safe = false;
     bool surveyed = false;
-    std::map<std::string, unsigned> errors;
   };
   std::map<std::tuple<std::string, unsigned, std::string>, Surveyed> converted;
-  /// The surveyed globals' errors, each global once.
-  std::map<std::tuple<std::string, unsigned, std::string>,
-           std::map<std::string, unsigned>>
-      globalErrors;
+  /// RFC 0049 §8: the surveyed errors, each once (a header's are reported
+  /// by each unit that includes it).
+  std::map<std::string, RuleError> errors;
   llvm::json::Array aliased;
+  /// RFC 0049 §8: the counted members code outside their class can write,
+  /// and the classes with a member function that is not safe.
+  std::set<std::pair<std::string, std::string>> writable;
+  std::map<std::pair<std::string, std::string>, llvm::json::Object> counted;
   /// RFC 0048 §9: the locals placed in typed memory, which the source does
   /// not show as allocations.
   std::int64_t placed = 0;
 };
 } // namespace
 
-/// The ledgers `operand` names: a file, or a directory's `*.ledger.json`.
-static void ledgersOf(llvm::StringRef operand,
-                      std::vector<std::string> &paths) {
+void ledgersOf(llvm::StringRef operand, std::vector<std::string> &paths) {
   if (!llvm::sys::fs::is_directory(operand)) {
     paths.push_back(operand.str());
     return;
@@ -368,7 +517,9 @@ static void ledgersOf(llvm::StringRef operand,
   std::error_code error;
   for (llvm::sys::fs::recursive_directory_iterator it(operand, error), end;
        it != end && !error; it.increment(error))
-    if (llvm::StringRef(it->path()).ends_with(".ledger.json"))
+    if (llvm::sys::path::filename(it->path()) == "weavec-fix")
+      it.no_push(); // RFC 0049 §6: the fixer's runs are not the project's.
+    else if (llvm::StringRef(it->path()).ends_with(".ledger.json"))
       paths.push_back(it->path());
   std::ranges::sort(paths);
 }
@@ -415,14 +566,8 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
               static_cast<unsigned>(function->getInteger("line").value_or(0)),
               name}];
           entry.safe = entry.safe || tier == "safe";
-          if (const llvm::json::Object *survey =
-                  function->getObject("survey")) {
-            entry.surveyed = true;
-            for (const auto &[rule, count] : *survey)
-              entry.errors[rule.str()] = std::max<unsigned>(
-                  entry.errors[rule.str()],
-                  static_cast<unsigned>(count.getAsInteger().value_or(0)));
-          }
+          entry.surveyed = entry.surveyed ||
+                           function->getBoolean("surveyed").value_or(false);
         }
         if (tier == "safe") {
           ++audit.safe;
@@ -442,6 +587,13 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
             // A header's struct is listed by each unit that includes it.
             audit.fields.insert(llvm::formatv("{0}", value).str()).second) {
           const auto kind = field->getString("kind");
+          const std::pair<std::string, std::string> member{
+              field->getString("record").value_or("").str(),
+              field->getString("field").value_or("").str()};
+          if (kind == "counted")
+            audit.counted.emplace(member, *field);
+          if (kind == "writable")
+            audit.writable.insert(member);
           // RFC 0047 §8: a member with a bound is a reference too.
           if (kind == "reference" || kind == "counted")
             audit.references.push_back(llvm::json::Object(*field));
@@ -456,21 +608,14 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
           else if (kind == "aliased")
             audit.aliased.push_back(llvm::json::Object(*field));
         }
-    if (const llvm::json::Array *globals = unit->getArray("surveyGlobals"))
-      for (const llvm::json::Value &value : *globals) {
-        const llvm::json::Object *global = value.getAsObject();
-        const llvm::json::Object *survey =
-            global == nullptr ? nullptr : global->getObject("survey");
-        if (survey == nullptr)
-          continue;
-        auto &errors = audit.globalErrors[{
-            global->getString("file").value_or("").str(),
-            static_cast<unsigned>(global->getInteger("line").value_or(0)),
-            global->getString("global").value_or("").str()}];
-        for (const auto &[rule, count] : *survey)
-          errors[rule.str()] = std::max<unsigned>(
-              errors[rule.str()],
-              static_cast<unsigned>(count.getAsInteger().value_or(0)));
+    if (const llvm::json::Array *errors = unit->getArray("errors"))
+      for (const llvm::json::Value &value : *errors) {
+        RuleError error;
+        if (readError(value, error) && error.surveyed)
+          audit.errors.emplace(error.file + ":" + std::to_string(error.line) +
+                                   ":" + std::to_string(error.column) + " " +
+                                   error.rule + " " + error.message,
+                               std::move(error));
       }
     if (const llvm::json::Array *library = unit->getArray("library"))
       for (const llvm::json::Value &value : *library) {
@@ -508,8 +653,8 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
   return true;
 }
 
-/// RFC 0047 §7: a conversion's progress, from the survey: per file, its
-/// functions, how many are safe, and the errors of the others by rule.
+/// RFC 0047 §7, RFC 0049 §8: a conversion's progress, from the survey: per
+/// file, its functions, how many are safe, and its errors by rule.
 namespace {
 struct FilePlan {
   std::string file;
@@ -517,13 +662,36 @@ struct FilePlan {
   unsigned safe = 0;
   unsigned clean = 0;
   unsigned errors = 0;
+  /// The errors with no fix, and their rules.
+  unsigned unfixed = 0;
+  std::map<std::string, unsigned> open;
   bool surveyed = true;
   std::map<std::string, unsigned> rules;
+  llvm::json::Array places;
 };
 } // namespace
 
 static std::vector<FilePlan> conversionPlan(const Audit &audit) {
   std::map<std::string, FilePlan> files;
+  std::map<std::tuple<std::string, unsigned, std::string>, unsigned> owned;
+  for (const auto &[key, error] : audit.errors) {
+    FilePlan &plan = files[error.ownerFile];
+    plan.file = error.ownerFile;
+    ++plan.rules[error.rule];
+    ++plan.errors;
+    if (error.fixes.empty()) {
+      ++plan.unfixed;
+      ++plan.open[error.rule];
+    }
+    plan.places.push_back(
+        llvm::json::Object{{.K = "file", .V = error.file},
+                           {.K = "line", .V = error.line},
+                           {.K = "column", .V = error.column},
+                           {.K = "rule", .V = error.rule},
+                           {.K = "fixes", .V = error.fixes.size()}});
+    if (!error.global)
+      ++owned[{error.ownerFile, error.ownerLine, error.owner}];
+  }
   for (const auto &[key, entry] : audit.converted) {
     FilePlan &plan = files[std::get<0>(key)];
     plan.file = std::get<0>(key);
@@ -533,22 +701,8 @@ static std::vector<FilePlan> conversionPlan(const Audit &audit) {
       continue;
     }
     plan.surveyed = plan.surveyed && entry.surveyed;
-    unsigned errors = 0;
-    for (const auto &[rule, count] : entry.errors) {
-      plan.rules[rule] += count;
-      errors += count;
-    }
-    plan.errors += errors;
-    if (entry.surveyed && errors == 0)
+    if (entry.surveyed && !owned.contains(key))
       ++plan.clean;
-  }
-  for (const auto &[key, errors] : audit.globalErrors) {
-    FilePlan &plan = files[std::get<0>(key)];
-    plan.file = std::get<0>(key);
-    for (const auto &[rule, count] : errors) {
-      plan.rules[rule] += count;
-      plan.errors += count;
-    }
   }
   std::vector<FilePlan> plans;
   plans.reserve(files.size());
@@ -559,6 +713,29 @@ static std::vector<FilePlan> conversionPlan(const Audit &audit) {
     return a.errors < b.errors;
   });
   return plans;
+}
+
+/// RFC 0049 §8: the fixes the errors carry, and the choices by the errors
+/// each would decide, most first.
+static void fixesOf(const Audit &audit, std::map<std::string, unsigned> &levels,
+                    std::vector<std::pair<std::string, unsigned>> &choices) {
+  std::set<std::string> seen;
+  std::map<std::pair<std::string, std::string>, unsigned> chosen;
+  for (const auto &[key, error] : audit.errors)
+    for (const RuleFix &fix : error.fixes) {
+      if (fix.level == "choice") {
+        ++chosen[{fix.declaration, fix.text}];
+        continue;
+      }
+      if (seen.insert(fix.declaration + " " + fix.aspect + " " + fix.fact)
+              .second)
+        ++levels[fix.level];
+    }
+  for (const auto &[declaration, count] : chosen)
+    choices.emplace_back(declaration.second, count);
+  std::ranges::stable_sort(choices, [](const auto &a, const auto &b) {
+    return a.second > b.second;
+  });
 }
 
 static std::string ruleCounts(const std::map<std::string, unsigned> &rules) {
@@ -595,38 +772,51 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
   bool ok = true;
   for (const std::string &path : paths)
     ok = auditLedger(path, audit) && ok;
-  const std::vector<FilePlan> plans = conversionPlan(audit);
+  std::vector<FilePlan> plans = conversionPlan(audit);
   const bool surveyed = llvm::any_of(
       audit.converted, [](const auto &entry) { return entry.second.surveyed; });
+  std::map<std::string, unsigned> levels;
+  std::vector<std::pair<std::string, unsigned>> choices;
+  fixesOf(audit, levels, choices);
+  // RFC 0049 §8: the bounds on members that code which is not safe can
+  // write, which nothing compares where it does (T-A1, V-A1).
+  std::set<std::string> openRecords;
+  for (const auto &[key, entry] : audit.converted)
+    if (const std::string &name = std::get<2>(key);
+        !entry.safe && name.rfind("::") != std::string::npos)
+      openRecords.insert(name.substr(0, name.rfind("::")));
+  llvm::json::Array unchecked;
+  for (const auto &[member, field] : audit.counted)
+    if (audit.writable.contains(member) || openRecords.contains(member.first))
+      unchecked.push_back(llvm::json::Object(field));
+  const auto ready = [](const FilePlan &plan) {
+    return plan.surveyed && plan.errors == 0 && plan.safe < plan.functions;
+  };
   if (json) {
     llvm::json::Array files;
-    std::map<std::string, unsigned> total;
-    for (const FilePlan &plan : plans) {
-      llvm::json::Object rules;
-      for (const auto &[rule, count] : plan.rules) {
-        rules[rule] = count;
-        total[rule] += count;
-      }
+    for (FilePlan &plan : plans)
       files.push_back(
           llvm::json::Object{{.K = "file", .V = plan.file},
                              {.K = "functions", .V = plan.functions},
                              {.K = "safe", .V = plan.safe},
                              {.K = "clean", .V = plan.clean},
                              {.K = "errors", .V = plan.errors},
-                             {.K = "ready",
-                              .V = plan.surveyed && plan.errors == 0 &&
-                                   plan.safe < plan.functions},
-                             {.K = "rules", .V = std::move(rules)}});
-    }
-    llvm::json::Object rules;
-    for (const auto &[rule, count] : total)
-      rules[rule] = count;
+                             {.K = "unfixed", .V = plan.unfixed},
+                             {.K = "ready", .V = ready(plan)},
+                             {.K = "places", .V = std::move(plan.places)}});
+    llvm::json::Object fixes;
+    for (const auto &[level, count] : levels)
+      fixes[level] = count;
+    llvm::json::Array chosen;
+    for (const auto &[text, count] : choices)
+      chosen.push_back(llvm::json::Object{{.K = "choice", .V = text},
+                                          {.K = "errors", .V = count}});
     llvm::outs()
         << llvm::formatv(
                "{0:2}",
                llvm::json::Value(llvm::json::Object{
                    {.K = "schema", .V = "weavec-audit"},
-                   {.K = "version", .V = 7},
+                   {.K = "version", .V = 8},
                    {.K = "functions", .V = audit.functions},
                    {.K = "placedLocals", .V = audit.placed},
                    {.K = "safe", .V = audit.safe},
@@ -643,11 +833,14 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
                    {.K = "sends", .V = std::move(audit.sends)},
                    {.K = "threadGlobals", .V = std::move(audit.threadGlobals)},
                    {.K = "aliased", .V = std::move(audit.aliased)},
+                   {.K = "unchecked", .V = std::move(unchecked)},
                    {.K = "conversion",
-                    .V = surveyed ? llvm::json::Value(llvm::json::Object{
-                                        {.K = "files", .V = std::move(files)},
-                                        {.K = "rules", .V = std::move(rules)}})
-                                  : llvm::json::Value(nullptr)}}))
+                    .V = surveyed
+                             ? llvm::json::Value(llvm::json::Object{
+                                   {.K = "files", .V = std::move(files)},
+                                   {.K = "fixes", .V = std::move(fixes)},
+                                   {.K = "choices", .V = std::move(chosen)}})
+                             : llvm::json::Value(nullptr)}}))
         << '\n';
     return ok ? 0 : 1;
   }
@@ -691,18 +884,26 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
         << " functions safe ("
         << (functions == 0 ? 0 : ((100 * safe) + (functions / 2)) / functions)
         << "%); " << clean << " more have no error\n";
-    out << "ready (mark WEAVEC_SAFE_FILE):\n";
+    // RFC 0049 §8: what the fixer writes, what is left to decide, and what
+    // needs a rewrite.
+    out << "fixes: " << levels["certain"] << " certain, " << levels["likely"]
+        << " likely ('weavec-cc --weavec-fix <ledger>' applies them)\n";
+    out << "choices, most errors first:\n";
+    for (const auto &[text, count] : choices)
+      out << "  " << text << "  " << count
+          << (count == 1 ? " error\n" : " errors\n");
+    out << "no fix, fewest errors first:\n";
     for (const FilePlan &plan : plans)
-      if (plan.surveyed && plan.errors == 0 && plan.safe < plan.functions)
+      if (plan.unfixed != 0)
+        out << "  " << plan.file << "  " << plan.unfixed
+            << (plan.unfixed == 1 ? " error: " : " errors: ")
+            << ruleCounts(plan.open) << '\n';
+    out << "ready (marked or to mark WEAVEC_SAFE_FILE):\n";
+    for (const FilePlan &plan : plans)
+      if (ready(plan))
         out << "  " << plan.file << "  " << plan.functions - plan.safe
             << (plan.functions - plan.safe == 1 ? " function\n"
                                                 : " functions\n");
-    out << "blocked, fewest errors first:\n";
-    for (const FilePlan &plan : plans)
-      if (plan.errors != 0)
-        out << "  " << plan.file << "  " << plan.errors
-            << (plan.errors == 1 ? " error: " : " errors: ")
-            << ruleCounts(plan.rules) << '\n';
     out << "by rule: " << ruleCounts(total) << '\n';
   }
   list("functions that are not safe (safe code trusts them; 'owns': a "
@@ -714,6 +915,9 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
        audit.wrapped, "operation", "");
   list("reference fields (tested where safe code loads them)", audit.references,
        "field", "");
+  list("bounds on members that code which is not safe can write (nothing "
+       "compares them where it does: T-A1, V-A1)",
+       unchecked, "field", "");
   list("shared members (safe C++ may change what they point to, and does "
        "not follow the other holders)",
        audit.shared, "field", "");

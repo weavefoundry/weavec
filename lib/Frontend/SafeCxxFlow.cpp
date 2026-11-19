@@ -1303,6 +1303,12 @@ private:
            (isLibrary(*record) &&
             !kinds.switchesAny(object, /*strings=*/true))))
         return;
+      if (record != nullptr && !isLibrary(*record))
+        kinds.want(at, {.kind = Want::Kind::Aliased,
+                        .declaration = record,
+                        .expression = nullptr,
+                        .keeper = nullptr,
+                        .subjects = {}});
       const std::string declare =
           record != nullptr && !isLibrary(*record)
               ? "declare '" + record->getNameAsString() + "' WEAVEC_ALIASED " +

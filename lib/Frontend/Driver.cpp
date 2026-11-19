@@ -89,8 +89,9 @@ static std::string invalidValue(llvm::StringRef arg, llvm::StringRef value,
 /// then says what is wrong with it, if anything.
 static bool consumeValueFlag(DriverOptions &options, llvm::StringRef arg,
                              std::string &error) {
-  static constexpr std::array<llvm::StringLiteral, 3> Names{
-      "-fweavec-checks", "-fweavec-ledger", "-fweavec-safe-checks"};
+  static constexpr std::array<llvm::StringLiteral, 4> Names{
+      "-fweavec-checks", "-fweavec-ledger", "-fweavec-safe-checks",
+      "-fweavec-fix-wants"};
   const auto [flag, value] = arg.split('=');
   if (!llvm::is_contained(Names, flag))
     return false;
@@ -116,6 +117,8 @@ static bool consumeValueFlag(DriverOptions &options, llvm::StringRef arg,
     } else {
       error = invalidValue(arg, value, "bounds or full");
     }
+  } else if (flag == "-fweavec-fix-wants") {
+    options.fixWants = value.str();
   } else {
     options.ledger = value.str();
   }
@@ -225,6 +228,16 @@ llvm::StringRef driverFlagsHelp() {
       that are not safe, the accesses of safe functions that kept a guard
       and why, the library calls that kept a checked wrapper, and the
       reference fields.
+  --weavec-fix [--dry-run] [--level=certain|likely] [--no-mark]
+              [--only=<path>,...] [--rounds=<n>] [-j<n>] <ledger>...
+  --weavec-fix [options] -- <a compile command>
+      Apply the fixes the rules' errors carry (RFC 0049): from the ledgers a
+      survey wrote (-fweavec-safe-survey -fweavec-ledger=<dir>/), or of the
+      command given, surveyed first. Certain fixes and the likely ones that
+      agree are written, the rules run again on the units an edit reached,
+      a likely fix that brings an error with no fix is taken out, and it
+      repeats until nothing changes; files left with no error are marked
+      WEAVEC_SAFE_FILE. What is left needs judgment (--weavec-audit).
   --weavec-explain [<rule>... | all]
       Safe C's rules (RFC 0041, RFC 0042, RFC 0043): what each rejects, why,
       a rejected example and its accepted rewrite; alone, the list of rules.
@@ -482,10 +495,25 @@ configureEnforcement(clang::CompilerInstance &compiler,
   return ledger;
 }
 
+/// RFC 0049 §7: the driver's command line and directory, which each unit's
+/// ledger records (empty for a hand-written `-cc1` line).
+namespace {
+struct DriverCommand {
+  std::vector<std::string> arguments;
+  std::string directory;
+  bool cxx = false;
+};
+} // namespace
+static DriverCommand &driverCommand() {
+  static DriverCommand command;
+  return command;
+}
+
 /// Writes the unit's enforcement ledger and prints its summary line.
 static bool emitEnforcementLedger(const clang::CompilerInstance &compiler,
                                   const DriverOptions &weavec,
-                                  const EnforcementLedger &ledger) {
+                                  const EnforcementLedger &ledger,
+                                  bool partial) {
   const clang::FrontendOptions &frontend = compiler.getFrontendOpts();
   EnforcementUnit unit;
   if (!frontend.Inputs.empty() && frontend.Inputs.front().isFile())
@@ -497,6 +525,12 @@ static bool emitEnforcementLedger(const clang::CompilerInstance &compiler,
   unit.zeroInit = weavec.zeroInitializes();
   if (weavec.safe)
     unit.safe = weavec.safeFull ? "full" : "fast";
+  unit.partial = partial;
+  if (weavec.survey) {
+    unit.command = driverCommand().arguments;
+    unit.directory = driverCommand().directory;
+    unit.cxx = driverCommand().cxx;
+  }
   bool ok = true;
   if (!weavec.ledger.empty()) {
     std::string error;
@@ -505,7 +539,7 @@ static bool emitEnforcementLedger(const clang::CompilerInstance &compiler,
       ok = false;
     }
   }
-  if (weavec.summary.value_or(!weavec.ledger.empty()))
+  if (!partial && weavec.summary.value_or(!weavec.ledger.empty()))
     llvm::errs() << enforcementSummary(ledger, unit.source) << '\n';
   return ok;
 }
@@ -621,6 +655,12 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   safe->fast = safe->annotates && weavec.fastSafe();
   safe->cxx = lang.CPlusPlus;
   safe->survey = weavec.survey;
+  // RFC 0049 §5: the declarations other units want facts about.
+  if (!weavec.fixWants.empty())
+    if (auto wants = llvm::MemoryBuffer::getFile(weavec.fixWants))
+      for (llvm::StringRef line : llvm::split((*wants)->getBuffer(), '\n'))
+        if (!line.trim().empty())
+          safe->wants.push_back(line.trim().str());
   if (safe->annotates) {
     unsafe = std::make_shared<UnsafeRegions>();
     ledger = configureEnforcement(*compiler, weavec, unsafe, safe);
@@ -632,9 +672,14 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   WeaveCWrapperAction action(std::move(inner), unsafe, safe, weavec.safe,
                              asanCompat);
   success = compiler->ExecuteAction(action);
-  if (success && ledger) {
+  // RFC 0049 §7: a unit that did not reach code generation (-fsyntax-only,
+  // or an error) still writes the checker's part of its ledger.
+  const bool full = success && ledger;
+  if (full || (!weavec.ledger.empty() && weavec.enabled)) {
+    EnforcementLedger partialLedger;
+    EnforcementLedger &target = full ? *ledger : partialLedger;
     for (const SafeUnit::Definition &definition : safe->definitions)
-      ledger->functions.push_back(
+      target.functions.push_back(
           {.function = definition.name,
            .tier = definition.tier,
            .file = definition.file,
@@ -643,30 +688,28 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
            .starts = definition.starts,
            .locks = definition.locks,
            .sends = definition.sends,
-           .surveyed = safe->survey && definition.tier == "guarded",
-           .survey = definition.survey});
-    for (const SafeUnit::SurveyedGlobal &global : safe->surveyedGlobals)
-      ledger->surveyedGlobals.push_back({.name = global.name,
-                                         .file = global.file,
-                                         .line = global.line,
-                                         .survey = global.survey});
+           .surveyed = safe->survey && definition.tier == "guarded"});
+    target.errors = std::move(safe->errors);
+    target.evidence = std::move(safe->evidence);
+    target.files = std::move(safe->files);
     for (const SafeUnit::Field &field : safe->fields)
-      ledger->fields.push_back({.record = field.record,
-                                .field = field.field,
-                                .kind = field.kind,
-                                .file = field.file,
-                                .line = field.line,
-                                .sendable = field.sendable,
-                                .shareable = field.shareable});
+      target.fields.push_back({.record = field.record,
+                               .field = field.field,
+                               .kind = field.kind,
+                               .file = field.file,
+                               .line = field.line,
+                               .sendable = field.sendable,
+                               .shareable = field.shareable});
     for (const SafeUnit::InPlace &global : safe->inPlace)
-      ledger->fields.push_back({.record = global.function,
-                                .field = global.global,
-                                .kind = "global",
-                                .file = global.file,
-                                .line = global.line,
-                                .sendable = false,
-                                .shareable = false});
-    success = emitEnforcementLedger(*compiler, weavec, *ledger);
+      target.fields.push_back({.record = global.function,
+                               .field = global.global,
+                               .kind = "global",
+                               .file = global.file,
+                               .line = global.line,
+                               .sendable = false,
+                               .shareable = false});
+    success =
+        emitEnforcementLedger(*compiler, weavec, target, !full) && success;
   }
   return success ? 0 : 1;
 }
@@ -1219,6 +1262,8 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
       return runAudit(argv.drop_front(2));
     if (mode == "--weavec-explain")
       return runExplain(argv.drop_front(2));
+    if (mode == "--weavec-fix")
+      return runFixer(argv.drop_front(2), argv[0], mainAddress);
     if (mode.starts_with("-cc1")) {
       llvm::errs() << "weavec-cc: error: '" << mode
                    << "' is Clang's tool, which weavec-cc does not include; "
@@ -1230,6 +1275,14 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
 
   const std::string executable =
       llvm::sys::fs::getMainExecutable(argv[0], mainAddress);
+  // RFC 0049 §7: what each unit's ledger records, to run its rules again.
+  driverCommand().arguments.assign(argv.begin(), argv.end());
+  {
+    llvm::SmallString<256> here;
+    std::ignore = llvm::sys::fs::current_path(here);
+    driverCommand().directory = here.str().str();
+  }
+  driverCommand().cxx = cxxDriverMode(argv);
 
   DriverOptions weavec;
   std::vector<const char *> clangArgs;

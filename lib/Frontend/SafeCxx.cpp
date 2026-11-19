@@ -601,6 +601,11 @@ public:
       return;
     }
     globals.insert(canonical);
+    kinds.want(at, {.kind = Want::Kind::Const,
+                    .declaration = &variable,
+                    .expression = nullptr,
+                    .keeper = nullptr,
+                    .subjects = {}});
     report(at, rule::ThreadShare,
            "every thread can reach the global '" + variable.getNameAsString() +
                "', and '" +
@@ -912,6 +917,7 @@ public:
         bounds(bounds), kinds(ast), rules(ast, kinds, report), names(ast),
         trusted(kinds, unit, names) {
     kinds.threadRules = threadRules;
+    kinds.fixes = bounds.fixes;
   }
 
   // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
@@ -948,12 +954,23 @@ public:
     const bool safe = isSafe(*function);
     const std::size_t index = define(*function, safe);
     usedBounds = false;
-    if (!safe && unit.survey && unit.definitions[index].tier == "guarded") {
-      bounds.survey(&unit.definitions[index].survey);
+    // RFC 0049 §1: whose code the errors are in.
+    const SafeUnit::Definition &definition = unit.definitions[index];
+    const ErrorOwner owner{.name = definition.name,
+                           .file = definition.file,
+                           .line = definition.line,
+                           .global = false,
+                           .surveyed = !safe,
+                           .function = function};
+    if (!safe && unit.survey && definition.tier == "guarded") {
+      bounds.owner(&owner);
       survey(*function);
-      bounds.survey(nullptr);
+      bounds.owner(nullptr);
     }
+    if (safe)
+      bounds.owner(&owner);
     const bool settled = !safe || check(*function);
+    bounds.owner(nullptr);
     if (!settled)
       unit.definitions[index].tier = "unsettled";
     nameAs(*function, safe && settled);
@@ -976,26 +993,26 @@ public:
         variable->getDeclContext()->isDependentContext() ||
         isLibrary(*variable))
       return true;
-    if (safeGlobal(*variable)) {
+    const clang::PresumedLoc at =
+        ast.getSourceManager().getPresumedLoc(variable->getLocation());
+    const ErrorOwner owner{.name = variable->getQualifiedNameAsString(),
+                           .file = at.isValid() ? at.getFilename() : "",
+                           .line = at.isValid() ? at.getLine() : 0,
+                           .global = true,
+                           .surveyed = !safeGlobal(*variable),
+                           .function = nullptr};
+    if (!owner.surveyed) {
+      bounds.owner(&owner);
       rules.global(*variable, variable->getLocation());
+      bounds.owner(nullptr);
       return true;
     }
     // RFC 0047 §7: a global of code that is not safe yet, as if it were.
     if (!unit.survey)
       return true;
-    std::map<std::string, unsigned> counts;
-    bounds.survey(&counts);
+    bounds.owner(&owner);
     CxxRules(ast, kinds, report).global(*variable, variable->getLocation());
-    bounds.survey(nullptr);
-    if (counts.empty())
-      return true;
-    const clang::PresumedLoc at =
-        ast.getSourceManager().getPresumedLoc(variable->getLocation());
-    unit.surveyedGlobals.push_back(
-        {.name = variable->getQualifiedNameAsString(),
-         .file = at.isValid() ? at.getFilename() : "",
-         .line = at.isValid() ? at.getLine() : 0,
-         .survey = std::move(counts)});
+    bounds.owner(nullptr);
     return true;
   }
 
@@ -1096,6 +1113,13 @@ private:
     };
     if (const clang::FunctionDecl *previous = function.getPreviousDecl();
         previous != nullptr && !isLibrary(*previous) && differs(*previous))
+      kinds.want(function.getLocation(), {.kind = Want::Kind::Agree,
+                                          .declaration = previous,
+                                          .expression = nullptr,
+                                          .keeper = nullptr,
+                                          .subjects = {&function}});
+    if (const clang::FunctionDecl *previous = function.getPreviousDecl();
+        previous != nullptr && !isLibrary(*previous) && differs(*previous))
       report(function.getLocation(), "bad-annotation",
              "this declaration of '" + function.getNameAsString() +
                  "' gives its pointers other bounds than an earlier one",
@@ -1105,6 +1129,11 @@ private:
     if (const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(&function))
       for (const clang::CXXMethodDecl *base : method->overridden_methods())
         if (differs(*base)) {
+          kinds.want(function.getLocation(), {.kind = Want::Kind::Agree,
+                                              .declaration = base,
+                                              .expression = nullptr,
+                                              .keeper = nullptr,
+                                              .subjects = {&function}});
           report(function.getLocation(), "bad-annotation",
                  "'" + function.getNameAsString() + "' overrides '" +
                      base->getQualifiedNameAsString() + "' with other bounds",
@@ -1258,8 +1287,7 @@ private:
                                 .owns = false,
                                 .starts = 0,
                                 .locks = false,
-                                .sends = false,
-                                .survey = {}});
+                                .sends = false});
     threadFacts(function, unit.definitions.back());
     return unit.definitions.size() - 1;
   }
@@ -1318,7 +1346,7 @@ private:
       return true;
     }
     rules.run(function);
-    keptAddresses(ast, function, true, &report);
+    keptAddresses(ast, function, true, &report, kinds.fixes);
     usedBounds = bounds.check(function) || declaresBounds(function);
     if (kinds.threadRules)
       threadGlobals(function);
@@ -1353,7 +1381,7 @@ private:
       return;
     CxxRules fresh(ast, kinds, report);
     fresh.run(function);
-    keptAddresses(ast, function, true, &report);
+    keptAddresses(ast, function, true, &report, kinds.fixes);
     (void)bounds.check(function);
     (void)checkCxxFlow(ast, kinds, function, *body, nullptr, report);
     std::vector<const clang::LambdaExpr *> lambdas;
@@ -1472,6 +1500,16 @@ private:
                              .line = at.isValid() ? at.getLine() : 0,
                              .sendable = false,
                              .shareable = false});
+      // RFC 0049 §8: a bound code outside the class can write.
+      if (llvm::StringRef(kind) == "counted" &&
+          (field->getAccess() != clang::AS_private || record.hasFriends()))
+        unit.fields.push_back({.record = record.getQualifiedNameAsString(),
+                               .field = field->getNameAsString(),
+                               .kind = "writable",
+                               .file = at.isValid() ? at.getFilename() : "",
+                               .line = at.isValid() ? at.getLine() : 0,
+                               .sendable = false,
+                               .shareable = false});
     }
   }
 
@@ -1540,8 +1578,9 @@ struct Origin {
 class Kept final : public clang::RecursiveASTVisitor<Kept> {
 public:
   Kept(clang::ASTContext &ast, const clang::FunctionDecl &function, bool safe,
-       const RuleReport *report)
-      : ast(ast), function(function), safe(safe), report(report) {}
+       const RuleReport *report, FixPlanner *fixes)
+      : ast(ast), function(function), safe(safe), report(report), fixes(fixes) {
+  }
 
   void run() {
     // Every value a local pointer is given, before any is followed.
@@ -1564,9 +1603,12 @@ public:
           continue;
         if (initializer->isAnyMemberInitializer() &&
             initializer->getAnyMember()->getType()->isPointerType() &&
-            !borrowed(initializer->getAnyMember()) && safe)
+            !borrowed(initializer->getAnyMember()) && safe) {
+          keeper = initializer->getAnyMember();
           keep(valueOrigins(value), at,
                "'" + initializer->getAnyMember()->getNameAsString() + "'");
+          keeper = nullptr;
+        }
         // A member or base constructed from an argument that it keeps.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
         TraverseStmt(const_cast<clang::Expr *>(value));
@@ -1593,12 +1635,16 @@ public:
     if (localPointer(left) != nullptr ||
         (member != nullptr && borrowed(member->getMemberDecl())))
       return true;
+    if (member != nullptr &&
+        llvm::isa<clang::CXXThisExpr>(member->getBase()->IgnoreParenImpCasts()))
+      keeper = llvm::dyn_cast<clang::FieldDecl>(member->getMemberDecl());
     if (safe &&
         (llvm::isa<clang::MemberExpr, clang::ArraySubscriptExpr>(left) ||
          llvm::isa<clang::UnaryOperator>(left) ||
          llvm::isa<clang::DeclRefExpr>(left)))
       keep(valueOrigins(op->getRHS()), op->getOperatorLoc(),
            "'" + spelled(left) + "'");
+    keeper = nullptr;
     return true;
   }
 
@@ -1659,6 +1705,10 @@ private:
   const clang::FunctionDecl &function;
   bool safe;
   const RuleReport *report;
+  /// RFC 0049: the fix planner, and the member of the object the value
+  /// being kept is stored in (D5).
+  FixPlanner *fixes;
+  const clang::FieldDecl *keeper = nullptr;
   LocalValues assigned;
   std::set<std::pair<Origin, unsigned>> reported;
 
@@ -1976,6 +2026,12 @@ private:
       message = "the address of '" + parameter->getNameAsString() +
                 "' is kept by " + where + ", and '" +
                 function.getNameAsString() + "' only borrows it";
+      if (fixes != nullptr)
+        fixes->want(at, {.kind = Want::Kind::Escapes,
+                         .declaration = parameter,
+                         .expression = nullptr,
+                         .keeper = keeper,
+                         .subjects = {}});
       note = "declare the parameter WEAVEC_ESCAPES (after its '*' or '&') "
              "if '" +
              function.getNameAsString() +
@@ -1987,6 +2043,12 @@ private:
         return;
       message = "'this' is kept by " + where + ", and '" +
                 function.getNameAsString() + "' only borrows it";
+      if (fixes != nullptr)
+        fixes->want(at, {.kind = Want::Kind::Escapes,
+                         .declaration = &function,
+                         .expression = nullptr,
+                         .keeper = nullptr,
+                         .subjects = {}});
       note = "write WEAVEC_ESCAPES after the parameter list of '" +
              function.getNameAsString() + "', or declare '" +
              method->getParent()->getNameAsString() + "' WEAVEC_ALIASED";
@@ -2054,10 +2116,10 @@ void localValues(const clang::Stmt *statement, LocalValues &values,
 }
 
 void keptAddresses(clang::ASTContext &ast, const clang::FunctionDecl &function,
-                   bool safe, const RuleReport *report) {
+                   bool safe, const RuleReport *report, FixPlanner *fixes) {
   if (!function.hasBody() || function.isDependentContext())
     return;
-  Kept(ast, function, safe, report).run();
+  Kept(ast, function, safe, report, fixes).run();
 }
 
 void checkCxx(clang::ASTContext &ast, bool unitSafe, SafeUnit &unit,
