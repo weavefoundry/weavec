@@ -1,6 +1,29 @@
 # CHANGELOG
 
 
+## [0.25.0](https://github.com/weavefoundry/weavec/compare/v0.24.0...v0.25.0) (2026-11-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* check each fact once in fast safe units ([#76](https://github.com/weavefoundry/weavec/issues/76))
+* make rule errors carry fixes, and add --weavec-fix ([#75](https://github.com/weavefoundry/weavec/issues/75))
+* check fast safe code against what it holds ([#74](https://github.com/weavefoundry/weavec/issues/74))
+* convert existing C++ to safe C++ in place ([#73](https://github.com/weavefoundry/weavec/issues/73))
+* make safe C++ free of data races ([#72](https://github.com/weavefoundry/weavec/issues/72))
+* make safe code fast with type-stable memory ([#71](https://github.com/weavefoundry/weavec/issues/71))
+* add Safe C++, checked for moves, borrows, and views ([#69](https://github.com/weavefoundry/weavec/issues/69))
+
+### Features
+
+* add Safe C++, checked for moves, borrows, and views ([#69](https://github.com/weavefoundry/weavec/issues/69)) ([c1056db](https://github.com/weavefoundry/weavec/commit/c1056dbf786c9251294edfabc98d85e86a26d88c))
+* check each fact once in fast safe units ([#76](https://github.com/weavefoundry/weavec/issues/76)) ([2d56b9f](https://github.com/weavefoundry/weavec/commit/2d56b9f177823de014a7176a1c125d81e2e6acf7))
+* check fast safe code against what it holds ([#74](https://github.com/weavefoundry/weavec/issues/74)) ([392b720](https://github.com/weavefoundry/weavec/commit/392b72011e6a475f28e3b3e7c1363e4abda502b1))
+* convert existing C++ to safe C++ in place ([#73](https://github.com/weavefoundry/weavec/issues/73)) ([59a4bd7](https://github.com/weavefoundry/weavec/commit/59a4bd7124398daca758d646da809dffc4b1b9cf))
+* make rule errors carry fixes, and add --weavec-fix ([#75](https://github.com/weavefoundry/weavec/issues/75)) ([bffda03](https://github.com/weavefoundry/weavec/commit/bffda0365329f366526e77ab0ee954c86f714b24))
+* make safe C++ free of data races ([#72](https://github.com/weavefoundry/weavec/issues/72)) ([3066dd7](https://github.com/weavefoundry/weavec/commit/3066dd728b0e141e15bac1b347dab64ecef831b9))
+* make safe code fast with type-stable memory ([#71](https://github.com/weavefoundry/weavec/issues/71)) ([9b33263](https://github.com/weavefoundry/weavec/commit/9b33263428415983db7b4ed63c499a3c59581a41))
+
 ## v0.24.0 (2026-11-13)
 
 ### Features
