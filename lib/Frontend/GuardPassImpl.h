@@ -51,13 +51,6 @@ inline constexpr unsigned SiteNullOk = 8;
 /// passes.
 inline constexpr unsigned SiteTyped = 16;
 inline constexpr unsigned SiteBelieved = 32;
-/// RFC 0050 §3.1: a release by fast safe C++, whose pooled slot keeps its
-/// shadow (Safe C's reference test reads a released block's).
-inline constexpr unsigned SiteShadowed = 64;
-/// The site flags of a typed release in `module`.
-[[nodiscard]] inline unsigned typedSite(bool cxx) {
-  return SiteTyped | (cxx ? SiteShadowed : 0);
-}
 
 /// The markers GuardInsert puts before accesses and GuardExpand turns into
 /// checks:

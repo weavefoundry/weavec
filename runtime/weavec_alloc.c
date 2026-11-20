@@ -208,11 +208,11 @@ static WeavecRtLock cacheListLock;
 #if !defined(__APPLE__)
 static __thread void *cacheCopy __attribute__((tls_model("initial-exec")));
 #endif
-static inline void setCacheValue(void *value) {
+static inline int setCacheValue(void *value) {
 #if !defined(__APPLE__)
   cacheCopy = value;
 #endif
-  (void)pthread_setspecific(cacheKey, value);
+  return pthread_setspecific(cacheKey, value);
 }
 static inline void *cacheValue(void) {
 #if defined(__APPLE__) && defined(__aarch64__)
@@ -1015,11 +1015,11 @@ static __attribute__((noinline)) ThreadCache *makeCache(void) {
     return NULL;
   for (c = 0; c < cachedClasses; ++c)
     cache->alloc[c].limit = cache->release[c].limit = cacheLimit(c);
-  if (pthread_setspecific(cacheKey, cache) != 0) {
+  if (setCacheValue(cache) != 0) {
+    (void)setCacheValue(NULL);
     (void)munmap(cache, sizeof(ThreadCache));
     return NULL;
   }
-  setCacheValue(cache);
   take(&cacheListLock);
   cache->next = caches;
   caches = cache;
@@ -1128,7 +1128,7 @@ static void drainCache(ThreadCache *cache, int check) {
  * (a destructor that runs after this one may still allocate). */
 static void dropCache(void *value) {
   ThreadCache *cache = (ThreadCache *)value;
-  setCacheValue(CacheGone);
+  (void)setCacheValue(CacheGone);
   if (cache == NULL || cache == CacheGone)
     return;
   drainCache(cache, 0);
@@ -1697,8 +1697,7 @@ badHuge(const void *p, const HugeBlock *block, const char *by,
 
 /* RFC 0039 section 4: `form` allocated what the release takes (or any). */
 
-static void poolRelease(SlotRef ref, unsigned c, uint32_t index, size_t size,
-                        const struct __weavec_rt_site *site);
+static void poolRelease(SlotRef ref, unsigned c, uint32_t index, size_t size);
 
 static void release(void *p, unsigned form, size_t bytes, const void *caller,
                     uint32_t stack, const struct __weavec_rt_site *site) {
@@ -1729,7 +1728,7 @@ static void release(void *p, unsigned form, size_t bytes, const void *caller,
       uint32_t *pool = poolOf(ref.region, ref.slot);
       if (*pool != 0) {
         if (site != NULL && (site->flags & WeavecRtSiteTyped) != 0) {
-          poolRelease(ref, c, *pool, weavecRtLiveSize(word), site);
+          poolRelease(ref, c, *pool, weavecRtLiveSize(word));
           return;
         }
         *pool = 0;
@@ -2241,15 +2240,13 @@ static void *poolAlloc(uint32_t index, unsigned c, size_t size, unsigned form,
   return makeLive(taken & ~(uint64_t)1, size, slotBytes, form, stack);
 }
 
-/* RFC 0050 section 3.1 (D3): in a fast program a slot that safe C++
+/* RFC 0050 section 3.1 (D3): in a fast program a slot that safe code
  * releases into its pool keeps the shadow of the object it held, so that
  * its next object of the same size writes none; the slot's word says
- * released. A program with a verify unit marks it released, so that the
- * monitors see it, and so does a release by Safe C, whose reference test
- * reads it. */
-static inline int keepsShadow(const struct __weavec_rt_site *site) {
-  return weavecRtFastProgram && !weavecRtVerifyProgram &&
-         (site->flags & WeavecRtSiteShadowed) != 0;
+ * released. A program with a verify unit or with Safe C marks it released,
+ * so that the monitors and Safe C's reference test see it. */
+static inline int keepsShadow(void) {
+  return weavecRtFastProgram && !weavecRtTestsReleased;
 }
 
 /* The claimed slot `ref` of class `c`, whose object had `size` bytes, into
@@ -2257,11 +2254,10 @@ static inline int keepsShadow(const struct __weavec_rt_site *site) {
  * double free), zeroed, so that a stale pointer to it reads an empty object
  * and nothing it held is kept by a sweep, and handed to the next allocation
  * of its type and class. */
-static void poolRelease(SlotRef ref, unsigned c, uint32_t index, size_t size,
-                        const struct __weavec_rt_site *site) {
+static void poolRelease(SlotRef ref, unsigned c, uint32_t index, size_t size) {
   ThreadCache *cache = cacheFor(c);
   const size_t slotBytes = __weavec_rt_heap.table[c].size;
-  const int keep = keepsShadow(site);
+  const int keep = keepsShadow();
   const uint64_t slot = keep ? withShadow(slotEntry(ref.region, ref.slot, 1), size)
                              : slotEntry(ref.region, ref.slot, 1);
   if (size <= 128) {
@@ -2310,12 +2306,11 @@ static void poolRelease(SlotRef ref, unsigned c, uint32_t index, size_t size,
  * common case of a typed allocation is one pop from the thread's cache of
  * its pool (a slot whose shadow already says live for this size writes
  * none: D3), and of its release one push; everything else takes the paths
- * above. The
- * thread's depth is raised around each, as the allocator's own are, so
- * that a signal handler that allocates meanwhile takes the paths above. */
+ * above. The thread's depth is raised around each, as the allocator's own
+ * are, so that a signal handler that allocates meanwhile takes the paths
+ * above. */
 static inline int shortPaths(void) {
-  return weavecRtFastProgram && !weavecRtVerifyProgram &&
-         !weavecRtHeapStacks && slotPools != NULL;
+  return weavecRtFastProgram && !weavecRtHeapStacks && slotPools != NULL;
 }
 
 static void *poolTake(size_t size, unsigned form,
@@ -2415,7 +2410,7 @@ poolGive(void *p, unsigned form, size_t bytes,
     zeroFill(ref.base, size);
   }
   weavecRtCount(WeavecRtStatPooled);
-  if (keepsShadow(site)) {
+  if (keepsShadow()) {
     entry->slots[entry->count++] =
         withShadow(slotEntry(ref.region, ref.slot, 1), size);
   } else {

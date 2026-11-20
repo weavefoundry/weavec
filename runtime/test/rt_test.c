@@ -1653,33 +1653,33 @@ static void testPoolReusesByType(void) {
   CHECK(stopsIn(typedDoubleRelease));
 }
 
-/* RFC 0050 section 3.1 (D3): in a fast program a slot that safe C++
+/* RFC 0050 section 3.1 (D3): in a fast program a slot that safe code
  * released into its pool keeps its object's shadow, so that the next object
  * of its size writes none; its word still says released, so a second
- * release is a double free. Safe C's release, and a program with a verify
- * unit, mark it released. */
-static struct __weavec_rt_site shadowedRelease = {
-    0, 0, 0, WeavecRtSiteTyped | WeavecRtSiteShadowed};
+ * release is a double free. A program with a verify unit or with Safe C
+ * marks it released. */
 static struct __weavec_rt_type poolC = {0x0fedcba987654321ULL, 0};
 
 static void shadowedDoubleRelease(void) {
   void *p;
   weavecRtFastProgram = 1;
   p = __weavec_rt_alloc_typed(40, WeavecRtFormMalloc, &poolC);
-  __weavec_rt_free_at(p, &shadowedRelease);
-  __weavec_rt_free_at(opaque(p), &shadowedRelease);
+  __weavec_rt_free_at(p, &typedRelease);
+  __weavec_rt_free_at(opaque(p), &typedRelease);
 }
 
 static void testPoolKeepsShadow(void) {
   const int fast = weavecRtFastProgram;
+  const int tests = weavecRtTestsReleased;
   unsigned char *p;
   unsigned char *q;
   weavecRtFastProgram = 1;
+  weavecRtTestsReleased = 0;
   p = (unsigned char *)opaque(
       __weavec_rt_alloc_typed(40, WeavecRtFormMalloc, &poolC));
   CHECK(inArena(p));
   memset(p, 0xab, 40);
-  __weavec_rt_free_at(p, &shadowedRelease);
+  __weavec_rt_free_at(p, &typedRelease);
   /* Addressable, and zero: the object it held, empty. */
   CHECK(addressable(p, 40) && !addressable(p, 41));
   CHECK(p[0] == 0 && p[39] == 0);
@@ -1688,22 +1688,16 @@ static void testPoolKeepsShadow(void) {
   CHECK(q == p);
   CHECK(addressable(q, 40) && !addressable(q, 41));
   /* Another size in the same class takes its own shadow. */
-  __weavec_rt_free_at(q, &shadowedRelease);
+  __weavec_rt_free_at(q, &typedRelease);
   q = (unsigned char *)opaque(
       __weavec_rt_alloc_typed(36, WeavecRtFormMalloc, &poolC));
   CHECK(q == p);
   CHECK(addressable(q, 36) && !addressable(q, 37));
-  /* Safe C's release marks it released. */
+  /* A program with a verify unit or Safe C marks it released. */
+  __weavec_rt_tests_released();
   __weavec_rt_free_at(q, &typedRelease);
   CHECK(!addressable(p, 1));
-  q = (unsigned char *)opaque(
-      __weavec_rt_alloc_typed(36, WeavecRtFormMalloc, &poolC));
-  CHECK(q == p && addressable(q, 36));
-  /* So does a program with a verify unit. */
-  weavecRtVerifyProgram = 1;
-  __weavec_rt_free_at(q, &shadowedRelease);
-  CHECK(!addressable(p, 1));
-  weavecRtVerifyProgram = 0;
+  weavecRtTestsReleased = tests;
   weavecRtFastProgram = fast;
   CHECK(stopsIn(shadowedDoubleRelease));
 }

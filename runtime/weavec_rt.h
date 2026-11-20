@@ -278,9 +278,10 @@ WEAVEC_RT_API void __weavec_rt_frame_escape(uintptr_t address,
 WEAVEC_RT_API void __weavec_rt_fast_program(void);
 extern int weavecRtFastProgram;
 /* RFC 0050 section 3.1: called by each unit compiled with
- * -fweavec-checks=verify: a pooled slot's shadow says released. */
-WEAVEC_RT_API void __weavec_rt_verify_program(void);
-extern int weavecRtVerifyProgram;
+ * -fweavec-checks=verify and each with Safe C, which read a released
+ * block's shadow: a pooled slot's shadow says released. */
+WEAVEC_RT_API void __weavec_rt_tests_released(void);
+extern int weavecRtTestsReleased;
 /* Allocates as `allocForm` does, from the pool of `type` when it has one. */
 void *weavecRtAllocTyped(size_t size, unsigned form,
                          struct __weavec_rt_type *type);
@@ -355,10 +356,7 @@ enum {
   WeavecRtSiteTyped = 16,
   /* Section 10: verify mode's monitor of a believed access, which a released
    * heap block passes (its pointer reaches memory of its type). */
-  WeavecRtSiteBelieved = 32,
-  /* RFC 0050 section 3.1: a release by safe C++ in a fast unit, whose pooled
-   * slot keeps the shadow of its object (Safe C's reference test reads it). */
-  WeavecRtSiteShadowed = 64
+  WeavecRtSiteBelieved = 32
 };
 /* RFC 0037 section 11: the file name lies `file` bytes from the record (0:
  * none), so that the records and the names are read-only data without a

@@ -346,38 +346,27 @@ static void checkCountedInit(clang::ASTContext &ast,
 }
 
 /// RFC 0050 §2.5: whether the unit's C++ library checks its preconditions:
-/// libc++ in a hardening mode other than `none` (the macro's value read
-/// through the macros it names), libstdc++ with its assertions.
+/// libc++ in the hardening mode `fast`, `extensive` or `debug` by name (a
+/// number, or anything else, is none); libstdc++ with its assertions.
 static bool libraryHardened(const clang::Preprocessor &preprocessor) {
-  // The tokens a macro finally names, as text.
-  const auto spelled = [&](llvm::StringRef name) {
-    std::string text(name);
-    for (int depth = 0; depth < 4; ++depth) {
-      const clang::MacroInfo *macro =
-          preprocessor.getMacroInfo(preprocessor.getIdentifierInfo(text));
-      if (macro == nullptr)
-        return text;
-      if (macro->getNumTokens() == 1 &&
-          macro->getReplacementToken(0).is(clang::tok::identifier)) {
-        text = preprocessor.getSpelling(macro->getReplacementToken(0));
-        continue;
-      }
-      std::string tokens;
-      for (const clang::Token &token : macro->tokens())
-        tokens += preprocessor.getSpelling(token) + " ";
-      return tokens;
-    }
-    return text;
+  const auto macro = [&](llvm::StringRef name) {
+    return preprocessor.getMacroInfo(preprocessor.getIdentifierInfo(name));
   };
-  const auto defined = [&](llvm::StringRef name) {
-    return preprocessor.getMacroInfo(preprocessor.getIdentifierInfo(name)) !=
-           nullptr;
-  };
-  if (defined("_LIBCPP_VERSION"))
-    return defined("_LIBCPP_HARDENING_MODE") &&
-           spelled("_LIBCPP_HARDENING_MODE") !=
-               spelled("_LIBCPP_HARDENING_MODE_NONE");
-  return defined("_GLIBCXX_ASSERTIONS");
+  if (macro("_LIBCPP_VERSION") == nullptr)
+    return macro("_GLIBCXX_ASSERTIONS") != nullptr;
+  std::string name = "_LIBCPP_HARDENING_MODE";
+  for (int depth = 0; depth < 4; ++depth) {
+    if (name == "_LIBCPP_HARDENING_MODE_FAST" ||
+        name == "_LIBCPP_HARDENING_MODE_EXTENSIVE" ||
+        name == "_LIBCPP_HARDENING_MODE_DEBUG")
+      return true;
+    const clang::MacroInfo *named = macro(name);
+    if (named == nullptr || named->getNumTokens() != 1 ||
+        !named->getReplacementToken(0).is(clang::tok::identifier))
+      return false;
+    name = preprocessor.getSpelling(named->getReplacementToken(0));
+  }
+  return false;
 }
 
 namespace {

@@ -39,6 +39,10 @@ void drop(struct node *WEAVEC_OWNED n) { free(n); }
 // CHECK: call {{.*}}@malloc(
 WEAVEC_GUARDED void *raw(size_t n) { return malloc(n); }
 
+// RFC 0050 §3.1: a unit with Safe C, whose reference test reads a
+// released block's shadow, tells the runtime to mark pooled slots released.
+// CHECK-LABEL: define internal void @weavec.released(
+// CHECK: call void @__weavec_rt_tests_released()
 // CHECK-LABEL: define internal void @weavec.fast(
 // CHECK: call void @__weavec_rt_fast_program()
 // The public entry of the split function releases as its body does.

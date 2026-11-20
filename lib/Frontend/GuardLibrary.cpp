@@ -703,8 +703,7 @@ static bool redirect(LibraryCall &call, bool late) {
       });
   llvm::Constant *site =
       releases && typedRelease(module, *call.call.getFunction())
-          ? module.site(call.call.getDebugLoc(),
-                        typedSite(module.options.safe->cxx))
+          ? module.site(call.call.getDebugLoc(), SiteTyped)
           : call.site(false);
   // RFC 0036 §6: the object size of a fortified form, or no limit.
   llvm::Value *limit = nullptr;

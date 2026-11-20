@@ -8,6 +8,8 @@
 // as a monitor (§4).
 // RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -S -emit-llvm %s -o - | FileCheck %s
 // RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_NONE -U_GLIBCXX_ASSERTIONS -S -emit-llvm %s -o - | FileCheck %s --check-prefix=NONE
+// A mode given as a number (2: none) is taken as none.
+// RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -D_LIBCPP_HARDENING_MODE=2 -U_GLIBCXX_ASSERTIONS -S -emit-llvm %s -o - | FileCheck %s --check-prefix=NONE
 // RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -fweavec-checks=verify -S -emit-llvm %s -o - | FileCheck %s --check-prefix=VERIFY
 #include <array>
 #include <cstddef>
@@ -28,6 +30,7 @@ std::size_t digits(std::string_view text, std::size_t at) {
   return at;
 }
 
+// NONE-LABEL: define {{.*}} @_Z5ended{{[^(]*}}(
 // CHECK-LABEL: define {{.*}} @_Z5ended{{[^(]*}}(
 // CHECK-NOT: __weavec_rt_shadow
 // CHECK: ret
@@ -68,3 +71,10 @@ long stepped(const std::vector<long> &values) {
     total += *at;
   return total;
 }
+
+// RFC 0050 §3.1: a safe C++ unit lets released pooled slots keep their
+// shadow; one in verify mode tells the runtime not to.
+// CHECK-NOT: __weavec_rt_tests_released
+// VERIFY: define internal void @weavec.released(
+// VERIFY-NEXT: entry:
+// VERIFY-NEXT: call void @__weavec_rt_tests_released()

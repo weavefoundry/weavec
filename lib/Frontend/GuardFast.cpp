@@ -296,30 +296,34 @@ void typeAllocations(ModuleContext &module, llvm::Function &function) {
   }
 }
 
-/// A constructor of the unit, at priority 101, that calls the runtime's
-/// `name` (once per unit).
+/// A constructor of the unit, `weavec.<name>` at priority 101, that calls
+/// the runtime's `entry` (once per unit).
 static void announce(ModuleContext &module, llvm::Module &ir,
-                     llvm::StringRef name) {
+                     llvm::StringRef name, llvm::StringRef entry) {
   const std::string symbol = ("weavec." + name).str();
   if (ir.getFunction(symbol) != nullptr)
     return;
+  auto *type =
+      llvm::FunctionType::get(llvm::Type::getVoidTy(module.context), false);
   auto *constructor = llvm::Function::Create(
-      llvm::FunctionType::get(llvm::Type::getVoidTy(module.context), false),
-      llvm::GlobalValue::InternalLinkage, symbol, ir);
+      type, llvm::GlobalValue::InternalLinkage, symbol, ir);
   llvm::IRBuilder<> builder(
       llvm::BasicBlock::Create(module.context, "entry", constructor));
-  builder.CreateCall(module.runtime(
-      name == "fast" ? "fast_program" : "verify_program",
-      llvm::FunctionType::get(llvm::Type::getVoidTy(module.context), false)));
+  builder.CreateCall(module.runtime(entry, type));
   builder.CreateRetVoid();
   llvm::appendToGlobalCtors(ir, constructor, 101);
 }
 
 void prepareFast(ModuleContext &module, llvm::Module &ir) {
-  // RFC 0050 §3.1: a program with a unit in verify mode marks pooled slots
-  // released, so that its monitors see them.
-  if (module.verify())
-    announce(module, ir, "verify");
+  // RFC 0050 §3.1: a program with a unit in verify mode, whose monitors
+  // read a released block's shadow, or with Safe C, whose reference test
+  // does, marks pooled slots released.
+  if (module.verify() ||
+      (module.options.safe != nullptr && !module.options.safe->cxx &&
+       llvm::any_of(ir, [&](const llvm::Function &function) {
+         return isSafe(module, function);
+       })))
+    announce(module, ir, "released", "tests_released");
   if (!fastUnit(module))
     return;
   // §2: the metadata is for GuardExpand; LLVM's own token pass, which
@@ -328,7 +332,7 @@ void prepareFast(ModuleContext &module, llvm::Module &ir) {
     function.removeFnAttr(llvm::Attribute::SanitizeAllocToken);
   // §9: a program with a fast unit records no heap stacks and makes no
   // container annotations, unless its environment asks.
-  announce(module, ir, "fast");
+  announce(module, ir, "fast", "fast_program");
   if (pools)
     markAllocations(module, ir);
   if (fastCxxUnit(module))
@@ -496,7 +500,10 @@ bool rangeElement(const ModuleContext &module, const llvm::Function &function,
   return fastCxxUnit(module) && llvm::isa<llvm::LoadInst>(instruction) &&
          !module.options.safe->rangeLoops.empty() &&
          fastCodeOf(module, function) == FastCode::Safe &&
-         module.options.safe->rangeLoops.contains(loopPlace(instruction));
+         module.options.safe->rangeLoops.contains(
+             (function.getName().split(".weavec.safe").first + ":" +
+              loopPlace(instruction))
+                 .str());
 }
 
 void guardMadeViews(ModuleContext &module, llvm::Function &function) {
@@ -528,20 +535,22 @@ void guardMadeViews(ModuleContext &module, llvm::Function &function) {
     llvm::Value *data = builder.CreateLoad(
         module.ptr,
         builder.CreateConstGEP1_64(module.i8, view, layout->pointerOffset));
-    llvm::Value *count =
-        layout->countOffset < 0
-            ? static_cast<llvm::Value *>(
-                  llvm::ConstantInt::get(module.i64, layout->constant))
-            : builder.CreateZExtOrTrunc(
-                  builder.CreateLoad(
-                      builder.getIntNTy(
-                          static_cast<unsigned>(layout->countWidth * 8)),
-                      builder.CreateConstGEP1_64(
-                          module.i8, view,
-                          static_cast<std::uint64_t>(layout->countOffset))),
-                  module.i64);
-    llvm::Value *bytes = builder.CreateMul(
-        count, llvm::ConstantInt::get(module.i64, layout->elementSize));
+    llvm::Value *count = llvm::ConstantInt::get(module.i64, layout->constant);
+    if (const auto at = static_cast<std::uint64_t>(layout->countOffset);
+        layout->countOffset >= 0)
+      count = builder.CreateZExtOrTrunc(
+          builder.CreateLoad(
+              builder.getIntNTy(static_cast<unsigned>(layout->countWidth) * 8),
+              builder.CreateConstGEP1_64(module.i8, view, at)),
+          module.i64);
+    // A count whose bytes overflow is longer than any object: all ones.
+    llvm::Value *product = builder.CreateBinaryIntrinsic(
+        llvm::Intrinsic::umul_with_overflow, count,
+        llvm::ConstantInt::get(module.i64, layout->elementSize));
+    llvm::Value *bytes =
+        builder.CreateSelect(builder.CreateExtractValue(product, 1),
+                             llvm::ConstantInt::getAllOnesValue(module.i64),
+                             builder.CreateExtractValue(product, 0));
     const unsigned row = module.row(function, call->getDebugLoc(), "view", 0,
                                     LedgerRow::Outcome::Guarded, "view");
     module.insertRange(after, data, bytes, 0, row);

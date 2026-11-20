@@ -440,8 +440,8 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
     llvm::Value *block = builder.CreateLoad(module.ptr, slot);
     if (typed)
       builder.CreateCall(
-          release, {block, module.site(builder.getCurrentDebugLocation(),
-                                       typedSite(module.options.safe->cxx))});
+          release,
+          {block, module.site(builder.getCurrentDebugLocation(), SiteTyped)});
     else
       builder.CreateCall(release, {block});
     builder.CreateStore(llvm::ConstantPointerNull::get(module.ptr), slot);

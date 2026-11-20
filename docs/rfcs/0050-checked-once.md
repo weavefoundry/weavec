@@ -915,7 +915,8 @@ building it and from what S0 and the gates found. They override the body.
    and that a safe function of a fast unit calls is followed by one range
    guard over the view it made, read from the view's own pointer and count
    (`guardMadeViews`, ledger reason `view`): not a comparison with the
-   pointer's bound. One mechanism covers a pointer and a count, two
+   pointer's bound. A count whose bytes overflow 64 bits guards all of
+   them, and so fails (amendment 11). One mechanism covers a pointer and a count, two
    pointers and two iterators alike. A view one too long therefore stops
    with the guard's report (`heap-buffer-overflow at …: read of 9 bytes`,
    pinned in `test/Guards/view-made.cpp`), not `pointer-out-of-bounds`.
@@ -942,22 +943,29 @@ building it and from what S0 and the gates found. They override the body.
    initializer), and `cloneTrusted` sends the call of a safe function
    made at that place to that callee to its trusted clone. For a pointer
    iterator (a `std::string_view`'s, an array's), the load at the colon is
-   a `trusted` row. A loop variable that is a reference into a pointer
+   a `trusted` row in the function the loop is in, by its symbol
+   (`<function>:<file>:<line>:<column>`), so that each instance of a
+   template is apart (amendment 11). A lambda's code is not a safe
+   function's to `fastCodeOf`, so a loop in a lambda keeps its guards. A loop variable that is a reference into a pointer
    iterator's range (`for (const char &c : view)`) keeps the guards of its
    uses. The range expression is not restricted: the rules follow
    `__range` as the borrow it is.
 6. **Hardening (§2.5)** is read from the unit's preprocessor at its end:
-   libc++ with `_LIBCPP_HARDENING_MODE` naming anything but `none`, or
-   libstdc++ with `_GLIBCXX_ASSERTIONS`. Without it no library function is
+   libc++ with `_LIBCPP_HARDENING_MODE` naming `fast`, `extensive` or
+   `debug` (directly or through macros that name it; a mode given as a
+   number, or as anything else, is taken as `none`), or libstdc++ with
+   `_GLIBCXX_ASSERTIONS`. Without it no library function is
    trusted, RFC 0045's owners included: the hole S0 (c) was to look for
    was there (a unit with `-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_NONE`
    trusted every owner's members), and is closed.
-7. **The allocator (§3), as built.** (a) The shadow is kept only for a
-   slot safe **C++** released (a new site flag, `WeavecRtSiteShadowed`,
-   64). Safe C's reference test (O4) reads a released block's shadow; with
-   (D3) applied to Safe C, `ownership/reference-dangling.c` stopped
-   stopping, a weakening of a safe function's own check that (D3) did not
-   cover. Safe C's pooled slots are marked released as before. (b) A slot
+7. **The allocator (§3), as built.** (a) The shadow is kept only in a
+   program without Safe C. Safe C's reference test (O4) reads a released
+   block's shadow; with (D3) applied to it, `ownership/reference-dangling.c`
+   stopped stopping, a weakening of a safe function's own check that (D3)
+   did not cover. A unit with Safe C functions therefore calls
+   `__weavec_rt_tests_released` from a constructor, and in that program
+   every pooled slot is marked released as before, whichever language
+   released it (a Safe C reference may point to a block safe C++ frees). (b) A slot
    whose next object has another size (an array's) takes that object's
    shadow on the short path: no class-wide shadow for arrays was built.
    (c) The short paths (`poolTake`, `poolGive`) are in the runtime, not
@@ -972,8 +980,11 @@ building it and from what S0 and the gates found. They override the body.
    a byte past its object (RFC 0042 §8), so a 16-byte object takes a
    32-byte slot, and the pools keep up to the most the heap held live.
 8. **Verify (§3.1, §4).** A unit compiled `-fweavec-checks=verify` calls
-   `__weavec_rt_verify_program` from a constructor; the runtime then marks
-   every pooled slot released. `WEAVEC_RT_ABI` is 46. The ledger stays at
+   `__weavec_rt_tests_released` from a constructor too; the runtime then
+   marks every pooled slot released. A slot released before the first such
+   constructor runs (in another image's constructors, or before a verify
+   unit is loaded by `dlopen`) keeps its shadow: verify's monitors are a
+   diagnostic, and are not made complete for those. `WEAVEC_RT_ABI` is 46. The ledger stays at
    version 12; its rows gain the reason `view`, which a later reason does
    not replace.
 9. **Safe C (§5.1), as built.** `libraryAccess` runs for C, and sees
@@ -985,6 +996,21 @@ building it and from what S0 and the gates found. They override the body.
    in safe C++". A string such a call reads is checked when it runs, as
    before.
 10. **Line limit (D6).** The library is 31,850 lines of 31,850: no headroom.
+11. **Review of the implementation.** Four holes were closed before
+    merging, each pinned by a test that failed without its fix: a view
+    whose count times its element's size wrapped to a small number (here
+    to none) was guarded over those bytes and then trusted
+    (`view-made.cpp`, `wrap`); a libc++ hardening mode given as a number
+    (`=2`, which is `none`) was taken as hardened (`ir-views.cpp`); the
+    load of a range-based `for`'s pointer iterator was trusted wherever its
+    place recurred, so an instance of a template over a range of the
+    program's own lost its check when another instance was over an array
+    (`range-instances.cpp`); and a block safe C++ released kept its shadow
+    in a program whose Safe C held references to it (amendment 7 (a);
+    `ir-pools.c`, `ir-views.cpp`, `rt_test` `pool-keeps-shadow`). The
+    initial-exec thread-local copy of amendment 7 (e) needs a few bytes of
+    the process's static TLS when the runtime is loaded by `dlopen`, which
+    glibc reserves for such libraries; it was kept.
 
 ## Measured gates
 

@@ -123,7 +123,7 @@ static int containersSet;
 /* Whether a container was annotated yet. */
 static int containersUsed;
 int weavecRtFastProgram;
-int weavecRtVerifyProgram;
+int weavecRtTestsReleased;
 
 /* The granules of the heap block at `base` that a container marked, as the
  * block's own again: past its elements, a last element's granule that the
@@ -159,9 +159,10 @@ void __weavec_rt_fast_program(void) {
   }
   __weavec_rt_typed_program();
 }
-/* RFC 0050 section 3.1: a unit compiled -fweavec-checks=verify: pooled
- * slots are marked released, so that its monitors see them. */
-void __weavec_rt_verify_program(void) { weavecRtVerifyProgram = 1; }
+/* RFC 0050 section 3.1: a unit compiled -fweavec-checks=verify, or one
+ * with Safe C: pooled slots are marked released, so that its monitors and
+ * Safe C's reference test see them. */
+void __weavec_rt_tests_released(void) { weavecRtTestsReleased = 1; }
 
 __attribute__((constructor)) static void readContainers(void) {
   const char *value = getenv("WEAVEC_RT_CONTAINERS");

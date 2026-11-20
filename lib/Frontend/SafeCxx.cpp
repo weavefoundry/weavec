@@ -55,14 +55,17 @@ static llvm::cl::opt<bool> trustViews("weavec-trust-views",
                                       llvm::cl::init(true), llvm::cl::Hidden);
 
 /// RFC 0045 §4: the symbols of `function` as the IR names them: the
-/// mangled names without the target's label prefix (Darwin's `_`).
+/// mangled names without the target's label prefix (Darwin's `_`), each
+/// between `before` and `after`.
 static void symbolsOf(const clang::FunctionDecl &function,
-                      clang::ASTNameGenerator &names, llvm::StringSet<> &into) {
+                      clang::ASTNameGenerator &names, llvm::StringSet<> &into,
+                      const llvm::Twine &before = "",
+                      const llvm::Twine &after = "") {
   const llvm::StringRef prefix =
       function.getASTContext().getTargetInfo().getUserLabelPrefix();
   auto add = [&](llvm::StringRef name) {
     name.consume_front(prefix);
-    into.insert(name);
+    into.insert((before + name + after).str());
   };
   if (llvm::isa<clang::CXXConstructorDecl, clang::CXXDestructorDecl>(
           function)) {
@@ -857,11 +860,18 @@ public:
     destroyed(type);
   }
 
+  /// The calls of safe `function` (a lambda's loops are the function's).
+  void walk(clang::FunctionDecl &function) {
+    within = &function;
+    TraverseDecl(&function);
+  }
+
 private:
   clang::ASTContext &ast;
   CxxKinds &kinds;
   SafeUnit &unit;
   clang::ASTNameGenerator &names;
+  const clang::FunctionDecl *within = nullptr; ///< The function walked.
 
   /// RFC 0050 §2.3: a checked view made by a constructor that is not
   /// trusted (from a pointer or an iterator, and a count or an end): where
@@ -876,13 +886,10 @@ private:
                         return forbiddenParameter(parameter->getType());
                       }))
       return;
-    const std::optional<SafeUnit::ViewLayout> layout = viewLayout(record);
-    if (!layout)
-      return;
     llvm::StringSet<> symbols;
     symbolsOf(constructor, names, symbols);
     for (const auto &symbol : symbols)
-      unit.viewMakers[symbol.getKey()] = *layout;
+      unit.viewMakers[symbol.getKey()] = *viewLayout(record);
   }
 
   /// Where a view of `record` keeps its pointer and its count, in it or in
@@ -891,8 +898,7 @@ private:
   /// trusted.
   static std::optional<SafeUnit::ViewLayout>
   viewLayout(const clang::CXXRecordDecl *record) {
-    if (record != nullptr)
-      record = record->getDefinition();
+    record = record != nullptr ? record->getDefinition() : nullptr;
     if (record == nullptr || record->isDependentType() ||
         record->isInvalidDecl())
       return std::nullopt;
@@ -968,8 +974,9 @@ private:
             .str();
     const auto *begin = llvm::dyn_cast_or_null<clang::VarDecl>(
         loop.getBeginStmt()->getSingleDecl());
-    if (begin != nullptr && begin->getType()->isPointerType())
-      unit.rangeLoops.insert(place);
+    if (begin != nullptr && begin->getType()->isPointerType() &&
+        within != nullptr && !within->isDependentContext())
+      symbolsOf(*within, names, unit.rangeLoops, "", ":" + place);
     // The begin, the end, the comparison and the step: their calls; the
     // element: the dereference alone, not what the loop's variable makes of
     // it.
@@ -993,12 +1000,8 @@ private:
         (!element ||
          (star != nullptr && star->getOperator() == clang::OO_Star)))
       if (const clang::FunctionDecl *callee = call->getDirectCallee();
-          callee != nullptr && isLibrary(*callee)) {
-        llvm::StringSet<> symbols;
-        symbolsOf(*callee, names, symbols);
-        for (const auto &symbol : symbols)
-          unit.rangeLoops.insert(place + ":" + symbol.getKey().str());
-      }
+          callee != nullptr && isLibrary(*callee))
+        symbolsOf(*callee, names, unit.rangeLoops, place + ":");
     for (const clang::Stmt *child : statement->children())
       rangeCalls(child, colon, place, element);
   }
@@ -1524,7 +1527,7 @@ private:
     if (unit.fast)
       // The visitor takes what it walks as changeable; it changes nothing.
       // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-      trusted.TraverseDecl(const_cast<clang::FunctionDecl *>(&function));
+      trusted.walk(const_cast<clang::FunctionDecl &>(function));
     bool settled = checkCxxFlow(ast, kinds, function, *body, nullptr, report);
     std::vector<const clang::LambdaExpr *> lambdas;
     collectLambdas(body, lambdas);

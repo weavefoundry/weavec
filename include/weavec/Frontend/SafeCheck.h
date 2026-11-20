@@ -234,11 +234,12 @@ struct SafeUnit {
   /// RFC 0050 §2.4: the hidden iterator's calls of the range-based `for`s of
   /// safe functions over an array, a library container or a checked view,
   /// as `<file>:<line>:<column>:<symbol>` (the file's name, the loop's
-  /// colon), and the loops whose iterator is a pointer, as
-  /// `<file>:<line>:<column>`.
+  /// colon), and the loops whose iterator is a pointer, as `<function's
+  /// symbol>:<file>:<line>:<column>` (each instance of a template apart).
   llvm::StringSet<> rangeLoops;
   /// RFC 0050 §2.5: the C++ library's own checks are on (libc++'s
-  /// hardening mode is not `none`, or libstdc++'s assertions are defined):
+  /// hardening mode is `fast`, `extensive` or `debug`, or libstdc++'s
+  /// assertions are defined):
   /// without them no library function is trusted.
   bool hardened = true;
   /// RFC 0042 §5: the guard passes run, which read the fields' annotations.
