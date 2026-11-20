@@ -277,6 +277,11 @@ WEAVEC_RT_API void __weavec_rt_frame_escape(uintptr_t address,
  * container annotations of every unit are ignored. */
 WEAVEC_RT_API void __weavec_rt_fast_program(void);
 extern int weavecRtFastProgram;
+/* RFC 0050 section 3.1: called by each unit compiled with
+ * -fweavec-checks=verify and each with Safe C, which read a released
+ * block's shadow: a pooled slot's shadow says released. */
+WEAVEC_RT_API void __weavec_rt_tests_released(void);
+extern int weavecRtTestsReleased;
 /* Allocates as `allocForm` does, from the pool of `type` when it has one. */
 void *weavecRtAllocTyped(size_t size, unsigned form,
                          struct __weavec_rt_type *type);
@@ -848,7 +853,7 @@ void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
 /* The library's interface version (libweavec_rt.so.<abi>,
  * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
  * encoding or a site record changes. */
-#define WEAVEC_RT_ABI 45
+#define WEAVEC_RT_ABI 46
 
 /*===-- Internal -----------------------------------------------------------===*/
 

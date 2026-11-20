@@ -546,6 +546,15 @@ inline constexpr llvm::StringLiteral TrustedSuffix = ".weavec.t";
 /// Before GuardInsert: LLVM's token pass disabled, the constructor that
 /// tells the runtime, and (C++) the trusted clones.
 void prepareFast(ModuleContext &module, llvm::Module &ir);
+/// RFC 0050 §2.4: `instruction`, a load in a fast C++ unit's safe
+/// function, reads the element of a range-based `for` whose iterator is a
+/// pointer.
+bool rangeElement(const ModuleContext &module, const llvm::Function &function,
+                  const llvm::Instruction &instruction);
+/// RFC 0050 §2.3: in a fast C++ unit's safe function, a checked view made
+/// from a pointer or an iterator is guarded once, as a range, where it is
+/// made.
+void guardMadeViews(ModuleContext &module, llvm::Function &function);
 void cloneTrusted(ModuleContext &module, llvm::Module &ir);
 /// §2, in GuardExpand: the typed allocation sites' calls.
 void typeAllocations(ModuleContext &module, llvm::Function &function);

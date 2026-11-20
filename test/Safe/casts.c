@@ -55,7 +55,8 @@ WEAVEC_SAFE other functions(unary f) {
 
 WEAVEC_SAFE int present(unary f) { return f != NULL; }
 
-WEAVEC_SAFE void names(char *dst[4], const char *const src[4]) {
+WEAVEC_SAFE void names(char **WEAVEC_COUNTED_BY(4) dst,
+                       const char *const *WEAVEC_COUNTED_BY(4) src) {
   memcpy(dst, src, 4 * sizeof *dst); // const-ness of the pointees forges nothing
 }
 

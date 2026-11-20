@@ -131,9 +131,10 @@ struct EnforcementLedger {
   unsigned add(LedgerRow row);
   /// A copy of row `index`'s guard stays, or was removed with `reason`.
   void copy(unsigned index, bool stays, llvm::StringRef reason);
-  /// RFC 0042 §10: row `index`'s guard stays for `reason`.
+  /// RFC 0042 §10: row `index`'s guard stays for `reason` (RFC 0050 §2.3:
+  /// a view's guard where it is made keeps saying so).
   void setReason(unsigned index, llvm::StringRef reason) {
-    if (index < rows.size())
+    if (index < rows.size() && rows[index].reason != "view")
       rows[index].reason = reason.str();
   }
   /// Settles the outcomes of the rows whose guards were inserted, and

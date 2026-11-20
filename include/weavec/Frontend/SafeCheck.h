@@ -218,6 +218,30 @@ struct SafeUnit {
   llvm::StringSet<> cxxSafe;
   llvm::StringSet<> cxxOther;
   llvm::StringSet<> cxxTrusted;
+  /// RFC 0050 §2.3: where a checked library view keeps its pointer and its
+  /// count (an integer member, or `constant` elements when it has none).
+  struct ViewLayout {
+    std::uint64_t pointerOffset = 0;
+    std::int64_t countOffset = -1;
+    std::uint64_t countWidth = 0;
+    std::uint64_t constant = 0;
+    std::uint64_t elementSize = 1;
+  };
+  /// RFC 0050 §2.3: the constructors of checked views that safe code calls
+  /// with a pointer or an iterator, by symbol: each view they make is
+  /// guarded once, as a range, where it is made.
+  llvm::StringMap<ViewLayout> viewMakers;
+  /// RFC 0050 §2.4: the hidden iterator's calls of the range-based `for`s of
+  /// safe functions over an array, a library container or a checked view,
+  /// as `<file>:<line>:<column>:<symbol>` (the file's name, the loop's
+  /// colon), and the loops whose iterator is a pointer, as `<function's
+  /// symbol>:<file>:<line>:<column>` (each instance of a template apart).
+  llvm::StringSet<> rangeLoops;
+  /// RFC 0050 §2.5: the C++ library's own checks are on (libc++'s
+  /// hardening mode is `fast`, `extensive` or `debug`, or libstdc++'s
+  /// assertions are defined):
+  /// without them no library function is trusted.
+  bool hardened = true;
   /// RFC 0042 §5: the guard passes run, which read the fields' annotations.
   bool annotates = false;
   /// RFC 0047 §7: `-fweavec-safe-survey`.

@@ -141,6 +141,18 @@ static inline unsigned entryRegion(uint64_t entry) {
 static inline uint32_t entrySlot(uint64_t entry) {
   return (uint32_t)(entry >> 1) & 0x7FFFFFFF;
 }
+/* RFC 0050 section 3.1: a pooled slot whose shadow still says live for an
+ * object of `size` bytes records it, plus one, in bits 40 to 62 (0: its
+ * shadow says released). */
+enum { EntryShadowShift = 40, EntryShadowLimit = (1 << 23) - 1 };
+static inline uint64_t withShadow(uint64_t entry, size_t size) {
+  return size < EntryShadowLimit
+             ? entry | (uint64_t)(size + 1) << EntryShadowShift
+             : entry;
+}
+static inline size_t entryShadow(uint64_t entry) {
+  return (size_t)(entry >> EntryShadowShift) & EntryShadowLimit;
+}
 
 /* RFC 0045 section 3: a thread's free slots of one pool (pool + 1; 0 for
  * none), direct-mapped by the pool's index. */
@@ -190,7 +202,18 @@ static WeavecRtLock cacheListLock;
 
 /* The calling thread's value of the cache's key: on Darwin read from its
  * TSD array directly, as libpthread's inline accessor does (the call costs
- * as much as the rest of a small allocation's fast path). */
+ * as much as the rest of a small allocation's fast path); elsewhere from a
+ * thread-local copy of it in the static block (RFC 0050 section 3.2), set
+ * where the key is. */
+#if !defined(__APPLE__)
+static __thread void *cacheCopy __attribute__((tls_model("initial-exec")));
+#endif
+static inline int setCacheValue(void *value) {
+#if !defined(__APPLE__)
+  cacheCopy = value;
+#endif
+  return pthread_setspecific(cacheKey, value);
+}
 static inline void *cacheValue(void) {
 #if defined(__APPLE__) && defined(__aarch64__)
   uintptr_t tsd;
@@ -201,7 +224,7 @@ static inline void *cacheValue(void) {
   __asm__("movq %%gs:(,%1,8), %0" : "=r"(value) : "r"((uintptr_t)cacheKey));
   return value;
 #else
-  return pthread_getspecific(cacheKey);
+  return cacheCopy;
 #endif
 }
 
@@ -930,6 +953,9 @@ static inline uint32_t liveWord(size_t size, unsigned form) {
 static void *makeLive(uint64_t taken, size_t size, size_t slotBytes,
                       unsigned form, uint32_t stack) {
   const unsigned region = entryRegion(taken);
+  /* (RFC 0050 section 3.1: a pooled slot whose shadow already says live for
+   * this size keeps it.) */
+  const int shadowed = entryShadow(taken) == size + 1;
   const uint32_t slot = entrySlot(taken);
   const uintptr_t base = regionStart(region) + (uintptr_t)slot * slotBytes;
   storeWord(&slotWords(region)[slot], liveWord(size, form));
@@ -939,7 +965,8 @@ static void *makeLive(uint64_t taken, size_t size, size_t slotBytes,
    * so that a string in the object ends there at the latest. */
   if ((taken & 1) != 0)
     zeroFill(base, size < slotBytes ? size + 1 : size);
-  shadowLive(base, size, slotBytes);
+  if (!shadowed)
+    shadowLive(base, size, slotBytes);
   return (void *)base;
 }
 
@@ -988,7 +1015,8 @@ static __attribute__((noinline)) ThreadCache *makeCache(void) {
     return NULL;
   for (c = 0; c < cachedClasses; ++c)
     cache->alloc[c].limit = cache->release[c].limit = cacheLimit(c);
-  if (pthread_setspecific(cacheKey, cache) != 0) {
+  if (setCacheValue(cache) != 0) {
+    (void)setCacheValue(NULL);
     (void)munmap(cache, sizeof(ThreadCache));
     return NULL;
   }
@@ -1100,7 +1128,7 @@ static void drainCache(ThreadCache *cache, int check) {
  * (a destructor that runs after this one may still allocate). */
 static void dropCache(void *value) {
   ThreadCache *cache = (ThreadCache *)value;
-  (void)pthread_setspecific(cacheKey, CacheGone);
+  (void)setCacheValue(CacheGone);
   if (cache == NULL || cache == CacheGone)
     return;
   drainCache(cache, 0);
@@ -1238,7 +1266,8 @@ static void decommit(uintptr_t base, size_t bytes) {
  * word says released, with the value `CachedDead` (a sweep leaves it be
  * until it is queued), so a second release of it, even one racing this
  * one, is a double free. */
-static int claim(SlotRef ref, uint32_t word, uint32_t stack) {
+static inline __attribute__((always_inline)) int
+claim(SlotRef ref, uint32_t word, uint32_t stack) {
   uint32_t *at = &slotWords(ref.region)[ref.slot];
   if (!__atomic_compare_exchange_n(
           at, &word, ((uint32_t)CachedDead << WeavecRtWordShift) | WeavecRtDead,
@@ -1763,6 +1792,10 @@ captureStack(ThreadCache *self, uintptr_t fp) {
 
 static void *typedAllocate(size_t size, unsigned form,
                            struct __weavec_rt_type *type, uint32_t stack);
+static void *poolTake(size_t size, unsigned form,
+                      struct __weavec_rt_type *type);
+static int poolGive(void *p, unsigned form, size_t bytes,
+                    const struct __weavec_rt_site *site);
 
 static inline __attribute__((always_inline)) void *
 allocForm(size_t size, size_t alignment, unsigned form,
@@ -1798,7 +1831,8 @@ void *__weavec_rt_alloc(size_t size, size_t alignment) {
 
 void *weavecRtAllocTyped(size_t size, unsigned form,
                          struct __weavec_rt_type *type) {
-  return allocForm(size, 0, form, type);
+  void *block = poolTake(size, form, type);
+  return block != NULL ? block : allocForm(size, 0, form, type);
 }
 
 
@@ -1807,7 +1841,7 @@ void weavecRtReleaseForm(void *p, unsigned form, size_t size,
                          const struct __weavec_rt_site *site) {
   ThreadCache *self;
   uint32_t stack = 0;
-  if (p == NULL)
+  if (p == NULL || poolGive(p, form, size, site))
     return;
   self = ownCache();
   if (self != NULL && self->depth != 0 && self->locks != 0) {
@@ -2006,7 +2040,9 @@ static uint32_t findPool(uint64_t key, unsigned c) {
   if (poolHash == NULL) {
     pools = (Pool *)mapInternal(PoolLimit * sizeof(Pool));
     if (pools != NULL)
-      poolHash = (uint32_t *)mapInternal(PoolHashSlots * sizeof(uint32_t));
+      __atomic_store_n(&poolHash,
+                       (uint32_t *)mapInternal(PoolHashSlots * sizeof(uint32_t)),
+                       __ATOMIC_RELEASE);
   }
   if (poolHash == NULL) {
     give(&poolLock);
@@ -2023,7 +2059,7 @@ static uint32_t findPool(uint64_t key, unsigned c) {
         pools[poolCount].cls = c;
         found = poolCount + 1;
         __atomic_store_n(&poolCount, found, __ATOMIC_RELEASE);
-        poolHash[at] = found;
+        __atomic_store_n(&poolHash[at], found, __ATOMIC_RELEASE);
       }
       break;
     }
@@ -2036,19 +2072,42 @@ static uint32_t findPool(uint64_t key, unsigned c) {
   return found;
 }
 
+/* RFC 0050 section 3.2: the pool of (`key`, `c`) if it was made, without
+ * the lock: a pool's entry is written before its index is published. */
+static uint32_t lookPool(uint64_t key, unsigned c) {
+  const uint32_t *hash = __atomic_load_n(&poolHash, __ATOMIC_ACQUIRE);
+  size_t at;
+  if (hash == NULL)
+    return 0;
+  for (at = poolHashOf(key, c) & (PoolHashSlots - 1);;
+       at = (at + 1) & (PoolHashSlots - 1)) {
+    const uint32_t index = __atomic_load_n(&hash[at], __ATOMIC_ACQUIRE);
+    if (index == 0)
+      return 0;
+    if (pools[index - 1].key == key && pools[index - 1].cls == c)
+      return index;
+  }
+}
+
+/* The pool of `type` for class `c`: the type's last, the table's, or a new
+ * one (null when none can be made). A type allocated in many classes (an
+ * array's) finds its pools in the table without the lock. */
 static uint32_t resolvePool(struct __weavec_rt_type *type, unsigned c) {
   const uint64_t cached = __atomic_load_n(&type->cache, __ATOMIC_RELAXED);
   uint32_t pool;
   if ((uint32_t)(cached >> 32) == c + 1)
     return (uint32_t)cached;
-  pool = findPool(type->key, c);
+  pool = lookPool(type->key, c);
+  if (pool == 0)
+    pool = findPool(type->key, c);
   if (pool != 0)
     __atomic_store_n(&type->cache, (uint64_t)(c + 1) << 32 | pool,
                      __ATOMIC_RELAXED);
   return pool;
 }
 
-static inline SlotRef refOfEntry(uint64_t entry) {
+static inline __attribute__((always_inline)) SlotRef
+refOfEntry(uint64_t entry) {
   SlotRef ref;
   ref.region = entryRegion(entry);
   ref.slot = entrySlot(entry);
@@ -2181,6 +2240,15 @@ static void *poolAlloc(uint32_t index, unsigned c, size_t size, unsigned form,
   return makeLive(taken & ~(uint64_t)1, size, slotBytes, form, stack);
 }
 
+/* RFC 0050 section 3.1 (D3): in a fast program a slot that safe code
+ * releases into its pool keeps the shadow of the object it held, so that
+ * its next object of the same size writes none; the slot's word says
+ * released. A program with a verify unit or with Safe C marks it released,
+ * so that the monitors and Safe C's reference test see it. */
+static inline int keepsShadow(void) {
+  return weavecRtFastProgram && !weavecRtTestsReleased;
+}
+
 /* The claimed slot `ref` of class `c`, whose object had `size` bytes, into
  * pool `index`: released (its shadow says so, and a second release is a
  * double free), zeroed, so that a stale pointer to it reads an empty object
@@ -2189,7 +2257,9 @@ static void *poolAlloc(uint32_t index, unsigned c, size_t size, unsigned form,
 static void poolRelease(SlotRef ref, unsigned c, uint32_t index, size_t size) {
   ThreadCache *cache = cacheFor(c);
   const size_t slotBytes = __weavec_rt_heap.table[c].size;
-  const uint64_t slot = slotEntry(ref.region, ref.slot, 1);
+  const int keep = keepsShadow();
+  const uint64_t slot = keep ? withShadow(slotEntry(ref.region, ref.slot, 1), size)
+                             : slotEntry(ref.region, ref.slot, 1);
   if (size <= 128) {
     /* A small object's granules, inline (the slot holds them all). */
     uint64_t *word = (uint64_t *)ref.base;
@@ -2201,7 +2271,8 @@ static void poolRelease(SlotRef ref, unsigned c, uint32_t index, size_t size) {
   } else {
     zeroFill(ref.base, size);
   }
-  shadowDead(ref.base, slotBytes);
+  if (!keep)
+    shadowDead(ref.base, slotBytes);
   weavecRtCount(WeavecRtStatPooled);
   if (cache == NULL) {
     addPooled((intptr_t)slotBytes);
@@ -2229,6 +2300,136 @@ static void poolRelease(SlotRef ref, unsigned c, uint32_t index, size_t size) {
     if (cache->pooledDelta >= (intptr_t)FoldBytes)
       foldPooled(cache);
   }
+}
+
+/* RFC 0050 section 3.2: in a fast program that records no heap stacks, the
+ * common case of a typed allocation is one pop from the thread's cache of
+ * its pool (a slot whose shadow already says live for this size writes
+ * none: D3), and of its release one push; everything else takes the paths
+ * above. The thread's depth is raised around each, as the allocator's own
+ * are, so that a signal handler that allocates meanwhile takes the paths
+ * above. */
+static inline int shortPaths(void) {
+  return weavecRtFastProgram && !weavecRtHeapStacks && slotPools != NULL;
+}
+
+static void *poolTake(size_t size, unsigned form,
+                      struct __weavec_rt_type *type) {
+  const uint64_t cached = __atomic_load_n(&type->cache, __ATOMIC_RELAXED);
+  const unsigned c = classFor(size);
+  ThreadCache *self;
+  PoolCache *entry;
+  uint64_t taken;
+  uint32_t index;
+  size_t slotBytes;
+  SlotRef ref;
+  if (!shortPaths() || c >= cachedClasses)
+    return NULL;
+  index = (uint32_t)(cached >> 32) == c + 1 ? (uint32_t)cached
+                                             : lookPool(type->key, c);
+  if (index == 0)
+    return NULL;
+  self = ownCache();
+  if (self == NULL || self->depth != 0)
+    return NULL;
+  entry = &self->pools[index % PoolCaches];
+  if (entry->pool != index || entry->count == 0)
+    return NULL;
+  ++self->depth;
+  __atomic_signal_fence(__ATOMIC_SEQ_CST);
+  taken = entry->slots[--entry->count];
+  ref = refOfEntry(taken);
+  slotBytes = __weavec_rt_heap.table[c].size;
+  storeWord(&slotWords(ref.region)[ref.slot], liveWord(size, form));
+  if (allocStacks != NULL)
+    *allocStackOf(ref.region, ref.slot) = 0;
+  /* (A slot whose last object had another size, an array's, takes the
+   * shadow of this one.) */
+  if (entryShadow(taken) != size + 1)
+    shadowLive(ref.base, size, slotBytes);
+  self->liveDelta += (intptr_t)slotBytes;
+  self->pooledDelta -= (intptr_t)slotBytes;
+  if (self->liveDelta >= FoldBytes)
+    foldLive(self);
+  if (self->pooledDelta <= -(intptr_t)FoldBytes)
+    foldPooled(self);
+  weavecRtCount(WeavecRtStatAllocations);
+  weavecRtCount(WeavecRtStatTyped);
+  __atomic_signal_fence(__ATOMIC_SEQ_CST);
+  if (--self->depth == 0 && self->deferredCount != 0)
+    releaseDeferred(self);
+  return (void *)ref.base;
+}
+
+/* (The object's granules are zeroed by stores, not by a call to memset,
+ * which the compiler would otherwise make of the loop.) */
+__attribute__((no_builtin("memset"))) static int
+poolGive(void *p, unsigned form, size_t bytes,
+         const struct __weavec_rt_site *site) {
+  const uintptr_t address = (uintptr_t)p;
+  ThreadCache *self;
+  PoolCache *entry;
+  SlotRef ref;
+  uint32_t word;
+  uint32_t index;
+  unsigned c;
+  size_t size;
+  if (site == NULL || (site->flags & WeavecRtSiteTyped) == 0 ||
+      !inArena(address) || !shortPaths())
+    return 0;
+  ref = slotOf(address);
+  word = wordOf(ref);
+  c = regionClass[ref.region];
+  index = *poolOf(ref.region, ref.slot);
+  size = weavecRtLiveSize(word);
+  /* (Anything to report, or to check, goes the long way.) */
+  if (ref.base != address || (word & WeavecRtWordState) != WeavecRtLive ||
+      index == 0 || c >= cachedClasses ||
+      (form != WeavecRtFormAny && weavecRtLiveForm(word) != WeavecRtFormAny &&
+       (weavecRtLiveForm(word) != form || (bytes != SIZE_MAX && bytes != size))))
+    return 0;
+  self = ownCache();
+  if (self == NULL || self->depth != 0)
+    return 0;
+  entry = &self->pools[index % PoolCaches];
+  if (entry->pool != index || entry->count == PoolCacheSlots)
+    return 0;
+  ++self->depth;
+  __atomic_signal_fence(__ATOMIC_SEQ_CST);
+  if (!claim(ref, word, 0))
+    badSlot(p, weavecRtReleaseName(form), site);
+  weavecRtCount(WeavecRtStatReleases);
+  if (size <= 128) {
+    uint64_t *at = (uint64_t *)ref.base;
+    uint64_t *const end = at + ((size + 15) & ~(size_t)15) / 8;
+    for (; at < end; at += 2) {
+      at[0] = 0;
+      at[1] = 0;
+    }
+  } else {
+    zeroFill(ref.base, size);
+  }
+  weavecRtCount(WeavecRtStatPooled);
+  if (keepsShadow()) {
+    entry->slots[entry->count++] =
+        withShadow(slotEntry(ref.region, ref.slot, 1), size);
+  } else {
+    shadowDead(ref.base, __weavec_rt_heap.table[c].size);
+    entry->slots[entry->count++] = slotEntry(ref.region, ref.slot, 1);
+  }
+  {
+    const size_t slotBytes = __weavec_rt_heap.table[c].size;
+    self->liveDelta -= (intptr_t)slotBytes;
+    self->pooledDelta += (intptr_t)slotBytes;
+    if (self->liveDelta <= -(intptr_t)FoldBytes)
+      foldLive(self);
+    if (self->pooledDelta >= (intptr_t)FoldBytes)
+      foldPooled(self);
+  }
+  __atomic_signal_fence(__ATOMIC_SEQ_CST);
+  if (--self->depth == 0 && self->deferredCount != 0)
+    releaseDeferred(self);
+  return 1;
 }
 
 /* An allocation of `type`: from its pool, else a slot as any other that

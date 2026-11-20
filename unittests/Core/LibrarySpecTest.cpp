@@ -435,6 +435,19 @@ TEST(LibrarySpecTest, ClassRowsNameErasedTypes) {
   EXPECT_FALSE(both->classMember("a", "resets", "h"));
 }
 
+// RFC 0050 section 2: the views whose element access the library checks.
+TEST(LibrarySpecTest, ClassRowsNameCheckedViews) {
+  const LibrarySpec &table = LibrarySpec::shipped();
+  EXPECT_TRUE(table.classIs("std::basic_string_view", "checked"));
+  EXPECT_TRUE(table.classIs("std::span", "checked"));
+  EXPECT_FALSE(table.classIs("std::vector", "checked"));
+  EXPECT_FALSE(table.classIs("std::reverse_iterator", "checked"));
+  std::string error;
+  const auto parsed = LibrarySpec::parse("class a::v : checked;\n", error);
+  ASSERT_TRUE(parsed.has_value()) << error;
+  EXPECT_TRUE(parsed->classIs("a::v", "checked"));
+}
+
 // RFC 0047 section 1: members that take or return a pointer with a count.
 TEST(LibrarySpecTest, ClassRowsBoundPointers) {
   const LibrarySpec &table = LibrarySpec::shipped();

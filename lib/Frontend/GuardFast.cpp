@@ -296,7 +296,34 @@ void typeAllocations(ModuleContext &module, llvm::Function &function) {
   }
 }
 
+/// A constructor of the unit, `weavec.<name>` at priority 101, that calls
+/// the runtime's `entry` (once per unit).
+static void announce(ModuleContext &module, llvm::Module &ir,
+                     llvm::StringRef name, llvm::StringRef entry) {
+  const std::string symbol = ("weavec." + name).str();
+  if (ir.getFunction(symbol) != nullptr)
+    return;
+  auto *type =
+      llvm::FunctionType::get(llvm::Type::getVoidTy(module.context), false);
+  auto *constructor = llvm::Function::Create(
+      type, llvm::GlobalValue::InternalLinkage, symbol, ir);
+  llvm::IRBuilder<> builder(
+      llvm::BasicBlock::Create(module.context, "entry", constructor));
+  builder.CreateCall(module.runtime(entry, type));
+  builder.CreateRetVoid();
+  llvm::appendToGlobalCtors(ir, constructor, 101);
+}
+
 void prepareFast(ModuleContext &module, llvm::Module &ir) {
+  // RFC 0050 §3.1: a program with a unit in verify mode, whose monitors
+  // read a released block's shadow, or with Safe C, whose reference test
+  // does, marks pooled slots released.
+  if (module.verify() ||
+      (module.options.safe != nullptr && !module.options.safe->cxx &&
+       llvm::any_of(ir, [&](const llvm::Function &function) {
+         return isSafe(module, function);
+       })))
+    announce(module, ir, "released", "tests_released");
   if (!fastUnit(module))
     return;
   // §2: the metadata is for GuardExpand; LLVM's own token pass, which
@@ -305,18 +332,7 @@ void prepareFast(ModuleContext &module, llvm::Module &ir) {
     function.removeFnAttr(llvm::Attribute::SanitizeAllocToken);
   // §9: a program with a fast unit records no heap stacks and makes no
   // container annotations, unless its environment asks.
-  if (ir.getFunction("weavec.fast") == nullptr) {
-    auto *constructor = llvm::Function::Create(
-        llvm::FunctionType::get(llvm::Type::getVoidTy(module.context), false),
-        llvm::GlobalValue::InternalLinkage, "weavec.fast", ir);
-    llvm::IRBuilder<> builder(
-        llvm::BasicBlock::Create(module.context, "entry", constructor));
-    builder.CreateCall(module.runtime(
-        "fast_program",
-        llvm::FunctionType::get(llvm::Type::getVoidTy(module.context), false)));
-    builder.CreateRetVoid();
-    llvm::appendToGlobalCtors(ir, constructor, 101);
-  }
+  announce(module, ir, "fast", "fast_program");
   if (pools)
     markAllocations(module, ir);
   if (fastCxxUnit(module))
@@ -466,6 +482,81 @@ void checkResults(ModuleContext &module, llvm::Function &function) {
   }
 }
 
+/// RFC 0050 §2.4: the place of a range-based `for` an instruction made at
+/// its colon would have, `<file>:<line>:<column>` (the function's own
+/// instruction, not one inlined), or empty.
+static std::string loopPlace(const llvm::Instruction &instruction) {
+  const llvm::DebugLoc &location = instruction.getDebugLoc();
+  if (!location || location.getInlinedAt() != nullptr)
+    return {};
+  return (llvm::sys::path::filename(location->getFilename()) + ":" +
+          llvm::Twine(location.getLine()) + ":" +
+          llvm::Twine(location.getCol()))
+      .str();
+}
+
+bool rangeElement(const ModuleContext &module, const llvm::Function &function,
+                  const llvm::Instruction &instruction) {
+  return fastCxxUnit(module) && llvm::isa<llvm::LoadInst>(instruction) &&
+         !module.options.safe->rangeLoops.empty() &&
+         fastCodeOf(module, function) == FastCode::Safe &&
+         module.options.safe->rangeLoops.contains(
+             (function.getName().split(".weavec.safe").first + ":" +
+              loopPlace(instruction))
+                 .str());
+}
+
+void guardMadeViews(ModuleContext &module, llvm::Function &function) {
+  if (!fastCxxUnit(module) || fastCodeOf(module, function) != FastCode::Safe)
+    return;
+  const SafeUnit &safe = *module.options.safe;
+  std::vector<std::pair<llvm::CallBase *, const SafeUnit::ViewLayout *>> made;
+  for (llvm::BasicBlock &block : function)
+    for (llvm::Instruction &instruction : block)
+      if (auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction))
+        if (const llvm::Function *callee = call->getCalledFunction();
+            callee != nullptr && call->arg_size() != 0)
+          if (const auto found = safe.viewMakers.find(callee->getName());
+              found != safe.viewMakers.end())
+            made.emplace_back(call, &found->second);
+  for (const auto &[call, layout] : made) {
+    llvm::Instruction *after = nullptr;
+    if (auto *invoke = llvm::dyn_cast<llvm::InvokeInst>(call)) {
+      llvm::BasicBlock *normal = invoke->getNormalDest();
+      if (normal->getSinglePredecessor() == nullptr)
+        normal = llvm::SplitEdge(invoke->getParent(), normal);
+      after = &*normal->getFirstInsertionPt();
+    } else {
+      after = call->getNextNode();
+    }
+    llvm::IRBuilder<> builder(after);
+    builder.SetCurrentDebugLocation(call->getDebugLoc());
+    llvm::Value *view = call->getArgOperand(0);
+    llvm::Value *data = builder.CreateLoad(
+        module.ptr,
+        builder.CreateConstGEP1_64(module.i8, view, layout->pointerOffset));
+    llvm::Value *count = llvm::ConstantInt::get(module.i64, layout->constant);
+    if (const auto at = static_cast<std::uint64_t>(layout->countOffset);
+        layout->countOffset >= 0)
+      count = builder.CreateZExtOrTrunc(
+          builder.CreateLoad(
+              builder.getIntNTy(static_cast<unsigned>(layout->countWidth) * 8),
+              builder.CreateConstGEP1_64(module.i8, view, at)),
+          module.i64);
+    // A count whose bytes overflow is longer than any object: all ones.
+    llvm::Value *product = builder.CreateBinaryIntrinsic(
+        llvm::Intrinsic::umul_with_overflow, count,
+        llvm::ConstantInt::get(module.i64, layout->elementSize));
+    llvm::Value *bytes =
+        builder.CreateSelect(builder.CreateExtractValue(product, 1),
+                             llvm::ConstantInt::getAllOnesValue(module.i64),
+                             builder.CreateExtractValue(product, 0));
+    const unsigned row = module.row(function, call->getDebugLoc(), "view", 0,
+                                    LedgerRow::Outcome::Guarded, "view");
+    module.insertRange(after, data, bytes, 0, row);
+  }
+}
+
 void cloneTrusted(ModuleContext &module, llvm::Module &ir) {
   const SafeUnit &safe = *module.options.safe;
   // The library functions reached from the safe functions' calls of
@@ -558,8 +649,12 @@ void cloneTrusted(ModuleContext &module, llvm::Module &ir) {
         auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
         llvm::Function *callee =
             call != nullptr ? call->getCalledFunction() : nullptr;
+        // RFC 0050 §2.4: a range-based `for`'s iterator calls too.
         if (!clonable(callee) ||
-            (!trusted && !safe.cxxTrusted.contains(callee->getName())))
+            (!trusted && !safe.cxxTrusted.contains(callee->getName()) &&
+             (safe.rangeLoops.empty() ||
+              !safe.rangeLoops.contains(loopPlace(*call) + ":" +
+                                        callee->getName().str()))))
           continue;
         call->setCalledFunction(cloneOf(callee));
       }

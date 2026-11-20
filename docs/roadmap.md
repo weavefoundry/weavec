@@ -4,7 +4,7 @@ Rough ordering of the major pieces of work. This page is the one-screen view;
 the design detail and the reasoning live in the [RFCs](rfcs/README.md) each
 milestone links to. Everything here is subject to change as we learn.
 
-The design today is [RFC 0049](rfcs/0049-errors-that-carry-their-fix.md) for the fixes errors carry and `--weavec-fix`, [RFC 0048](rfcs/0048-safe-code-without-the-shadow.md) for what a fast safe unit checks and believes, [RFC 0047](rfcs/0047-conversion-in-place.md) for converting existing C++, [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
+The design today is [RFC 0050](rfcs/0050-checked-once.md) for what a fast safe unit checks once (views, the typed allocator's paths, Safe C's library calls), [RFC 0049](rfcs/0049-errors-that-carry-their-fix.md) for the fixes errors carry and `--weavec-fix`, [RFC 0048](rfcs/0048-safe-code-without-the-shadow.md) for what a fast safe unit checks and believes, [RFC 0047](rfcs/0047-conversion-in-place.md) for converting existing C++, [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
 sweep and colors of [RFC 0037](rfcs/0037-complete-sweep-and-colors.md), the
 reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
 and the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
@@ -12,7 +12,29 @@ milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
-## Now: RFC 0049 — Errors that carry their fix
+## Now: RFC 0050 — Checked once
+
+Design: [RFC 0050 — Checked once](rfcs/0050-checked-once.md) (Accepted,
+built; its _Implementation amendments_ and _Measured gates_ say how). For
+new code the loop is no longer behind Rust's, and the result is: an
+agent's all-safe `json` port ran at 1.55 times Clang. RFC 0050 checks each
+fact once in a fast unit: the library's `std::string_view` and `std::span`
+are trusted as its owners are (a view made from a pointer is guarded once
+where it is made), a range-based `for` reads its elements unchecked, a
+pooled slot safe C++ released keeps its shadow and the typed allocator
+pops and pushes on a short path, and Safe C rejects a library call on a
+pointer to one object when it compiles. Runtime ABI 46.
+
+- [x] **The RFC**, accepted as drafted on 2026-11-18.
+- [x] **S0 to S5**: measured first (the `json` port at 1.22 with both
+      parts, under (D5)'s 1.25), then the views, the range-based `for`,
+      the allocator's paths, Safe C's calls, the guarantees and the guides.
+- [ ] **The cost gates (D1)**: the `json` port 1.22 (asks 1.15), the
+      conversions 1.43 and 1.52 (ask 1.25 and 1.30), Safe C unchanged, the
+      allocator 1.10 times Darwin's and 1.73 times glibc's (asks 1.0). The
+      RFC is not Implemented until they pass or the owner changes them.
+
+## Before: RFC 0049 — Errors that carry their fix
 
 Design: [RFC 0049 — Errors that carry their fix](rfcs/0049-errors-that-carry-their-fix.md)
 (Accepted, built; its _Implementation amendments_ and _Measured gates_

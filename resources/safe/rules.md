@@ -526,11 +526,24 @@ int four(const int *WEAVEC_COUNTED_BY(4) p) { return sum(p, 4); }
 
 Pass a pointer with bounds (an array, an allocation, a counted parameter), or declare the parameter with the same bound.
 
+Nor does a C library function access, through a pointer to one object, more bytes than the object has ([RFC 0050](/rfcs/0050-checked-once/) §5.1): `memcpy(out, in, n)` needs both declared with their count. A count that stays inside the object (`memset(p, 0, sizeof *p)`) is accepted. What a string function reads is checked when it runs.
+
+```c rejected
+void copy(char *out, const char *in, size_t n) { memcpy(out, in, n); }
+```
+
+```c accepted
+void copy(char *WEAVEC_COUNTED_BY(n) out, const char *WEAVEC_COUNTED_BY(n) in,
+          size_t n) {
+  memcpy(out, in, n);
+}
+```
+
 
 _Fix_ ([`fix`](#fix)): the argument's bound, from its uses, on its declaration; for a stored or returned end of its own bound (`data_ + size_`), `WEAVEC_COUNTED_BY(0)` on where it goes (certain).
 ### In C++
 
-The same for a function's, a constructor's or a member function's parameters with a bound, and for the library's that take a pointer and a count, or two pointers: `std::span(p, n)`, `std::string_view(p, n)`, `std::string(p, n)`, `append(p, n)`, `assign(p, n)`, `std::vector(first, last)`. Their pointer has a bound that covers the count, checked when it runs.
+The same for a function's, a constructor's or a member function's parameters with a bound, and for the library's that take a pointer and a count, or two pointers: `std::span(p, n)`, `std::string_view(p, n)`, `std::string(p, n)`, `append(p, n)`, `assign(p, n)`, `std::vector(first, last)`. Their pointer has a bound that covers the count, checked when it runs; in a fast unit a `std::span` or a `std::string_view` made from a pointer, or from an iterator, is checked once where it is made, since its index is checked by the library alone (RFC 0050 §2.3).
 
 ```cpp rejected
 std::string_view view(const char *p, std::size_t n) { return std::string_view(p, n); }
@@ -542,7 +555,7 @@ std::string_view view(const char *WEAVEC_COUNTED_BY(n) p, std::size_t n) {
 }
 ```
 
-A raw pointer without a bound points to one object (RFC 0048), so a position is not one: a pointer computed by arithmetic from a bounded one is not returned, stored or passed where a plain pointer is declared. Declare an end `WEAVEC_COUNTED_BY(0)`, a cursor `WEAVEC_ENDED_BY(limit)` or with a count, or take `&p[i]`, which is compared with the bound. Nor does a C library function access, through a pointer to one object, more bytes than the object has: `memcpy(out, in, n)` needs `in` declared with its count, `strncmp(a, b, n)` both strings declared `WEAVEC_NULL_TERMINATED` or counted.
+A raw pointer without a bound points to one object (RFC 0048), so a position is not one: a pointer computed by arithmetic from a bounded one is not returned, stored or passed where a plain pointer is declared. Declare an end `WEAVEC_COUNTED_BY(0)`, a cursor `WEAVEC_ENDED_BY(limit)` or with a count, or take `&p[i]`, which is compared with the bound. A C library function's access is checked as in C, above.
 
 ```cpp rejected
 class Buffer {

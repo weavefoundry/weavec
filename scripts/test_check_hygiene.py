@@ -19,7 +19,6 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
-from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location("check_hygiene", HERE / "check-hygiene.py")
@@ -432,14 +431,17 @@ class RuntimeExportTest(TreeTest):
             ("runtime/weavec_rt.exports", None, "missing, while the runtime marks 1 names exported")])
 
 
-class LineLimitTest(TreeTest):
+class LineCountTest(TreeTest):
     def test_count_lines_is_wc_plus_a_last_line_without_newline(self):
         for data, lines in ((b"", 0), (b"\n", 1), (b"a", 1), (b"a\nb", 2), (b"a\nb\n", 2), (b"\n\n", 2)):
             self.assertEqual(hygiene.count_lines(data), lines, data)
 
-    def test_the_real_limits(self):
-        """RFC 0040 section 9 and amendment 10 (the module docstring)."""
-        self.assertEqual((hygiene.LIBRARY_LINE_LIMIT, hygiene.RUNTIME_LINE_LIMIT), (31_490, 11_000))
+    def test_no_limit(self):
+        """RFC 0050 amendment 12: the counts have no limit, and no check."""
+        self.assertFalse(hasattr(hygiene, "LIBRARY_LINE_LIMIT") or hasattr(hygiene, "RUNTIME_LINE_LIMIT"))
+        self.assertNotIn("library-lines", dict(hygiene.CHECKS))
+        self.write("lib/Frontend/Long.cpp", "int x;\n" * 100_000)
+        self.assertEqual(hygiene.run_checks(self.root).violations, [])
 
     def test_runtime_total_leaves_out_its_tests(self):
         """RFC 0032 gate H1: the runtime is counted apart, without runtime/test/."""
@@ -451,12 +453,8 @@ class LineLimitTest(TreeTest):
         result = hygiene.run_checks(self.root)
         self.assertEqual(result.runtime_lines, {"runtime/CMakeLists.txt": 1, "runtime/weavec_alloc.c": 3,
                                                 "runtime/weavec_rt.h": 1})
-        self.assertEqual(result.count("runtime-lines"), 0)
+        self.assertEqual(result.runtime_code, 5)
         self.assertNotIn("runtime/weavec_alloc.c", result.library_lines)
-        with mock.patch.object(hygiene, "RUNTIME_LINE_LIMIT", 4):
-            self.assertEqual(self.found("runtime-lines"), [
-                ("runtime/**", None, "5 lines in 3 files, 1 over the limit of 4"),
-            ])
 
     def test_library_total_counts_every_text_file_under_lib_include_and_tools(self):
         for top in ("lib", "include", "tools"):
@@ -466,65 +464,61 @@ class LineLimitTest(TreeTest):
                            ("lib/Frontend/blob.bin", b"\0\1\2\n" * 10), ("docs/pages/long.md", b"line\n" * 100)):
             (self.root / path).parent.mkdir(parents=True, exist_ok=True)
             (self.root / path).write_bytes(data)
-        with mock.patch.object(hygiene, "LIBRARY_LINE_LIMIT", 8):
-            result = hygiene.run_checks(self.root)
+        result = hygiene.run_checks(self.root)
         self.assertEqual(result.library_lines, {"include/weavec/Empty.h": 1, "lib/CMakeLists.txt": 2,
                                                 "lib/Frontend/Partial.cpp": 3, "tools/weavec-cc/CMakeLists.txt": 2})
+        self.assertEqual(result.library_code, 7)
         self.assertEqual(result.binary, ["lib/Frontend/blob.bin"])
-        self.assertEqual(result.count("library-lines"), 0)
-        with mock.patch.object(hygiene, "LIBRARY_LINE_LIMIT", 7):
-            self.assertEqual(self.found("library-lines"), [
-                ("{lib,include,tools}/**", None, "8 lines in 4 files, 1 over the limit of 7"),
-            ])
+
+    def test_code_lines_leave_out_blank_lines_and_comments(self):
+        for top in ("lib", "include", "tools"):
+            shutil.rmtree(self.root / top)
+        self.write("lib/Frontend/Code.cpp", "// A comment.\n\n#include <x>\nint a; // trailing\n"
+                                            "/* a block\n   comment */\nconst char *s = \"// not one\";\n")
+        self.write("lib/CMakeLists.txt", "# A comment.\n\nadd_library(x)\n")
+        result = hygiene.run_checks(self.root)
+        self.assertEqual(result.library_lines, {"lib/CMakeLists.txt": 3, "lib/Frontend/Code.cpp": 7})
+        self.assertEqual(result.library_code, 4)
 
     def test_library_total_excludes_the_declarative_table(self):
         """The table is data, and its growth is coverage."""
         result = hygiene.run_checks(self.root)
         self.assertNotIn(hygiene.LIBRARY_SPEC, result.library_lines)
         self.assertIn("lib/Core/LibrarySpec.cpp", result.library_lines)
-        table = (self.root / hygiene.LIBRARY_SPEC)
-        table.write_text(table.read_text() + "header wchar.h;\n" * 5_000)
-        with mock.patch.object(hygiene, "LIBRARY_LINE_LIMIT", 100):
-            self.assertEqual(self.found("library-lines"), [])
 
 
 class MainTest(TreeTest):
     def test_output_json_and_exit_code(self):
         self.write("lib/Frontend/Notes.txt", "Corpus notes:\nzlib\n")
         out = self.root / "reports" / "hygiene.json"
-        with mock.patch.object(hygiene, "LIBRARY_LINE_LIMIT", 10):
-            code, output = self.run_main("--json", str(out))
+        code, output = self.run_main("--json", str(out))
         self.assertEqual(code, 1)
         lines = output.splitlines()
         self.assertEqual(lines[0], "lib/Frontend/Notes.txt:2: corpus-word: word 'zlib' at column 1")
-        self.assertRegex(lines[1], r"^\{lib,include,tools\}/\*\*: library-lines: "
-                                   r"\d+ lines in 8 files, \d+ over the limit of 10$")
-        self.assertEqual(lines[2:4], ["", "Summary (RFC 0037, gate H1)"])
+        self.assertEqual(lines[1:3], ["", "Summary (RFC 0037, gate H1)"])
         self.assertRegex(output, r"\n  files: +12 from a directory walk \(not a git work tree\); "
                                  r"skipped 0 binary, 0 unreadable\n")
         self.assertRegex(output, r"\n  LibrarySpec: +5 entries, 3 chk aliases, and their __builtin_ spellings\n")
         self.assertRegex(output, r"\n  entry points: +4 of 4 declared in runtime/weavec_rt\.h\n")
-        self.assertRegex(output, r"\n  library lines: +\d+ / 10 \(8 code files under lib/, include/ and "
+        self.assertRegex(output, r"\n  library lines: +\d+, \d+ of code \(8 files under lib/, include/ and "
                                  r"tools/, lib/Core/LibrarySpec\.txt excluded\)\n")
-        self.assertRegex(output, r"\n  runtime lines: +\d+ / 11,000 \(2 files under runtime/, runtime/test/ "
+        self.assertRegex(output, r"\n  runtime lines: +\d+, \d+ of code \(2 files under runtime/, runtime/test/ "
                                  r"and runtime/weavec_rt\.exports excluded\)\n")
         for check, count in (("library-name-test", 0), ("corpus-word", 1), ("core-include", 0),
-                             ("runtime-include", 0), ("runtime-entry", 0), ("runtime-export", 0),
-                             ("library-lines", 1),
-                             ("runtime-lines", 0)):
+                             ("runtime-include", 0), ("runtime-entry", 0), ("runtime-export", 0)):
             self.assertRegex(output, rf"\n  {check} +{count}  ")
-        self.assertEqual(lines[-1], "H1: FAIL (2 violations)")
+        self.assertEqual(lines[-1], "H1: FAIL (1 violation)")
         document = json.loads(out.read_text())
         self.assertFalse(document["passed"])
-        self.assertEqual(document["version"], 3)
+        self.assertEqual(document["version"], 4)
         self.assertEqual(document["files"]["source"], "walk")
         self.assertEqual(document["checks"]["corpus-word"]["violations"], 1)
         self.assertEqual(document["violations"][0], {
             "check": "corpus-word", "path": "lib/Frontend/Notes.txt", "line": 2,
             "message": "word 'zlib' at column 1"})
-        self.assertIsNone(document["violations"][1]["line"])
         self.assertEqual(document["entryPoints"]["__weavec_rt_guard"], True)
-        self.assertEqual(document["lines"]["library"]["limit"], 10)
+        self.assertNotIn("limit", document["lines"]["library"])
+        self.assertGreater(document["lines"]["library"]["code"], 0)
         self.assertEqual(document["lines"]["library"]["files"], 8)
         self.assertEqual(sorted(document["lines"]["runtime"]["files"]),
                          ["runtime/weavec_guard.c", "runtime/weavec_rt.h"])

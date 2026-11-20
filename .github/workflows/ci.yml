@@ -159,8 +159,8 @@ jobs:
 
       # RFC 0036 gate H1: no library names compared outside the LibrarySpec
       # table, no corpus project names in lib/, the layering of lib/Core and
-      # the runtime, the runtime's entry points against the passes', and the
-      # library and runtime line budgets.
+      # the runtime, and the runtime's entry points and exports against the
+      # passes' and its declarations.
       - name: Repository hygiene
         if: runner.os == 'Linux' && matrix.preset == 'ci-release'
         run: |
