@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check repository hygiene: gate H1 of RFC 0037 (docs/rfcs/0037-complete-sweep-and-colors.md).
 
-Eight checks, the rules of AGENTS.md that a script can hold the tree to:
+Six checks, the rules of AGENTS.md that a script can hold the tree to:
 
   library-name-test  0 `== "NAME"` or `"NAME" ==` comparisons (any whitespace
                      around ==) in the C and C++ sources (.h .hpp .cpp .cc .c
@@ -42,19 +42,14 @@ Eight checks, the rules of AGENTS.md that a script can hold the tree to:
                      WEAVEC_RT_REPLACEABLE, WEAVEC_RT_WEAK or WEAVEC_ASAN_API: a name on one side
                      only is a violation, and so is a missing list when such
                      declarations exist.
-  library-lines      the code under lib/, include/ and tools/ totals at most
-                     31,850 lines (RFC 0050; the headers and the
-                     driver's tool count too). lib/Core/LibrarySpec.txt does
-                     not count: it is a declarative table, and its growth is
-                     coverage, not sprawl. The limit is a ratchet: it is
-                     lowered as code is deleted, and raised only by an RFC
-                     amendment that records the measurement.
-  runtime-lines      the C runtime (runtime/, its tests under runtime/test/
-                     and its export list excluded) totals at most 11,000 lines
-                     (RFC 0045; the list is declarative, as the
-                     library table is).
-                     It is counted apart from the libraries: it is linked
-                     into compiled programs, not into the compiler.
+
+It also counts the lines of the library (lib/, include/ and tools/, without
+lib/Core/LibrarySpec.txt, a declarative table) and of the C runtime
+(runtime/, without its tests under runtime/test/ and its export list), and
+their code lines: lines that are not blank, not only a comment (C and C++)
+and not a '#' comment (other files). The summary prints them. They have no
+limit (RFC 0050 amendment 12): an RFC reports the code lines it adds and
+removes in its gates.
 
 The word rule of corpus-word: an occurrence counts when it is not immediately
 preceded or followed by an ASCII letter or digit, and case matters.
@@ -102,10 +97,6 @@ ROOT = Path(__file__).resolve().parent.parent
 # Gate H1 (RFC 0036, Acceptance gates, Hygiene)
 # ---------------------------------------------------------------------------
 
-# Recorded by RFC 0037 gate H1 and RFC 0032 gate H1 (see the module docstring).
-LIBRARY_LINE_LIMIT = 31_850
-RUNTIME_LINE_LIMIT = 11_000
-
 # library-name-test
 LIBRARY_SPEC = "lib/Core/LibrarySpec.txt"
 LIBRARY_SPEC_PREFIX = "lib/Core/LibrarySpec"
@@ -138,13 +129,10 @@ EXPORT_MACROS = ("WEAVEC_RT_API", "WEAVEC_RT_WEAK", "WEAVEC_ASAN_API", "WEAVEC_R
 EXPORTING_MACROS = ("WEAVEC_NEW", "WEAVEC_DELETE")
 _EXPORTING = re.compile(r"(?m)^(?:" + "|".join(EXPORTING_MACROS) + r")\(\s*([A-Za-z_][A-Za-z0-9_]*)")
 PASS_DIRS = ("lib/Frontend",)
-# library-lines and runtime-lines
+# The line counts
 LIBRARY_DIRS = ("lib", "include", "tools")
-# What a total's violation line shows in place of a path.
-LIBRARY_TOTAL = "{lib,include,tools}/**"
 RUNTIME_DIRS = ("runtime",)
 RUNTIME_TESTS = "runtime/test/"
-RUNTIME_TOTAL = "runtime/**"
 
 CHECKS = (
     ("library-name-test", '== "<name>" against a LibrarySpec name outside lib/Core/LibrarySpec*'),
@@ -153,8 +141,6 @@ CHECKS = (
     ("runtime-include", "a WeaveC header other than weavec_rt.h included by runtime/"),
     ("runtime-entry", "a runtime entry point the passes name that runtime/weavec_rt.h does not declare"),
     ("runtime-export", "runtime/weavec_rt.exports and the runtime's WEAVEC_RT_API declarations differ"),
-    ("library-lines", "lib/, include/ and tools/ over their line limit"),
-    ("runtime-lines", "runtime/ (without runtime/test/) over its line limit"),
 )
 
 # ---------------------------------------------------------------------------
@@ -192,6 +178,8 @@ class Result:
     entry_points: dict[str, bool] = dataclasses.field(default_factory=dict)
     library_lines: dict[str, int] = dataclasses.field(default_factory=dict)
     runtime_lines: dict[str, int] = dataclasses.field(default_factory=dict)
+    library_code: int = 0
+    runtime_code: int = 0
     violations: list[Violation] = dataclasses.field(default_factory=list)
 
     def add(self, check: str, path: str, line: Optional[int], message: str) -> None:
@@ -282,6 +270,15 @@ class SourceFile:
     @property
     def lines(self) -> int:
         return count_lines(self.data)
+
+    @property
+    def code_lines(self) -> int:
+        """Lines that are not blank, not only a comment (C and C++), and not a
+        '#' comment (other files)."""
+        if self.path.endswith(SOURCE_SUFFIXES):
+            return sum(1 for line in self.lexed.code.splitlines() if line.strip())
+        return sum(1 for line in self.text.splitlines()
+                   if line.strip() and not line.lstrip().startswith("#"))
 
 
 class Tree:
@@ -689,38 +686,28 @@ def check_runtime_exports(tree: Tree, result: Result) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Checks 7 and 8: line budgets
+# The line counts (no limit: RFC 0050 amendment 12)
 # ---------------------------------------------------------------------------
 
 
-def _over_limit(total: int, limit: int, files: int) -> str:
-    return f"{total:,} lines in {files:,} files, {total - limit:,} over the limit of {limit:,}"
-
-
-def check_library_lines(tree: Tree, result: Result) -> None:
+def count_library_lines(tree: Tree, result: Result) -> None:
     for file in tree.files(LIBRARY_DIRS):
         if file.path == LIBRARY_SPEC:
             continue
         result.library_lines[file.path] = file.lines
-    total = sum(result.library_lines.values())
-    if total > LIBRARY_LINE_LIMIT:
-        result.add("library-lines", LIBRARY_TOTAL, None,
-                   _over_limit(total, LIBRARY_LINE_LIMIT, len(result.library_lines)))
+        result.library_code += file.code_lines
 
 
-def check_runtime_lines(tree: Tree, result: Result) -> None:
+def count_runtime_lines(tree: Tree, result: Result) -> None:
     for file in tree.files(RUNTIME_DIRS, exclude=(RUNTIME_TESTS,)):
         if file.path == RUNTIME_EXPORTS:
             continue
         result.runtime_lines[file.path] = file.lines
-    total = sum(result.runtime_lines.values())
-    if total > RUNTIME_LINE_LIMIT:
-        result.add("runtime-lines", RUNTIME_TOTAL, None,
-                   _over_limit(total, RUNTIME_LINE_LIMIT, len(result.runtime_lines)))
+        result.runtime_code += file.code_lines
 
 
 CHECK_FUNCTIONS = (check_library_name_tests, check_corpus_words, check_core_includes, check_runtime_includes,
-                   check_runtime_entries, check_runtime_exports, check_library_lines, check_runtime_lines)
+                   check_runtime_entries, check_runtime_exports, count_library_lines, count_runtime_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -753,10 +740,10 @@ def summary_lines(result: Result) -> list[str]:
                      f"aliases, and their {BUILTIN_PREFIX} spellings")
     declared = sum(result.entry_points.values())
     lines.append(f"  entry points:   {declared:,} of {len(result.entry_points):,} declared in {RUNTIME_HEADER}")
-    lines.append(f"  library lines:  {library:,} / {LIBRARY_LINE_LIMIT:,} "
-                 f"({len(result.library_lines):,} code files under lib/, include/ and tools/, "
+    lines.append(f"  library lines:  {library:,}, {result.library_code:,} of code "
+                 f"({len(result.library_lines):,} files under lib/, include/ and tools/, "
                  f"{LIBRARY_SPEC} excluded)")
-    lines.append(f"  runtime lines:  {runtime:,} / {RUNTIME_LINE_LIMIT:,} "
+    lines.append(f"  runtime lines:  {runtime:,}, {result.runtime_code:,} of code "
                  f"({len(result.runtime_lines):,} files under runtime/, {RUNTIME_TESTS} and "
                  f"{RUNTIME_EXPORTS} excluded)")
     width = max(len(check) for check, _ in CHECKS)
@@ -772,7 +759,7 @@ def document(result: Result) -> dict:
     """The results as JSON."""
     return {
         "schema": "weavec-hygiene",
-        "version": 3,
+        "version": 4,
         "root": str(result.root),
         "passed": not result.violations,
         "files": {"source": result.file_source, "count": result.files,
@@ -780,9 +767,9 @@ def document(result: Result) -> dict:
         "librarySpec": {"entries": result.library_entries, "aliases": result.library_aliases},
         "entryPoints": result.entry_points,
         "lines": {
-            "library": {"total": sum(result.library_lines.values()), "limit": LIBRARY_LINE_LIMIT,
+            "library": {"total": sum(result.library_lines.values()), "code": result.library_code,
                         "files": len(result.library_lines)},
-            "runtime": {"total": sum(result.runtime_lines.values()), "limit": RUNTIME_LINE_LIMIT,
+            "runtime": {"total": sum(result.runtime_lines.values()), "code": result.runtime_code,
                         "files": result.runtime_lines},
         },
         "checks": {check: {"description": description, "violations": result.count(check)}

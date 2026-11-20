@@ -1010,7 +1010,22 @@ building it and from what S0 and the gates found. They override the body.
     `ir-pools.c`, `ir-views.cpp`, `rt_test` `pool-keeps-shadow`). The
     initial-exec thread-local copy of amendment 7 (e) needs a few bytes of
     the process's static TLS when the runtime is loaded by `dlopen`, which
-    glibc reserves for such libraries; it was kept.
+        glibc reserves for such libraries; it was kept.
+12. **The line limits are retired (D6).** The library's and the runtime's
+    line limits (gate H1 since RFC 0037) are removed, and with them (D6):
+    `scripts/check-hygiene.py` prints the lines and the code lines (not
+    blank, not only a comment) of each, and no longer fails on them. The
+    limits were set by the RFC that needed the room, and were raised by
+    every one of the last ten; an agent built to each, and met an overrun
+    by shortening comments and folding code, which made nothing simpler
+    (amendment 11's fixes were paid for that way). What keeps the
+    compiler small is its structural rules (local rules decided inside
+    one function, Core free of Clang and LLVM) and the RFCs. An RFC now
+    reports the code lines it adds and removes in its gates, as a fact,
+    not a gate: against `main`, this one grows the library from 31,489
+    lines (26,118 of code) to 31,844 (26,392), and the runtime from 10,619
+    (8,382) to 10,831 (8,553). The hygiene
+    JSON is version 4 (`lines.*.code`, no `limit`).
 
 ## Measured gates
 
@@ -1031,7 +1046,7 @@ source.
 | G6 Nothing believed is wrong | **Pass.** Built fast under `-fweavec-checks=verify`, no `weavec.proven`: RFC 0044's 10 seeded bugs that compile as safe, both `json` ports' 646 vectors (645 pass, as with Clang), the LRU port's tests, tinyxml2's 517 checks. Built `full`, the 10 stop. Built fast, one seeded bug that stopped on main no longer does: `b094`, a pointer into a vector's old buffer after the vector grew, read by a guarded library function (`operator+` on a `const char *`) after the buffer went back to its pool: (D3), as designed. yaml-cpp's tests were not run under verify. |
 | G7 The loop | **Pass.** The `json` port written again by a fresh agent with the frozen compiler: 2 rounds to a clean build, 5 min 17 s to `check.py`'s 645 of 646 (RFC 0049: 2 rounds, 5 min 1 s); one `owner-moved` on a move guarded by a flag, which it rewrote. Its port runs at 1.22 (Rust 0.88). Safe C's five conversions: §5.1 adds no error to any of them. |
 | G8 Nothing elsewhere | **Pass.** 1,210 guarded compiles of `test/cases/` and `test/Guards/` give main's object (`../weavec-rfc47-main`, the same passes and runtime as main): 536 identical, 674 differing only in the immediate that carries the runtime's ABI, 45 then 46. The `dev` tests, the cases, the documentation's examples and the site's tests pass; the Linux container's `ci-release` passes. |
-| H1 Hygiene | **Pass.** Library 31,850 of 31,850 lines (D6); runtime 10,837 of 11,000. |
+| H1 Hygiene | **Pass.** The limits are retired (amendment 12). Library 31,844 lines, 26,392 of code (+355, +274); runtime 10,831, 8,553 of code (+212, +171). |
 
 What the numbers say about the owner's goal: new code an agent writes in
 safe C++ costs a fifth more than Clang's build of it, where it cost half
