@@ -39,6 +39,7 @@ __weavec_rt_free_at
 __weavec_rt_fscanf
 __weavec_rt_fstat
 __weavec_rt_fstatat
+__weavec_rt_gcvt
 __weavec_rt_getdelim
 __weavec_rt_getline
 __weavec_rt_getpeername
@@ -78,6 +79,7 @@ __weavec_rt_realloc
 __weavec_rt_realloc_at
 __weavec_rt_reallocarray_at
 __weavec_rt_reallocf_at
+__weavec_rt_realpath
 __weavec_rt_recvfrom
 __weavec_rt_recvmsg
 __weavec_rt_reference_fail

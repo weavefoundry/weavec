@@ -25,6 +25,7 @@
 
 #include <ctype.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -108,6 +109,54 @@ char *__weavec_rt_strcat(char *d, const char *s, size_t limit,
   checkRange((uintptr_t)d, at + n + 1, &write);
   checkLimit(d, at + n + 1, limit, &write);
   memcpy(d + at, s, (size_t)n + 1);
+  return d;
+}
+
+/* The calls whose caller gives a buffer without its size (realpath's
+ * resolved path, at most PATH_MAX bytes; gcvt's digits): each writes into a
+ * buffer of the runtime's first, and what it wrote is checked and copied.
+ * After a failure nothing is written: the buffer's contents are then
+ * unspecified. */
+static void copyOut(char *d, const char *s, uint64_t n, size_t limit,
+                    const struct __weavec_rt_site *site) {
+  struct __weavec_rt_site write;
+  writeSite(&write, site);
+  checkRange((uintptr_t)d, n, &write);
+  checkLimit(d, n, limit, &write);
+  memcpy(d, s, (size_t)n);
+}
+
+char *__weavec_rt_realpath(const char *path, char *resolved, size_t limit,
+                           const struct __weavec_rt_site *site) {
+  char buffer[PATH_MAX];
+  if (path != NULL)
+    (void)__weavec_rt_strlen(path, ~(uint64_t)0, site);
+  if (resolved == NULL)
+    return realpath(path, NULL);
+  if (realpath(path, buffer) == NULL)
+    return NULL;
+  copyOut(resolved, buffer, strlen(buffer) + 1, limit, site);
+  return resolved;
+}
+
+/* Every C library's gcvt writes at most a sign, its digits (a whole part of
+ * up to 309 digits counts among them, since gcvt writes a value with an
+ * exponent at least the digits' count in exponential form), a point, an
+ * exponent of five characters and the terminator. */
+enum { WeavecRtGcvtDigits = 1000 };
+
+char *__weavec_rt_gcvt(double value, int digits, char *d,
+                       const struct __weavec_rt_site *site) {
+  char buffer[WeavecRtGcvtDigits + 16];
+  if (digits > WeavecRtGcvtDigits) {
+    /* What so many digits may take, checked before the call writes. */
+    struct __weavec_rt_site write;
+    writeSite(&write, site);
+    checkRange((uintptr_t)d, (uint64_t)digits + 16, &write);
+    return gcvt(value, digits, d);
+  }
+  (void)gcvt(value, digits, buffer);
+  copyOut(d, buffer, strlen(buffer) + 1, SIZE_MAX, site);
   return d;
 }
 

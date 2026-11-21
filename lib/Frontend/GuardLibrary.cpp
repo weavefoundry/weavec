@@ -22,7 +22,8 @@
 // function whose address the unit takes is replaced there by a thunk that
 // calls it directly, so that a call through the pointer is guarded too.
 // RFC 0037 §10: a string or formatting call into an array field of a
-// struct is limited to the field. RFC 0038 §2: a search (`strchr`,
+// struct is limited to the field, and in a safe function any call that
+// writes into one. RFC 0038 §2: a search (`strchr`,
 // `strcspn`, `memchr`) is guarded after the call, over what it read up to
 // where its result says it stopped. RFC 0039 §2: a call that can unwind
 // (an `invoke`) is guarded as a call, and a check after it goes on its
@@ -75,9 +76,14 @@ struct LibraryCall {
 
   /// RFC 0037 §10: the size of the array field the call's first written
   /// argument names, for a row whose wrapper takes a limit (a string or
-  /// formatting call); or null.
+  /// formatting call); in a safe function, whose fields' bounds hold (RFC
+  /// 0042), for any row the guards check inline too (`memcpy`, `read`);
+  /// or null.
   [[nodiscard]] llvm::Value *writtenField() const {
-    if (match.entry->wide || !match.entry->wrapper || !wrapperTakesLimit())
+    if (match.entry->wide)
+      return nullptr;
+    if (match.entry->wrapper ? !wrapperTakesLimit()
+                             : !isSafe(module(), function))
       return nullptr;
     const std::vector<core::LibraryParam> &params = match.entry->params;
     for (unsigned index = 0; index < params.size(); ++index) {

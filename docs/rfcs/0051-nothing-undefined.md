@@ -1391,6 +1391,32 @@ building it and from what the gates found. They override the body.
       runtime's alternate signal stack is given back at a thread's end
       only while it is the thread's: one a program replaces with its own
       is kept (256 KiB per such thread).
+18. **After the soundness probes (2026-11-21).** An adversarial round of
+    safe programs that compile without an error found two items this RFC
+    disposes of that the implementation did not hold:
+    - **A fresh block's bytes (§2.3, J.2 items 185, `basic.indet.value`).**
+      The runtime's blocks are zeroes, but LLVM takes the bytes of a block
+      `malloc`, `aligned_alloc` or a builtin `new` returns to be undefined
+      (`allockind("alloc,uninitialized")`, which its inference of the
+      library's attributes gives after GuardInsert) and folded a read of
+      one to whatever a register held. In a unit with a safe function,
+      every such call now says `allockind("alloc,zeroed")` and is not the
+      library's builtin (`defineAllocations`, GuardDefine.cpp), so a read
+      of a fresh block is zero; an allocation nothing reads is still
+      removed with its release (`test/Guards/fresh-blocks.c`, `.cpp`).
+    - **Bytes written into a pointer (§4.2, `pointer-bytes` in C++).** The
+      rule rejected bytes written into a `bool`, not into a pointer: a
+      pointer read as an integer, moved and cast back with `std::bit_cast`
+      (or copied into an object with `memcpy`) pointed anywhere, and a
+      fast unit believed it. In C++ bytes are now not written into an
+      object that is or holds a pointer, by `std::bit_cast`,
+      `__builtin_bit_cast`, or a library call that writes as many bytes as
+      its caller says (`memcpy`, `read`, `fread`); a whole object zeroed or
+      copied from its own type is accepted, and so is what a library writes
+      as its own object, of a constant size (`strtod`'s end, `localtime_r`'s
+      `tm`) or none (a `FILE`). C's rule is unchanged: it rejects the
+      conversion of such an object's address to `void *`
+      (`test/Safe/cxx-pointer-bytes.cpp`).
 
 ## Measured gates
 

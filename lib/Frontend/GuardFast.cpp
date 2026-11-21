@@ -28,6 +28,8 @@
 #include "weavec/Core/LibrarySpec.h"
 
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
@@ -109,15 +111,42 @@ FastCode fastCodeOf(const ModuleContext &module,
   return FastCode::Library;
 }
 
+/// Whether the printed type `name` mentions one of `names` (an identifier
+/// of it, as a whole word).
+static bool mentions(llvm::StringRef name, const llvm::StringSet<> &names) {
+  if (names.empty())
+    return false;
+  const auto identifier = [](char each) {
+    return llvm::isAlnum(each) || each == '_' || each == '$';
+  };
+  while (!name.empty()) {
+    name = name.drop_until(identifier);
+    const llvm::StringRef word = name.take_while(identifier);
+    if (names.contains(word))
+      return true;
+    name = name.drop_front(word.size());
+  }
+  return false;
+}
+
+bool typeIdentified(const ModuleContext &module, llvm::StringRef name) {
+  return !name.empty() &&
+         !mentions(name, module.options.safe->ambiguousTypeNames);
+}
+
 /// §2: the key of the type a `!alloc_token` names: a hash of its name, and
 /// of the unit for a type the name does not identify across units (every
-/// C type, a C++ type in an unnamed namespace or a function); an array
-/// `new`, which may put a cookie before its elements, apart.
+/// C type, a C++ type in an unnamed namespace or a function, or one whose
+/// name mentions a type declared in a function: Clang prints such a type
+/// without its function); an array `new`, which may put a cookie before
+/// its elements, apart. A name that more than one of the unit's types
+/// prints as (`typeIdentified`) is not keyed at all.
 std::uint64_t typeKey(const ModuleContext &module, llvm::StringRef name,
                       bool array) {
   std::uint64_t key = llvm::xxh3_64bits(name);
   if (!module.options.safe->cxx || name.contains('(') ||
-      name.contains("anonymous")) {
+      name.contains("anonymous") ||
+      mentions(name, module.options.safe->localTypeNames)) {
     llvm::SmallString<256> path(module.module.getSourceFileName());
     std::ignore = llvm::sys::fs::make_absolute(path);
     key ^= llvm::xxh3_64bits(path.str()) * 0x9E3779B97F4A7C15ULL;
@@ -214,7 +243,10 @@ static void markAllocations(ModuleContext &module, llvm::Module &ir) {
         token->getNumOperands() != 0
             ? llvm::dyn_cast<llvm::MDString>(token->getOperand(0))
             : nullptr;
-    if (row == nullptr || name == nullptr || name->getString().empty())
+    // A type the name does not tell from another of the unit's stays
+    // untyped: its block never goes back to a pool.
+    if (row == nullptr || name == nullptr ||
+        !typeIdentified(module, name->getString()))
       continue;
     // An array `new`, which may put a cookie before its elements, apart.
     const bool array =

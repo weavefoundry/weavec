@@ -214,7 +214,10 @@ _ZdaPvm (none:null-ok:release, int) -> void wrapper(delete_array_sized_at);
 posix_memalign (w:bytes(8):owner, int, int) -> int;
 # glibc: allocates the result of realpath(path, NULL) in one call.
 canonicalize_file_name (r:str:null-ok) -> ptr:owned;
-realpath (r:str:null-ok, w:null-ok) -> ptr chk(__realpath_chk:0,1,size);
+# What realpath writes (up to PATH_MAX bytes, at most one terminated path)
+# only the call knows: its wrapper writes through a buffer of its own.
+realpath (r:str:null-ok, w:null-ok) -> ptr wrapper(realpath) \
+    chk(__realpath_chk:0,1,size);
 
 strdup (r:str) -> ptr:owned;
 strndup (r:bytes(min(a1,strlen(a0)+1)):null-if-zero(a1), int) -> ptr:owned;
@@ -470,6 +473,9 @@ strtoull (r:str, w:null-ok:bytes(8), int) -> int wrapper(strtoull) \
 strtod (r:str, w:null-ok:bytes(8)) -> int wrapper(strtod);
 strtof (r:str, w:null-ok:bytes(8)) -> int wrapper(strtof);
 strtold (r:str, w:null-ok:bytes(8)) -> int wrapper(strtold);
+# gcvt writes its digits into a buffer its caller gives without a size: its
+# wrapper writes them through one of its own.
+gcvt (other, int, w) -> ptr wrapper(gcvt);
 getenv (r:str:null-ok) -> ptr;
 # RFC 0046 section 1: one generator every caller shares.
 rand () -> int unshared;

@@ -27,7 +27,7 @@ report; `[[assume]]`, `restrict`, asserting attributes, bytes into a
 Clang's warnings are errors; and safe units that disagree on a type, a
 function or a global do not link. [The list](../resources/safe/undefined.md) gives
 each of C23's 221 items and C++'s 80 their disposition and test. Runtime
-ABI 47, ledger 13, audit 9.
+ABI 48, ledger 13, audit 9.
 
 - [x] **The RFC**, accepted as drafted on 2026-11-20.
 - [x] **S0 to S6**: the list, the definitions, the stops and the runtime,
@@ -38,6 +38,17 @@ ABI 47, ledger 13, audit 9.
       server's noisy benchmark 1.08 and 0.95); compiles within 1.02.
 - [ ] **The comparison at the link**: 4 ms, 4.3% of libzmq's link (asks
       2%); reading the objects is all of it.
+- [ ] **The soundness probes** (2026-11-21): about 290 adversarial safe
+      programs found about 80 that compile without an error and corrupt
+      memory, race or reach undefined behavior unstopped, from about 30
+      causes. Five are fixed: a fresh block's bytes, bytes written into a
+      pointer, local types sharing a pool, writes into a field in a safe
+      function, and `realpath`'s and `gcvt`'s buffers (RFC 0051 amendment
+      18, RFC 0045 amendment 19, RFC 0037 amendment 16). Most of the rest
+      are borrows that a call through a closure or a reference ends, and
+      references a function returns into its arguments, which a design
+      change of their own will take on; then threads and the link's
+      records.
 
 ## Before: RFC 0050 — Checked once
 

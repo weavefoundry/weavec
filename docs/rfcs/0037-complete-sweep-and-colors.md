@@ -964,6 +964,20 @@ override the body.
     and an `alloca`'s shadow on a stack the thread does not own (a
     coroutine's) are written up to 1 GiB, as `__weavec_rt_unpoison_stack`
     clears one; on the thread's own stack only what fits is.
+16. **Field limits in safe functions, and buffers without a size (§5,
+    §10; 2026-11-21).** §10 limits a string or formatting call's write into
+    an array field to the field, through the wrapper's limit. In a safe
+    function, whose fields' bounds hold (RFC 0042), every row the guards
+    check inline is limited to the field its first written argument names
+    too: `memcpy` or `read` into an 8-byte field with 12 bytes stops with
+    `intra-object-overflow` (`test/Guards/safe-field-writes.c`). A guarded
+    function keeps §10's scope, since C code copies or zeroes from one
+    field to the end of its struct. `realpath`'s resolved path (at most
+    `PATH_MAX` bytes) and `gcvt`'s digits are written into a buffer the
+    caller gives without a size; their rows guarded its first byte, or had
+    none. Each now has a wrapper that writes into a buffer of the
+    runtime's, checks what was written against the caller's, and copies
+    it (`test/Guards/unsized-buffers.c`; ABI 48).
 
 ## Measured gates
 

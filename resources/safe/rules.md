@@ -276,7 +276,7 @@ int load(FILE *file, struct header *h) {
 
 ### In C++
 
-The bytes of an object that is not trivially copyable are not read or written by `memcpy`, `memset`, `memmove` or `memcmp`, and bytes are not written into an object that holds a `bool`, by a call or by `std::bit_cast`.
+The bytes of an object that is not trivially copyable are not read or written by `memcpy`, `memset`, `memmove` or `memcmp`, and bytes are not written into an object that holds a `bool` or a pointer, by a call or by `std::bit_cast`: a pointer is made only from what it points to. A pointer may be read as an integer.
 
 ```cpp rejected
 struct Item { int id = 0; std::string name; };
@@ -286,6 +286,15 @@ void copy(Item &to, const Item &from) { std::memcpy(&to, &from, sizeof(Item)); }
 ```cpp accepted
 struct Item { int id = 0; std::string name; };
 void copy(Item &to, const Item &from) { to = from; }
+```
+
+```cpp rejected
+struct Ref { const long *p; };
+Ref forge(std::uintptr_t bits) { return std::bit_cast<Ref>(bits); }
+```
+
+```cpp accepted
+std::uintptr_t address(const long *p) { return std::bit_cast<std::uintptr_t>(p); }
 ```
 
 ```cpp rejected

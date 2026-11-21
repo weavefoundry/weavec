@@ -218,6 +218,14 @@ struct SafeUnit {
   llvm::StringSet<> cxxSafe;
   llvm::StringSet<> cxxOther;
   llvm::StringSet<> cxxTrusted;
+  /// RFC 0045 §2 (fast mode): the names of the types the unit declares in
+  /// a function, which an allocation's `!alloc_token` prints without the
+  /// function (two units' `struct Node` of two functions print alike), and
+  /// of those the names that more than one of the unit's types has: an
+  /// allocation whose type's name mentions one of the first is keyed by
+  /// its unit too, and one that mentions one of the second is not typed.
+  llvm::StringSet<> localTypeNames;
+  llvm::StringSet<> ambiguousTypeNames;
   /// RFC 0051 §2: the symbols of every safe function the unit emits (C or
   /// C++, either mode: its lambdas, its instantiations and the implicit
   /// members of its safe classes), whose code GuardDefine defines; and
