@@ -16,9 +16,14 @@ weavec_add_library(
           # RFC 0041: Safe C's rules and its bounds in the passes.
           GuardSafe.cpp
           GuardTyped.cpp
+          # RFC 0051: nothing undefined in safe functions.
+          GuardDefine.cpp
+          Definitions.cpp
           # RFC 0045: type-stable memory in fast safe units.
           GuardFast.cpp
           SafeCheck.cpp
+          # RFC 0051 §4: what a safe function may not assert.
+          SafeUndefined.cpp
           # RFC 0049: the fixes of the rules' errors, and --weavec-fix.
           SafeFix.cpp
           Fixer.cpp
@@ -85,6 +90,28 @@ file(
 // NOLINTNEXTLINE(*-avoid-c-arrays)
 static constexpr char SafeRulesTextData[] = {@_weavec_safe_rules_bytes@ '\\0'};
 static constexpr std::size_t SafeRulesTextSize = sizeof(SafeRulesTextData) - 1;
+"
+  @ONLY)
+# RFC 0051 §10: the list of undefined behavior, for --weavec-explain
+# undefined.
+set(_weavec_undefined "${PROJECT_SOURCE_DIR}/resources/safe/undefined.md")
+set_property(
+  DIRECTORY
+  APPEND
+  PROPERTY CMAKE_CONFIGURE_DEPENDS "${_weavec_undefined}")
+file(READ "${_weavec_undefined}" _weavec_undefined_hex HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "'\\\\x\\1'," _weavec_undefined_bytes
+                     "${_weavec_undefined_hex}")
+file(
+  CONFIGURE
+  OUTPUT
+  "${CMAKE_CURRENT_BINARY_DIR}/SafeUndefinedText.inc"
+  CONTENT
+  "// Generated from resources/safe/undefined.md by lib/Frontend/CMakeLists.txt.
+// NOLINTNEXTLINE(*-avoid-c-arrays)
+static constexpr char SafeUndefinedTextData[] = {@_weavec_undefined_bytes@ '\\0'};
+static constexpr std::size_t SafeUndefinedTextSize =
+    sizeof(SafeUndefinedTextData) - 1;
 "
   @ONLY)
 target_include_directories(weavecFrontend PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")

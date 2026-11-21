@@ -9,6 +9,7 @@
 #include "weavec/Frontend/Driver.h"
 
 #include "weavec/Config/Version.h"
+#include "weavec/Frontend/Definitions.h"
 #include "weavec/Frontend/EnforcementLedger.h"
 #include "weavec/Frontend/GuardPass.h"
 #include "weavec/Frontend/ResourceDir.h"
@@ -167,6 +168,10 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
     return true;
   } else if (name == "weavec-summary") {
     summary = value;
+  } else if (name == "weavec-definitions") {
+    // RFC 0051 §5.2: the link's own; not forwarded to -cc1 jobs.
+    definitions = value;
+    return true;
   } else {
     if (!name.starts_with("weavec"))
       return false;
@@ -218,6 +223,10 @@ llvm::StringRef driverFlagsHelp() {
       printing or failing on their errors: the ledger counts them by rule,
       and --weavec-audit prints the files ready to mark WEAVEC_SAFE_FILE
       and what blocks the rest (RFC 0047).
+  -fweavec-definitions, -fno-weavec-definitions
+      Before a link, compare what its safe units believe of the types,
+      functions and globals they share, and refuse to link units that
+      disagree (default: on; RFC 0051). Off, the link says so.
   -fweavec-rpath=<dir>, -fno-weavec-rpath
       Where a linked image finds the runtime's library (libweavec_rt):
       <dir> ($ORIGIN, @loader_path or an installation path) instead of the
@@ -463,24 +472,46 @@ configureEnforcement(clang::CompilerInstance &compiler,
         clang::LangOptions::TrivialAutoVarInitKind::Zero);
     // A local larger than this is not zero-initialized (unless the command
     // line set its own limit): clearing a buffer of hundreds of KiB on each
-    // iteration of a loop that declares it cost a test suite 14x.
-    if (lang.TrivialAutoVarInitMaxSize == 0)
+    // iteration of a loop that declares it cost a test suite 14x. RFC 0051
+    // §2.3: in a safe unit every local is, whatever its size.
+    if (weavec.safe)
+      lang.TrivialAutoVarInitMaxSize = 0;
+    else if (lang.TrivialAutoVarInitMaxSize == 0)
       lang.TrivialAutoVarInitMaxSize = ZeroInitMaxSize;
+  }
+  // RFC 0051 §2.2: a safe unit's arithmetic is defined in every function it
+  // emits, the library code it instantiates included: signed overflow
+  // wraps, a loop may run forever, a conversion from floating point
+  // saturates, and nothing is assumed of an enumeration's value or a
+  // virtual table's pointer.
+  if (weavec.safe) {
+    lang.setSignedOverflowBehavior(clang::LangOptions::SOB_Defined);
+    codegen.setFiniteLoops(clang::CodeGenOptions::FiniteLoopsKind::Never);
+    codegen.StrictFloatCastOverflow = false;
+    codegen.StrictEnums = false;
+    codegen.StrictVTablePointers = false;
   }
   // Lifetime markers at every optimization level, for the scopes of
   // section 3.3 (Clang emits them at -O0 for this flag only).
   codegen.SanitizeAddressUseAfterScope = true;
-  // A command line that asks for a sanitizer keeps its own handlers.
-  if (lang.Sanitize.empty()) {
+  // WeaveC's own kinds are added whatever the command line asks for, whose
+  // kinds keep their own handlers beside them (RFC 0051 §6: a fast unit
+  // compiled with a UBSan check keeps its typed allocations).
+  if (!lang.Sanitize.has(clang::SanitizerKind::ArrayBounds)) {
     lang.Sanitize.set(clang::SanitizerKind::ArrayBounds, true);
     if (weavec.checks == DriverOptions::Checks::Report)
       codegen.SanitizeRecover.set(clang::SanitizerKind::ArrayBounds, true);
-    // RFC 0045 §2: the allocated type of each allocation call
-    // (`!alloc_token`), which GuardInsert keeps from LLVM's own pass and
-    // GuardExpand makes the allocation's pool.
-    if (weavec.fastSafe())
-      lang.Sanitize.set(clang::SanitizerKind::AllocToken, true);
   }
+  // RFC 0045 §2: the allocated type of each allocation call
+  // (`!alloc_token`), which GuardInsert keeps from LLVM's own pass and
+  // GuardExpand makes the allocation's pool.
+  if (weavec.fastSafe())
+    lang.Sanitize.set(clang::SanitizerKind::AllocToken, true);
+  // RFC 0051 §3.1: the end of a C++ function that must return a value
+  // stops with `missing-return` in a safe unit (the runtime's handler);
+  // C's is GuardDefine's.
+  if (weavec.safe && lang.CPlusPlus)
+    lang.Sanitize.set(clang::SanitizerKind::Return, true);
   if (codegen.getDebugInfo() == llvm::codegenoptions::NoDebugInfo) {
     codegen.setDebugInfo(llvm::codegenoptions::LocTrackingOnly);
     codegen.DebugColumnInfo = true;
@@ -523,6 +554,7 @@ static bool emitEnforcementLedger(const clang::CompilerInstance &compiler,
   unit.target = compiler.getTargetOpts().Triple;
   unit.checks = checksName(weavec.checks).str();
   unit.zeroInit = weavec.zeroInitializes();
+  unit.defined = weavec.safe;
   if (weavec.safe)
     unit.safe = weavec.safeFull ? "full" : "fast";
   unit.partial = partial;
@@ -567,6 +599,22 @@ static bool applyAsanCompat(clang::CompilerInstance &compiler,
   return true;
 }
 
+/// RFC 0051 §4.4: a path that returns no value, a `[[noreturn]]` function
+/// that returns, a format that does not match its arguments or is not a
+/// literal, an object changed twice or read and changed with no order
+/// between (amendment); in C, a call through a declaration without a
+/// prototype.
+static void promoteSafeWarnings(clang::DiagnosticsEngine &diagnostics, bool c) {
+  llvm::SmallVector<llvm::StringRef, 6> groups{
+      "return-type", "invalid-noreturn", "format", "format-security",
+      "unsequenced"};
+  if (c)
+    groups.push_back("deprecated-non-prototype");
+  for (const llvm::StringRef group : groups)
+    (void)diagnostics.setSeverityForGroup(clang::diag::Flavor::WarningOrError,
+                                          group, clang::diag::Severity::Error);
+}
+
 static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   DriverOptions weavec;
   std::vector<const char *> cc1Args;
@@ -608,6 +656,11 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   buffer->FlushDiagnostics(compiler->getDiagnostics());
   if (!success)
     return 1;
+  // RFC 0051 §4.4 (D5): four of Clang's warnings are errors in a safe unit,
+  // under Clang's own names and words.
+  if (weavec.enabled && weavec.safe)
+    promoteSafeWarnings(compiler->getDiagnostics(),
+                        !compiler->getLangOpts().CPlusPlus);
   // RFC 0048 §1: a cc1 line that did not choose a safe unit's mode.
   weavec.defaultSafeChecks(compiler->getCodeGenOpts().OptimizationLevel > 0);
 
@@ -655,6 +708,7 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   safe->fast = safe->annotates && weavec.fastSafe();
   safe->cxx = lang.CPlusPlus;
   safe->survey = weavec.survey;
+  safe->defined = weavec.safe;
   // RFC 0049 §5: the declarations other units want facts about.
   if (!weavec.fixWants.empty())
     if (auto wants = llvm::MemoryBuffer::getFile(weavec.fixWants))
@@ -688,6 +742,7 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
            .starts = definition.starts,
            .locks = definition.locks,
            .sends = definition.sends,
+           .handlers = definition.handlers,
            .surveyed = safe->survey && definition.tier == "guarded"});
     target.errors = std::move(safe->errors);
     target.evidence = std::move(safe->evidence);
@@ -843,6 +898,49 @@ static std::string runtimeObstacle(llvm::ArrayRef<const char *> args) {
   const llvm::Triple target(llvm::Triple::normalize(triple));
   if (!target.isArch64Bit() || !(target.isOSDarwin() || target.isOSLinux()))
     return "the runtime supports 64-bit Darwin and Linux targets";
+  return {};
+}
+
+/// RFC 0051 §4.5: the first flag of a compile with `-fweavec-safe` that
+/// lets the optimizer assume what a safe unit does not check, where no
+/// later flag takes it back; empty for none.
+static std::string assumingFlag(llvm::ArrayRef<const char *> args,
+                                const DriverOptions &weavec) {
+  if (!weavec.zeroInit.value_or(true))
+    return "-fno-weavec-zero-init";
+  struct Assumes {
+    llvm::StringLiteral flag;
+    /// The flags after which it no longer holds.
+    std::array<llvm::StringLiteral, 3> undone;
+  };
+  static constexpr std::array<Assumes, 9> Flags{{
+      {.flag = "-ffast-math", .undone = {"-fno-fast-math", "", ""}},
+      {.flag = "-Ofast", .undone = {"", "", ""}},
+      {.flag = "-ffinite-math-only",
+       .undone = {"-fno-finite-math-only", "-fno-fast-math", ""}},
+      {.flag = "-fstrict-enums", .undone = {"-fno-strict-enums", "", ""}},
+      {.flag = "-fstrict-vtable-pointers",
+       .undone = {"-fno-strict-vtable-pointers", "", ""}},
+      {.flag = "-ffinite-loops", .undone = {"-fno-finite-loops", "", ""}},
+      {.flag = "-fstrict-overflow",
+       .undone = {"-fno-strict-overflow", "-fwrapv", ""}},
+      {.flag = "-fno-wrapv", .undone = {"-fwrapv", "-fno-strict-overflow", ""}},
+      {.flag = "-fstrict-float-cast-overflow",
+       .undone = {"-fno-strict-float-cast-overflow", "", ""}},
+  }};
+  for (const Assumes &assumes : Flags) {
+    bool on = false;
+    for (const char *arg : args.drop_front()) {
+      const llvm::StringRef text(arg);
+      if (text == assumes.flag)
+        on = true;
+      else if (llvm::is_contained(assumes.undone, text) ||
+               (assumes.flag == "-Ofast" && text.starts_with("-O")))
+        on = false;
+    }
+    if (on)
+      return assumes.flag.str();
+  }
   return {};
 }
 
@@ -1123,103 +1221,43 @@ static bool addRuntimeLibraries(clang::driver::Compilation &compilation,
   return true;
 }
 
-/// Calls `visit(file)` for the object at `path`, or for each object member of
-/// the archive there, until one answers true. A linked image (a shared
-/// library, an executable) is not visited: its definitions are its own.
-template <typename Visit>
-static bool anyRelocatableObject(const std::string &path, const Visit &visit) {
-  if (!llvm::sys::fs::is_regular_file(path))
-    return false;
-  llvm::Expected<llvm::object::OwningBinary<llvm::object::Binary>> binary =
-      llvm::object::createBinary(path);
-  if (!binary) {
-    llvm::consumeError(binary.takeError());
-    return false;
+/// The checks a link's inputs get before the linker runs, from one read of
+/// each (RFC 0051 §5.2): a program that defines the allocator keeps it (the
+/// loader binds `malloc` to the program's definition before the runtime's),
+/// which is said once, naming the first input, an object or an archive,
+/// that defines `malloc` strongly; and the records of the link's safe units
+/// are compared. False when two disagree, and the link does not run.
+static bool checkLinkInputs(const clang::driver::Command &link,
+                            const DriverOptions &weavec,
+                            const llvm::Triple &target) {
+  if (!weavec.definitions)
+    llvm::errs() << "weavec-cc: note: -fno-weavec-definitions: the safe units "
+                    "of this link were not compared (RFC 0051)\n";
+  std::vector<std::string> inputs;
+  for (const clang::driver::InputInfo &input : link.getInputInfos())
+    if (input.isFilename())
+      inputs.emplace_back(input.getFilename());
+  const LinkRead read =
+      readLink(inputs, weavec.definitions,
+               target.isOSDarwin() ? "_malloc" : "malloc", llvm::errs());
+  if (!read.allocator.empty())
+    llvm::errs() << "weavec-cc: note: '" << read.allocator
+                 << "' defines the allocator, which serves the program "
+                    "instead of the WeaveC runtime's: the heap is "
+                    "untracked, guards pass on it and releases are not "
+                    "validated\n";
+  const DefinitionsCompared &found = read.definitions;
+  if (found.safe != 0 && weavec.summary.value_or(false) &&
+      found.mismatches == 0) {
+    const std::string output = link.getOutputFilenames().empty()
+                                   ? std::string("a.out")
+                                   : link.getOutputFilenames().front();
+    llvm::errs() << "weavec: " << output << ": " << found.objects
+                 << " objects, " << found.safe << " safe; " << found.types
+                 << " types, " << found.functions << " functions and "
+                 << found.globals << " globals agree\n";
   }
-  if (const auto *file =
-          llvm::dyn_cast<llvm::object::SymbolicFile>(binary->getBinary())) {
-    const auto *object = llvm::dyn_cast<llvm::object::ObjectFile>(file);
-    if (object != nullptr && !object->isRelocatableObject())
-      return false;
-    return visit(*file);
-  }
-  const auto *archive =
-      llvm::dyn_cast<llvm::object::Archive>(binary->getBinary());
-  if (archive == nullptr)
-    return false;
-  bool found = false;
-  llvm::Error error = llvm::Error::success();
-  for (const llvm::object::Archive::Child &child : archive->children(error)) {
-    llvm::Expected<std::unique_ptr<llvm::object::Binary>> member =
-        child.getAsBinary();
-    if (!member) {
-      llvm::consumeError(member.takeError());
-      continue;
-    }
-    if (const auto *file =
-            llvm::dyn_cast<llvm::object::SymbolicFile>(member->get());
-        file != nullptr && visit(*file)) {
-      found = true;
-      break;
-    }
-  }
-  llvm::consumeError(std::move(error));
-  return found;
-}
-
-/// Calls `visit(name, weak)` for each global definition of `file` until one
-/// answers true.
-template <typename Visit>
-static bool anyGlobalDefinition(const llvm::object::SymbolicFile &file,
-                                const Visit &visit) {
-  for (const llvm::object::BasicSymbolRef &symbol : file.symbols()) {
-    llvm::Expected<std::uint32_t> flags = symbol.getFlags();
-    if (!flags) {
-      llvm::consumeError(flags.takeError());
-      continue;
-    }
-    if ((*flags & llvm::object::BasicSymbolRef::SF_Undefined) != 0 ||
-        (*flags & llvm::object::BasicSymbolRef::SF_Global) == 0)
-      continue;
-    std::string name;
-    llvm::raw_string_ostream os(name);
-    if (llvm::Error error = symbol.printName(os)) {
-      llvm::consumeError(std::move(error));
-      continue;
-    }
-    if (visit(name, (*flags & llvm::object::BasicSymbolRef::SF_Weak) != 0))
-      return true;
-  }
-  return false;
-}
-
-/// A program that defines the allocator keeps it: the loader binds
-/// `malloc` to the program's definition before the runtime's. Says so once,
-/// naming the first input of the link, an object or a member of an archive,
-/// that defines `malloc` strongly.
-static void noteProgramAllocator(const clang::driver::Command &link,
-                                 const llvm::Triple &target) {
-  const llvm::StringRef malloc = target.isOSDarwin() ? "_malloc" : "malloc";
-  for (const clang::driver::InputInfo &input : link.getInputInfos()) {
-    if (!input.isFilename())
-      continue;
-    const std::string path = input.getFilename();
-    const bool defines =
-        anyRelocatableObject(path, [&](const llvm::object::SymbolicFile &file) {
-          return anyGlobalDefinition(file,
-                                     [&](const std::string &name, bool weak) {
-                                       return !weak && name == malloc;
-                                     });
-        });
-    if (defines) {
-      llvm::errs() << "weavec-cc: note: '" << path
-                   << "' defines the allocator, which serves the program "
-                      "instead of the WeaveC runtime's: the heap is "
-                      "untracked, guards pass on it and releases are not "
-                      "validated\n";
-      return;
-    }
-  }
+  return found.mismatches == 0;
 }
 
 int runCc1(llvm::ArrayRef<const char *> argv, const char *argv0) {
@@ -1336,6 +1374,15 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
         (text == "-" && llvm::StringRef(clangArgs.back()) != "-o"))
       hasSource = true;
     clangArgs.push_back(arg);
+  }
+  if (weavec.enabled && weavec.safe && hasSource) {
+    if (const std::string flag = assumingFlag(clangArgs, weavec);
+        !flag.empty()) {
+      llvm::errs() << "weavec-cc: error: '" << flag
+                   << "' lets the optimizer assume what a safe unit does not "
+                      "check (RFC 0051)\n";
+      return 1;
+    }
   }
   // Builds the runtime cannot serve are compiled without guards; the link
   // says so.
@@ -1473,10 +1520,15 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
                          llvm::StringRef(job.getArguments().front()) == "-cc1";
     if (status != 0 && !compile)
       continue;
-    // The objects exist now: a program-defined allocator is visible.
+    // The objects exist now: their safe units' definitions can be compared,
+    // and a program-defined allocator is visible.
     if (job.getSource().getKind() == clang::driver::Action::LinkJobClass &&
-        weavec.enforces())
-      noteProgramAllocator(job, compilation->getDefaultToolChain().getTriple());
+        weavec.enforces() &&
+        !checkLinkInputs(job, weavec,
+                         compilation->getDefaultToolChain().getTriple())) {
+      status = 1;
+      continue;
+    }
     const clang::driver::Command *failing = nullptr;
     const int rc = compilation->ExecuteCommand(job, failing);
     if (rc != 0) {

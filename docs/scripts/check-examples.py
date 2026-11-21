@@ -3,7 +3,7 @@
 
 Every example in docs/examples must compile. `weavec-cc` must compile
 lookup.c, record the guarded load of `table[i]` in the enforcement ledger
-(`weavec-ledger` version 12, RFC 0035 section 9, RFC 0039 section 8, RFC 0042 section 10, RFC 0043 section 11, RFC 0046 section 12), link it, run it, and stop
+(`weavec-ledger` version 13, RFC 0035 section 9, RFC 0039 section 8, RFC 0042 section 10, RFC 0043 section 11, RFC 0046 section 12), link it, run it, and stop
 a negative index with an `index-out-of-bounds` report; and it must build
 vec.c and stop a read past its heap block with a `heap-buffer-overflow`
 report, its stack and its summary line (RFC 0035 section 5.3, RFC 0040
@@ -65,7 +65,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert enforcement_summary(compiled.stderr, "lookup.c"), "no summary line:\n" + compiled.stderr
 
     ledger = json.loads((ledgers / "lookup.o.ledger.json").read_text())
-    assert ledger["schema"] == "weavec-ledger" and ledger["version"] == 12, ledger
+    assert ledger["schema"] == "weavec-ledger" and ledger["version"] == 13, ledger
     rows = [row for unit in ledger["units"] for row in unit["rows"]
             if row["function"] == "lookup" and row["line"] == 8 and row["operation"] == "load"]
     assert rows, "no ledger row for the load of table[i]"
@@ -96,9 +96,9 @@ with tempfile.TemporaryDirectory() as temp:
     # RFC 0043 section 12: the rules' examples.
     rules = examples.parent.parent / "resources" / "safe" / "rules.md"
     prelude = "".join(f"#include <{h}>\n" for h in
-                      ("weavec.h", "stddef.h", "stdio.h", "stdlib.h", "string.h"))
+                      ("weavec.h", "signal.h", "stdbool.h", "stddef.h", "stdio.h", "stdlib.h", "string.h"))
     cxx_prelude = "".join(f"#include <{h}>\n" for h in (
-        "weavec.h", "algorithm", "atomic", "condition_variable", "cstdarg", "cstdint", "deque", "cstdio", "cstdlib", "cstring",
+        "weavec.h", "algorithm", "array", "atomic", "bit", "condition_variable", "csignal", "signal.h", "cstdarg", "cstdint", "deque", "cstdio", "cstdlib", "cstring",
         "functional", "future", "initializer_list", "map", "memory", "mutex", "optional", "shared_mutex", "span",
         "string", "string_view", "thread", "unordered_map", "utility", "variant", "vector"))
     weavec_cxx = Path(weavec_cc).with_name("weavec-c++")

@@ -97,6 +97,17 @@ long count(Registry &registry) {
 }
 ```
 
+### What safe code can rely on
+
+A safe unit has no behavior the language leaves undefined ([RFC 0051](/rfcs/0051-nothing-undefined/); [the list](/reference/undefined/) item by item). What no rule rejects has one result or stops with a report, in both builds:
+
+- signed arithmetic wraps, a shift's count is taken modulo the width, and a conversion from floating point saturates; dividing by zero, or the least value by -1, stops (`division-by-zero`, `division-overflow`);
+- `std::unreachable()` reached stops (`unreachable`), and so does the end of a function that must return a value (`missing-return`): a `switch` over an `enum class` given another value no longer jumps through a table unchecked;
+- every local starts as zeroes, a loop may run forever, and a full stack stops (`stack-exhaustion`);
+- nothing the code asserts is believed: `[[assume]]`, `__builtin_assume`, `[[gnu::pure]]` and their kin are errors ([`assumed`](/reference/rules/#assumed)), whose certain fix `--weavec-fix` applies, and `-ffast-math` and the other flags that assume are refused;
+- bytes do not become a `bool` ([`pointer-bytes`](/reference/rules/#pointer-bytes)), a handler the system runs between any two instructions is registered by code that is not safe ([`signal-handler`](/reference/rules/#signal-handler)), and `-Wreturn-type`, `-Winvalid-noreturn`, `-Wformat`, `-Wformat-security` and `-Wunsequenced` are errors;
+- the units of a program agree: two files that each define a `struct Entry` of their own, or a header compiled with two values of a macro, do not link ([`definition-mismatch`](/reference/rules/#definition-mismatch)). Put a type one file uses in an unnamed namespace.
+
 ## Building blocks
 
 Each of these compiles under `-fweavec-safe` and is checked with the documentation.
@@ -407,6 +418,32 @@ std::size_t count_lines(const std::string &path) {
 }
 ```
 
+### A signal handler
+
+A handler runs between any two instructions of the program, so safe code does not register one. A small guarded function does, and the handler only sets an atomic that safe code reads:
+
+```cpp accepted
+std::atomic<bool> stopping{false};
+
+void onStop(int) { stopping.store(true); }
+
+WEAVEC_GUARDED void installStop() {
+  struct sigaction action {};
+  action.sa_handler = onStop;
+  sigaction(SIGINT, &action, nullptr);
+  sigaction(SIGTERM, &action, nullptr);
+}
+
+int serve() {
+  installStop();
+  std::signal(SIGPIPE, SIG_IGN);
+  int handled = 0;
+  while (!stopping.load() && handled < 3)
+    ++handled;
+  return handled;
+}
+```
+
 ## Threads
 
 Safe C++ has no data races, and the rules alone say so: nothing at run time checks them, in either build ([RFC 0046](/rfcs/0046-thread-safety/)). Three facts about a type decide what may cross into a thread. A **sendable** type can be handed to another thread: it owns what it holds, and its pointers point to what is shareable. A **shareable** type can be used by two threads at once: an atomic, a condition variable, a mutex, or a class whose members are each shareable, `const`, or guarded by the class's one lock. A **frozen** type is never written through `const`. Then:
@@ -670,30 +707,34 @@ What the rules reject that is correct: a mutex beside the data it guards in loca
 
 ## Coming from Rust
 
-| Rust                                      | Safe C++                                                                                                                                                                                                 |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Box<T>`, `Vec<T>`, `String`, `Option<T>` | `std::unique_ptr<T>`, `std::vector<T>`, `std::string`, `std::optional<T>`                                                                                                                                |
-| a move, and "use of moved value"          | `std::move`, and `owner-moved`; `std::exchange(x, {})` is `mem::take`                                                                                                                                    |
-| `&T`, `&mut T` in a local or a parameter  | `const T &`, `T &`, pointers, iterators: borrows, ended by a non-`const` use of what they point into                                                                                                     |
-| "cannot borrow as mutable because…"       | `stale-borrow` at the later use; two `int &` into one vector are fine, since changing an `int` ends nothing                                                                                              |
-| `&str`, `&[T]`, a struct with a lifetime  | `std::string_view`, `std::span<T>` or a pointer with a bound (`WEAVEC_COUNTED_BY`), a class with one as a member: views; there are no lifetime parameters, and a view's borrows are worked out per local |
-| returning or storing a borrow of a local  | `escape`                                                                                                                                                                                                 |
-| `&mut self` twice (`self.f(&mut self.x)`) | `call-alias`                                                                                                                                                                                             |
-| a back pointer: `Weak<T>`, an index       | a raw pointer member (read only, checked at run time), or an index                                                                                                                                       |
-| `Rc<T>`                                   | `std::shared_ptr<const T>`                                                                                                                                                                               |
-| `Rc<RefCell<T>>`                          | `std::shared_ptr<T>` to a `WEAVEC_ALIASED` class: conflicting borrows are found at run time by the guards, not by a count; no enum (`std::variant`) inside                                               |
-| a slice index or `unwrap()` that panics   | a hardened library check (`library-assertion`) or a `null-dereference` report                                                                                                                            |
-| `unsafe`                                  | `WEAVEC_GUARDED` (still guarded at run time), `WEAVEC_UNSAFE` (not)                                                                                                                                      |
-| `Send`                                    | a sendable type; `thread-send`                                                                                                                                                                           |
-| `Sync`                                    | a shareable type, or a `const` object of a frozen type; `thread-share`                                                                                                                                   |
-| `thread::scope` and a borrowed local      | a `std::jthread` local and a lent local; `thread-lent`                                                                                                                                                   |
-| `thread::spawn` and `'static`             | a thread object that borrows nothing, which may be detached                                                                                                                                              |
-| `Mutex<T>` and its guard                  | a class with a `std::mutex` member, and `std::lock_guard`; `lock-held`                                                                                                                                   |
-| `RwLock<T>`                               | `std::shared_mutex` and `std::shared_lock`                                                                                                                                                               |
-| `Arc<T>`, `Arc<Mutex<T>>`                 | `std::shared_ptr<const T>`, a `std::shared_ptr` to a locked class                                                                                                                                        |
-| `static`, `thread_local!`                 | a shareable or `const` global, `thread_local`                                                                                                                                                            |
-| `Box<dyn FnOnce() + Send>`                | a `std::function<void()> WEAVEC_SENDS` parameter                                                                                                                                                         |
-| `chunks_mut` over a slice                 | threads that write `v[i]` at their own loop index                                                                                                                                                        |
+| Rust                                                                   | Safe C++                                                                                                                                                                                                 |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Box<T>`, `Vec<T>`, `String`, `Option<T>`                              | `std::unique_ptr<T>`, `std::vector<T>`, `std::string`, `std::optional<T>`                                                                                                                                |
+| a move, and "use of moved value"                                       | `std::move`, and `owner-moved`; `std::exchange(x, {})` is `mem::take`                                                                                                                                    |
+| `&T`, `&mut T` in a local or a parameter                               | `const T &`, `T &`, pointers, iterators: borrows, ended by a non-`const` use of what they point into                                                                                                     |
+| "cannot borrow as mutable because…"                                    | `stale-borrow` at the later use; two `int &` into one vector are fine, since changing an `int` ends nothing                                                                                              |
+| `&str`, `&[T]`, a struct with a lifetime                               | `std::string_view`, `std::span<T>` or a pointer with a bound (`WEAVEC_COUNTED_BY`), a class with one as a member: views; there are no lifetime parameters, and a view's borrows are worked out per local |
+| returning or storing a borrow of a local                               | `escape`                                                                                                                                                                                                 |
+| `&mut self` twice (`self.f(&mut self.x)`)                              | `call-alias`                                                                                                                                                                                             |
+| a back pointer: `Weak<T>`, an index                                    | a raw pointer member (read only, checked at run time), or an index                                                                                                                                       |
+| `Rc<T>`                                                                | `std::shared_ptr<const T>`                                                                                                                                                                               |
+| `Rc<RefCell<T>>`                                                       | `std::shared_ptr<T>` to a `WEAVEC_ALIASED` class: conflicting borrows are found at run time by the guards, not by a count; no enum (`std::variant`) inside                                               |
+| a slice index or `unwrap()` that panics                                | a hardened library check (`library-assertion`) or a `null-dereference` report                                                                                                                            |
+| `unsafe`                                                               | `WEAVEC_GUARDED` (still guarded at run time), `WEAVEC_UNSAFE` (not)                                                                                                                                      |
+| integer overflow (a panic in a debug build, wrapping in a release one) | wrapping in both builds; a division by zero stops (`division-by-zero`)                                                                                                                                   |
+| `unreachable!()`, a `match` that must be exhaustive                    | `std::unreachable()` and the end of a function that must return a value stop with a report                                                                                                               |
+| `bool` is 0 or 1; `transmute` is `unsafe`                              | bytes do not become a `bool` (`pointer-bytes`); `std::bit_cast` and byte views of objects without one                                                                                                    |
+| a crate's one definition of each name                                  | the link compares what safe units record of the names they share (`definition-mismatch`)                                                                                                                 |
+| `Send`                                                                 | a sendable type; `thread-send`                                                                                                                                                                           |
+| `Sync`                                                                 | a shareable type, or a `const` object of a frozen type; `thread-share`                                                                                                                                   |
+| `thread::scope` and a borrowed local                                   | a `std::jthread` local and a lent local; `thread-lent`                                                                                                                                                   |
+| `thread::spawn` and `'static`                                          | a thread object that borrows nothing, which may be detached                                                                                                                                              |
+| `Mutex<T>` and its guard                                               | a class with a `std::mutex` member, and `std::lock_guard`; `lock-held`                                                                                                                                   |
+| `RwLock<T>`                                                            | `std::shared_mutex` and `std::shared_lock`                                                                                                                                                               |
+| `Arc<T>`, `Arc<Mutex<T>>`                                              | `std::shared_ptr<const T>`, a `std::shared_ptr` to a locked class                                                                                                                                        |
+| `static`, `thread_local!`                                              | a shareable or `const` global, `thread_local`                                                                                                                                                            |
+| `Box<dyn FnOnce() + Send>`                                             | a `std::function<void()> WEAVEC_SENDS` parameter                                                                                                                                                         |
+| `chunks_mut` over a slice                                              | threads that write `v[i]` at their own loop index                                                                                                                                                        |
 
 ## What the rules do not see
 

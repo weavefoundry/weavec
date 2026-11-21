@@ -105,6 +105,10 @@ struct Planned {
   RuleFix fix;
   clang::SourceLocation at;
   std::vector<std::pair<clang::SourceLocation, std::string>> insertions;
+  /// RFC 0051 §4.1: the characters a removal takes out.
+  // A designated initializer may leave it out.
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  std::vector<clang::CharSourceRange> removals = {};
   /// What the note says to write.
   std::string what;
 };
@@ -1761,8 +1765,65 @@ struct FixPlanner::Impl {
           planned.push_back(std::move(*each));
       return planned;
     }
+    case Want::Kind::Remove:
+      if (std::optional<Planned> each = removal(want.removal, want.replacement))
+        planned.push_back(std::move(*each));
+      return planned;
     }
     return {};
+  }
+
+  /// RFC 0051 §4.1: what only asserts, taken out: certain. Its text in the
+  /// file, and the place, which names the fix (no declaration does).
+  std::optional<Planned> removal(clang::CharSourceRange range,
+                                 const std::string &replacement) const {
+    range = sources.getExpansionRange(range);
+    if (range.isInvalid() || range.getBegin().isMacroID())
+      return std::nullopt;
+    const clang::SourceLocation begin = range.getBegin();
+    const clang::SourceLocation end =
+        range.isTokenRange()
+            ? clang::Lexer::getLocForEndOfToken(range.getEnd(), 0, sources,
+                                                ast.getLangOpts())
+            : range.getEnd();
+    if (end.isInvalid() || sources.getFileID(begin) != sources.getFileID(end))
+      return std::nullopt;
+    const unsigned from = sources.getFileOffset(begin);
+    const unsigned to = range.isTokenRange()
+                            ? sources.getFileOffset(end)
+                            : sources.getFileOffset(range.getEnd());
+    if (to <= from)
+      return std::nullopt;
+    bool invalid = false;
+    const llvm::StringRef buffer =
+        sources.getBufferData(sources.getFileID(begin), &invalid);
+    if (invalid || to > buffer.size())
+      return std::nullopt;
+    const std::string text = buffer.substr(from, to - from).str();
+    Planned planned;
+    planned.at = begin;
+    planned.removals.push_back(clang::CharSourceRange::getCharRange(
+        begin, sources.getComposedLoc(sources.getFileID(begin), to)));
+    planned.what = replacement.empty()
+                       ? "remove '" + text + "'"
+                       : "write '" + replacement + "' for '" + text + "'";
+    if (!replacement.empty())
+      planned.insertions.emplace_back(begin, replacement);
+    planned.fix.level = "certain";
+    planned.fix.declaration =
+        path(begin) + ":" +
+        std::to_string(sources.getSpellingLineNumber(begin)) + ":" +
+        std::to_string(sources.getSpellingColumnNumber(begin));
+    planned.fix.name = text;
+    planned.fix.aspect = "removal";
+    planned.fix.fact = "removal";
+    planned.fix.text = planned.what;
+    planned.fix.edits.push_back({.file = path(begin),
+                                 .offset = from,
+                                 .text = replacement,
+                                 .removed = text,
+                                 .needsInclude = false});
+    return planned;
   }
 
   /// C3: a value that is, by its form, the end of its own bound: `p + n`
@@ -2051,8 +2112,9 @@ FixPlanner::attach(clang::SourceLocation at, RuleError &error,
              "' objects are kept";
     } else {
       text = "fix (" + each.fix.level + "): " +
-             (each.fix.aspect == "copy" ? each.what
-                                        : "declare it '" + each.what + "'");
+             (each.fix.aspect == "copy" || each.fix.aspect == "removal"
+                  ? each.what
+                  : "declare it '" + each.what + "'");
       std::set<std::string> elsewhere;
       for (const auto &[place, inserted] : each.insertions)
         if (place != each.at && each.fix.aspect != "copy") {
@@ -2069,8 +2131,10 @@ FixPlanner::attach(clang::SourceLocation at, RuleError &error,
     }
     if (note.text.empty()) {
       note.text = text;
-      if (each.fix.level != "choice")
+      if (each.fix.level != "choice") {
         note.insertions = each.insertions;
+        note.removals = each.removals;
+      }
     } else {
       note.text += "; or " + text;
     }

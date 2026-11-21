@@ -49,6 +49,12 @@ if(Python3_Interpreter_FOUND)
            COMMAND "${Python3_EXECUTABLE}"
                    "${PROJECT_SOURCE_DIR}/scripts/test_check_hygiene.py")
   set_tests_properties(hygiene-harness PROPERTIES LABELS "unit")
+  # RFC 0051 G2: every item of the list of undefined behavior is disposed
+  # of, and names a test that exists.
+  add_test(NAME undefined-list
+           COMMAND "${Python3_EXECUTABLE}"
+                   "${PROJECT_SOURCE_DIR}/scripts/check-undefined.py")
+  set_tests_properties(undefined-list PROPERTIES LABELS "unit")
 else()
   message(WARNING "Python 3 not found; the cases tree (test/cases) and the "
                   "script harness tests are disabled.")

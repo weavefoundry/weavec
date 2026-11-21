@@ -130,6 +130,8 @@ static std::string renderClauses(const LibraryEntry &entry) {
     clauses.emplace_back("spawns");
   if (entry.unshared)
     clauses.emplace_back("unshared");
+  if (entry.handler)
+    clauses.emplace_back("handler");
   for (const LibraryChk &alias : entry.chk) {
     std::string text = "chk=" + alias.name + ":";
     for (std::size_t i = 0; i < alias.argumentOf.size(); ++i) {
@@ -572,6 +574,25 @@ TEST(LibrarySpecTest, ClassRowsNameThreadsAndLocks) {
       << error;
   EXPECT_FALSE(LibrarySpec::parse("class a : guard(exclusive);\n", error));
   EXPECT_FALSE(LibrarySpec::parse("f () -> int spawns spawns;\n", error));
+}
+
+// RFC 0051 §4.3: the rows that register a signal handler.
+TEST(LibrarySpecTest, RowsNameSignalHandlers) {
+  const LibrarySpec &table = LibrarySpec::shipped();
+  for (const char *name :
+       {"signal", "sigaction", "bsd_signal", "sigset", "sigvec"}) {
+    const LibraryEntry *entry = table.find(name);
+    ASSERT_NE(entry, nullptr) << name;
+    EXPECT_TRUE(entry->handler) << name;
+  }
+  EXPECT_FALSE(table.find("sigemptyset")->handler);
+  std::string error;
+  const auto parsed = LibrarySpec::parse("f (int) -> int handler;\n", error);
+  ASSERT_TRUE(parsed.has_value()) << error;
+  EXPECT_TRUE(parsed->entries()[0].handler);
+  EXPECT_FALSE(LibrarySpec::parse("f () -> int handler handler;\n", error));
+  EXPECT_NE(error.find("duplicate clause 'handler'"), std::string::npos)
+      << error;
 }
 
 TEST(LibrarySpecTest, OverloadsFollowTheArity) {
@@ -1211,7 +1232,11 @@ static constexpr auto ThreadExpectations = std::to_array<Expectation>({
 // semaphores, trees and searches (synchronous comparators), walks, spawning
 // and polling.
 static constexpr auto SignalExpectations = std::to_array<Expectation>({
-    {"sigaction", "int, R nullable, W nullable", "int", ""},
+    {"sigaction", "int, R nullable, W nullable", "int", "handler"},
+    {"signal", "int, none nullable", "ptr", "handler"},
+    {"bsd_signal", "int, none nullable", "ptr", "handler"},
+    {"sigset", "int, none nullable", "ptr", "handler"},
+    {"sigvec", "int, R nullable, W nullable", "int", "handler"},
     {"sigemptyset", "W", "int", ""},
     {"sigfillset", "W", "int", ""},
     {"sigaddset", "RW, int", "int", ""},

@@ -673,8 +673,13 @@ bool LibrarySpecParser::parseClause(LibraryEntry &entry,
     entry.wide = true;
     return true;
   }
-  if (clause == "spawns" || clause == "unshared") {
-    bool &flag = clause == "spawns" ? entry.spawns : entry.unshared;
+  if (clause == "spawns" || clause == "unshared" || clause == "handler") {
+    bool *chosen = &entry.handler;
+    if (clause == "spawns")
+      chosen = &entry.spawns;
+    else if (clause == "unshared")
+      chosen = &entry.unshared;
+    bool &flag = *chosen;
     if (flag)
       return fail("duplicate clause '" + clause + "'");
     flag = true;

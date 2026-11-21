@@ -315,6 +315,17 @@ inline void appendRun(ShadowRuns &runs, std::uint64_t count,
     runs.push_back({.count = count, .value = value});
 }
 
+/// RFC 0051 (GuardDefine.cpp): whether `function` is the code of a safe
+/// function, before GuardInsert splits one (C or C++, either mode).
+[[nodiscard]] bool definesSafe(const ModuleContext &module,
+                               const llvm::Function &function);
+/// RFC 0051 §2, §3: what `function`, a safe function, leaves undefined
+/// given one result or made a stop; run first, before GuardInsert.
+void defineSafe(ModuleContext &module, llvm::Function &function);
+/// RFC 0051 §5: the unit's record of what its safe code believes of the
+/// names it shares, in a section of its own.
+void emitDefinitions(ModuleContext &module);
+
 /// RFC 0041: whether `function` is safe; before GuardInsert, its locals
 /// promoted, its address arithmetic without `inbounds` and the locals whose
 /// address may outlive their scope placed on the heap; after GuardInsert,

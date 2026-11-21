@@ -273,6 +273,22 @@ WEAVEC_RT_API void *__weavec_rt_new_typed(size_t size,
 WEAVEC_RT_API void __weavec_rt_frame_escape(uintptr_t address,
                                             const char *function,
                                             const struct __weavec_rt_site *site);
+/* RFC 0051 section 3: what a safe function does not leave undefined stops.
+ * Reached code its source says cannot be (`unreachable`); the end of a C
+ * function that must return a value (`missing-return`); a division by zero,
+ * `bits` 0, or of the least `bits`-bit integer by -1 (`division-by-zero`,
+ * `division-overflow`). Each reports and ends the program in every mode. */
+WEAVEC_RT_API __attribute__((noreturn)) void
+__weavec_rt_unreachable(const struct __weavec_rt_site *site);
+WEAVEC_RT_API __attribute__((noreturn)) void
+__weavec_rt_missing_return(const struct __weavec_rt_site *site);
+WEAVEC_RT_API __attribute__((noreturn)) void
+__weavec_rt_division(const struct __weavec_rt_site *site, unsigned bits);
+/* RFC 0051 section 7: the calling thread's alternate signal stack, on which
+ * the fault handler reports a full stack (`stack-exhaustion`): made when
+ * the thread has none, given back when it ends. */
+void weavecRtAltStack(void);
+void weavecRtAltStackDrop(void);
 /* RFC 0045 section 9: called by each fast safe C++ unit's constructor: the
  * container annotations of every unit are ignored. */
 WEAVEC_RT_API void __weavec_rt_fast_program(void);
@@ -853,7 +869,7 @@ void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
 /* The library's interface version (libweavec_rt.so.<abi>,
  * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
  * encoding or a site record changes. */
-#define WEAVEC_RT_ABI 46
+#define WEAVEC_RT_ABI 47
 
 /*===-- Internal -----------------------------------------------------------===*/
 

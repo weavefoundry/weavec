@@ -23,12 +23,17 @@
 
 namespace weavec::frontend {
 
-/// An edit of a source file: `text` inserted at `offset` (a fix only adds).
+/// An edit of a source file: `text` inserted at `offset`; RFC 0051 §4.1:
+/// after `removed`, the text there, is taken out (a certain fix that
+/// deletes what only asserts).
 struct FixEdit {
   /// An absolute path.
   std::string file;
   unsigned offset = 0;
   std::string text;
+  // A designated initializer may leave it out.
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  std::string removed = {};
   /// The file does not define WeaveC's macros where the edit is (no
   /// `weavec.h` before it): the fixer adds the include with it.
   bool needsInclude = false;

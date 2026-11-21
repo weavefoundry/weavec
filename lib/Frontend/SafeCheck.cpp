@@ -19,6 +19,7 @@
 #include "SafeCheckImpl.h"
 #include "SafeCxxKinds.h"
 #include "weavec/Core/LibrarySpec.h"
+#include "weavec/Frontend/Definitions.h"
 #include "weavec/Frontend/UnsafeRegions.h"
 
 #include "clang/AST/ASTConsumer.h"
@@ -924,6 +925,8 @@ public:
       pairedInitializers(*constructor);
     }
     TraverseStmt(function.getBody());
+    // RFC 0051 §4: what the function may not assert, in both languages.
+    checkUndefined(ast, function, report, fixes);
   }
 
   /// RFC 0047 §1.2: whether the function indexes or steps a pointer, passes
@@ -1034,6 +1037,11 @@ public:
     }
     switch (cast->getCastKind()) {
     case clang::CK_IntegralToPointer:
+      // RFC 0051 §4.3: a constant a system header spells as a function
+      // pointer (SIG_IGN, SIG_DFL) is not a pointer anything calls.
+      if (cast->getType()->isFunctionPointerType() &&
+          ast.getSourceManager().isInSystemMacro(cast->getExprLoc()))
+        break;
       report(cast->getExprLoc(), rule::IntToPointer,
              "an integer cannot become a pointer in a safe function",
              "keep the pointer itself rather than its address as an "
@@ -2783,6 +2791,16 @@ private:
                  from.getAsString() +
                  "' objects, memset it to 0, or pass it to a function that "
                  "is not safe");
+    // RFC 0051 §4.2: bytes written into a `bool` may make one that is
+    // neither 0 nor 1.
+    else if (isByteType(to) && !to.isConstQualified() && holdsBool(from) &&
+             !byteViewAllowed(cast, from))
+      report(cast.getExprLoc(), rule::PointerBytes,
+             "writing '" + from.getAsString() +
+                 "' as bytes could make a 'bool' that is neither 0 nor 1",
+             "a 'bool' is 0 or 1: pass an 'int' and assign the 'bool' from "
+             "it, give the member the type 'uint8_t', copy it as its own "
+             "type, or pass it to a function that is not safe");
   }
 
   static bool isAllocation(const clang::Expr &expression) {
@@ -3007,8 +3025,10 @@ public:
     if (!safe.empty())
       for (const clang::RecordDecl *record : records)
         declarations.checkRecord(*record);
-    for (const clang::FunctionDecl *function : safe)
+    for (const clang::FunctionDecl *function : safe) {
       out->functions[function->getName()].safe = true;
+      out->definedSafe.insert(function->getName());
+    }
     if (!safe.empty())
       checkGlobalInits(ast.getTranslationUnitDecl(), ast);
     if (!safe.empty())
@@ -3221,6 +3241,8 @@ private:
     builder << fixed->text;
     for (const auto &[place, inserted] : fixed->insertions)
       builder << clang::FixItHint::CreateInsertion(place, inserted);
+    for (const clang::CharSourceRange &removed : fixed->removals)
+      builder << clang::FixItHint::CreateRemoval(removed);
   }
 
   /// RFC 0049 §1: a function as the owner of the errors in its code.
@@ -3250,6 +3272,10 @@ private:
     fixes().evidence(out->wants, out->evidence);
     if (out->survey)
       fixes().files(out->files);
+    // RFC 0051 §5: what the unit's safe code believes of the names it
+    // shares, for the link to compare.
+    if (out->annotates && compiler.hasASTContext())
+      out->definitionRecord = recordDefinitions(compiler.getASTContext(), *out);
   }
   /// The definitions that are guarded, for the survey: with their index in
   /// the unit's definitions.
@@ -3396,7 +3422,8 @@ private:
                               }),
          .starts = 0,
          .locks = false,
-         .sends = false});
+         .sends = false,
+         .handlers = safeFunction ? 0 : countHandlers(function)});
   }
 
   void reportMismatch(const clang::FunctionDecl &function,
@@ -3435,7 +3462,15 @@ private:
 
 int runExplain(llvm::ArrayRef<const char *> operands) {
 #include "SafeRulesText.inc"
+#include "SafeUndefinedText.inc"
   const llvm::StringRef text(SafeRulesTextData, SafeRulesTextSize);
+  // RFC 0051 §10: the list of undefined behavior and what keeps a safe
+  // function from each.
+  if (operands.size() == 1 && llvm::StringRef(operands[0]) == "undefined") {
+    llvm::outs() << llvm::StringRef(SafeUndefinedTextData,
+                                    SafeUndefinedTextSize);
+    return 0;
+  }
   llvm::SmallVector<llvm::StringRef, 32> parts;
   text.split(parts, "\n## ");
   llvm::StringMap<llvm::StringRef> rules;
@@ -3450,7 +3485,9 @@ int runExplain(llvm::ArrayRef<const char *> operands) {
   if (operands.empty()) {
     out << "The rules of Safe C and Safe C++ ('safe-cxx' introduces the C++ "
            "ones, 'fix' the fixes errors carry); '--weavec-explain <rule>' "
-           "explains one, '--weavec-explain all' every one:\n";
+           "explains one, '--weavec-explain all' every one, and "
+           "'--weavec-explain undefined' the list of undefined behavior and "
+           "what keeps a safe function from each:\n";
     for (const llvm::StringRef id : order)
       out << "  " << id << '\n';
     return 0;
