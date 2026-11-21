@@ -102,5 +102,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0050](0050-checked-once.md) | Checked once | Accepted |
 | [0051](0051-nothing-undefined.md) | Nothing undefined | Implemented |
 | [0052](0052-what-a-call-may-reach.md) | What a call may reach | Accepted |
+| [0053](0053-callables-and-containers-by-their-loans.md) | Callables and containers by their loans | Draft |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.
