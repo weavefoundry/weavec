@@ -1,6 +1,6 @@
 # RFC 0053: Callables and containers by their loans
 
-- **Status**: Draft (S0 measured; returned to the owner: D5 exceeds D8)
+- **Status**: Draft (S0 measured, D5 narrowed and measured)
 - **Authors**: WeaveC authors
 - **Created**: 2026-11-21
 - **Tracking issue**: TBD
@@ -133,7 +133,7 @@ limit is exceeded.
 
 ### Measured: S0 (`build/rfc53/s0/`)
 
-A prototype of §1 to §8 on RFC 0052's branch (`prototype.diff`, 341 lines
+A prototype of §1 to §8 on RFC 0052's branch (`prototype.diff`, 435 lines
 in `SafeCxxFlow.cpp` and `SafeCxxKinds.h`), each decision behind a switch,
 measured against RFC 0052's compiler (`build/rfc52/tc`) on RFC 0052's G2
 corpus (`measure.py`: 10,413 safe functions in the RFC 0044 and RFC 0046
@@ -153,6 +153,7 @@ build stops (`holes.sh`, 90 programs).
 | … without D3, or without D6 | 247 | 23.72 | 70, 69 |
 | D1, D2, D3, D6, D7 read at the caller | 2 | 0.19 | 69 |
 | … and D4 | 18 | 1.73 | 71 |
+| … and D5 as §6 now has it | 18 | 1.73 | 72 |
 
 So:
 
@@ -179,17 +180,23 @@ So:
   a `void *`, which reaches everything), and borrows of kv's `Executor`
   through a container of views. It fits D8 with D1 to D3, D6 and D7
   (1.73), with little room.
-- **D5 as drafted costs 86 for one program.** Taking every polymorphic
-  class to hold a borrow makes every `std::unique_ptr<Expr>` a parser
+- **D5 as drafted cost 86 for one program.** Taking every polymorphic
+  class to hold a borrow made every `std::unique_ptr<Expr>` a parser
   returns a view of the parser (interp's 80), and every virtual call a
-  barrier (RFC 0044's shapes). D5 needs a narrower form before S1: a
-  candidate is to reach only through objects of a polymorphic class the
-  function was given or got from a call, at a virtual call or a call they
-  are passed to, and never to make a smart pointer to a base a view. S0
-  will measure it before S1.
+  barrier (RFC 0044's shapes). §6 now has the narrower form: a polymorphic
+  object holds the loans of what it was made from and none by default.
+  Its first prototype still cost 52 (a member function's result taken to
+  borrow its object whatever its type, a polymorphic argument taken to
+  reach what its container points to, a socket's member calls taken to
+  store their pointers); with those read as §6 says, it costs nothing
+  (18 with every decision, as without D5) and rejects one more program, a
+  view behind a base passed to a function. It does not reject a view
+  returned as a `std::unique_ptr<Base>` by a function, which the caller
+  cannot see (_Unresolved question_ 3).
 
-The 19 programs the combination D1 to D4, D6, D7 still accepts are D5's 3
-(a view behind a base, a `unique_ptr<Base>`, a `unique_ptr` of a view), 13
+The 18 programs every decision, D5 as §6 has it, still accepts are 2 of
+D5's (a `unique_ptr<Base>` and a `unique_ptr` of a view, returned by a
+function), 13
 of D4's form the prototype does not reach yet (a `std::array` or
 `std::optional` of reference wrappers made from braces, `vector<long *>{&x}`
 returned, a pointer member assigned past its local's scope, an aliasing
@@ -267,11 +274,13 @@ void wrapped(V &v) {
 
 ```cpp
 struct Base { virtual void run() = 0; virtual ~Base() = default; };
-void go(Base &b);
-void through(V &v, Base &b) {
+struct D : Base { V &v; explicit D(V &v) : v(v) {} void run() override { v = 1L; } };
+void go(Base &b) { b.run(); }
+void through(V &v) {
+  D d(v);                                   // a view of 'v'
   std::string &s = std::get<std::string>(v);
-  go(b);       // reaches what 'b' points to, as a view: unknown, so
-  s[0] = 'Z';  // only if 'b' could point to 'v' (a derived class's member)
+  go(d);       // reaches what 'd' holds, through the 'Base &' it is bound to
+  s[0] = 'Z';  // stale-borrow
 }
 ```
 
@@ -292,9 +301,10 @@ void through(V &v, Base &b) {
   helper(v); };` where `helper` takes `V &` is not, and ends borrows into
   `v` at each call of `size`. The fix is a `const &` capture
   (`[&v = std::as_const(v)]`) or a `const` parameter.
-- **A virtual call on an object the function was handed.** Its borrows of
-  what the object could reach end at the call. The fix is to call through a
-  `final` class, or take the borrow after the call.
+- **A virtual call on a polymorphic object made from a borrow.** The
+  borrows into what it was made from end at the call, whatever the
+  override does. The fix is to take the borrow after the call, or call
+  through a `final` class.
 - **A borrow into a mutable global across a call.** The fix is to copy out
   what is needed, or make the global `const` or a locked class.
 
@@ -372,12 +382,27 @@ container's loans point, as well as into the container.
 
 ### 6. Polymorphic objects (D5)
 
-A call of a virtual member function that is not `final`, on an object whose
-dynamic type the function did not make (a reference or pointer parameter,
-what a smart pointer to a base holds), reaches what the object's loans
-reach, as a view of the program's class does under RFC 0052 §4.1. A
-conversion of a smart pointer or a reference to a base keeps the loans of
-what it converts. This answers RFC 0052's _Unresolved question_ 4.
+A polymorphic class of the program that is not `final`, and a library
+template of one (a smart pointer to a base), is followed by the flow, with
+the loans of what it was made from and **none by default**:
+
+- A conversion keeps the loans of what it converts: a `D &` bound as a
+  `Base &`, a `std::unique_ptr<D>` converted to a `std::unique_ptr<Base>`.
+- A call of a virtual member function that is not `final` on such an
+  object, or a call of a function of the program it is passed to, reaches
+  what the flow knows its loans reach, as a view of the program's class
+  does under RFC 0052 §4.1; nothing more, so an `Expr &` taken from a
+  container reaches nothing the container's own loans do not.
+- A member function's result of such a type borrows its object only if
+  the result's type could (RFC 0052 §6's `mayBorrow`), and a call of its
+  member functions stores nothing of its arguments (it is not a view).
+
+So a view behind a base the function made is followed through every
+reference and smart pointer to it. One a function returns as a
+`std::unique_ptr<Base>` is not: the caller cannot see the derived class,
+and taking every such result to borrow its arguments cost 80 errors in S0
+(_Unresolved question_ 3). This answers RFC 0052's _Unresolved question_ 4
+for what the function can see.
 
 ### 7. Globals, `mutable`, owners (D6, D7)
 
@@ -476,10 +501,9 @@ Each is pinned by a `test/Safe/` test with its note.
   answers. The narrowing keeps RFC 0052's precision for lambdas the function
   wrote whose captures are only read; it loses it where a capture is passed
   to a function of the program by non-`const` reference that only reads.
-- **Virtual calls become barriers** for borrows of what the object could
-  reach. Code that calls through interfaces while holding borrows of objects
-  the interface's implementations could reference will need to take the
-  borrow again.
+- **Virtual calls end the borrows** into what a polymorphic object was
+  made from. S0 found none in the corpus; and a view returned behind a base
+  by a factory is not followed (_Unresolved question_ 3).
 - **Globals.** A borrow into a mutable global no longer survives a call of
   the program's. Safe code has few: RFC 0046 makes every global shareable,
   `const` or `thread_local`.
@@ -516,10 +540,14 @@ Each is pinned by a `test/Safe/` test with its note.
    loans; its call reaches only its arguments and the globals (D6). Is
    that enough, or is a call through one a barrier for what its arguments
    reach?
-3. **Interfaces.** D5 makes a virtual call reach what the object's loans
-   reach; for a reference parameter that is every owner the caller's
-   types reach. Should a class be able to say its implementations hold no
-   references (`final` aside)?
+3. **Interfaces returned by factories.** D5 follows a view behind a base
+   only from where the function made it. A `std::unique_ptr<Base>` a
+   function returns may hold a derived class's reference to an argument
+   (RFC 0052's G4 `t09`); taking every such result to borrow its
+   arguments cost 80 errors in S0. Should a function that returns one say
+   what it borrows (`WEAVEC_LIFETIMEBOUND` on the parameter), with no
+   borrow assumed otherwise, as X-A1 already assumes of code that is not
+   safe?
 
 ## Future work
 
@@ -540,10 +568,10 @@ Each is pinned by a `test/Safe/` test with its note.
   0052 §4.1.
 - **D4. The library's containers of views are views** of what they are made
   from, however they are made.
-- **D5. A virtual call that is not final** reaches what its object's loans
-  reach. S0 measured the drafted form (every polymorphic class may hold a
-  borrow) at 86 errors for one program; a narrower form is to be drafted
-  and measured before S1.
+- **D5. A polymorphic object holds the loans of what it was made from**,
+  none by default; a virtual call that is not final, or a call it is
+  passed to, reaches those. (S0: the drafted form, every polymorphic class
+  holding a borrow, cost 86 errors for one program; this one costs none.)
 - **D6. A borrow into a mutable global** ends at every call of a function
   of the program.
 - **D7. `mutable` makes `const` shallow for a caller; `= default` is no
