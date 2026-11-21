@@ -276,7 +276,7 @@ int load(FILE *file, struct header *h) {
 
 ### In C++
 
-The bytes of an object that is not trivially copyable are not read or written by `memcpy`, `memset`, `memmove` or `memcmp`, and bytes are not written into an object that holds a `bool` or a pointer, by a call or by `std::bit_cast`: a pointer is made only from what it points to. A pointer may be read as an integer.
+The bytes of an object that is not trivially copyable are not read or written by `memcpy`, `memset`, `memmove` or `memcmp`, and bytes are not written into an object that holds a `bool` or a pointer, by a call or by `std::bit_cast`: a pointer is made only from what it points to. The object a call writes is what its argument points to before it becomes the call's `void *`: an array's element when the array is passed by name, and through a cast to `void *`. A whole object zeroed (`memset` with 0, `bzero`), its elements reordered (`qsort`) or copied from an object of its own type is accepted, and a pointer may be read as an integer. A call that writes pointers of the library's making into an array its caller gives (`backtrace`, `epoll_wait`'s and `kevent`'s events) is rejected: make it in a `WEAVEC_GUARDED` function.
 
 ```cpp rejected
 struct Item { int id = 0; std::string name; };

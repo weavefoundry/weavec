@@ -458,6 +458,7 @@ WEAVEC_RT_API char *__weavec_rt_realpath(const char *path, char *resolved,
                                          size_t limit,
                                          const struct __weavec_rt_site *site);
 WEAVEC_RT_API char *__weavec_rt_gcvt(double value, int digits, char *d,
+                                     size_t limit,
                                      const struct __weavec_rt_site *site);
 WEAVEC_RT_API int __weavec_rt_sprintf(const struct __weavec_rt_site *site,
                                       size_t limit, char *d,

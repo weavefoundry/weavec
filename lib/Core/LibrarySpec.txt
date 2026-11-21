@@ -29,7 +29,9 @@
 #   result   ::= 'void' | 'int' [ ':value(' term ')' ] | 'ptr' [ ':owned' ]
 #   clause   ::= 'disjoint(' INT ',' INT ',' term ')' | 'wide'
 #              | 'printf(' INT ',' INT ')' | 'scanf(' INT ',' INT ')'
-#              | 'chk(' NAME ':' carg { ',' carg } ')' | 'wrapper(' NAME ')'
+#              | 'chk(' NAME ':' carg { ',' carg } ')'
+#              | 'wrapper(' NAME [ ',' 'limit' ] ')' | 'fills(' term ')'
+#              | 'permutes'
 #              | 'exits' | 'unwinds' | 'typed(' NAME ',' INT ')'
 #   carg     ::= INT | '_' | 'size'
 #   term     ::= INT | 'a' N | 'strlen(a' N ')' | term '*' term
@@ -89,6 +91,17 @@
 #                    is the row's name, or its name and `_at` for a row
 #                    that releases (RFC 0040 section 5.5); a C++ row's (a
 #                    mangled name, RFC 0039 section 6) may name another.
+#                    With `limit` (RFC 0037 amendment 16), it also takes,
+#                    before the site, the size of the array field the first
+#                    written argument names (all ones for none), as it would
+#                    a fortified form's object size: for a call that writes
+#                    a buffer its caller gives without a size.
+#   fills(t)         (RFC 0051 amendment 18) every byte the call writes into
+#                    its first written argument is t: a fill with zero of a
+#                    whole object is not bytes that could forge a pointer.
+#   permutes         (RFC 0051 amendment 18) the call only reorders the
+#                    elements of its first written argument: what it writes
+#                    was the object's own, and forges nothing.
 #   exits, unwinds   (RFC 0039 section 3) the call ends the process, or
 #                    unwinds the stack (a throw): the stack's shadow is not
 #                    cleared before it, as it is before any other call that
@@ -252,9 +265,9 @@ memcpy (w:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) -> \
 memmove (w:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) -> \
     ptr chk(__builtin___memmove_chk:0,1,2,size) \
     chk(__memmove_chk:0,1,2,size);
-memset (w:bytes(a2):null-if-zero(a2), int, int) -> ptr \
+memset (w:bytes(a2):null-if-zero(a2), int, int) -> ptr fills(a1) \
     chk(__builtin___memset_chk:0,1,2,size) chk(__memset_chk:0,1,2,size);
-memset_explicit (w:bytes(a2):null-if-zero(a2), int, int) -> ptr;
+memset_explicit (w:bytes(a2):null-if-zero(a2), int, int) -> ptr fills(a1);
 memcmp (r:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) -> \
     int;
 # RFC 0038 section 2: memchr reads up to the match, or all n bytes.
@@ -331,12 +344,12 @@ strsep (rw, r:str) -> ptr;
 strerror (int) -> ptr unshared;
 strerror_r (int, w:bytes(a2):null-if-zero(a2), int) -> ptr;
 strerror_r (int, w:bytes(a2):null-if-zero(a2), int) -> int;
-explicit_bzero (w:bytes(a1):null-if-zero(a1), int) -> void \
+explicit_bzero (w:bytes(a1):null-if-zero(a1), int) -> void fills(0) \
     chk(__explicit_bzero_chk:0,1,size);
 # macOS: a null s is EINVAL, and min(smax, n) bytes are set.
-memset_s (w:bytes(min(a1,a3)):null-ok, int, int, int) -> int;
+memset_s (w:bytes(min(a1,a3)):null-ok, int, int, int) -> int fills(a2);
 
-bzero (w:bytes(a1):null-if-zero(a1), int) -> void;
+bzero (w:bytes(a1):null-if-zero(a1), int) -> void fills(0);
 bcopy (r:bytes(a2):null-if-zero(a2), w:bytes(a2):null-if-zero(a2), int) -> \
     void;
 bcmp (r:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) -> \
@@ -475,7 +488,8 @@ strtof (r:str, w:null-ok:bytes(8)) -> int wrapper(strtof);
 strtold (r:str, w:null-ok:bytes(8)) -> int wrapper(strtold);
 # gcvt writes its digits into a buffer its caller gives without a size: its
 # wrapper writes them through one of its own.
-gcvt (other, int, w) -> ptr wrapper(gcvt);
+# An array field's limit too (RFC 0037 amendment 16).
+gcvt (other, int, w) -> ptr wrapper(gcvt, limit);
 getenv (r:str:null-ok) -> ptr;
 # RFC 0046 section 1: one generator every caller shares.
 rand () -> int unshared;
@@ -485,12 +499,12 @@ unsetenv (r:str:null-ok) -> int unshared;
 # The string itself becomes part of the environment.
 putenv (r:str:null-ok) -> int unshared;
 system (r:str:null-ok) -> int;
-qsort (rw:bytes(a1*a2):null-if-zero(a1*a2), int, int, fn) -> void;
+qsort (rw:bytes(a1*a2):null-if-zero(a1*a2), int, int, fn) -> void permutes;
 # glibc (and C2y): compar(a, b, arg). BSD and macOS: compar(thunk, a, b).
 qsort_r (rw:bytes(a1*a2):null-if-zero(a1*a2), int, int, fn, none:null-ok) -> \
-    void;
+    void permutes;
 qsort_r (rw:bytes(a1*a2):null-if-zero(a1*a2), int, int, none:null-ok, fn) -> \
-    void;
+    void permutes;
 bsearch (none:null-ok, r:bytes(a2*a3):null-if-zero(a2*a3), int, int, fn) -> \
     ptr;
 mblen (r:bytes(min(a1,strlen(a0)+1)):null-ok, int) -> int;

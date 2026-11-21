@@ -673,12 +673,15 @@ bool LibrarySpecParser::parseClause(LibraryEntry &entry,
     entry.wide = true;
     return true;
   }
-  if (clause == "spawns" || clause == "unshared" || clause == "handler") {
+  if (clause == "spawns" || clause == "unshared" || clause == "handler" ||
+      clause == "permutes") {
     bool *chosen = &entry.handler;
     if (clause == "spawns")
       chosen = &entry.spawns;
     else if (clause == "unshared")
       chosen = &entry.unshared;
+    else if (clause == "permutes")
+      chosen = &entry.permutes;
     bool &flag = *chosen;
     if (flag)
       return fail("duplicate clause '" + clause + "'");
@@ -752,10 +755,24 @@ bool LibrarySpecParser::parseClause(LibraryEntry &entry,
     if (!expect('(', "after 'wrapper'"))
       return false;
     auto wrapped = name("a wrapper name");
-    if (!wrapped || !expect(')', "after the wrapper name"))
+    if (!wrapped)
       return false;
-    entry.wrapper = LibWrapper{.name = std::move(*wrapped)};
+    bool limit = false;
+    if (accept(',')) {
+      if (!accept("limit"))
+        return fail("expected 'limit' after the wrapper name's ','");
+      limit = true;
+    }
+    if (!expect(')', "after the wrapper name"))
+      return false;
+    entry.wrapper = LibWrapper{.name = std::move(*wrapped), .limit = limit};
     return true;
+  }
+  if (clause == "fills") {
+    if (entry.fills)
+      return fail("duplicate clause 'fills'");
+    entry.fills = parenthesisedTerm("fills");
+    return entry.fills.has_value();
   }
   if (clause == "chk") {
     if (!expect('(', "after 'chk'"))
@@ -819,6 +836,16 @@ bool LibrarySpecParser::validateEntry(const LibraryEntry &entry) {
   }
   if (entry.value && !validateTerm(entry, *entry.value, "the result"))
     return false;
+  if (entry.fills && !validateTerm(entry, *entry.fills, "'fills'"))
+    return false;
+  if ((entry.fills || entry.permutes) &&
+      std::ranges::none_of(entry.params, [](const LibraryParam &param) {
+        return param.type == LibraryParam::Type::Pointer &&
+               (param.access == LibraryParam::Access::Write ||
+                param.access == LibraryParam::Access::ReadWrite);
+      }))
+    return fail(std::string(entry.fills ? "'fills'" : "'permutes'") +
+                " needs a written argument");
   for (const LibDisjoint &disjoint : entry.disjoint)
     if (disjoint.first >= entry.params.size() ||
         disjoint.second >= entry.params.size() ||

@@ -118,7 +118,12 @@ static std::string renderClauses(const LibraryEntry &entry) {
                       std::to_string(entry.format->format) + "/" +
                       std::to_string(entry.format->first));
   if (entry.wrapper)
-    clauses.push_back("wrapper=" + entry.wrapper->name);
+    clauses.push_back("wrapper=" + entry.wrapper->name +
+                      (entry.wrapper->limit ? "/limit" : ""));
+  if (entry.fills)
+    clauses.push_back("fills=" + entry.fills->str());
+  if (entry.permutes)
+    clauses.emplace_back("permutes");
   if (entry.typed)
     clauses.push_back("typed=" + entry.typed->name + "/" +
                       std::to_string(entry.typedFlags));
@@ -280,7 +285,16 @@ TEST(LibrarySpecTest, ParserErrorsNameTheLineAndTheProblem) {
       {"f (r) -> int:value(a3);",
        "argument a3 of the result is past the row's parameters"},
       {"f (w:bytes(a1), int) -> void wrapper(f,room);",
+       "expected 'limit' after the wrapper name's ','"},
+      {"f (w:bytes(a1), int) -> void wrapper(f,limit,limit);",
        "after the wrapper name"},
+      {"f (int, int) -> void fills(0);", "'fills' needs a written argument"},
+      {"f (r:bytes(a1), int) -> void permutes;",
+       "'permutes' needs a written argument"},
+      {"f (w:bytes(a1), int) -> void fills(a3);",
+       "argument a3 of 'fills' is past the row's parameters"},
+      {"f (w:bytes(a1), int) -> void fills(0) fills(0);",
+       "duplicate clause 'fills'"},
       {"f (r:str) -> int wrapper(g);", "'wrapper(g)' must name the row"},
       {"f (r:str) -> int wrapper(f_at);", "'wrapper(f_at)' must name the row"},
       {"f (w:bytes(a1), int) -> void wrapper(f) wrapper(f);",
@@ -686,8 +700,10 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
      "ptr",
      "chk=__builtin___memmove_chk:0/1/2/size chk=__memmove_chk:0/1/2/size"},
     {"memset", "W bytes=a2 nullable-if=a2, int, int", "ptr",
-     "chk=__builtin___memset_chk:0/1/2/size chk=__memset_chk:0/1/2/size"},
-    {"memset_explicit", "W bytes=a2 nullable-if=a2, int, int", "ptr", ""},
+     "fills=a1 chk=__builtin___memset_chk:0/1/2/size "
+     "chk=__memset_chk:0/1/2/size"},
+    {"memset_explicit", "W bytes=a2 nullable-if=a2, int, int", "ptr",
+     "fills=a1"},
     {"memcmp", "R bytes=a2 nullable-if=a2, R bytes=a2 nullable-if=a2, int",
      "int", ""},
     {"memchr", "R scan=1 bytes=a2 nullable-if=a2, int, int", "ptr", ""},
@@ -766,9 +782,10 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
     {"strerror_r", "int, W bytes=a2 nullable-if=a2, int", "ptr", ""},
     {"strerror_r#2", "int, W bytes=a2 nullable-if=a2, int", "int", ""},
     {"explicit_bzero", "W bytes=a1 nullable-if=a1, int", "void",
-     "chk=__explicit_bzero_chk:0/1/size"},
-    {"memset_s", "W bytes=min(a1,a3) nullable, int, int, int", "int", ""},
-    {"bzero", "W bytes=a1 nullable-if=a1, int", "void", ""},
+     "fills=0 chk=__explicit_bzero_chk:0/1/size"},
+    {"memset_s", "W bytes=min(a1,a3) nullable, int, int, int", "int",
+     "fills=a2"},
+    {"bzero", "W bytes=a1 nullable-if=a1, int", "void", "fills=0"},
     {"bcopy", "R bytes=a2 nullable-if=a2, W bytes=a2 nullable-if=a2, int",
      "void", ""},
     {"bcmp", "R bytes=a2 nullable-if=a2, R bytes=a2 nullable-if=a2, int", "int",
@@ -910,7 +927,7 @@ static constexpr auto StdlibExpectations = std::to_array<Expectation>({
     {"strtod", "R str, W bytes=8 nullable", "int", "wrapper=strtod"},
     {"strtof", "R str, W bytes=8 nullable", "int", "wrapper=strtof"},
     {"strtold", "R str, W bytes=8 nullable", "int", "wrapper=strtold"},
-    {"gcvt", "other, int, W", "ptr", "wrapper=gcvt"},
+    {"gcvt", "other, int, W", "ptr", "wrapper=gcvt/limit"},
     {"strtoimax", "R str, W bytes=8 nullable, int", "int",
      "wrapper=strtoimax chk=__isoc23_strtoimax:0/1/2"},
     {"strtoumax", "R str, W bytes=8 nullable, int", "int",
@@ -922,12 +939,13 @@ static constexpr auto StdlibExpectations = std::to_array<Expectation>({
     {"unsetenv", "R str nullable", "int", "unshared"},
     {"putenv", "R str nullable", "int", "unshared"},
     {"system", "R str nullable", "int", ""},
-    {"qsort", "RW bytes=a1*a2 nullable-if=a1*a2, int, int, fn", "void", ""},
+    {"qsort", "RW bytes=a1*a2 nullable-if=a1*a2, int, int, fn", "void",
+     "permutes"},
     {"qsort_r", "RW bytes=a1*a2 nullable-if=a1*a2, int, int, fn, none nullable",
-     "void", ""},
+     "void", "permutes"},
     {"qsort_r#2",
      "RW bytes=a1*a2 nullable-if=a1*a2, int, int, none nullable, fn", "void",
-     ""},
+     "permutes"},
     {"bsearch", "none nullable, R bytes=a2*a3 nullable-if=a2*a3, int, int, fn",
      "ptr", ""},
     {"mblen", "R bytes=min(a1,strlen(a0)+1) nullable, int", "int", ""},

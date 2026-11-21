@@ -204,7 +204,7 @@ Rows of the same family say "as row N" or "as above". A row is one line of the s
 | 182 | A zero-size allocation is accessed | stops | the block has no addressable byte (heap-buffer-overflow) | `test/Guards/heap-overflow.c` |
 | 183 | Released memory is used | stale | heap-use-after-free; in the fast build (Y) | `test/Guards/reference-load.c` |
 | 184 | free or realloc gets a pointer the allocator did not give, or twice | stops | invalid-free, double-free: the runtime validates every release | `test/Guards/report-release.c` |
-| 185 | malloc's uninitialized object is read | defined | the runtime's blocks are zeroes, and each allocation call says so to the optimizer (§2.3) | `test/Guards/fresh-blocks.c` |
+| 185 | malloc's uninitialized object is read | defined | the runtime's blocks are zeroes, and no allocation call tells the optimizer that its block's bytes are undefined (§2.3, amendment 18) | `test/Guards/fresh-blocks.c` |
 | 186 | realloc's new bytes are read | defined | the runtime's blocks are zeroes | `test/Guards/ir-defined.c` |
 | 187 | exit or quick_exit is called twice | library | assumed of the library (A2) | `test/Guards/checked-calls.c` |
 | 188 | longjmp leaves an atexit function | cannot | a safe function does not call longjmp (no-asm) | `test/Safe/forbidden.c` |
@@ -259,7 +259,7 @@ Rows of the same family say "as row N" or "as above". A row is one line of the s
 | `lifetime.outside.glvalue.dynamic.cast` | dynamic_cast or typeid of an ended object | stale | as above | `test/Safe/cxx-borrows.cpp` |
 | `original.type.implicit.destructor` | An implicit destructor runs over storage of another type | cannot | raw-owner rejects placement new and a destructor called by hand | `test/Safe/cxx-expressions.cpp` |
 | `creating.within.const.complete.obj` | An object is made over a const complete object | cannot | raw-owner rejects placement new | `test/Safe/cxx-expressions.cpp` |
-| `basic.indet.value` | An indeterminate value is evaluated | defined | every local is zeroes until assigned (§2.3); the runtime's blocks are zeroes, and each allocation call says so to the optimizer | `test/Guards/fresh-blocks.cpp` |
+| `basic.indet.value` | An indeterminate value is evaluated | defined | every local is zeroes until assigned (§2.3); the runtime's blocks are zeroes, and no allocation call tells the optimizer that its block's bytes are undefined | `test/Guards/fresh-blocks.cpp` |
 | `basic.stc.alloc.dealloc.constraint` | An allocation function breaks its contract | assumed | a program's own operator new is code that is not safe (raw-owner keeps safe code from writing one) | `test/Safe/cxx-expressions.cpp` |
 | `basic.stc.alloc.zero.dereference` | The block of a zero-size allocation is dereferenced | stops | the block has no addressable byte (heap-buffer-overflow) | `test/Guards/heap-overflow.c` |
 | `basic.compound.invalid.pointer` | A released pointer is dereferenced or released again | stale | heap-use-after-free, double-free; in the fast build (Y) | `test/Guards/report-release.c` |

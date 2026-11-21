@@ -970,14 +970,23 @@ override the body.
     function, whose fields' bounds hold (RFC 0042), every row the guards
     check inline is limited to the field its first written argument names
     too: `memcpy` or `read` into an 8-byte field with 12 bytes stops with
-    `intra-object-overflow` (`test/Guards/safe-field-writes.c`). A guarded
+    `intra-object-overflow` (`test/Guards/safe-field-writes.c`). The limit
+    is that argument's alone: a row whose first written argument's bytes
+    the guards do not compute (`strtok_r`'s string) puts no limit on the
+    next one it writes, another object (its save pointer). A guarded
     function keeps §10's scope, since C code copies or zeroes from one
     field to the end of its struct. `realpath`'s resolved path (at most
     `PATH_MAX` bytes) and `gcvt`'s digits are written into a buffer the
     caller gives without a size; their rows guarded its first byte, or had
     none. Each now has a wrapper that writes into a buffer of the
     runtime's, checks what was written against the caller's, and copies
-    it (`test/Guards/unsized-buffers.c`; ABI 48).
+    it (`test/Guards/unsized-buffers.c`; ABI 48). `realpath`'s wrapper
+    takes the limit its fortified form's object size gives; `gcvt`, which
+    has no fortified form, says so in its row (`wrapper(gcvt, limit)`, a
+    clause of the table's grammar), so that its digits are limited to an
+    array field as a string call's are. The other wrappers that write a
+    buffer without a size (`if_indextoname`, `basename_r`, `dirname_r`)
+    take no limit yet.
 
 ## Measured gates
 

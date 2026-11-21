@@ -145,7 +145,7 @@ char *__weavec_rt_realpath(const char *path, char *resolved, size_t limit,
  * exponent of five characters and the terminator. */
 enum { WeavecRtGcvtDigits = 1000 };
 
-char *__weavec_rt_gcvt(double value, int digits, char *d,
+char *__weavec_rt_gcvt(double value, int digits, char *d, size_t limit,
                        const struct __weavec_rt_site *site) {
   char buffer[WeavecRtGcvtDigits + 16];
   if (digits > WeavecRtGcvtDigits) {
@@ -153,10 +153,11 @@ char *__weavec_rt_gcvt(double value, int digits, char *d,
     struct __weavec_rt_site write;
     writeSite(&write, site);
     checkRange((uintptr_t)d, (uint64_t)digits + 16, &write);
+    checkLimit(d, (uint64_t)digits + 16, limit, &write);
     return gcvt(value, digits, d);
   }
   (void)gcvt(value, digits, buffer);
-  copyOut(d, buffer, strlen(buffer) + 1, SIZE_MAX, site);
+  copyOut(d, buffer, strlen(buffer) + 1, limit, site);
   return d;
 }
 

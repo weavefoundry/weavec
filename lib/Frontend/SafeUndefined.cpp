@@ -44,7 +44,9 @@
 
 #include "llvm/ADT/StringRef.h"
 
+#include <cstdint>
 #include <cstring>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -139,6 +141,36 @@ static std::string pointerMember(clang::QualType type) {
     if (holdsPointer(field->getType()))
       return field->getName().str();
   return "";
+}
+
+/// The type of what a library call's pointer argument points to, before
+/// it converts to the parameter's type: through the implicit conversions,
+/// to an array's element (an array passed by name decays to a pointer to
+/// it), and through an explicit cast to `void *`, which writes no bytes
+/// itself (`static_cast<void *>(&r)`); null when it is no pointer.
+static clang::QualType writtenPointee(const clang::Expr *argument) {
+  const clang::Expr *at = argument->IgnoreParens();
+  for (;;) {
+    if (const auto *implicit = llvm::dyn_cast<clang::ImplicitCastExpr>(at)) {
+      at = implicit->getSubExpr()->IgnoreParens();
+      continue;
+    }
+    if (const auto *cast = llvm::dyn_cast<clang::ExplicitCastExpr>(at);
+        cast != nullptr && cast->getType()->isVoidPointerType()) {
+      const clang::QualType from = cast->getSubExpr()->getType();
+      if (from->isPointerType() || from->isArrayType()) {
+        at = cast->getSubExpr()->IgnoreParens();
+        continue;
+      }
+    }
+    break;
+  }
+  const clang::QualType type = at->getType();
+  if (const clang::ArrayType *array = type->getAsArrayTypeUnsafe())
+    return array->getElementType();
+  if (type->isPointerType())
+    return type->getPointeeType();
+  return {};
 }
 
 namespace {
@@ -565,14 +597,12 @@ private:
           (parameter.access != core::LibraryParam::Access::Write &&
            parameter.access != core::LibraryParam::Access::ReadWrite))
         continue;
-      const clang::QualType given =
-          call.getArg(i)->IgnoreParenImpCasts()->getType();
-      if (!given->isPointerType() ||
-          (!holdsBool(given->getPointeeType()) &&
-           (!forges(given->getPointeeType()) || !counted(parameter))) ||
-          zeroOrCopy(call, i, given->getPointeeType(), *match))
+      const clang::QualType pointee = writtenPointee(call.getArg(i));
+      if (pointee.isNull() ||
+          (!holdsBool(pointee) && (!forges(pointee) || !counted(parameter))) ||
+          harmless(call, i, static_cast<unsigned>(row), pointee, *match))
         continue;
-      writtenBytes(call.getArg(i)->getExprLoc(), given->getPointeeType());
+      writtenBytes(call.getArg(i)->getExprLoc(), pointee);
       return;
     }
   }
@@ -586,32 +616,59 @@ private:
            parameter.bytes->kind != core::LibTerm::Kind::Constant;
   }
 
-  /// A fill with zero, or a copy whose source has the destination's type.
-  bool zeroOrCopy(const clang::CallExpr &call, unsigned index,
-                  clang::QualType type, const core::LibraryMatch &match) const {
+  /// Whether the bytes the call writes behind call argument `index` (row
+  /// argument `row`) forge nothing: none (a count of zero), the object's
+  /// own reordered (`permutes`), a fill with zero (`fills`), or a copy
+  /// whose source has the destination's type.
+  bool harmless(const clang::CallExpr &call, unsigned index, unsigned row,
+                clang::QualType type, const core::LibraryMatch &match) const {
+    const core::LibraryEntry &entry = *match.entry;
+    const auto integer = [&](unsigned argument) -> std::optional<std::int64_t> {
+      const int at = match.callArgument(argument);
+      if (at < 0 || static_cast<unsigned>(at) >= call.getNumArgs())
+        return std::nullopt;
+      const clang::Expr *value = call.getArg(static_cast<unsigned>(at));
+      clang::Expr::EvalResult result;
+      if (value->isValueDependent() || !value->EvaluateAsInt(result, ast))
+        return std::nullopt;
+      return result.Val.getInt().tryExtValue();
+    };
+    const core::LibTerm::Values values{.argument = integer, .stringLength = {}};
+    const core::LibraryParam &written = entry.params[row];
+    if (written.bytes && written.bytes->evaluate(values) == 0)
+      return true;
+    if (firstWritten(entry) == row &&
+        (entry.permutes || (entry.fills && entry.fills->evaluate(values) == 0)))
+      return true;
     for (unsigned i = 0; i < call.getNumArgs(); ++i) {
       if (i == index)
         continue;
-      const clang::Expr *argument = call.getArg(i)->IgnoreParenImpCasts();
-      const int row = match.rowArgument(i);
-      if (row < 0 ||
-          static_cast<std::size_t>(row) >= match.entry->params.size())
+      const int other = match.rowArgument(i);
+      if (other < 0 || static_cast<std::size_t>(other) >= entry.params.size())
         continue;
       const core::LibraryParam &parameter =
-          match.entry->params[static_cast<std::size_t>(row)];
-      if (parameter.type == core::LibraryParam::Type::Pointer &&
-          parameter.access == core::LibraryParam::Access::Read &&
-          argument->getType()->isPointerType() &&
-          clang::ASTContext::hasSameUnqualifiedType(
-              argument->getType()->getPointeeType(), type))
-        return true;
-      clang::Expr::EvalResult value;
-      if (parameter.type == core::LibraryParam::Type::Int && i == index + 1 &&
-          !argument->isValueDependent() &&
-          argument->EvaluateAsInt(value, ast) && value.Val.getInt().isZero())
+          entry.params[static_cast<std::size_t>(other)];
+      if (parameter.type != core::LibraryParam::Type::Pointer ||
+          parameter.access != core::LibraryParam::Access::Read)
+        continue;
+      const clang::QualType source = writtenPointee(call.getArg(i));
+      if (!source.isNull() &&
+          clang::ASTContext::hasSameUnqualifiedType(source, type))
         return true;
     }
     return false;
+  }
+
+  /// The row argument a call of `entry` writes first, which `fills` and
+  /// `permutes` are of.
+  [[nodiscard]] static std::optional<unsigned>
+  firstWritten(const core::LibraryEntry &entry) {
+    for (unsigned index = 0; index < entry.params.size(); ++index)
+      if (entry.params[index].type == core::LibraryParam::Type::Pointer &&
+          (entry.params[index].access == core::LibraryParam::Access::Write ||
+           entry.params[index].access == core::LibraryParam::Access::ReadWrite))
+        return index;
+    return std::nullopt;
   }
 
   /// Whether a `handler` call registers code: a function pointer that is

@@ -85,20 +85,27 @@ struct LibraryCall {
     if (match.entry->wrapper ? !wrapperTakesLimit()
                              : !isSafe(module(), function))
       return nullptr;
+    const std::optional<unsigned> index = firstWritten();
+    if (!index)
+      return nullptr;
+    const llvm::Value *pointer = argument(*index);
+    if (pointer == nullptr || !pointer->getType()->isPointerTy())
+      return nullptr;
+    const std::optional<std::uint64_t> limit =
+        fieldLimit(pointer, function.getParent()->getDataLayout());
+    return limit ? llvm::ConstantInt::get(context.i64, *limit) : nullptr;
+  }
+
+  /// The row argument the call writes first: the one a field's limit and a
+  /// fortified form's object size are of (and no other).
+  [[nodiscard]] std::optional<unsigned> firstWritten() const {
     const std::vector<core::LibraryParam> &params = match.entry->params;
-    for (unsigned index = 0; index < params.size(); ++index) {
-      if (params[index].type != core::LibraryParam::Type::Pointer ||
-          (params[index].access != core::LibraryParam::Access::Write &&
-           params[index].access != core::LibraryParam::Access::ReadWrite))
-        continue;
-      const llvm::Value *pointer = argument(index);
-      if (pointer == nullptr || !pointer->getType()->isPointerTy())
-        return nullptr;
-      const std::optional<std::uint64_t> limit =
-          fieldLimit(pointer, function.getParent()->getDataLayout());
-      return limit ? llvm::ConstantInt::get(context.i64, *limit) : nullptr;
-    }
-    return nullptr;
+    for (unsigned index = 0; index < params.size(); ++index)
+      if (params[index].type == core::LibraryParam::Type::Pointer &&
+          (params[index].access == core::LibraryParam::Access::Write ||
+           params[index].access == core::LibraryParam::Access::ReadWrite))
+        return index;
+    return std::nullopt;
   }
 
   /// A call of a C library's fortified inline definition (glibc's
@@ -158,11 +165,13 @@ struct LibraryCall {
   }
 
   /// Whether the row's wrapper takes a limit: some fortified form of the
-  /// row passes an object size.
+  /// row passes an object size, or the row says so (`wrapper(N, limit)`,
+  /// a buffer its caller gives without a size).
   [[nodiscard]] bool wrapperTakesLimit() const {
-    return llvm::any_of(match.entry->chk, [](const core::LibraryChk &chk) {
-      return chk.sizeArgument >= 0;
-    });
+    return (match.entry->wrapper && match.entry->wrapper->limit) ||
+           llvm::any_of(match.entry->chk, [](const core::LibraryChk &chk) {
+             return chk.sizeArgument >= 0;
+           });
   }
 
   /// RFC 0036 §6: `bytes` written at `pointer` within the object size.
@@ -432,7 +441,8 @@ void LibraryCall::guardScan(unsigned index) const {
 
 void LibraryCall::guardArguments() const {
   const core::LibraryEntry &entry = *match.entry;
-  llvm::Value *limit = objectSize();
+  llvm::Value *const limit = objectSize();
+  const std::optional<unsigned> limited = firstWritten();
   llvm::SmallVector<unsigned, 2> scans;
   for (unsigned index = 0; index < entry.params.size(); ++index) {
     const core::LibraryParam &param = entry.params[index];
@@ -499,11 +509,11 @@ void LibraryCall::guardArguments() const {
                                llvm::ConstantInt::get(module().i64, 0), bytes);
     guardBytes(pointer, bytes, write);
     // The object a fortified form writes is the first it writes; its bytes
-    // are addressable by now, so a failure is within an object.
-    if (limit != nullptr && write) {
+    // are addressable by now, so a failure is within an object. (A first
+    // written argument whose bytes are not known here, `strtok_r`'s string,
+    // has no limit: the next one written is another object.)
+    if (limit != nullptr && write && index == limited)
       checkLimit(pointer, bytes, limit);
-      limit = nullptr;
-    }
   }
   // The operands a copy must not overlap.
   for (const core::LibDisjoint &disjoint : entry.disjoint) {
