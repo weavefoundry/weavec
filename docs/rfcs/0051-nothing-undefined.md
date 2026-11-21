@@ -1360,6 +1360,37 @@ building it and from what the gates found. They override the body.
     entries in 3.1 MB. The comparison walks each input's entries where its
     read put them, and an entry that agrees with the first of its name
     costs one lookup.
+17. **After review (2026-11-21).** What a review of the implementation
+    found, and what was done with it:
+    - **Fixed.** An LTO object (bitcode, `-flto` and `-flto=thin`, and a
+      thin archive's members) had its record read by nothing, so a link of
+      LTO objects was not compared: its record is now its module's
+      `__weavec.defs`, read lazily (`test/Driver/definitions-lto.cpp`).
+      Each record ended in a zero byte, so an ELF partial link (`ld -r`)
+      that joins records was read to its first: records now follow one
+      another with nothing between them (`definitions-partial.cpp`). A
+      record whose string offsets fall outside its strings is not read. A
+      shift of a type whose width is not a power of two (`_BitInt(24)`)
+      took its count unmasked: it takes the remainder. Division and right
+      shifts kept `exact`, which Clang puts on the division of every
+      pointer difference, so a difference that is not a multiple of the
+      element's size was poison (J.2 item 45 says it is defined): they
+      lose it. `llvm.memcpy.inline` is a move as `llvm.memcpy` is
+      (`test/Guards/ir-defined.c`).
+    - **Not fixed: limitations.** A Mach-O partial link keeps no record
+      (amendment 16: the debug attribute that keeps records out of images
+      drops them from `ld -r`'s output too), so its units are not
+      compared. Vector division (`vector_size`, `ext_vector_type`) is not
+      checked: Clang's extensions are on neither list, and
+      `resources/safe/undefined.md` says so under _Beyond the lists_. A
+      `WEAVEC_SAFE` C++ function in a unit compiled without
+      `-fweavec-safe` that reaches its end stops with `unreachable`, not
+      `missing-return`: Clang's check of the end (`SanitizerKind::Return`)
+      is asked for in a safe unit, whose options the driver sets before it
+      knows which functions are safe; either stop ends the program. The
+      runtime's alternate signal stack is given back at a thread's end
+      only while it is the thread's: one a program replaces with its own
+      is kept (256 KiB per such thread).
 
 ## Measured gates
 

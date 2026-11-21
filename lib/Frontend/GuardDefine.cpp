@@ -11,12 +11,15 @@
 //
 //   - signed `add`, `sub`, `mul` and `shl` lose `nsw`: they wrap;
 //   - a shift whose count is not a constant below the width takes it modulo
-//     the width;
+//     the width (any width: `_BitInt(24)`'s too);
+//   - `sdiv`, `udiv`, `lshr` and `ashr` lose `exact`: a pointer difference
+//     that is not a multiple of the element's size is the quotient;
 //   - `fptosi` and `fptoui` saturate (`llvm.fpto[su]i.sat`), NaN to 0;
 //   - `llvm.assume` is removed, and `llvm.abs`, `llvm.ctlz` and `llvm.cttz`
 //     have a result for the least value and for zero;
-//   - `llvm.memcpy` (an assignment of a struct, a copy Clang emits) is a
-//     move: an object assigned to one it overlaps is copied as it was;
+//   - `llvm.memcpy` and `llvm.memcpy.inline` (an assignment of a struct, a
+//     copy Clang emits) are a move: an object assigned to one it overlaps is
+//     copied as it was;
 //   - the function and its loops lose `mustprogress`;
 //   - a division or remainder whose divisor may be zero stops
 //     (`division-by-zero`), and a signed one of the least value by -1
@@ -245,11 +248,12 @@ static void defineDivision(ModuleContext &module, llvm::BinaryOperator &divide,
   ++counts.division;
 }
 
-/// §2: a shift's count modulo the width.
+/// §2: a shift's count modulo the width: a mask for a width that is a power
+/// of two, a remainder for any other (`_BitInt(24)`).
 static void defineShift(llvm::BinaryOperator &shift, LedgerDefined &counts) {
   llvm::Type *type = shift.getType();
   const unsigned width = type->getScalarSizeInBits();
-  if (width == 0 || !llvm::isPowerOf2_32(width))
+  if (width == 0)
     return;
   llvm::Value *count = shift.getOperand(1);
   if (const auto *constant = llvm::dyn_cast<llvm::ConstantInt>(count);
@@ -263,7 +267,9 @@ static void defineShift(llvm::BinaryOperator &shift, LedgerDefined &counts) {
         return;
   llvm::IRBuilder<> builder(&shift);
   shift.setOperand(
-      1, builder.CreateAnd(count, llvm::ConstantInt::get(type, width - 1)));
+      1, llvm::isPowerOf2_32(width)
+             ? builder.CreateAnd(count, llvm::ConstantInt::get(type, width - 1))
+             : builder.CreateURem(count, llvm::ConstantInt::get(type, width)));
   ++counts.shifts;
 }
 
@@ -372,10 +378,16 @@ void defineSafe(ModuleContext &module, llvm::Function &function) {
           break;
         case llvm::Instruction::LShr:
         case llvm::Instruction::AShr:
+          binary->setIsExact(false);
           shifts.push_back(binary);
           break;
         case llvm::Instruction::SDiv:
         case llvm::Instruction::UDiv:
+          // Clang divides a pointer difference by the element's size with
+          // `exact`, which makes a remainder poison.
+          binary->setIsExact(false);
+          divisions.push_back(binary);
+          break;
         case llvm::Instruction::SRem:
         case llvm::Instruction::URem:
           divisions.push_back(binary);
@@ -397,6 +409,7 @@ void defineSafe(ModuleContext &module, llvm::Function &function) {
           assumptions.push_back(intrinsic);
           break;
         case llvm::Intrinsic::memcpy:
+        case llvm::Intrinsic::memcpy_inline:
           // An assignment of an object to one it overlaps copies as a
           // move: `memcpy`'s operands may not overlap.
           copies.push_back(llvm::cast<llvm::MemCpyInst>(intrinsic));

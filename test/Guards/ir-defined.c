@@ -1,5 +1,6 @@
 // RFC 0051 §2, §3: in a safe function, signed arithmetic wraps (no `nsw`),
-// a shift's count is taken modulo the width, a conversion from floating
+// a shift's count is taken modulo the width (any width), a division is not
+// `exact`, a copy is a move, a conversion from floating
 // point saturates, nothing is assumed, loops may run forever, a division
 // that may divide by zero (or the least value by -1) stops, the end of a
 // function that must return a value stops, and a large frame is probed. A
@@ -61,6 +62,37 @@ DEFINED int sign(int x) {
     return 1;
   if (x < 0)
     return -1;
+}
+
+// A width that is not a power of two takes the count's remainder.
+// CHECK-LABEL: define {{.*}}@wide(
+// CHECK: urem i24 %{{.*}}, 24
+// CHECK: lshr i24
+DEFINED unsigned wide(unsigned _BitInt(24) a, unsigned b) {
+  return (unsigned)(a >> b);
+}
+
+// A pointer difference is the quotient, whatever the remainder: no
+// `exact`.
+// CHECK-LABEL: define {{.*}}@distance(
+// CHECK-NOT: exact
+// CHECK: sdiv i64 %{{.*}}, 12
+struct triple {
+  int a, b, c;
+};
+DEFINED long distance(int i, int j) {
+  struct triple xs[4] = {0};
+  return &xs[i & 3] - &xs[j & 3];
+}
+
+// `__builtin_memcpy_inline` of overlapping bytes is a move too.
+// CHECK-LABEL: define {{.*}}@slide(
+// CHECK-NOT: memcpy.inline
+// CHECK: call void @llvm.memmove.p0.p0.i64(
+DEFINED int slide(void) {
+  char bytes[32] = {0};
+  __builtin_memcpy_inline(&bytes[1], &bytes[0], 16);
+  return bytes[1];
 }
 
 // A guarded function keeps Clang's arithmetic.

@@ -326,3 +326,7 @@ Rows of the same family say "as row N" or "as above". A row is one line of the s
 | `class.cdtor.dynamic.cast` | dynamic_cast of an object under construction through an unrelated type | rule | as above | `test/Safe/cxx-casts.cpp` |
 | `temp.inst.inf.recursion` | Template instantiation recurses without end | translation | Clang stops at its depth limit with an error | `test/Safe/undefined-translation.cpp` |
 | `except.handle.handler.ctor.dtor` | A constructor's try-block handler names a member | stale | the members are destroyed: the guards; in the fast build (Y) | `test/Safe/cxx-borrows.cpp` |
+
+## Beyond the lists
+
+Clang's extensions are not on either list, and one of them is not yet disposed of ([RFC 0051](/rfcs/0051-nothing-undefined/), amendment 17): a division or remainder of vector types (`__attribute__((vector_size(n)))`, `ext_vector_type`) whose divisor has a zero lane, or a signed one with the least value divided by -1 in a lane, is not checked in a safe function. A safe function that divides vectors should test the divisor's lanes first.

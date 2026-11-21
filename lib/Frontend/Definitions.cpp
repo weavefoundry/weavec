@@ -33,9 +33,12 @@
 //      share a user
 //
 // `key` is a hash of the kind and the name, `hash` of what the units must
-// agree on. The record is in a section the linker does not copy into the
-// image it links (Mach-O's debug attribute, ELF's SHF_EXCLUDE): an image
-// carries none of its units' records.
+// agree on. Records follow one another with nothing between them (an ELF
+// partial link, `ld -r`, joins its objects'). The record is in a section
+// the linker does not copy into the image it links (Mach-O's debug
+// attribute, ELF's SHF_EXCLUDE): an image carries none of its units'
+// records, nor does a Mach-O partial link. An LTO object's record is its
+// bitcode's `__weavec.defs`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -60,8 +63,14 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/BinaryFormat/Magic.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/Binary.h"
+#include "llvm/Object/IRObjectFile.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
@@ -70,6 +79,7 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -476,7 +486,7 @@ void guard::emitDefinitions(ModuleContext &module) {
     return;
   llvm::Constant *data = llvm::ConstantDataArray::getString(
       module.context, module.options.safe->definitionRecord,
-      /*AddNull=*/true);
+      /*AddNull=*/false);
   auto *record = new llvm::GlobalVariable(
       module.module, data->getType(), /*isConstant=*/true,
       llvm::GlobalValue::PrivateLinkage, data, "__weavec.defs");
@@ -520,6 +530,8 @@ struct Recorded {
 struct Records {
   std::vector<llvm::object::OwningBinary<llvm::object::Binary>> binaries;
   std::vector<std::unique_ptr<llvm::object::Binary>> members;
+  /// The records of LTO objects, copied out of their modules.
+  std::vector<std::unique_ptr<std::string>> copies;
   std::vector<std::string> names;
   std::vector<Recorded> entries;
   DefinitionsCompared found;
@@ -556,9 +568,22 @@ static void readRecords(llvm::StringRef contents, unsigned from,
     const std::uint64_t size = Header + (count * EntryBytes) + bytes;
     if (contents.size() < size)
       return;
-    ++records.found.safe;
     const char *table = contents.data() + Header;
     const char *strings = table + (count * EntryBytes);
+    // Every string ends inside the area, and every offset is into it: a
+    // record that is not whole is not read.
+    const auto inside = [&](const char *entry, unsigned at) {
+      return little(entry + at, 4) < bytes;
+    };
+    bool whole = bytes != 0 && strings[bytes - 1] == '\0';
+    for (std::uint64_t i = 0; whole && i < count; ++i) {
+      const char *entry = table + (i * EntryBytes);
+      whole = inside(entry, 4) && inside(entry, 24) && inside(entry, 28) &&
+              inside(entry, 32);
+    }
+    if (!whole)
+      return;
+    ++records.found.safe;
     for (std::uint64_t i = 0; i < count; ++i) {
       const char *entry = table + (i * EntryBytes);
       records.entries.push_back(
@@ -642,18 +667,63 @@ static void readFile(const llvm::object::Binary &binary, std::string from,
     readObject(*object, std::move(from), records);
 }
 
+/// An LTO object (bitcode): what it defines, from its symbol table, and its
+/// record, from its module's `__weavec.defs` (the module is read lazily:
+/// its functions' code is not).
+static void readBitcode(llvm::MemoryBufferRef buffer, const std::string &from,
+                        const Wanted &wanted, Records &records) {
+  llvm::LLVMContext context;
+  llvm::Expected<std::unique_ptr<llvm::object::IRObjectFile>> file =
+      llvm::object::IRObjectFile::create(buffer, context);
+  if (!file) {
+    llvm::consumeError(file.takeError());
+    return;
+  }
+  readFile(**file, from, wanted, records);
+  if (!wanted.compare)
+    return;
+  ++records.found.objects;
+  for (const llvm::Module &module : (*file)->modules())
+    for (const llvm::GlobalVariable &global : module.globals()) {
+      const llvm::StringRef section = global.getSection();
+      if (!global.hasInitializer() || (section != DefinitionsSectionMachO &&
+                                       section != DefinitionsSectionELF))
+        continue;
+      const auto *data =
+          llvm::dyn_cast<llvm::ConstantDataSequential>(global.getInitializer());
+      if (data == nullptr)
+        continue;
+      // The record outlives the module's context: a copy of its own.
+      records.copies.push_back(
+          std::make_unique<std::string>(data->getRawDataValues()));
+      records.names.push_back(from);
+      readRecords(*records.copies.back(),
+                  static_cast<unsigned>(records.names.size() - 1), records);
+    }
+}
+
 /// Reads `path`: an object, a linked image or each member of an archive.
 static void readInput(const std::string &path, const Wanted &wanted,
                       Records &records) {
   if (!llvm::sys::fs::is_regular_file(path))
     return;
-  llvm::Expected<llvm::object::OwningBinary<llvm::object::Binary>> binary =
-      llvm::object::createBinary(path);
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
+      llvm::MemoryBuffer::getFile(path, /*IsText=*/false,
+                                  /*RequiresNullTerminator=*/false);
+  if (!buffer)
+    return;
+  if (llvm::identify_magic((*buffer)->getBuffer()) ==
+      llvm::file_magic::bitcode) {
+    readBitcode((*buffer)->getMemBufferRef(), path, wanted, records);
+    return;
+  }
+  llvm::Expected<std::unique_ptr<llvm::object::Binary>> binary =
+      llvm::object::createBinary((*buffer)->getMemBufferRef());
   if (!binary) {
     llvm::consumeError(binary.takeError());
     return;
   }
-  records.binaries.push_back(std::move(*binary));
+  records.binaries.emplace_back(std::move(*binary), std::move(*buffer));
   const llvm::object::Binary *read = records.binaries.back().getBinary();
   if (llvm::isa<llvm::object::SymbolicFile>(read)) {
     readFile(*read, path, wanted, records);
@@ -664,17 +734,28 @@ static void readInput(const std::string &path, const Wanted &wanted,
     return;
   llvm::Error error = llvm::Error::success();
   for (const llvm::object::Archive::Child &child : archive->children(error)) {
+    llvm::Expected<llvm::StringRef> name = child.getName();
+    std::string from =
+        path + "(" + (name ? name->str() : std::string("?")) + ")";
+    if (!name)
+      llvm::consumeError(name.takeError());
+    // A thin LTO archive's members are bitcode.
+    if (llvm::Expected<llvm::MemoryBufferRef> bytes =
+            child.getMemoryBufferRef()) {
+      if (llvm::identify_magic(bytes->getBuffer()) ==
+          llvm::file_magic::bitcode) {
+        readBitcode(*bytes, from, wanted, records);
+        continue;
+      }
+    } else {
+      llvm::consumeError(bytes.takeError());
+    }
     llvm::Expected<std::unique_ptr<llvm::object::Binary>> member =
         child.getAsBinary();
     if (!member) {
       llvm::consumeError(member.takeError());
       continue;
     }
-    llvm::Expected<llvm::StringRef> name = child.getName();
-    std::string from =
-        path + "(" + (name ? name->str() : std::string("?")) + ")";
-    if (!name)
-      llvm::consumeError(name.takeError());
     records.members.push_back(std::move(*member));
     readFile(*records.members.back(), std::move(from), wanted, records);
   }
