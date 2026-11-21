@@ -31,7 +31,8 @@ struct Ref {
 };
 
 Ref forge(const long *p) {
-  return std::bit_cast<Ref>(std::array<long, 2>{std::bit_cast<long>(p) + 32, 1}); // expected-error {{bytes are written into a 'Ref', which holds a pointer ('p') they would forge}}
+  // RFC 0052 §6: and 'Ref''s pointer could point into the temporary.
+  return std::bit_cast<Ref>(std::array<long, 2>{std::bit_cast<long>(p) + 32, 1}); // expected-error {{bytes are written into a 'Ref', which holds a pointer ('p') they would forge}} expected-error {{the value holds a borrow of a temporary 'std::array<long, 2>' and is returned [weavec-safe:escape]}}
 }
 
 void overwrite(Ref &r, long bits) {

@@ -4721,13 +4721,14 @@ private:
               ? mayLeave
               : !place.first->getType()->isLValueReferenceType())
         continue;
+      std::string name = "*this";
+      if (place.second != nullptr)
+        name = place.second->getNameAsString();
+      else if (place.first != nullptr)
+        name = place.first->getNameAsString();
       if (emit && reportedMoves.emplace(place, where.getRawEncoding()).second)
         report(at, rule::OwnerMoved,
-               "'" +
-                   (place.second != nullptr ? place.second->getNameAsString()
-                                            : place.first->getNameAsString()) +
-                   "' is left moved when the function returns",
-               where,
+               "'" + name + "' is left moved when the function returns", where,
                "moved here; assign to it before returning ('x = {}', or "
                "move with 'std::exchange(x, {})'), or take the object by "
                "value or by rvalue reference");
