@@ -95,6 +95,7 @@ int main() {
 // LEDGER-NEXT: "shareable": false
 // LEDGER: "functions": [
 // LEDGER: "function": "Log::Log"
+// LEDGER-NEXT: "handlers": 0
 // LEDGER-NEXT: "line"
 // LEDGER-NEXT: "locks": false
 // LEDGER-NEXT: "owns": false
@@ -102,9 +103,11 @@ int main() {
 // LEDGER-NEXT: "starts": 1
 // LEDGER-NEXT: "tier": "safe"
 // LEDGER: "function": "Log::add"
+// LEDGER-NEXT: "handlers": 0
 // LEDGER-NEXT: "line"
 // LEDGER-NEXT: "locks": true
 // LEDGER: "function": "spawn"
+// LEDGER-NEXT: "handlers": 0
 // LEDGER-NEXT: "line"
 // LEDGER-NEXT: "locks": false
 // LEDGER-NEXT: "owns": false
@@ -112,12 +115,13 @@ int main() {
 // LEDGER-NEXT: "starts": 1
 // LEDGER-NEXT: "tier": "guarded"
 // LEDGER: "function": "total"
+// LEDGER-NEXT: "handlers": 0
 // LEDGER-NEXT: "line"
 // LEDGER-NEXT: "locks": false
 // LEDGER-NEXT: "owns": false
 // LEDGER-NEXT: "sends": false
 // LEDGER-NEXT: "starts": 1
-// LEDGER: "version": 12
+// LEDGER: "version": 13
 
 // AUDIT: functions that are not safe and start threads or use locks
 // AUDIT-NEXT: safe-cxx-threads.cpp:{{[0-9]+}}: spawn (guarded)
@@ -126,6 +130,6 @@ int main() {
 // AUDIT: globals of code that is not safe that safe code names
 // AUDIT-NEXT: safe-cxx-threads.cpp:{{[0-9]+}}: main.counter
 // JSON-DAG: "schema": "weavec-audit"
-// JSON-DAG: "version": 8
+// JSON-DAG: "version": 9
 // JSON-DAG: "threads": [
 // JSON-DAG: "sends": [

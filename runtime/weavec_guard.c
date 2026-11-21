@@ -743,3 +743,70 @@ void __ubsan_handle_out_of_bounds_abort(void *data, uintptr_t index) {
   weavecRtFail("index-out-of-bounds", index, 0, &site);
   __builtin_trap();
 }
+
+/*===-- What a safe function leaves undefined (RFC 0051 section 3) ---------===*/
+
+/* Each stop is a report that ends the program in every mode: there is no
+ * value to go on with. The entry points are trivial wrappers of noinline
+ * helpers, as the guards' slow paths are. */
+
+static __attribute__((noinline, noreturn)) void
+stopUndefined(const char *kind, const char *message,
+              const struct __weavec_rt_site *site) {
+  weavecRtFailMessage(kind, message, site);
+}
+
+void __weavec_rt_unreachable(const struct __weavec_rt_site *site) {
+  stopUndefined("unreachable",
+                "reached code the program says cannot be reached", site);
+}
+
+void __weavec_rt_missing_return(const struct __weavec_rt_site *site) {
+  stopUndefined("missing-return",
+                "the function ended without returning a value", site);
+}
+
+static __attribute__((noinline, noreturn)) void
+stopDivision(const struct __weavec_rt_site *site, unsigned bits) {
+  char message[64];
+  if (bits == 0)
+    stopUndefined("division-by-zero", "division by zero", site);
+  (void)snprintf(message, sizeof message,
+                 "the least %u-bit integer divided by -1", bits);
+  stopUndefined("division-overflow", message, site);
+}
+
+void __weavec_rt_division(const struct __weavec_rt_site *site, unsigned bits) {
+  stopDivision(site, bits);
+}
+
+/* Clang's `return` and `unreachable` checks (SanitizerKind::Return in a safe
+ * C++ unit) call these with their own location record; UBSan's runtime,
+ * when linked, provides them instead. */
+struct weavecRtUbsanAt {
+  struct weavecRtUbsanLocation location;
+};
+
+WEAVEC_RT_REPLACEABLE __attribute__((noreturn)) void
+__ubsan_handle_missing_return(void *data);
+WEAVEC_RT_REPLACEABLE __attribute__((noreturn)) void
+__ubsan_handle_builtin_unreachable(void *data);
+
+static __attribute__((noinline, noreturn)) void
+stopAt(const char *kind, const char *message, const void *data) {
+  const struct weavecRtUbsanAt *at = (const struct weavecRtUbsanAt *)data;
+  struct __weavec_rt_site site;
+  weavecRtSiteSet(&site, at->location.file, at->location.line,
+                  at->location.column, 0);
+  stopUndefined(kind, message, &site);
+}
+
+void __ubsan_handle_missing_return(void *data) {
+  stopAt("missing-return", "the function ended without returning a value",
+         data);
+}
+
+void __ubsan_handle_builtin_unreachable(void *data) {
+  stopAt("unreachable", "reached code the program says cannot be reached",
+         data);
+}

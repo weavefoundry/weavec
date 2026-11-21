@@ -4,7 +4,7 @@ A safe function (`WEAVEC_SAFE`, or every function of a unit compiled with `-fwea
 
 A rule that both languages have says first what it means in C, then, under _In C++_, what it means there. [`safe-cxx`](#safe-cxx) is the page to read before writing safe C++: the kinds of pointer its rules are stated over.
 
-The C examples below include `<weavec.h>`, `<stddef.h>`, `<stdio.h>`, `<stdlib.h>` and `<string.h>`; the C++ ones `<weavec.h>` and the standard library's containers, strings, smart pointers and algorithms, as C++20. The design is in [RFC 0041](/rfcs/0041-safe-c/) (bounds), [RFC 0042](/rfcs/0042-typed-memory/) (typed memory), [RFC 0043](/rfcs/0043-ownership/) (ownership), [RFC 0044](/rfcs/0044-safe-cxx/) (C++), [RFC 0046](/rfcs/0046-thread-safety/) (threads), [RFC 0047](/rfcs/0047-conversion-in-place/) (bounds and aliased classes in C++, converting existing code) and [RFC 0048](/rfcs/0048-safe-code-without-the-shadow/) (kept parameters, ends, what a fast build believes). The thread examples include `<atomic>`, `<condition_variable>`, `<future>`, `<mutex>`, `<shared_mutex>` and `<thread>` too.
+The C examples below include `<weavec.h>`, `<signal.h>`, `<stdbool.h>`, `<stddef.h>`, `<stdio.h>`, `<stdlib.h>` and `<string.h>`; the C++ ones `<weavec.h>`, `<bit>`, `<csignal>` and the standard library's containers, strings, smart pointers and algorithms, as C++20. The design is in [RFC 0041](/rfcs/0041-safe-c/) (bounds), [RFC 0042](/rfcs/0042-typed-memory/) (typed memory), [RFC 0043](/rfcs/0043-ownership/) (ownership), [RFC 0044](/rfcs/0044-safe-cxx/) (C++), [RFC 0046](/rfcs/0046-thread-safety/) (threads), [RFC 0047](/rfcs/0047-conversion-in-place/) (bounds and aliased classes in C++, converting existing code) and [RFC 0048](/rfcs/0048-safe-code-without-the-shadow/) (kept parameters, ends, what a fast build believes). The thread examples include `<atomic>`, `<condition_variable>`, `<future>`, `<mutex>`, `<shared_mutex>` and `<thread>` too.
 
 ## safe-cxx
 
@@ -19,7 +19,7 @@ Every pointer, reference and object in a safe function is one of four kinds:
 
 A raw pointer points to one object unless its declaration, an array or the library says how many: Safe C's bounds (`WEAVEC_COUNTED_BY(n)`, `WEAVEC_ENDED_BY(e)`, `WEAVEC_NULL_TERMINATED` and the rest) mean the same in C++, on parameters, results, members and globals; an array keeps its length when it becomes a pointer; a container's `data()` has its `size()` elements; `main`'s `argv` has `argc`. Such a pointer is indexed and stepped, and each access is compared with its bound when it runs ([`index-single`](#index-single), [`call-args`](#call-args), [`counted-pair`](#counted-pair), [`field-address`](#field-address)). A `std::span` is the same thing as a type; existing code keeps its pointers and declares their bounds.
 
-The other flow rules are [`owner-moved`](#owner-moved) (an object used after `std::move`) and [`call-alias`](#call-alias). The rules of single expressions are [`index-single`](#index-single), [`pointer-cast`](#pointer-cast), [`pointer-bytes`](#pointer-bytes), [`union-pointer`](#union-pointer), [`int-to-pointer`](#int-to-pointer), [`variadic`](#variadic), [`no-asm`](#no-asm), [`unsafe-block`](#unsafe-block), [`bad-annotation`](#bad-annotation) and [`not-modeled`](#not-modeled). Rules without an _In C++_ part are C's.
+The other flow rules are [`owner-moved`](#owner-moved) (an object used after `std::move`) and [`call-alias`](#call-alias). The rules of single expressions are [`index-single`](#index-single), [`pointer-cast`](#pointer-cast), [`pointer-bytes`](#pointer-bytes), [`union-pointer`](#union-pointer), [`int-to-pointer`](#int-to-pointer), [`variadic`](#variadic), [`no-asm`](#no-asm), [`assumed`](#assumed), [`signal-handler`](#signal-handler), [`unsafe-block`](#unsafe-block), [`bad-annotation`](#bad-annotation) and [`not-modeled`](#not-modeled). Rules without an _In C++_ part are C's. A safe function has no behavior the language leaves undefined ([RFC 0051](/rfcs/0051-nothing-undefined/)): what no rule rejects is defined or stops when it runs ([`defined`](#defined)), safe units that disagree do not link ([`definition-mismatch`](#definition-mismatch)), and `--weavec-explain undefined` lists every item of the two languages' lists and what disposes of it.
 
 Threads add three facts about a type, each read from its structure ([RFC 0046](/rfcs/0046-thread-safety/)). A type is **sendable** when a value of it can be handed to another thread: what it owns is its own, and every pointer it holds points to something shareable (`std::vector<std::string>`, `std::unique_ptr<Job>`, a `std::future<int>`; not a `std::string_view`, a `std::shared_ptr<State>` of a plain struct, or a `std::function`, whose type does not say what it captured). A type is **shareable** when two threads can use one object of it at once: an atomic, a condition variable, a `std::mutex`, or a class each of whose members is shareable, `const` and frozen, a thread member, or guarded by the class's one lock member (a **locked class**). A type is **frozen** when an object of it reached only through `const` is never written: no `mutable` member that is not shareable, and no pointer to what is not shareable. Then: what a thread is given by value is sendable ([`thread-send`](#thread-send)); what it reaches by reference, and every global, is shareable or a `const` object of frozen type ([`thread-share`](#thread-share)), or a local the function lends it and keeps off until the thread ends ([`thread-lent`](#thread-lent)); a locked member is used only while a guard on its lock lives ([`lock-held`](#lock-held)). Nothing of this changes what is compiled: these rules have no check behind them at run time.
 
@@ -222,6 +222,20 @@ double radius(Shape *shape) {
 }
 ```
 
+Two conversions are rejected because what they make is used later ([RFC 0051](/rfcs/0051-nothing-undefined/)): a member pointer converted to a base class's (applied to a base that is not the derived object, it names a member that is not there), and an owner of a base (`std::unique_ptr<Base>`) made from an owner of a derived object when the base's destructor is not virtual (the object would be destroyed as the base). A writable byte view is not made of an object that holds a `bool` ([`pointer-bytes`](#pointer-bytes)).
+
+```cpp rejected
+struct Shape { double area = 0; };
+struct Circle : Shape { std::string name = "c"; };
+std::unique_ptr<Shape> make() { return std::make_unique<Circle>(); }
+```
+
+```cpp accepted
+struct Shape { virtual ~Shape() = default; double area = 0; };
+struct Circle : Shape { std::string name = "c"; };
+std::unique_ptr<Shape> make() { return std::make_unique<Circle>(); }
+```
+
 ## pointer-bytes
 
 Memory that holds pointers is not written as bytes, nor copied or zeroed in part: a pointer would be half written or forged.
@@ -241,9 +255,28 @@ void clear(struct item *it) {
 
 Copy whole objects (`*d = *s`), zero whole objects (`memset(p, 0, n * sizeof *p)`).
 
+A `bool` is 0 or 1 ([RFC 0051](/rfcs/0051-nothing-undefined/)): bytes are not written into an object that holds one, by a library call that writes its argument (`memcpy`, `fread`, `read`, `recv` and the rest) or through a byte pointer, but a whole object zeroed or copied from one of its own type. Give the member the type `uint8_t`, or read the bytes and assign each member.
+
+```c rejected
+struct header { unsigned length; bool compressed; };
+int load(FILE *file, struct header *h) { return fread(h, sizeof *h, 1, file) == 1; }
+```
+
+```c accepted
+struct header { unsigned length; bool compressed; };
+int load(FILE *file, struct header *h) {
+  unsigned char bytes[8];
+  if (fread(bytes, sizeof bytes, 1, file) != 1)
+    return 0;
+  h->length = (unsigned)bytes[0] | (unsigned)bytes[1] << 8;
+  h->compressed = bytes[4] != 0;
+  return 1;
+}
+```
+
 ### In C++
 
-The bytes of an object that is not trivially copyable are not read or written by `memcpy`, `memset`, `memmove` or `memcmp`.
+The bytes of an object that is not trivially copyable are not read or written by `memcpy`, `memset`, `memmove` or `memcmp`, and bytes are not written into an object that holds a `bool`, by a call or by `std::bit_cast`.
 
 ```cpp rejected
 struct Item { int id = 0; std::string name; };
@@ -253,6 +286,14 @@ void copy(Item &to, const Item &from) { std::memcpy(&to, &from, sizeof(Item)); }
 ```cpp accepted
 struct Item { int id = 0; std::string name; };
 void copy(Item &to, const Item &from) { to = from; }
+```
+
+```cpp rejected
+bool flag(unsigned char byte) { return std::bit_cast<bool>(byte); }
+```
+
+```cpp accepted
+bool flag(unsigned char byte) { return byte != 0; }
 ```
 
 ## union-pointer
@@ -266,9 +307,21 @@ char first(union value *v) { return v->text[0]; }
 
 Keep a tag beside a struct per variant, or one pointer per variant in a struct.
 
+Nor is a `bool` member read where another member of another type shares its bytes ([RFC 0051](/rfcs/0051-nothing-undefined/)): the bytes may not be 0 or 1.
+
+```c rejected
+union flag { bool on; unsigned char byte; };
+bool on(union flag *f) { return f->on; }
+```
+
+```c accepted
+union flag { bool on; unsigned char byte; };
+unsigned char byte(union flag *f) { return f->byte; }
+```
+
 ### In C++
 
-A union with a member that is a pointer, a view or an object with a destructor is not read in a safe function; `std::variant` keeps which alternative is live and checks it.
+A union with a member that is a pointer, a view or an object with a destructor is not read in a safe function, and neither is a `bool` member that shares its bytes; `std::variant` keeps which alternative is live and checks it.
 
 ```cpp rejected
 union Either { long number; const char *text; };
@@ -642,6 +695,59 @@ int pause() {
   __asm__("nop");
   return 0;
 }
+```
+
+## assumed
+
+A safe function says nothing to the optimizer that nothing checks ([RFC 0051](/rfcs/0051-nothing-undefined/) §4.1): if the promise is wrong, the optimizer removes the checks that would have caught it. Not `[[assume(e)]]`, `__builtin_assume`, `__builtin_assume_aligned` or `__builtin_assume_separate_storage`; not `restrict` on a parameter or a local, nor `static` in an array parameter (`int a[static 4]`); not the attributes `pure`, `const`, `malloc`, `alloc_size`, `alloc_align`, `assume_aligned`, `returns_nonnull` or `nonnull` on the function, or (but the allocation attributes, which a project's own allocator states and Safe C types allocations by) on a function it calls that the unit's own files declare; not `#pragma clang loop vectorize(assume_safety)` or `interleave(assume_safety)`. The error's fix is certain: it deletes the token, or writes the form that asserts nothing, and `--weavec-fix` applies it. Hints that are only hints stay: `[[likely]]`, `__builtin_expect`, `[[nodiscard]]`, `noexcept`.
+
+```c rejected
+long sum2(long *restrict a, long *restrict b) { return *a + *b; }
+```
+
+```c accepted
+long sum2(long *a, long *b) { return *a + *b; }
+```
+
+`if (!(e)) __builtin_unreachable();` states what `[[assume(e)]]` does and is checked: reaching it stops with `unreachable` ([`defined`](#defined)).
+
+### In C++
+
+The same, `[[assume]]` included; `if (!(e)) std::unreachable();` is the checked form.
+
+```cpp rejected
+long at(const std::array<long, 8> &cells, std::size_t i) {
+  [[assume(i < 8)]];
+  return cells[i];
+}
+```
+
+```cpp accepted
+long at(const std::array<long, 8> &cells, std::size_t i) { return cells[i]; }
+```
+
+## signal-handler
+
+A safe function does not register code the system runs between any two instructions of the program ([RFC 0051](/rfcs/0051-nothing-undefined/) §4.3): `signal`, `sigaction`, `bsd_signal`, `sigset` and `sigvec` (the library table's `handler` rows). `signal` with `SIG_IGN` or `SIG_DFL` registers no code and is accepted, and so is `sigaction` that only reads the old action. Register the handler in a `WEAVEC_GUARDED` function and let it only set a `volatile sig_atomic_t` (C) or a `std::atomic` (C++), or write a byte to a pipe; or block the signal and wait for it with `sigwait` on a thread. The audit lists every function that is not safe and registers a handler.
+
+```c rejected
+volatile sig_atomic_t stops;
+void on_stop(int signal) { (void)signal; stops = 1; }
+void watch(void) { signal(SIGINT, on_stop); }
+```
+
+```c accepted
+void quiet(void) { signal(SIGPIPE, SIG_IGN); }
+```
+
+### In C++
+
+The same.
+
+```cpp rejected
+std::atomic<int> stops{0};
+void onStop(int) { stops.fetch_add(1); }
+void watch() { std::signal(SIGINT, onStop); }
 ```
 
 ## unsafe-block
@@ -1529,3 +1635,28 @@ public:
   }
 };
 ```
+
+## defined
+
+What no rule rejects in a safe function has one result, or stops the program with a report, in the fast and the checked build alike ([RFC 0051](/rfcs/0051-nothing-undefined/)): signed arithmetic wraps, a shift's count is taken modulo the width, a conversion from floating point to an integer saturates (NaN to 0), a loop may run forever, every local starts as zeroes, and an object assigned to one it overlaps is copied as it was; a division by zero stops (`division-by-zero`), and so does the least value divided by -1 (`division-overflow`); reaching code the program says cannot be reached (`std::unreachable()`, `__builtin_unreachable()`) stops (`unreachable`), and so does the end of a function that must return a value (`missing-return`); a frame larger than a page is probed, so that a full stack stops (`stack-exhaustion`). The flags that would let the optimizer assume otherwise (`-ffast-math`, `-Ofast`, `-fstrict-enums`, `-fno-wrapv` and the rest) are refused with `-fweavec-safe`.
+
+Five of Clang's warnings are errors in a unit compiled with `-fweavec-safe`, with Clang's own words: `-Wreturn-type` (a path that returns no value), `-Winvalid-noreturn` (a `[[noreturn]]` function that returns), `-Wformat` and `-Wformat-security` (a format that does not match its arguments, or is not a literal), and `-Wunsequenced` (an object changed twice, or read and changed, with nothing to order them); in C also `-Wdeprecated-non-prototype` (a call through a declaration without a prototype). They end in `[-Werror,-W<name>]`, not in a rule's identifier.
+
+```text
+sign.c:5:1: error: non-void function does not return a value in all control paths [-Werror,-Wreturn-type]
+```
+
+`weavec-cc --weavec-explain undefined` prints the list of the two languages' undefined behavior, each item with what disposes of it in a safe function and the test that shows it.
+
+## definition-mismatch
+
+The safe units of a program agree on what they share ([RFC 0051](/rfcs/0051-nothing-undefined/) §5): each records the layout and the WeaveC annotations of every type other units can name (a C++ class outside an unnamed namespace; in C, a struct a shared declaration names), the declaration of every function it defines or calls, and the type of every global it defines or names, and `weavec-cc` compares the records of a link's objects, archives and libraries before the linker runs. Two that disagree are an error, and the program is not linked:
+
+```text
+weavec-cc: error: 'Entry' is defined differently in two safe units [weavec-safe:definition-mismatch]
+cache.cpp:7:8: note: here it is 8 bytes: 'long hits' (cache.o)
+index.cpp:8:8: note: here it is 56 bytes: 'std::array<long, 6> slots', 'long hits' (index.o)
+weavec-cc: note: a program has one definition of each name: put a type only one file uses in an unnamed namespace, or define it in one header both include
+```
+
+Put a type only one file uses in an unnamed namespace (C: give it a name of its own), and compile a header every unit includes with the same macros. `-fno-weavec-definitions` links without comparing, and says so; it is for bisecting a build.

@@ -224,6 +224,9 @@ struct LibraryEntry {
   /// function keeps state of its own between calls (`strtok`, `localtime`).
   bool spawns = false;
   bool unshared = false;
+  /// RFC 0051 §4.3: `handler`, the call registers code the system runs
+  /// between any two instructions of the program (a signal handler).
+  bool handler = false;
   /// The line of `LibrarySpec.txt` the row starts on.
   unsigned line = 0;
 

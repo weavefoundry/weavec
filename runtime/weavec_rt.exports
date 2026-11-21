@@ -27,6 +27,7 @@ __weavec_rt_delete_array_sized_at
 __weavec_rt_delete_at
 __weavec_rt_delete_sized_at
 __weavec_rt_dirname_r
+__weavec_rt_division
 __weavec_rt_dprintf
 __weavec_rt_escape_check
 __weavec_rt_fast_program
@@ -61,6 +62,7 @@ __weavec_rt_library_assertion
 __weavec_rt_limit_fail
 __weavec_rt_localtime_r
 __weavec_rt_lstat
+__weavec_rt_missing_return
 __weavec_rt_mmap
 __weavec_rt_munmap
 __weavec_rt_new_typed
@@ -114,6 +116,7 @@ __weavec_rt_trapping
 __weavec_rt_typed_program
 __weavec_rt_uname
 __weavec_rt_unpoison_stack
+__weavec_rt_unreachable
 __weavec_rt_vasprintf
 __weavec_rt_vdprintf
 __weavec_rt_vfprintf
@@ -156,8 +159,13 @@ __sanitizer_set_report_path
 __sanitizer_start_switch_fiber
 __sanitizer_verify_contiguous_container
 __sanitizer_verify_double_ended_contiguous_container
+__ubsan_handle_builtin_unreachable
+__ubsan_handle_missing_return
 __ubsan_handle_out_of_bounds
 __ubsan_handle_out_of_bounds_abort
+
+# RFC 0051 section 7: every thread's alternate signal stack (weavec_report.c).
+pthread_create linux
 
 # The allocator (weavec_malloc.c).
 aligned_alloc

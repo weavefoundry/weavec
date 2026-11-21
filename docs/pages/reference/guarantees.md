@@ -23,6 +23,8 @@ A function excluded from AddressSanitizer (`__attribute__((no_sanitize("address"
 
 ## Safe functions
 
+**A program whose every function is safe either does what its source says, with arithmetic as below, or stops with a report; the one departure is the one (X6) and (Y1) to (Y6) state: in the fast build a pointer the rules did not follow may reach another object of its own type** ([RFC 0051](/rfcs/0051-nothing-undefined/), (N1) to (N6) below, and [the list of undefined behavior](/reference/undefined/) item by item).
+
 A function marked `WEAVEC_SAFE`, or defined in a unit compiled with `-fweavec-safe` ([RFC 0041](/rfcs/0041-safe-c/), [RFC 0042](/rfcs/0042-typed-memory/), [RFC 0043](/rfcs/0043-ownership/); [the guide](/guides/safe-c/)), compiles only if it keeps [Safe C's rules](/reference/rules/). It relies on **typed memory**: every pointer in memory that safe code reads through a declaration that bounds it (a struct field, a parameter, a result) is null or satisfies that bound, and every owner is the only one:
 
 - **(W1) Single.** An unannotated `T *` points to the `sizeof(T)` bytes of one object.
@@ -129,6 +131,25 @@ What gets weaker, in a program with a fast unit: the shadow no longer stands beh
 | **V-A1** | Code that is not safe stores in a pointer member, an element or a global that safe code loads only null or a pointer to a live object of the declared type that is not a local, and passes for a parameter that keeps only such an object or a local `weavec-cc` placed (RFC 0048).                                  |
 | **V-A2** | Code not compiled by `weavec-cc` that is handed a pointer to a plain local keeps it no longer than the call (S-A2, for C++).                                                                                                                                                                                         |
 
+## Nothing undefined
+
+For a safe function, in both builds ([RFC 0051](/rfcs/0051-nothing-undefined/); [the list](/reference/undefined/) disposes of every item of C23's Annex J.2 and of C++'s annex of core undefined behavior, each with a test):
+
+- **(N1) Arithmetic.** Signed `+`, `-`, `*`, negation and `<<` wrap in two's complement; a shift's count is taken modulo the width of the promoted operand; a conversion from floating point to an integer saturates, and NaN converts to 0; a division by zero stops (`division-by-zero`), and so does the least value divided by -1 (`division-overflow`). No fact the optimizer uses comes from an operation having had no overflow. A unit compiled with `-fweavec-safe` defines its arithmetic so in every function it emits, the library code it instantiates included.
+- **(N2) Control.** Execution leaves a function by a `return` with its value, by an exception, or in a call that does not return. Reaching code the source says cannot be reached (`std::unreachable()`, `__builtin_unreachable()`) stops (`unreachable`); so does the end of a function that must return a value (`missing-return`). A loop may run forever.
+- **(N3) Values.** Every object a safe function reads holds a value of its type: a local is zeroes until assigned, whatever its size; no safe function writes bytes into a `bool` or reads one through another member of a union ([`pointer-bytes`](/reference/rules/#pointer-bytes), [`union-pointer`](/reference/rules/#union-pointer)); an object assigned to one it overlaps is copied as it was.
+- **(N4) Nothing asserted.** No fact the optimizer uses in a safe function comes from an attribute, a builtin, a qualifier, a pragma or a flag that nothing checks ([`assumed`](/reference/rules/#assumed); the flags are refused).
+- **(N5) The stack.** A safe function's frame lies inside its thread's stack, or the program stops with a report (`stack-exhaustion`) before the frame is used: a frame larger than a page is probed page by page.
+- **(N6) One definition.** The safe units linked into one image agree on the layout and the annotations of every type they share that has a name outside its file, on the declaration of every function one calls and another defines, and on the type of every global ([`definition-mismatch`](/reference/rules/#definition-mismatch), when `weavec-cc` links them).
+
+|          | Assumption                                                                                                                                                                                                                                                                                                                  |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **N-A1** | The targets define what the definitions rely on: two's complement, a shift instruction that masks its count, IEEE floating point, a guard page below every stack.                                                                                                                                                           |
+| **N-A2** | A thread's stack has at least one inaccessible page below it, and the runtime sees the thread start (Darwin's thread hooks, the runtime's `pthread_create` on Linux) or allocate before its stack fills: a thread a `-static` program's C library starts and that never allocates is stopped by the fault without a report. |
+| **N-A3** | Objects that are not safe units (system libraries, units built without `-fweavec-safe` or a `WEAVEC_SAFE` function) define the names they share with safe units as the safe units' declarations say; (N6) compares safe units with each other. A link with `-fno-weavec-definitions` has no (N6).                           |
+
+A `WEAVEC_SAFE` function in a unit compiled without `-fweavec-safe` has (N1) to (N5) in its own code; the library code the unit instantiates keeps the command line's arithmetic, and `--weavec-audit` lists such units. A missing return in such a C++ function stops as `unreachable` (with optimization) or as a trap without a report (without), and a large local is zeroed where its scope starts. The guarantee holds in an enforcing mode (`trap`, `verify`): under `-fweavec-checks=none` nothing of WeaveC's is compiled in.
+
 ## Threads
 
 A safe C++ function is also checked against the rules of threads ([RFC 0046](/rfcs/0046-thread-safety/), [the guide](/guides/safe-cxx/#threads)), in both builds; nothing at run time stands behind them. For a program that meets Z-A1 to Z-A5:
@@ -203,7 +224,7 @@ The runtime's allocator also serves the C library's own allocations (`strdup`, `
 - **Data races.** A release by another thread between a guard and its access is not caught (A3).
 - **Anything in a `WEAVEC_UNSAFE` region** or an AddressSanitizer-excluded function, and **any code not compiled by `weavec-cc`**: other compilers, precompiled libraries (the C++ library's shared object among them: its `std::string` and stream members that take a buffer are checked at their calls, its other internals and virtual calls into it are not; `basic_string::copy` is checked at its first byte), Objective-C sources.
 - **C++ containers' internals other than their size.** A `std::string`'s inline buffer and a `std::map`'s nodes are checked as the objects they are, not against the container's logical extent; a container whose storage is not the runtime's heap is untracked memory; a class-specific `operator new` that carves objects out of larger blocks shares the block's shadow, as a C pool does.
-- **Leaks** outside safe functions (a safe function that drops an owner it names does not compile, (O3)), integer overflow as such, type confusion within an object, and inline assembly. Outside safe functions WeaveC reports nothing before the program runs; a static analyzer (such as the Clang static analyzer) finds leaks.
+- **Leaks** outside safe functions (a safe function that drops an owner it names does not compile, (O3)), integer overflow as such (in a safe function it wraps, (N1): a sum that wraps is defined and wrong), type confusion within an object, and inline assembly. Outside safe functions WeaveC reports nothing before the program runs; a static analyzer (such as the Clang static analyzer) finds leaks.
 
 ## Assumptions
 

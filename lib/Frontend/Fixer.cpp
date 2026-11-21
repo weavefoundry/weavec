@@ -68,11 +68,15 @@ struct Unit {
   llvm::json::Value raw = nullptr;
 };
 
-/// An insertion the fixer made, kept so that it can be taken out.
+/// An insertion the fixer made, kept so that it can be taken out; RFC 0051
+/// §4.1: with the text it removed there first, put back when it is.
 struct Inserted {
   unsigned offset = 0;
   std::string text;
   std::string key;
+  // A designated initializer may leave it out.
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  std::string removed = {};
 };
 
 /// The fixer's state and options.
@@ -390,7 +394,7 @@ struct Fixer {
             break;
           auto have = llvm::find_if(fix.edits, [&](const FixEdit &other) {
             return other.file == edit.file && other.offset == edit.offset &&
-                   other.text == edit.text;
+                   other.text == edit.text && other.removed == edit.removed;
           });
           if (have == fix.edits.end())
             fix.edits.push_back(edit);
@@ -442,12 +446,16 @@ struct Fixer {
     std::string &text = texts[file];
     std::vector<Inserted> &record = inserted[file];
     for (auto &[offset, edit] : edits) {
-      if (offset > text.size())
+      if (offset > text.size() ||
+          (!edit.removed.empty() &&
+           text.compare(offset, edit.removed.size(), edit.removed) != 0))
         continue;
+      text.erase(offset, edit.removed.size());
       text.insert(offset, edit.text);
       for (Inserted &each : record)
-        if (each.offset >= offset)
-          each.offset += static_cast<unsigned>(edit.text.size());
+        if (each.offset >= offset + edit.removed.size())
+          each.offset = each.offset + static_cast<unsigned>(edit.text.size()) -
+                        static_cast<unsigned>(edit.removed.size());
       edit.offset = offset;
       record.push_back(edit);
     }
@@ -526,8 +534,11 @@ struct Fixer {
     std::set<std::string> include;
     for (const auto &[key, fix] : fixes)
       for (const FixEdit &edit : fix.edits) {
-        byFile[edit.file].push_back(
-            {edit.offset, {.offset = 0, .text = edit.text, .key = key}});
+        byFile[edit.file].push_back({edit.offset,
+                                     {.offset = 0,
+                                      .text = edit.text,
+                                      .key = key,
+                                      .removed = edit.removed}});
         if (edit.needsInclude)
           include.insert(edit.file);
       }
@@ -535,11 +546,12 @@ struct Fixer {
     for (auto &[file, edits] : byFile) {
       // Identical edits from several units, once.
       std::ranges::sort(edits, [](const auto &a, const auto &b) {
-        return std::tie(a.first, a.second.text) <
-               std::tie(b.first, b.second.text);
+        return std::tie(a.first, a.second.text, a.second.removed) <
+               std::tie(b.first, b.second.text, b.second.removed);
       });
       const auto same = [](const auto &a, const auto &b) {
-        return a.first == b.first && a.second.text == b.second.text;
+        return a.first == b.first && a.second.text == b.second.text &&
+               a.second.removed == b.second.removed;
       };
       edits.erase(std::ranges::unique(edits, same).begin(), edits.end());
       if (include.contains(file) && !includesWeaveC(texts[file]))
@@ -582,12 +594,16 @@ struct Fixer {
         if (record[i].key != key)
           continue;
         const Inserted gone = record[i];
-        if (text.compare(gone.offset, gone.text.size(), gone.text) == 0)
+        if (text.compare(gone.offset, gone.text.size(), gone.text) == 0) {
           text.erase(gone.offset, gone.text.size());
+          text.insert(gone.offset, gone.removed);
+        }
         record.erase(record.begin() + static_cast<std::ptrdiff_t>(i));
         for (Inserted &each : record)
           if (each.offset > gone.offset)
-            each.offset -= static_cast<unsigned>(gone.text.size());
+            each.offset = each.offset +
+                          static_cast<unsigned>(gone.removed.size()) -
+                          static_cast<unsigned>(gone.text.size());
         changed.insert(file);
       }
     }
@@ -725,10 +741,17 @@ struct Fixer {
   //===--------------------------------------------------------------------===//
 
   void diff(const std::map<std::string, RuleFix> &fixes) {
-    std::map<std::string, std::map<unsigned, std::vector<std::string>>> byFile;
+    // Each offset's insertions, and the bytes a removal there takes out.
+    std::map<
+        std::string,
+        std::map<unsigned, std::pair<std::vector<std::string>, std::size_t>>>
+        byFile;
     for (const auto &[key, fix] : fixes)
-      for (const FixEdit &edit : fix.edits)
-        byFile[edit.file][edit.offset].push_back(edit.text);
+      for (const FixEdit &edit : fix.edits) {
+        auto &at = byFile[edit.file][edit.offset];
+        at.first.push_back(edit.text);
+        at.second = std::max(at.second, edit.removed.size());
+      }
     for (auto &[file, edits] : byFile) {
       if (!load(file))
         continue;
@@ -745,13 +768,14 @@ struct Fixer {
             start, (end == std::string::npos ? text.size() : end) - start);
         std::string now;
         std::size_t at = start;
-        for (const auto &[offset, inserts] : edits) {
-          if (offset < start || offset > start + old.size())
+        for (const auto &[offset, change] : edits) {
+          if (offset < start || offset > start + old.size() || offset < at)
             continue;
           now += text.substr(at, offset - at);
-          for (const std::string &each : inserts)
+          for (const std::string &each : change.first)
             now += each;
-          at = offset;
+          at =
+              std::min<std::size_t>(offset + change.second, start + old.size());
         }
         now += text.substr(at, start + old.size() - at);
         const unsigned line = static_cast<unsigned>(

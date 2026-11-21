@@ -218,6 +218,17 @@ struct SafeUnit {
   llvm::StringSet<> cxxSafe;
   llvm::StringSet<> cxxOther;
   llvm::StringSet<> cxxTrusted;
+  /// RFC 0051 §2: the symbols of every safe function the unit emits (C or
+  /// C++, either mode: its lambdas, its instantiations and the implicit
+  /// members of its safe classes), whose code GuardDefine defines; and
+  /// whether the unit was compiled with -fweavec-safe, whose options define
+  /// the rest of its code too.
+  llvm::StringSet<> definedSafe;
+  bool defined = false;
+  /// RFC 0051 §5: what the unit's safe code believes of the types,
+  /// functions and globals it shares with other units (Definitions.cpp);
+  /// empty for a unit with no safe function.
+  std::string definitionRecord;
   /// RFC 0050 §2.3: where a checked library view keeps its pointer and its
   /// count (an integer member, or `constant` elements when it has none).
   struct ViewLayout {
@@ -264,6 +275,10 @@ struct SafeUnit {
     unsigned starts = 0;
     bool locks = false;
     bool sends = false;
+    /// RFC 0051 §8: the signal handlers the function registers (the
+    /// table's `handler` rows), what the audit lists of code that is not
+    /// safe.
+    unsigned handlers = 0;
   };
   std::vector<Definition> definitions;
   /// RFC 0043 §11: each pointer field of the structs the unit defines

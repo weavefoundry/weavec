@@ -95,9 +95,24 @@ table, `LibrarySpec`; **no Clang/LLVM includes allowed**) and
 `weavec::Frontend` (the guard passes, Safe C's checker, unsafe regions, the
 enforcement ledger, the compiler driver). `tools/weavec-cc` is Clang's
 driver with WeaveC inside; there is no other tool, and no analysis beyond
-Safe C's rules, each decided inside one function. Full
+Safe C's rules, each decided inside one function. Since RFC 0051 a safe function has no behavior
+the language leaves undefined: `lib/Frontend/GuardDefine.cpp` makes its
+arithmetic wrap, its shifts and float conversions total, its struct copies
+moves, its frames probed, and its unreachable code, missing returns and
+divisions stop (with the runtime's handlers); a unit compiled with
+`-fweavec-safe` gets the arithmetic from its options too; the rules
+`assumed`, `signal-handler` and the `bool` cases of `pointer-bytes` and
+`union-pointer` (`lib/Frontend/SafeUndefined.cpp`) reject what only
+asserts; and each safe unit records what it shares, which the driver
+compares before a link (`lib/Frontend/Definitions.cpp`,
+`definition-mismatch`). `resources/safe/undefined.md` lists every item of
+C23's Annex J.2 and C++'s core list with its disposition and test
+(`scripts/check-undefined.py`). Full
 picture: `docs/architecture.md`. Design and the reasoning behind it:
-`docs/rfcs/`. Read `0050-checked-once.md` first (what a fast unit
+`docs/rfcs/`. Read `0051-nothing-undefined.md` first (the list and its
+dispositions, the definitions and the stops, the rules, the comparison at
+the link; its *Implementation amendments* and *Measured gates*), then
+`0050-checked-once.md` (what a fast unit
 checks once: views, range-based `for`, the pooled slots' shadow, the
 allocator's short paths, Safe C's library calls; its *Implementation
 amendments* and *Measured gates*), then `0049-errors-that-carry-their-fix.md` (errors as
@@ -202,7 +217,13 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
    `lib/Core`.
 2. WeaveC's only compile-time diagnostics are Safe C's and Safe C++'s
    errors (RFC 0041, RFC 0044), each ending in `[weavec-safe:<rule>]` with
-   a note, and each pinned by a `test/Safe/` test (`cxx-*.cpp` for C++). A new run-time report
+   a note, and each pinned by a `test/Safe/` test (`cxx-*.cpp` for C++);
+   RFC 0051's one exception: in a unit compiled with `-fweavec-safe`,
+   Clang's `-Wreturn-type`, `-Winvalid-noreturn`, `-Wformat`,
+   `-Wformat-security` and `-Wunsequenced` (and in C
+   `-Wdeprecated-non-prototype`) are errors under Clang's own names
+   (`test/Safe/defined.cpp`, `defined.c`), and a link's
+   `definition-mismatch` ends in the rule's tag. A new run-time report
    kind gets a `test/Guards/` test that pins its exact report line, and an
    entry in the command-line reference's list of kinds
    (`docs/pages/reference/cli.md`); the case runner's list of kinds
@@ -286,6 +307,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Change what RFC 0050 checks once (checked views, views made from pointers, range-based `for`, a pooled slot's shadow, the short paths, hardening) | `TrustedCalls` (`checkedView`, `viewLayout`, `madeView`, `rangeFor`) in `lib/Frontend/SafeCxx.cpp`, `libraryHardened` in `SafeCheck.cpp`; `guardMadeViews`, `rangeElement` and the range calls of `cloneTrusted` in `GuardFast.cpp`; `class … : checked` in `lib/Core/LibrarySpec.txt`; `keepsShadow`, `poolTake`, `poolGive`, `lookPool` in `runtime/weavec_alloc.c`, `__weavec_rt_tests_released`, `announce` in `GuardFast.cpp` (RFC 0050); tests `test/Guards/ir-views.cpp`, `view-made.cpp`, `range-instances.cpp`, `ir-pools.c`, `typed-reuse.cpp`, `test/Safe/typed-rules.c`, `rt_test` `pool-keeps-shadow` |
 | Change what a fast unit believes, kept parameters or placed locals (RFC 0048) | `typedAccess`, `typedPointer`, `checkStep`, `inHand`, `escapeCheck`, `placeLocals` and the split of inline functions in `lib/Frontend/GuardSafe.cpp`; `shadowless` in `GuardFast.cpp`; the plain frames in `escapes` (`GuardExpand.cpp`); the heap string check in `expand` (`GuardExpand.cpp`) and `__weavec_rt_string_entry` in `runtime/weavec_guard.c`; `Kept` and `keptAddresses` in `lib/Frontend/SafeCxx.cpp`, the placement marks in `SafeChecker` (`SafeCheck.cpp`); the `call-args` and `index-single` cases `positionIntoSingle`, `libraryAccess`, `readsEnd` in `SafeCheck.cpp`; the pools' slot lists in `runtime/weavec_alloc.c`; tests `test/Safe/cxx-kept.cpp`, `cxx-ends.cpp`, `test/Guards/placed-local.cpp`, `ir-typed-cxx.cpp`, `ir-strings.c`, `stack-escape-entry.cpp`, `test/Driver/safe-checks-modes.cpp` |
 | Change the fixes errors carry, the evidence, or `--weavec-fix` (RFC 0049) | `FixPlanner` in `lib/Frontend/SafeFix.cpp` (wants, evidence E1–E7, edits, notes), the `want(...)` calls beside the rules' reports in `SafeCheck.cpp`, `SafeCxx.cpp`, `SafeCxxFlow.cpp`; `include/weavec/Frontend/RuleFix.h`; the fixer in `lib/Frontend/Fixer.cpp`; the ledger's `errors`, `evidence`, `command`, `files` and the audit's plan in `EnforcementLedger.cpp`; tests `test/Safe/fix-*.c*`, `notes.c`, `test/Driver/safe-fix*.cpp`, `safe-survey.cpp`, `unittests/Frontend/RuleFixTest.cpp`; the rules' page `fix` |
+| Change what a safe function leaves undefined (definitions, stops, probes, the rules that reject what asserts, the comparison at the link) | `lib/Frontend/GuardDefine.cpp` (`defineSafe`, run first by GuardInsert), the safe unit's options and `promoteSafeWarnings`, `assumingFlag`, `compareLinkDefinitions` in `lib/Frontend/Driver.cpp`; `lib/Frontend/SafeUndefined.cpp` (`assumed`, `signal-handler`, `bool` bytes, member pointers, owners of a base); `lib/Frontend/Definitions.cpp` (`recordDefinitions`, `emitDefinitions`, `compareDefinitions`); the `handler` row clause of `lib/Core/LibrarySpec.txt`; `__weavec_rt_unreachable`, `__weavec_rt_missing_return`, `__weavec_rt_division`, `__ubsan_handle_missing_return` in `runtime/weavec_guard.c`; the alternate signal stacks and `stack-exhaustion` in `runtime/weavec_report.c` (RFC 0051); the list `resources/safe/undefined.md` and `scripts/check-undefined.py`; tests `test/Guards/ir-defined.c*`, `unreachable.cpp`, `missing-return.c*`, `division.c`, `stack-exhaustion.cpp`, `test/Safe/assumed.c*`, `signal-handler.cpp`, `bool-bytes.cpp`, `defined.c*`, `undefined-translation.c*`, `fix-assumed.cpp`, `test/Driver/safe-flags.cpp`, `definitions.cpp` |
 | Add an annotation                    | Don't, without an RFC: `WEAVEC_UNSAFE` and Safe C's are the only ones (`UnsafeRegions.h`, `SafeCheck.h`, `weavec.h`, `docs/annotations.md`) |
 | Change build flags / warnings        | `cmake/WeaveCWarnings.cmake`, `cmake/WeaveCLLVM.cmake` |
 | Add a CI job                         | `.github/workflows/ci.yml`                             |

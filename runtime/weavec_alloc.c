@@ -1024,6 +1024,8 @@ static __attribute__((noinline)) ThreadCache *makeCache(void) {
   cache->next = caches;
   caches = cache;
   give(&cacheListLock);
+  /* RFC 0051 section 3.3: where a full stack is reported from. */
+  weavecRtAltStack();
   return cache;
 }
 
@@ -1129,6 +1131,7 @@ static void drainCache(ThreadCache *cache, int check) {
 static void dropCache(void *value) {
   ThreadCache *cache = (ThreadCache *)value;
   (void)setCacheValue(CacheGone);
+  weavecRtAltStackDrop();
   if (cache == NULL || cache == CacheGone)
     return;
   drainCache(cache, 0);

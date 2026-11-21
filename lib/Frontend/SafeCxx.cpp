@@ -736,8 +736,10 @@ private:
         from->isIncompleteType() ||
         (from.isConstQualified() && !to.isConstQualified()))
       return false;
-    return to.isConstQualified() ||
-           (from.isTriviallyCopyableType(ast) && !holdsPointer(from));
+    // RFC 0051 §4.2: a byte written into a `bool` forges a value it may
+    // not hold.
+    return to.isConstQualified() || (from.isTriviallyCopyableType(ast) &&
+                                     !holdsPointer(from) && !holdsBool(from));
   }
 
   [[nodiscard]] static bool dropsConst(clang::QualType from, clang::QualType to,
@@ -1227,6 +1229,9 @@ private:
   /// RFC 0045 §4: the symbols `function` is emitted under, as safe code or
   /// as the unit's other code.
   void nameAs(const clang::FunctionDecl &function, bool safe) {
+    // RFC 0051 §2: every safe function's code is defined, in either mode.
+    if (safe)
+      symbolsOf(function, names, unit.definedSafe);
     if (!unit.fast)
       return;
     symbolsOf(function, names, safe ? unit.cxxSafe : unit.cxxOther);
@@ -1235,14 +1240,12 @@ private:
   /// The members the compiler writes for a class of the unit, which run as
   /// its own code: safe for a safe class.
   void implicitMembers(const clang::CXXRecordDecl &record) {
-    if (!unit.fast)
-      return;
     const bool safe = isSafe(record);
     for (const clang::CXXMethodDecl *method : record.methods())
       if ((method->isImplicit() || method->isDefaulted()) &&
           method->isDefined() && !method->isDeleted())
         nameAs(*method, safe);
-    if (!safe)
+    if (!safe || !unit.fast)
       return;
     for (const clang::FieldDecl *field : record.fields())
       trusted.members(field->getType());
@@ -1454,14 +1457,16 @@ private:
       tier = "safe";
     else if (unsafe(function))
       tier = "unsafe";
-    unit.definitions.push_back({.name = std::move(name),
-                                .tier = tier,
-                                .file = at.isValid() ? at.getFilename() : "",
-                                .line = line,
-                                .owns = false,
-                                .starts = 0,
-                                .locks = false,
-                                .sends = false});
+    unit.definitions.push_back(
+        {.name = std::move(name),
+         .tier = tier,
+         .file = at.isValid() ? at.getFilename() : "",
+         .line = line,
+         .owns = false,
+         .starts = 0,
+         .locks = false,
+         .sends = false,
+         .handlers = safe ? 0 : countHandlers(function)});
     threadFacts(function, unit.definitions.back());
     return unit.definitions.size() - 1;
   }

@@ -36,6 +36,7 @@
 #include "weavec_rt.h"
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
@@ -44,6 +45,7 @@
 #include <sys/ucontext.h>
 #if defined(__APPLE__)
 #include <mach/mach.h>
+#include <pthread/introspection.h>
 #endif
 #include <string.h>
 #include <unistd.h>
@@ -294,6 +296,9 @@ static struct Report {
   uintptr_t frameBase;
   int local;
   const struct __weavec_rt_global *global;
+  /* RFC 0051: the location is the first frame that has one (a full stack
+   * faults in a prologue, which has no line). */
+  int locate;
 } report;
 
 static WeavecRtLock reportLock;
@@ -823,6 +828,17 @@ static void finish(void) {
     count += stacks[i]->count;
   }
   weavecRtSymbolize(pcs, count, symbols);
+  /* RFC 0051: the first frame with a location. */
+  for (i = 0; report.locate && report.file == NULL && i < report.stack.count;
+       ++i) {
+    const struct weavecRtSymbol *at = &symbols[report.stack.first + i].lines[0];
+    if (symbols[report.stack.first + i].count != 0 && at->file != NULL) {
+      report.file = at->file;
+      report.line = at->line;
+      report.column = at->column;
+      report.pc = 0;
+    }
+  }
   /* A location the site does not give: the first frame's. */
   if (report.file == NULL && innermost(&report.stack) != NULL &&
       innermost(&report.stack)->file != NULL) {
@@ -1146,6 +1162,131 @@ static uintptr_t faultFp(const void *context) {
 #endif
 }
 
+/*===-- A full stack (RFC 0051 section 3.3) ---------------------------------===*/
+
+/* A thread's alternate signal stack: the fault handler runs on it, so that a
+ * fault on a full stack is reported. A mapping of its own, marked at its
+ * base so that a thread's end gives back only the runtime's. */
+enum { AltStackBytes = 256 * 1024 };
+static const uint64_t AltStackMark = 0x77656176656373ULL; /* "weavecs" */
+
+void weavecRtAltStack(void) {
+  stack_t current;
+  stack_t fresh;
+  void *map;
+  if (sigaltstack(NULL, &current) != 0 || (current.ss_flags & SS_DISABLE) == 0)
+    return;
+  map = mmap(NULL, AltStackBytes, PROT_READ | PROT_WRITE,
+             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (map == MAP_FAILED)
+    return;
+  *(uint64_t *)map = AltStackMark;
+  memset(&fresh, 0, sizeof fresh);
+  fresh.ss_sp = map;
+  fresh.ss_size = AltStackBytes;
+  if (sigaltstack(&fresh, NULL) != 0)
+    (void)munmap(map, AltStackBytes);
+}
+
+void weavecRtAltStackDrop(void) {
+  stack_t current;
+  stack_t off;
+  if (sigaltstack(NULL, &current) != 0 ||
+      (current.ss_flags & (SS_DISABLE | SS_ONSTACK)) != 0 ||
+      current.ss_size != AltStackBytes || current.ss_sp == NULL ||
+      *(const uint64_t *)current.ss_sp != AltStackMark)
+    return;
+  memset(&off, 0, sizeof off);
+  off.ss_flags = SS_DISABLE;
+  if (sigaltstack(&off, NULL) == 0)
+    (void)munmap(current.ss_sp, AltStackBytes);
+}
+
+/* Every thread gets its alternate stack before its start routine runs: on
+ * Darwin from the threads' introspection hook (and gives it back as it
+ * ends), on Linux from the runtime's pthread_create, which wraps the start
+ * routine. A thread the runtime does not see start (one a -static program's
+ * C library creates) gets one with its first allocation. */
+#if defined(__APPLE__)
+static pthread_introspection_hook_t previousHook;
+
+static void onThreadEvent(unsigned int event, pthread_t thread, void *address,
+                          size_t size) {
+  if (thread == pthread_self()) {
+    if (event == PTHREAD_INTROSPECTION_THREAD_START)
+      weavecRtAltStack();
+    else if (event == PTHREAD_INTROSPECTION_THREAD_TERMINATE)
+      weavecRtAltStackDrop();
+  }
+  if (previousHook != NULL)
+    previousHook(event, thread, address, size);
+}
+
+static void watchThreads(void) {
+  previousHook = pthread_introspection_hook_install(onThreadEvent);
+}
+#else
+struct weavecRtStart {
+  void *(*routine)(void *);
+  void *argument;
+};
+
+static void dropAltStack(void *unused) {
+  (void)unused;
+  weavecRtAltStackDrop();
+}
+
+static void *startThread(void *start) {
+  struct weavecRtStart copy = *(struct weavecRtStart *)start;
+  void *result;
+  (void)munmap(start, sizeof copy);
+  weavecRtAltStack();
+  pthread_cleanup_push(dropAltStack, NULL);
+  result = copy.routine(copy.argument);
+  pthread_cleanup_pop(1);
+  return result;
+}
+
+typedef int (*weavecRtCreate)(pthread_t *, const pthread_attr_t *,
+                              void *(*)(void *), void *);
+
+WEAVEC_RT_REPLACEABLE int pthread_create(pthread_t *thread,
+                                         const pthread_attr_t *attributes,
+                                         void *(*routine)(void *),
+                                         void *argument) {
+  static weavecRtCreate next;
+  struct weavecRtStart *start;
+  int status;
+  if (next == NULL)
+    next = (weavecRtCreate)dlsym(RTLD_NEXT, "pthread_create");
+  if (next == NULL)
+    return EAGAIN;
+  start = (struct weavecRtStart *)mmap(NULL, sizeof *start,
+                                       PROT_READ | PROT_WRITE,
+                                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if ((void *)start == MAP_FAILED)
+    return next(thread, attributes, routine, argument);
+  start->routine = routine;
+  start->argument = argument;
+  status = next(thread, attributes, startThread, start);
+  if (status != 0)
+    (void)munmap(start, sizeof *start);
+  return status;
+}
+
+static void watchThreads(void) {}
+#endif
+
+/* Whether a fault at `address` is in the guard below the calling thread's
+ * stack, within the distance one probe of a frame can reach. */
+static int belowStack(uintptr_t address, uintptr_t *size) {
+  uintptr_t low = 0;
+  uintptr_t high = 0;
+  weavecRtOwnStack(&low, &high);
+  *size = high - low;
+  return low != 0 && address < low + 4096 && address + 256 * 1024 >= low;
+}
+
 /* A fault the shadow did not see (a wild access, the inaccessible middle of
  * a huge block): one report, with the stack from the faulting instruction
  * (RFC 0040 section 5.6), then the signal again under the default
@@ -1163,7 +1304,24 @@ static void onFault(int signal, siginfo_t *info, void *context) {
 #else
   const int sent = info->si_code <= 0;
 #endif
-  if (!sent && begin("memory-fault", NULL)) {
+  uintptr_t size = 0;
+  if (!sent && belowStack(address, &size) && begin("stack-exhaustion", NULL)) {
+    struct Line line = {report.what, report.what + sizeof report.what - 1};
+    report.locate = 1;
+    report.pc = pc;
+    report.op = "access";
+    report.address = address;
+    report.stack.thread = weavecRtThread();
+    put(&line, "thread T");
+    putUnsigned(&line, report.stack.thread, 10);
+    put(&line, "'s stack of ");
+    putUnsigned(&line, size / 1024, 10);
+    put(&line, " KiB is full");
+    *line.at = 0;
+    report.stack.count = weavecRtUnwind(report.stack.pc, WeavecRtReportFrames,
+                                        faultFp(context), pc);
+    finish();
+  } else if (!sent && begin("memory-fault", NULL)) {
     struct Line line = {report.what, report.what + sizeof report.what - 1};
     report.pc = pc;
     report.op = write == 1 ? "write" : write == 0 ? "read" : "access";
@@ -1190,6 +1348,9 @@ __attribute__((constructor)) static void watchFaults(void) {
   int i;
   if (value != NULL && strcmp(value, "0") == 0)
     return;
+  /* The main thread's alternate stack, and every other thread's. */
+  weavecRtAltStack();
+  watchThreads();
   for (i = 0; i < 2; ++i) {
     struct sigaction action;
     if (sigaction(Faults[i], NULL, &action) != 0 ||

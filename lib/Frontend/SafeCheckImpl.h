@@ -105,6 +105,9 @@ struct Want {
     /// No fix: the declaration (or the one `expression` comes from) is the
     /// error's subject, for the fixer to withdraw a fix by (§6).
     Subject,
+    /// RFC 0051 §4.1: the text of `removal`, which only asserts, taken out
+    /// (certain).
+    Remove,
   };
   Kind kind = Kind::Bound;
   const clang::Decl *declaration = nullptr;
@@ -112,6 +115,13 @@ struct Want {
   const clang::FieldDecl *keeper = nullptr;
   /// Other declarations the rule read.
   std::vector<const clang::Decl *> subjects;
+  /// Remove: the characters to take out, and what goes in their place.
+  // A designated initializer may leave it out.
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  clang::CharSourceRange removal = {};
+  // A designated initializer may leave it out.
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  std::string replacement = {};
 };
 
 class FixPlanner;
@@ -121,6 +131,23 @@ class FixPlanner;
 [[nodiscard]] bool inSafeFile(const SafeUnit &unit,
                               const clang::SourceManager &sources,
                               clang::SourceLocation at);
+
+/// RFC 0051 §4 (SafeUndefined.cpp): `assumed`, `signal-handler`, and the
+/// `bool` cases of `pointer-bytes` and `union-pointer`, for one safe
+/// function, C or C++.
+void checkUndefined(
+    clang::ASTContext &ast, const clang::FunctionDecl &function,
+    const std::function<void(clang::SourceLocation, llvm::StringRef,
+                             llvm::StringRef, llvm::StringRef)> &report,
+    FixPlanner *fixes);
+
+/// RFC 0051 §4.2: whether `type` holds a `bool` at any depth of its own
+/// bytes (not behind a pointer).
+[[nodiscard]] bool holdsBool(clang::QualType type, unsigned depth = 0);
+
+/// RFC 0051 §8: the calls of `function` that register a signal handler
+/// (the table's `handler` rows), for the audit of code that is not safe.
+[[nodiscard]] unsigned countHandlers(const clang::FunctionDecl &function);
 
 /// RFC 0043: ownership's rules (§3) for one safe function's body.
 void checkOwnership(clang::ASTContext &ast, const clang::FunctionDecl &function,
@@ -183,6 +210,10 @@ public:
     clang::SourceLocation at;
     std::string text;
     std::vector<std::pair<clang::SourceLocation, std::string>> insertions;
+    /// RFC 0051 §4.1: the characters a removal takes out.
+    // A designated initializer may leave it out.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    std::vector<clang::CharSourceRange> removals = {};
   };
   /// Fills the fixes and subjects of the error reported at `at` from the
   /// want said for it (else, in `function`, from the error's message); the
