@@ -1391,6 +1391,54 @@ building it and from what the gates found. They override the body.
       runtime's alternate signal stack is given back at a thread's end
       only while it is the thread's: one a program replaces with its own
       is kept (256 KiB per such thread).
+18. **After the soundness probes (2026-11-21).** An adversarial round of
+    safe programs that compile without an error found two items this RFC
+    disposes of that the implementation did not hold:
+    - **A fresh block's bytes (§2.3, J.2 items 185, `basic.indet.value`).**
+      The runtime's blocks are zeroes, but LLVM takes the bytes of a block
+      `malloc`, `aligned_alloc` or a builtin `new` returns to be undefined
+      (`allockind("alloc,uninitialized")`, which its inference of the
+      library's attributes gives after GuardInsert) and folded a read of
+      one to whatever a register held. In a unit with a safe function,
+      every such call now has the kind it had without `uninitialized`
+      (`allockind("alloc")`, `aligned_alloc`'s with `aligned`) and is not
+      the library's builtin (`defineAllocations`, GuardDefine.cpp), so a
+      read of a fresh block loads it, and the runtime's zeroes are read; an
+      allocation nothing reads is still removed with its release. The kind
+      does not say `zeroed`: a program's own allocator serves the call in
+      place of the runtime's (RFC 0038 §1, RFC 0039 amendment 18), and an
+      optimizer that took its blocks to be zeroes removed the program's own
+      zeroing of one (`p = malloc(n); memset(p, 0, n)`, a value-initialized
+      `new T()`), as the guarded code of the unit has it too
+      (`test/Guards/fresh-blocks.c` runs with an allocator whose blocks are
+      not zeroes; `.cpp`).
+    - **Bytes written into a pointer (§4.2, `pointer-bytes` in C++).** The
+      rule rejected bytes written into a `bool`, not into a pointer: a
+      pointer read as an integer, moved and cast back with `std::bit_cast`
+      (or copied into an object with `memcpy`) pointed anywhere, and a
+      fast unit believed it. In C++ bytes are now not written into an
+      object that is or holds a pointer, by `std::bit_cast`,
+      `__builtin_bit_cast`, or a library call that writes as many bytes as
+      its caller says (`memcpy`, `read`, `fread`). The object is what the
+      call's argument points to before it becomes the parameter's
+      `void *`: an array's element when the array is passed by name, and
+      through an explicit cast to `void *`. A whole object zeroed, its
+      elements reordered, or copied from its own type is accepted; two row
+      clauses of the library table say which calls zero and which reorder
+      (`fills(t)`, every byte the call writes into its first written
+      argument is `t`: `memset`'s `fills(a1)`, `memset_s`'s `fills(a2)`,
+      `bzero`'s and `explicit_bzero`'s `fills(0)`; `permutes`, `qsort`'s
+      and `qsort_r`'s), so that no argument is taken for a fill value by
+      its place. What a library writes as its own object, of a constant
+      size (`strtod`'s end, `localtime_r`'s `tm`) or none (a `FILE`), is
+      accepted; pointers of the library's making written into an array the
+      caller gives (`backtrace`, `epoll_wait`'s and `kevent`'s events) are
+      not, and such a call is made in a guarded function. C's rule is
+      unchanged: it rejects the conversion of such an object's address to
+      `void *`. C++ converts any object pointer to `void *` implicitly, so
+      a safe function that takes a `void *` and writes bytes behind it is
+      not seen from its caller; that conversion is the next design's
+      (`test/Safe/cxx-pointer-bytes.cpp`).
 
 ## Measured gates
 

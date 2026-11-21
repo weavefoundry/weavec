@@ -358,7 +358,17 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
                         llvm::AllocaInst &alloca, llvm::StringRef type = {}) {
   llvm::LLVMContext &context = module.context;
   const std::uint64_t alignment = alloca.getAlign().value();
-  const bool typed = fastUnit(module) && alignment <= 16;
+  std::string name;
+  if (fastUnit(module)) {
+    name = type.str();
+    if (name.empty()) {
+      llvm::raw_string_ostream text(name);
+      alloca.getAllocatedType()->print(text);
+    }
+  }
+  // A type its name does not tell from another of the unit's is not typed.
+  const bool typed =
+      fastUnit(module) && alignment <= 16 && typeIdentified(module, name);
   llvm::FunctionCallee allocate = module.module.getOrInsertFunction(
       "calloc", module.ptr, module.i64, module.i64);
   llvm::FunctionCallee alignedAllocate = module.module.getOrInsertFunction(
@@ -367,11 +377,6 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
       "free", llvm::Type::getVoidTy(context), module.ptr);
   llvm::GlobalVariable *record = nullptr;
   if (typed) {
-    std::string name = type.str();
-    if (name.empty()) {
-      llvm::raw_string_ostream text(name);
-      alloca.getAllocatedType()->print(text);
-    }
     auto *recordType = llvm::StructType::get(context, {module.i64, module.i64});
     record = new llvm::GlobalVariable(
         module.module, recordType, /*isConstant=*/false,

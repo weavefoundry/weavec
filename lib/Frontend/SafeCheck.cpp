@@ -370,6 +370,44 @@ static bool libraryHardened(const clang::Preprocessor &preprocessor) {
   return false;
 }
 
+/// RFC 0045 §2: the names of the unit's types declared in a function (a
+/// member of a class declared in one too), and those of them that more than
+/// one of the unit's types has (two functions' `struct Node`, the
+/// instances of a template's local class, a local `Node` beside another
+/// type of that name). Clang names a type in an allocation's
+/// `!alloc_token` without the function it is declared in.
+static void listLocalTypes(const clang::ASTContext &ast, SafeUnit &unit) {
+  struct Tags final : clang::RecursiveASTVisitor<Tags> {
+    llvm::StringMap<llvm::SmallPtrSet<const clang::TagDecl *, 2>> byName;
+    llvm::StringSet<> local;
+    // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method,readability-make-member-function-const)
+    [[nodiscard]] static bool shouldVisitTemplateInstantiations() {
+      return true;
+    }
+    bool VisitTagDecl(clang::TagDecl *tag) {
+      llvm::StringRef name = tag->getName();
+      if (name.empty())
+        if (const clang::TypedefNameDecl *typedefName =
+                tag->getTypedefNameForAnonDecl())
+          name = typedefName->getName();
+      if (name.empty())
+        return true;
+      byName[name].insert(tag->getCanonicalDecl());
+      if (tag->getParentFunctionOrMethod() != nullptr)
+        local.insert(name);
+      return true;
+    }
+    // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method,readability-make-member-function-const)
+  } tags;
+  tags.TraverseDecl(ast.getTranslationUnitDecl());
+  for (const auto &entry : tags.local) {
+    const llvm::StringRef name = entry.getKey();
+    unit.localTypeNames.insert(name);
+    if (tags.byName[name].size() > 1)
+      unit.ambiguousTypeNames.insert(name);
+  }
+}
+
 namespace {
 
 /// The parameters' and result's bounds a declaration gives (§2).
@@ -2961,6 +2999,8 @@ public:
     if (compiler.getDiagnostics().hasFatalErrorOccurred())
       return;
     Declarations &declarations = declarationsFor(ast);
+    if (out->fast)
+      listLocalTypes(ast, *out);
     if (ast.getLangOpts().CPlusPlus && out->annotates) {
       // The functions whose code is made at the unit's end (inline ones,
       // instantiations of templates).

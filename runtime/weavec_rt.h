@@ -453,6 +453,13 @@ WEAVEC_RT_API char *__weavec_rt_stpcpy(char *d, const char *s, size_t limit,
                                        const struct __weavec_rt_site *site);
 WEAVEC_RT_API char *__weavec_rt_strcat(char *d, const char *s, size_t limit,
                                        const struct __weavec_rt_site *site);
+/* A buffer its caller gives without a size: what the call wrote. */
+WEAVEC_RT_API char *__weavec_rt_realpath(const char *path, char *resolved,
+                                         size_t limit,
+                                         const struct __weavec_rt_site *site);
+WEAVEC_RT_API char *__weavec_rt_gcvt(double value, int digits, char *d,
+                                     size_t limit,
+                                     const struct __weavec_rt_site *site);
 WEAVEC_RT_API int __weavec_rt_sprintf(const struct __weavec_rt_site *site,
                                       size_t limit, char *d,
                                       const char *format, ...);
@@ -869,7 +876,7 @@ void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
 /* The library's interface version (libweavec_rt.so.<abi>,
  * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
  * encoding or a site record changes. */
-#define WEAVEC_RT_ABI 47
+#define WEAVEC_RT_ABI 48
 
 /*===-- Internal -----------------------------------------------------------===*/
 

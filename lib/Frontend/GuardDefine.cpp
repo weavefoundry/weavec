@@ -34,7 +34,13 @@
 //   - a frame larger than a page is probed page by page (`probe-stack`), so
 //     that the guard page below a stack cannot be stepped over;
 //   - in a unit not compiled with -fweavec-safe, a local larger than the
-//     4,096 bytes Clang zeroes is zeroed where its scope starts.
+//     4,096 bytes Clang zeroes is zeroed where its scope starts;
+//   - in a unit with a safe function, no call of `malloc`, `new` and the
+//     like says that its block's bytes are undefined (its `allockind`
+//     says neither `uninitialized` nor `zeroed`, and it is not the
+//     library's builtin): LLVM would otherwise fold a read of a fresh
+//     block to any value. A read loads the block's bytes, which are the
+//     runtime's zeroes (or what a program's own allocator gave).
 //
 // A unit compiled with -fweavec-safe gets the first, third and sixth from
 // its options too (Driver.cpp), so that the library code it instantiates
@@ -46,11 +52,15 @@
 
 #include "GuardPassImpl.h"
 
+#include "llvm/Analysis/MemoryBuiltins.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Transforms/Utils/BuildLibCalls.h"
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace weavec::frontend::guard {
@@ -451,6 +461,98 @@ void defineSafe(ModuleContext &module, llvm::Function &function) {
     defineReturnsC(module, function, counts);
   if (!module.options.safe->defined)
     zeroLarge(module, function);
+}
+
+/// The allocation kind LLVM's inference of the library's attributes
+/// (InferFunctionAttrs, which runs after this pass) gives the declaration
+/// `call` calls, asked of a copy of it (`malloc` and `aligned_alloc` say
+/// `uninitialized`, `calloc` says `zeroed`); 0 for none.
+static std::uint64_t inferredKind(const llvm::CallBase &call,
+                                  const llvm::TargetLibraryInfo &info,
+                                  llvm::StringMap<std::uint64_t> &known) {
+  const llvm::Function *callee = call.getCalledFunction();
+  llvm::LibFunc libraryFunction{};
+  if (callee == nullptr || !callee->isDeclaration() ||
+      !info.getLibFunc(*callee, libraryFunction))
+    return 0;
+  auto [entry, inserted] = known.try_emplace(callee->getName(), 0);
+  if (!inserted)
+    return entry->second;
+  llvm::Module scratch("weavec.allocation", callee->getContext());
+  scratch.setDataLayout(callee->getParent()->getDataLayout());
+  scratch.setTargetTriple(callee->getParent()->getTargetTriple());
+  llvm::Function *copy = llvm::Function::Create(
+      callee->getFunctionType(), llvm::GlobalValue::ExternalLinkage,
+      callee->getName(), scratch);
+  llvm::inferNonMandatoryLibFuncAttrs(*copy, info);
+  entry->second = static_cast<std::uint64_t>(
+      copy->getAttributes().getFnAttrs().getAllocKind());
+  return entry->second;
+}
+
+/// The allocation kind that makes LLVM take nothing of the first bytes of
+/// the block `call` returns, for a call whose block it would take to be
+/// undefined (a builtin `new` or `malloc`, or a kind that says
+/// `uninitialized`, the call's own or its declaration's to be); or nothing.
+/// The kind is the call's without `uninitialized`, and not `zeroed`
+/// either: a program's own allocator serves the call in place of the
+/// runtime's (RFC 0038 §1, RFC 0039 amendment 18), and its blocks are not
+/// zeroes, so the zeroes a program stores into a fresh block must stay.
+static std::optional<std::uint64_t>
+unknownKind(const llvm::CallBase &call, const llvm::TargetLibraryInfo &info,
+            llvm::StringMap<std::uint64_t> &known) {
+  constexpr auto Uninitialized =
+      static_cast<std::uint64_t>(llvm::AllocFnKind::Uninitialized);
+  constexpr auto Families =
+      static_cast<std::uint64_t>(llvm::AllocFnKind::Alloc) |
+      static_cast<std::uint64_t>(llvm::AllocFnKind::Realloc) |
+      static_cast<std::uint64_t>(llvm::AllocFnKind::Free);
+  const llvm::Attribute own = call.getFnAttr(llvm::Attribute::AllocKind);
+  std::uint64_t kind =
+      own.isValid() ? own.getValueAsInt() : inferredKind(call, info, known);
+  const bool undefined =
+      llvm::isa_and_nonnull<llvm::UndefValue>(llvm::getInitialValueOfAllocation(
+          &call, &info, llvm::Type::getInt8Ty(call.getContext())));
+  if (!undefined && (kind & Uninitialized) == 0)
+    return std::nullopt;
+  kind &= ~Uninitialized;
+  if ((kind & Families) == 0)
+    kind |= static_cast<std::uint64_t>(llvm::AllocFnKind::Alloc);
+  return kind;
+}
+
+void defineAllocations(ModuleContext &module, llvm::Module &ir) {
+  const SafeUnit *safe = module.options.safe.get();
+  if (safe == nullptr)
+    return;
+  const auto safeCode = [&](const llvm::Function &function) {
+    return definesSafe(module, function);
+  };
+  if (!safe->defined && !llvm::any_of(ir, safeCode))
+    return;
+  const llvm::TargetLibraryInfoImpl library(ir.getTargetTriple());
+  const llvm::TargetLibraryInfo info(library);
+  llvm::StringMap<std::uint64_t> known;
+  for (llvm::Function &function : ir)
+    for (llvm::BasicBlock &block : function)
+      for (llvm::Instruction &instruction : block) {
+        auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
+        if (call == nullptr)
+          continue;
+        const std::optional<std::uint64_t> kind =
+            unknownKind(*call, info, known);
+        if (!kind)
+          continue;
+        // The call is no longer the library's builtin, whose block LLVM
+        // takes to be undefined; its kind, which the call's own attributes
+        // give before its declaration's, still makes it an allocation, one
+        // the optimizer may remove with its release.
+        call->removeFnAttr(llvm::Attribute::Builtin);
+        call->addFnAttr(llvm::Attribute::NoBuiltin);
+        call->removeFnAttr(llvm::Attribute::AllocKind);
+        call->addFnAttr(llvm::Attribute::get(
+            module.context, llvm::Attribute::AllocKind, *kind));
+      }
 }
 
 } // namespace weavec::frontend::guard

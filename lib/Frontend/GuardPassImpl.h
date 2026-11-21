@@ -322,6 +322,10 @@ inline void appendRun(ShadowRuns &runs, std::uint64_t count,
 /// RFC 0051 §2, §3: what `function`, a safe function, leaves undefined
 /// given one result or made a stop; run first, before GuardInsert.
 void defineSafe(ModuleContext &module, llvm::Function &function);
+/// RFC 0051 §2.3: in a unit with a safe function, no allocation call says
+/// that its block's bytes are undefined (nor zeroes: a program's own
+/// allocator may serve it), so that the optimizer loads them.
+void defineAllocations(ModuleContext &module, llvm::Module &ir);
 /// RFC 0051 §5: the unit's record of what its safe code believes of the
 /// names it shares, in a section of its own.
 void emitDefinitions(ModuleContext &module);
@@ -338,6 +342,11 @@ void prepareSafe(ModuleContext &module, llvm::Function &function);
 /// function, each given a block for its scope (from its type's pool in a
 /// fast unit).
 void placeLocals(ModuleContext &module, llvm::Function &function);
+/// RFC 0045 §2: whether an allocation's printed type `name` tells its type
+/// from every other type of the unit (no type declared in a function that
+/// shares its name with another of the unit's types is mentioned).
+[[nodiscard]] bool typeIdentified(const ModuleContext &module,
+                                  llvm::StringRef name);
 /// RFC 0045 §2: the pool key of a type by its name.
 [[nodiscard]] std::uint64_t typeKey(const ModuleContext &module,
                                     llvm::StringRef name, bool array);

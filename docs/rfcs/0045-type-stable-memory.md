@@ -1026,6 +1026,21 @@ building it and from what the gates found. They override the body.
 18. **Hidden switches (§12):** `-mllvm -weavec-pools=0` (no typed
     allocation or release) and `-mllvm -weavec-believe=0` (no believed
     access, trusted clone, unshared frame or result check), for measuring.
+19. **Types declared in a function (§2, 2026-11-21).** Clang names a type
+    in an allocation's `!alloc_token` without the function it is declared
+    in, and §2's key tested the name for `(`, which such a name does not
+    have: two functions' `struct Node`, the instances of a function
+    template's local class, and two units' local types of one name shared
+    a pool, so a stale pointer reached an object of another type. The
+    checker now lists the unit's types declared in a function
+    (`SafeUnit::localTypeNames`) and those whose name another of the
+    unit's types has (`ambiguousTypeNames`). An allocation whose type's
+    name mentions one of the first is keyed by its unit too; one that
+    mentions one of the second is not typed, and its block never goes to
+    a pool (`typeIdentified`, GuardFast.cpp; placed locals alike). The
+    rule is by name, so a type in a namespace whose name a local type
+    shares is not typed either (`test/Guards/typed-local-types.c`,
+    `.cpp`).
 
 ## Measured gates
 
