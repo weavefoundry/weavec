@@ -1202,8 +1202,10 @@ public:
       if (isSafe(*record)) {
         bounds.checkRecord(*record);
         aliasedOwns(*record);
-        for (const clang::FieldDecl *field : record->fields())
+        for (const clang::FieldDecl *field : record->fields()) {
           rules.run(*field);
+          keptDefault(*record, *field);
+        }
       }
       implicitMembers(*record);
     }
@@ -1251,6 +1253,29 @@ private:
       trusted.members(field->getType());
     for (const clang::CXXBaseSpecifier &base : record.bases())
       trusted.members(base.getType());
+  }
+
+  /// RFC 0052 §5.3 (D6): a callable a member's default initializer makes
+  /// is kept by the member, and captures no reference, `this` or pointer.
+  void keptDefault(const clang::CXXRecordDecl &record,
+                   const clang::FieldDecl &field) {
+    if (!field.hasInClassInitializer() || !kinds.erased(field.getType()) ||
+        kinds.holdsThread(field.getType()))
+      return;
+    const clang::LambdaExpr *lambda =
+        CxxKinds::lambdaIn(field.getInClassInitializer());
+    if (lambda == nullptr)
+      return;
+    const std::string what = kinds.keptCapture(*lambda);
+    if (what.empty())
+      return;
+    report(
+        field.getLocation(), "escape",
+        "the callable that initializes '" + field.getNameAsString() +
+            "' is kept by it and captures " + what,
+        lambda->getBeginLoc(),
+        CxxKinds::keptFix(what == "'this'" && CxxKinds::sharesFromThis(&record))
+            .str());
   }
 
   /// RFC 0047 §5.2 (K): an aliased class owns no storage that changes type

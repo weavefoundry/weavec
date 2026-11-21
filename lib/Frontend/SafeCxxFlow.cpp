@@ -116,13 +116,21 @@ struct End {
     Unlocked,
     /// RFC 0047 §5.2 (S): the characters of a string the function does not
     /// own, at a call that may reach the string.
-    Characters
+    Characters,
+    /// RFC 0052 §4.1: a call that reaches the root through a view it is
+    /// given (`with`), or through its object.
+    Reached,
+    /// RFC 0052 §5.1: a call of a lambda the function sees (`with`), or
+    /// one it is passed to.
+    Runs
   };
   Why why = Why::None;
   clang::SourceLocation at;
   Root root;
   /// The function that changed the root.
   const clang::NamedDecl *by = nullptr;
+  /// The view or the callable it changed the root through.
+  const clang::Expr *with = nullptr;
   bool operator==(const End &) const = default;
 };
 
@@ -474,6 +482,38 @@ private:
              " again under the lock, or copy what is needed while it is "
              "held";
       break;
+    case End::Why::Reached:
+      message =
+          loop ? "the loop over '" + *loop + "' continues after the call to " +
+                     called(end.by) + ", which may reach " + owner
+               : name + " points into " + owner + ", which the call to " +
+                     called(end.by) + " may reach" +
+                     (end.with != nullptr ? " through " + spell(end.with, ast)
+                                          : std::string(" through its object"));
+      note = "called here; take " + name +
+             " again after the call, or give the call a view of what is "
+             "'const' ('std::span<const T>', 'const T *')";
+      break;
+    case End::Why::Runs: {
+      const std::string callable =
+          end.with != nullptr ? callableName(end.with) : "a lambda";
+      const bool direct =
+          end.by != nullptr && llvm::isa<clang::CXXMethodDecl>(end.by) &&
+          llvm::cast<clang::CXXMethodDecl>(end.by)->getOverloadedOperator() ==
+              clang::OO_Call;
+      const std::string runs = direct ? "the call of " + callable
+                                      : "the call to " + called(end.by) +
+                                            ", which may call " + callable;
+      message = loop ? "the loop over '" + *loop + "' continues after " + runs +
+                           ", which changes " + owner
+                     : name + " was taken from " + owner + " before " + runs +
+                           ", which changes " + owner;
+      note = "called here; take " + name +
+             " again after the call, or let the lambda return what to change "
+             "and change " +
+             owner + " after the call";
+      break;
+    }
     case End::Why::Characters:
       message = name + " points at the characters of " + owner +
                 ", which the call to " + called(end.by) + " may have moved";
@@ -786,8 +826,14 @@ private:
             llvm::dyn_cast<clang::CXXParenListInitExpr>(expression))
       return listed(flow, list->getInitExprs(), type);
     if (const auto *list =
-            llvm::dyn_cast<clang::CXXStdInitializerListExpr>(expression))
-      return points(flow, list->getSubExpr());
+            llvm::dyn_cast<clang::CXXStdInitializerListExpr>(expression)) {
+      // RFC 0052 §6: a list is a view of the array the compiler made for
+      // it, which lives as long as the full expression or the variable
+      // the list initializes.
+      Value value = points(flow, list->getSubExpr());
+      value.add(object(flow, list->getSubExpr()));
+      return value;
+    }
     if (const auto *conditional =
             llvm::dyn_cast<clang::AbstractConditionalOperator>(expression)) {
       Value value = points(flow, conditional->getTrueExpr());
@@ -913,7 +959,13 @@ private:
                  ? object(flow, argument)
                  : points(flow, argument);
     }
-    const Call call = describe(*expression);
+    Call call = describe(*expression);
+    // RFC 0052 §6: a call of one of the library's function objects
+    // (`std::views::all(v)`) is a function's, not a member's.
+    if (functionObject(call)) {
+      call.object = nullptr;
+      call.method = nullptr;
+    }
     const bool constructs = llvm::isa<clang::CXXConstructExpr>(expression);
     const clang::QualType type =
         constructs || call.callee == nullptr
@@ -923,7 +975,12 @@ private:
     if (!names && !kinds.tracked(expression->getType()))
       return {};
     Value value;
+    // RFC 0052 §3: `lifetimebound` on a parameter, or on the implicit
+    // object, narrows the result to those.
+    const bool boundThis = call.method != nullptr && call.object != nullptr &&
+                           lifetimeBoundThis(*call.method);
     const bool marked =
+        boundThis ||
         llvm::any_of(call.arguments, [](const Call::Argument &argument) {
           return argument.parameter != nullptr &&
                  argument.parameter->hasAttr<clang::LifetimeBoundAttr>();
@@ -952,7 +1009,7 @@ private:
     if (sharesState) {
       if (kinds.tracked(objectType(call)))
         value.add(points(flow, call.object));
-    } else if (call.object != nullptr && !marked && !owning) {
+    } else if (call.object != nullptr && (!marked || boundThis) && !owning) {
       value.add(through(flow, call.object, namesView));
     }
     bool views = false;
@@ -968,14 +1025,11 @@ private:
                  (given->isPointerType() || kinds.tracked(given)) &&
                  !given->isFunctionPointerType()) {
         // A pointer can be what a reference or pointer result names only
-        // if it points to the result's type; RFC 0045 §7: or, for the
-        // library's (`std::get_if(&variant)`), into what it points to.
+        // if it points to the result's type; RFC 0052 §3: or into what it
+        // points to, when that reaches the result's type.
         if (given->isPointerType() && (names || type->isPointerType()) &&
             !constructs && !CxxKinds::related(given->getPointeeType(), type)) {
-          if (call.callee != nullptr && isLibrary(*call.callee) &&
-              kinds.contains(given->getPointeeType(),
-                             type->isPointerType() ? type->getPointeeType()
-                                                   : type)) {
+          if (kinds.reaches(given->getPointeeType(), type)) {
             value.add(points(flow, argument.expression).inside());
             views = true;
           }
@@ -986,14 +1040,26 @@ private:
         if (owning && !kinds.erased(given))
           continue;
         if (!names && type->isRecordType() &&
-            !kinds.mayBorrow(type->getAsCXXRecordDecl(),
-                             given->isPointerType() ? given->getPointeeType()
-                                                    : given))
+            !(given->isPointerType()
+                  ? kinds.mayBorrow(type->getAsCXXRecordDecl(),
+                                    given->getPointeeType())
+                  : kinds.mayBorrowThrough(type->getAsCXXRecordDecl(), given)))
           continue;
         value.add(points(flow, argument.expression));
         views = true;
       }
     }
+    // RFC 0052 §3: a member function's reference or pointer result may
+    // point into a reference argument whose type reaches it, as well as
+    // into its object.
+    if (!marked && !owning && !constructs && call.object != nullptr &&
+        (names || type->isPointerType()))
+      for (const Call::Argument &argument : call.arguments)
+        if (argument.parameter != nullptr &&
+            argument.parameter->getType()->isReferenceType() &&
+            argument.expression->isGLValue() &&
+            kinds.reaches(argument.expression->getType(), type))
+          value.add(object(flow, argument.expression).inside());
     // §9: without a view passed by value, the result of a function that is
     // not a member points into its reference arguments. What is
     // constructed may keep every one.
@@ -1010,7 +1076,77 @@ private:
           else
             value.add(contribution(flow, argument, type, names, constructs));
         }
+    if (names || type->isPointerType())
+      return fit(value, type);
     return value;
+  }
+
+  /// RFC 0052 §3: a reference or pointer to `type` is at a root only if the
+  /// root has a related type; at any other it is inside it (`rv[0]` of a
+  /// `std::ranges::ref_view` at a vector is an element, not the vector).
+  [[nodiscard]] Value fit(Value value, clang::QualType type) const {
+    for (Loan &loan : value.loans) {
+      if (loan.depth != 0 || loan.root.beyond)
+        continue;
+      const clang::QualType root = rootType(loan.root);
+      if (!root.isNull() && !CxxKinds::related(root, type))
+        loan.depth = 1;
+    }
+    Value unique;
+    unique.add(value);
+    return unique;
+  }
+
+  /// The type of what a root names, with arrays taken as their elements.
+  [[nodiscard]] clang::QualType rootType(const Root &root) const {
+    clang::QualType type;
+    if (root.field != nullptr)
+      type = root.field->getType();
+    else if (const clang::VarDecl *variable = root.variable())
+      type = variable->getType();
+    else if (root.kind == RootKind::Temp)
+      type = static_cast<const clang::Expr *>(root.base)->getType();
+    else if (const auto *method =
+                 llvm::dyn_cast<clang::CXXMethodDecl>(&function);
+             root.kind == RootKind::This && method != nullptr &&
+             !method->isStatic())
+      type = method->getFunctionObjectParameterType();
+    if (type.isNull())
+      return type;
+    type = type.getNonReferenceType();
+    while (const clang::ArrayType *array = ast.getAsArrayType(type))
+      type = array->getElementType();
+    return type;
+  }
+
+  /// RFC 0052 §6: a call of the library's function object, an empty class
+  /// whose `operator()` stands for a function (`std::views::all`).
+  [[nodiscard]] static bool functionObject(const Call &call) {
+    if (call.method == nullptr || call.object == nullptr ||
+        call.method->getOverloadedOperator() != clang::OO_Call ||
+        !isLibrary(*call.method))
+      return false;
+    const clang::CXXRecordDecl *record = call.method->getParent();
+    return record != nullptr && record->hasDefinition() &&
+           record->getDefinition()->isEmpty();
+  }
+
+  /// `[[clang::lifetimebound]]` on a member function's implicit object, in
+  /// any of its declarations.
+  [[nodiscard]] static bool
+  lifetimeBoundThis(const clang::FunctionDecl &method) {
+    for (const clang::FunctionDecl *declaration : method.redecls()) {
+      const clang::TypeSourceInfo *written = declaration->getTypeSourceInfo();
+      if (written == nullptr)
+        continue;
+      clang::AttributedTypeLoc attributed;
+      for (clang::TypeLoc at = written->getTypeLoc();
+           (attributed = at.getAsAdjusted<clang::AttributedTypeLoc>());
+           at = attributed.getModifiedLoc())
+        if (attributed.getAttrAs<clang::LifetimeBoundAttr>() != nullptr)
+          return true;
+    }
+    return false;
   }
 
   /// The const side of a library accessor that is not a member.
@@ -1053,13 +1189,21 @@ private:
       // it has its type.
       if (same)
         value.add(object(flow, expression));
+      else if (kinds.reaches(given, type))
+        value.add(object(flow, expression).inside());
     } else if (!kinds.pureView(given) && !copies && !erases &&
                (!type->isRecordType() ||
                 kinds.mayBorrow(type->getAsCXXRecordDecl(), given))) {
       // A copy or a move of a view points where the view does, not into
       // the object it was copied from; and a class whose members could
-      // not refer to the argument keeps no borrow of it.
-      value.add(object(flow, expression).inside());
+      // not refer to the argument keeps no borrow of it. RFC 0052 §6: a
+      // view whose members name an object of the argument's type points
+      // at it (`std::ref(v)`, a span of an array).
+      const clang::CXXRecordDecl *made = type->getAsCXXRecordDecl();
+      if (made != nullptr && kinds.pointsAt(made, given))
+        value.add(object(flow, expression));
+      else
+        value.add(object(flow, expression).inside());
     }
     return value;
   }
@@ -1072,7 +1216,8 @@ private:
 
   static void invalidate(Flow &flow, const Value &objects, Ends ends,
                          End::Why why, clang::SourceLocation at,
-                         const clang::NamedDecl *by) {
+                         const clang::NamedDecl *by,
+                         const clang::Expr *with = nullptr) {
     for (auto &[variable, borrow] : flow.borrows) {
       if (borrow.end.why != End::Why::None ||
           llvm::is_contained(objects.through, variable))
@@ -1086,7 +1231,8 @@ private:
         });
         if (hit == objects.loans.end())
           continue;
-        borrow.end = {.why = why, .at = at, .root = hit->root, .by = by};
+        borrow.end = {
+            .why = why, .at = at, .root = hit->root, .by = by, .with = with};
         break;
       }
     }
@@ -1249,6 +1395,19 @@ private:
                              const Call *into = nullptr) {
     const clang::Expr *expression = argument.expression;
     const clang::QualType given = expression->getType();
+    // RFC 0048 §4: a function of the program keeps the address a pointer or
+    // reference parameter is given only if the parameter says
+    // WEAVEC_ESCAPES (or its class is aliased), which a safe one is
+    // checked for and one that is not is trusted with (X-A1).
+    if (into != nullptr && into->callee != nullptr &&
+        !isLibrary(*into->callee) && argument.parameter != nullptr &&
+        CxxKinds::pointerLike(argument.parameter->getType()) &&
+        !hasAnnotation(annotationsOf(argument.parameter->getType(), ast),
+                       EscapesAnnotation) &&
+        !sends(argument.parameter) &&
+        (into->method == nullptr ||
+         !CxxKinds::aliased(into->method->getParent())))
+      return {};
     if (given->isPointerType())
       return given->isFunctionPointerType() ? Value{}
                                             : pointee(flow, expression);
@@ -1699,31 +1858,144 @@ private:
            });
   }
 
-  /// The captures by reference a lambda's body may change.
-  void lambdaChanges(const clang::Stmt *statement,
-                     llvm::SmallPtrSetImpl<const clang::VarDecl *> &changed) {
-    if (statement == nullptr)
+  /// RFC 0052 §5.1: what a lambda's body may change of the enclosing
+  /// function's objects.
+  struct Changes {
+    llvm::SmallPtrSet<const clang::VarDecl *, 4> variables;
+    /// Members of `*this`, or all of it.
+    llvm::SmallPtrSet<const clang::FieldDecl *, 4> members;
+    bool self = false;
+  };
+
+  /// RFC 0052 §5.1: what a lambda's body may change: what it changes,
+  /// passes on to be changed, or writes through (a view, a reference or a
+  /// pointer it captured, §4), and what a lambda it calls or passes on may
+  /// change.
+  void lambdaChanges(const clang::Stmt *statement, Changes &changed,
+                     unsigned depth = 0) {
+    if (statement == nullptr || depth > 8)
       return;
     if (const auto *expression = llvm::dyn_cast<clang::Expr>(statement);
         expression != nullptr &&
         llvm::isa<clang::CallExpr, clang::CXXConstructExpr>(expression)) {
       const Call call = describe(*expression);
-      const auto note = [&](const clang::Expr *argument) {
-        const auto *named =
-            llvm::dyn_cast<clang::DeclRefExpr>(argument->IgnoreParenImpCasts());
-        if (named != nullptr && named->refersToEnclosingVariableOrCapture())
-          if (const clang::VarDecl *variable = variableOf(*named))
-            changed.insert(variable->getCanonicalDecl());
-      };
-      if (call.object != nullptr && changing(call) &&
-          kinds.holdsOwners(objectType(call)))
-        note(call.object);
-      for (const Call::Argument &argument : call.arguments)
-        if (changes(argument.parameter))
-          note(argument.expression);
+      if (call.object != nullptr &&
+          ((changing(call) && kinds.holdsOwners(objectType(call))) ||
+           writesThroughObject(call)))
+        noteChanged(call.object, changed);
+      for (const Call::Argument &argument : call.arguments) {
+        if (changes(argument.parameter) ||
+            (!llvm::isa<clang::CXXConstructExpr>(expression) &&
+             (call.callee == nullptr || !isLibrary(*call.callee)) &&
+             writable(argument.expression->getType())))
+          noteChanged(argument.expression, changed);
+        if (const clang::LambdaExpr *inner = lambdaOf(argument.expression))
+          for (const clang::Stmt *instance : bodiesOf(*inner))
+            lambdaChanges(instance, changed, depth + 1);
+      }
+      if (call.method != nullptr && call.object != nullptr &&
+          call.method->getOverloadedOperator() == clang::OO_Call)
+        if (const clang::LambdaExpr *inner = lambdaOf(call.object))
+          for (const clang::Stmt *instance : bodiesOf(*inner))
+            lambdaChanges(instance, changed, depth + 1);
     }
     for (const clang::Stmt *child : statement->children())
-      lambdaChanges(child, changed);
+      lambdaChanges(child, changed, depth);
+  }
+
+  /// The capture a place in a lambda's body is part of, or reached
+  /// through: `v`, `v.member`, `*p`, `span[0]`, `std::get<0>(v)`; or the
+  /// member of `*this` (all of it, through `this` itself).
+  static void noteChanged(const clang::Expr *expression, Changes &changed) {
+    const clang::FieldDecl *member = nullptr;
+    for (unsigned step = 0; expression != nullptr && step < 16; ++step) {
+      expression = strip(expression)->IgnoreParenImpCasts();
+      if (const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(expression)) {
+        if (named->refersToEnclosingVariableOrCapture())
+          if (const clang::VarDecl *variable = variableOf(*named))
+            changed.variables.insert(variable->getCanonicalDecl());
+        return;
+      }
+      if (llvm::isa<clang::CXXThisExpr>(expression)) {
+        if (member != nullptr)
+          changed.members.insert(member);
+        else
+          changed.self = true;
+        return;
+      }
+      if (const auto *access = llvm::dyn_cast<clang::MemberExpr>(expression)) {
+        member = llvm::dyn_cast<clang::FieldDecl>(access->getMemberDecl());
+        expression = access->getBase();
+        continue;
+      }
+      member = nullptr;
+      if (const auto *unary =
+              llvm::dyn_cast<clang::UnaryOperator>(expression)) {
+        expression = unary->getSubExpr();
+      } else if (const auto *subscript =
+                     llvm::dyn_cast<clang::ArraySubscriptExpr>(expression)) {
+        expression = subscript->getBase();
+      } else if (const auto *temporary =
+                     llvm::dyn_cast<clang::MaterializeTemporaryExpr>(
+                         expression)) {
+        expression = temporary->getSubExpr();
+      } else if (llvm::isa<clang::CallExpr>(expression)) {
+        // A call's result is in its object, or in its first argument.
+        const Call call = describe(*expression);
+        if (call.object != nullptr)
+          expression = call.object;
+        else if (!call.arguments.empty())
+          expression = call.arguments.front().expression;
+        else
+          return;
+      } else {
+        return;
+      }
+    }
+  }
+
+  /// RFC 0052 §5.1: the bodies a lambda's calls run: every instance of a
+  /// generic lambda's call operator (its pattern, when it has none).
+  [[nodiscard]] static llvm::SmallVector<const clang::Stmt *, 2>
+  bodiesOf(const clang::LambdaExpr &lambda) {
+    llvm::SmallVector<const clang::Stmt *, 2> bodies;
+    if (const clang::FunctionTemplateDecl *generic =
+            lambda.getDependentCallOperator())
+      for (const clang::FunctionDecl *instance : generic->specializations())
+        if (instance->hasBody())
+          bodies.push_back(instance->getBody());
+    if (bodies.empty())
+      bodies.push_back(lambda.getBody());
+    return bodies;
+  }
+
+  /// A view as RFC 0044 has it, or what erases its contents: not a class
+  /// that borrows only through raw pointer members (RFC 0052 §6).
+  [[nodiscard]] bool viewOrErased(clang::QualType type) {
+    return kinds.view(type.getNonReferenceType()) || kinds.erased(type);
+  }
+
+  /// RFC 0052 §4.1: a view of this type, given to a call, may change what
+  /// it points to: a view (or a class of the program that holds one) that
+  /// writes through. A callable is not read here: what a lambda changes
+  /// is read from its body (§5.1), and one the function cannot see is
+  /// believed (§5.2).
+  [[nodiscard]] bool writable(clang::QualType type) {
+    type = type.getNonReferenceType();
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    return record != nullptr && !record->isLambda() && !kinds.erased(type) &&
+           kinds.tracked(type) && kinds.writesThrough(type);
+  }
+
+  /// RFC 0052 §4.1: a member function of the program's own view class may
+  /// change what the view points to, whatever its `const`.
+  [[nodiscard]] bool writesThroughObject(const Call &call) {
+    return call.object != nullptr && call.method != nullptr &&
+           !call.method->isStatic() && !isLibrary(*call.method) &&
+           !llvm::isa<clang::CXXConstructorDecl, clang::CXXDestructorDecl>(
+               call.method) &&
+           call.method->getOverloadedOperator() != clang::OO_Call &&
+           writable(objectType(call));
   }
 
   [[nodiscard]] static const clang::LambdaExpr *
@@ -1758,11 +2030,13 @@ private:
 
   /// RFC 0043 §5's rule, and the callable a library function is given.
   void alias(const Flow &flow, const Call &call, const Value *target,
-             bool objectChanges) {
+             bool objectChanges, bool starts) {
     struct Passed {
       Value value;
       bool changer;
       const clang::Expr *expression;
+      /// A callable the callee keeps (§5.3 checks it) or a thread runs.
+      bool kept = false;
     };
     llvm::SmallVector<Passed, 4> passed;
     const bool library = call.callee != nullptr && isLibrary(*call.callee);
@@ -1783,34 +2057,39 @@ private:
         value = points(flow, expression);
       passed.push_back({.value = value,
                         .changer = changes(argument.parameter),
-                        .expression = expression});
+                        .expression = expression,
+                        .kept = starts || keeps(argument.parameter)});
     }
-    if (library) {
-      // §9: a library function is trusted with plain borrows; a callable
-      // that changes what it captured, beside a borrow into it, is not.
-      for (const Passed &callable : passed) {
-        const clang::LambdaExpr *lambda = lambdaOf(callable.expression);
-        if (lambda == nullptr)
+    // §9, RFC 0052 §5.2 (D5): a callable passed beside what it may
+    // change, or a borrow into it, for every callee; a library function is
+    // trusted with plain borrows.
+    for (const Passed &callable : passed) {
+      const clang::LambdaExpr *lambda =
+          callable.kept ? nullptr : lambdaOf(callable.expression);
+      if (lambda == nullptr)
+        continue;
+      const Value changes = lambdaObjects(flow, *lambda);
+      for (const Passed &other : passed) {
+        if (&other == &callable)
           continue;
-        llvm::SmallPtrSet<const clang::VarDecl *, 4> changed;
-        lambdaChanges(lambda->getBody(), changed);
-        for (const Passed &other : passed)
-          for (const Loan &loan : other.value.loans)
-            if (&other != &callable && loan.depth > 0 &&
-                loan.root.variable() != nullptr &&
-                changed.contains(loan.root.variable())) {
+        const bool closure = lambdaOf(other.expression) != nullptr;
+        for (const Loan &loan : other.value.loans)
+          for (const Loan &change : changes.loans)
+            if (loan.root.overlaps(change.root) &&
+                (closure ? loan.depth > change.depth
+                         : loan.depth >= change.depth)) {
               error(call.at, rule::CallAlias,
-                    spell(other.expression, ast) + " points into " +
-                        nameOf(loan.root) +
-                        ", which the callable passed with it may change",
-                    callable.expression->getExprLoc(),
+                    callableName(callable.expression) + " may change " +
+                        nameOf(change.root) + ", which is passed with it",
+                    other.expression->getExprLoc(),
                     "collect the changes in a local and apply them after "
                     "the call");
               return;
             }
       }
-      return;
     }
+    if (library)
+      return;
     for (const Passed &changer : passed) {
       if (!changer.changer)
         continue;
@@ -3487,6 +3766,158 @@ private:
                : nullptr;
   }
 
+  /// RFC 0052 §5.1: the objects of the enclosing function a lambda's body
+  /// may change: a variable it captured, what a captured reference names,
+  /// what a captured view points to, and `*this` when it captures `this`.
+  [[nodiscard]] Value lambdaObjects(const Flow &flow,
+                                    const clang::LambdaExpr &lambda) {
+    Changes changed;
+    for (const clang::Stmt *instance : bodiesOf(lambda))
+      lambdaChanges(instance, changed);
+    Value objects;
+    for (const clang::VarDecl *variable : changed.variables) {
+      const clang::QualType type = variable->getType();
+      // A capture by copy is the lambda's own: what it changes of the
+      // enclosing function is what the copy points to; through a shared
+      // pointer, what other holders already change (RFC 0044 §8).
+      const auto *capture = llvm::find_if(
+          lambda.captures(), [&](const clang::LambdaCapture &each) {
+            return each.capturesVariable() &&
+                   each.getCapturedVar()->getCanonicalDecl() == variable;
+          });
+      if (capture != lambda.capture_end() &&
+          capture->getCaptureKind() == clang::LCK_ByCopy) {
+        if (kinds.tracked(type) &&
+            !CxxKinds::shared(type->getAsCXXRecordDecl()))
+          objects.add(borrowOf(flow, *variable));
+        continue;
+      }
+      if (type->isReferenceType()) {
+        objects.add(borrowOf(flow, *variable));
+        continue;
+      }
+      objects.add(at(*variable));
+      if (kinds.tracked(type))
+        objects.add(borrowOf(flow, *variable));
+    }
+    objects.through.clear();
+    // `*this`'s members the body changes, or all of it; and what a view
+    // member of it points to.
+    if (changed.self) {
+      objects.add({.root = {.kind = RootKind::This}, .depth = 0});
+      objects.add(
+          {.root = {.kind = RootKind::This, .beyond = true}, .depth = 0});
+    }
+    for (const clang::FieldDecl *member : changed.members) {
+      objects.add(
+          {.root = {.kind = RootKind::This, .field = member}, .depth = 0});
+      objects.add(
+          {.root = {.kind = RootKind::This, .field = member, .beyond = true},
+           .depth = 0});
+    }
+    return objects;
+  }
+
+  /// RFC 0052 §5.1 (D5): a call of a lambda the function can see, or a
+  /// call it is passed to, ends the borrows into what its body may change.
+  /// A callable the function cannot see is lent (and believed, §5.2) or
+  /// kept (and captures nothing, §5.3): its call ends nothing.
+  void closures(Flow &flow, const Call &call) {
+    if (call.method != nullptr && call.object != nullptr &&
+        call.method->getOverloadedOperator() == clang::OO_Call &&
+        callableType(objectType(call)))
+      if (const clang::LambdaExpr *lambda = lambdaOf(call.object))
+        invalidate(flow, lambdaObjects(flow, *lambda), Ends::Into,
+                   End::Why::Runs, call.at, call.method, call.object);
+    // §5.3: a local that keeps lambdas the function sees.
+    for (const clang::LambdaExpr *lambda : keptIn(call.object))
+      invalidate(flow, lambdaObjects(flow, *lambda), Ends::Into, End::Why::Runs,
+                 call.at, call.callee, lambda);
+    for (const Call::Argument &argument : call.arguments)
+      for (const clang::LambdaExpr *lambda : keptIn(argument.expression))
+        invalidate(flow, lambdaObjects(flow, *lambda), Ends::Into,
+                   End::Why::Runs, call.at, call.callee, lambda);
+    // A callable the callee keeps captures nothing (§5.3); the library's
+    // callable made from one wraps it, and runs it when it is called.
+    if (llvm::isa_and_nonnull<clang::CXXConstructorDecl>(call.callee) &&
+        isLibrary(*call.callee) &&
+        kinds.erased(llvm::cast<clang::CXXConstructorDecl>(call.callee)
+                         ->getFunctionObjectParameterType()))
+      return;
+    for (const Call::Argument &argument : call.arguments)
+      if (callableType(argument.expression->getType()) &&
+          !keeps(argument.parameter))
+        if (const clang::LambdaExpr *lambda = lambdaOf(argument.expression))
+          invalidate(flow, lambdaObjects(flow, *lambda), Ends::Into,
+                     End::Why::Runs, call.at, call.callee, argument.expression);
+  }
+
+  /// How a callable is named in a message: a lambda written in place is
+  /// "the lambda", anything else as it is spelled.
+  [[nodiscard]] std::string callableName(const clang::Expr *expression) const {
+    if (CxxKinds::lambdaIn(expression) != nullptr)
+      return "the lambda";
+    return spell(expression, ast);
+  }
+
+  /// A callable that erases what it holds (`std::function`), or a library
+  /// container of them; a thread object runs what it is given (RFC 0046).
+  [[nodiscard]] bool keepsCallables(clang::QualType type, unsigned depth = 0) {
+    type = type.getNonReferenceType();
+    if (callableType(type) && !type->getAsCXXRecordDecl()->isLambda())
+      return true;
+    const auto *specialization =
+        llvm::dyn_cast_or_null<clang::ClassTemplateSpecializationDecl>(
+            type->getAsCXXRecordDecl());
+    return depth < 4 && specialization != nullptr &&
+           isLibrary(*specialization) && !kinds.holdsThread(type) &&
+           llvm::any_of(
+               CxxKinds::typeArguments(*specialization),
+               [&](clang::QualType argument) {
+                 return keepsCallables(argument, depth + 1);
+               });
+  }
+
+  /// A lambda, or a class with a call operator that erases
+  /// (`std::function`).
+  [[nodiscard]] bool callableType(clang::QualType type) {
+    type = type.getNonReferenceType();
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record == nullptr)
+      return false;
+    if (record->isLambda())
+      return true;
+    if (!kinds.erased(type))
+      return false;
+    record = record->getDefinition();
+    return record != nullptr &&
+           llvm::any_of(record->methods(), [](const clang::CXXMethodDecl *m) {
+             return m->getOverloadedOperator() == clang::OO_Call;
+           });
+  }
+
+  /// RFC 0052 §5.3 (D6): a callable that is kept (in a member, an element,
+  /// a global or a `static`; by a parameter that keeps it) captures no
+  /// reference, no `this` and no pointer or view. Whether it was reported.
+  bool keptCallable(const clang::Expr *given, clang::SourceLocation at,
+                    const std::string &keeper) {
+    const clang::LambdaExpr *lambda = lambdaOf(given);
+    if (lambda == nullptr)
+      return false;
+    const std::string what = kinds.keptCapture(*lambda);
+    if (what.empty())
+      return false;
+    const bool self = what == "'this'";
+    const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(&function);
+    const bool sharedClass = self && method != nullptr &&
+                             CxxKinds::sharesFromThis(method->getParent());
+    error(at, rule::Escape,
+          callableName(given) + " is kept by " + keeper + " and captures " +
+              what,
+          lambda->getBeginLoc(), CxxKinds::keptFix(sharedClass).str());
+    return true;
+  }
+
   void call(Flow &flow, const clang::Expr *expression) {
     if (const auto *plain = llvm::dyn_cast<clang::CallExpr>(expression);
         plain != nullptr && passesThrough(*plain))
@@ -3494,6 +3925,10 @@ private:
     const Call call = describe(*expression);
     if (kinds.threadRules)
       threads(flow, call, *expression);
+    // RFC 0052 §5: what a thread start gives a thread is RFC 0046's.
+    const bool starts = kinds.startOf(*expression).has_value();
+    if (!starts)
+      closures(flow, call);
     const bool constructs = llvm::isa<clang::CXXConstructExpr>(expression);
     const bool assigns =
         call.method != nullptr &&
@@ -3512,8 +3947,8 @@ private:
     Value taken;
     for (const Call::Argument &argument : call.arguments)
       taken.add(stored(flow, argument, &call));
-    alias(flow, call, call.object != nullptr ? &target : nullptr,
-          targetChanges);
+    alias(flow, call, call.object != nullptr ? &target : nullptr, targetChanges,
+          starts);
     endCharacters(flow, call,
                   targetChanges &&
                       (target.reference || throughShared(target, call.object)));
@@ -3524,6 +3959,15 @@ private:
         if (const std::optional<Place> place = movedFrom(argument.expression))
           move(flow, *place, argument.expression->getExprLoc());
 
+    // RFC 0052 §5.3: a callable stored in what erases its contents (a
+    // `std::function`, a container of them) is kept.
+    bool keptReported = false;
+    if (call.object != nullptr && call.method != nullptr &&
+        !call.method->isConst() && keepsCallables(objectType(call)))
+      for (const Call::Argument &argument : call.arguments)
+        keptReported |=
+            keptCallable(argument.expression, argument.expression->getExprLoc(),
+                         spell(call.object, ast));
     // §7: a view that is assigned, or that may store what it is passed.
     const clang::VarDecl *view =
         call.object != nullptr ? viewLocal(call.object) : nullptr;
@@ -3553,7 +3997,7 @@ private:
           borrow.loans.push_back(loan);
     }
     if (call.object != nullptr && view == nullptr && changing(call) &&
-        kinds.tracked(objectType(call)) && outside(target)) {
+        !keptReported && kinds.tracked(objectType(call)) && outside(target)) {
       if (global(call.object) && !taken.loans.empty())
         error(call.at, rule::Escape,
               "a borrow is stored in the global " + spell(call.object, ast) +
@@ -3562,8 +4006,10 @@ private:
               "keep in a global only what owns its data (a 'std::string', "
               "not a 'std::string_view')");
       else
+        // RFC 0052 §6: a class that borrows only through raw pointer
+        // members keeps references (RFC 0044 §8), stored as a pointer is.
         storedOutside(target, taken, call.at, spell(call.object, ast),
-                      /*viewTarget=*/true);
+                      /*viewTarget=*/viewOrErased(objectType(call)));
     }
     // RFC 0045 §7: a pointer kept by a container that outlives the call.
     if (call.object != nullptr && changing(call) && outside(target))
@@ -3598,7 +4044,16 @@ private:
         for (const Loan &loan : stored(flow, argument).loans)
           if (!llvm::is_contained(borrow.loans, loan))
             borrow.loans.push_back(loan);
-      } else if (!(constructs && declaresLocal(expression))) {
+        keepLambda(keeper, given);
+      } else if (constructs && declaresLocal(expression)) {
+        // RFC 0052 §5.3: a local made with a callable it keeps keeps one
+        // the function sees.
+        keepLambda(declaredBy(expression), given);
+      } else if (sends(argument.parameter) ||
+                 !keepsCallables(argument.parameter->getType()) ||
+                 !keptCallable(given, given->getExprLoc(),
+                               "what " + called(call.callee) + " keeps")) {
+        // RFC 0052 §5.3: a kept callable is reported as one, else as a view.
         if (given->getType()->isPointerType())
           switchingStore(stored(flow, argument), given->getExprLoc(),
                          "what " + called(call.callee) + " keeps",
@@ -3631,6 +4086,33 @@ private:
               if (!llvm::is_contained(borrow.loans, loan))
                 borrow.loans.push_back(loan);
       }
+    }
+    // RFC 0052 §4.1 (D4): a view a function of the program is given may
+    // change what it points to, whatever the view's own `const`; so may a
+    // member function of the program's own view class, through its
+    // object. The library's functions are trusted with what their
+    // specification allows (X-A4).
+    if (constructs || (call.callee != nullptr && isLibrary(*call.callee)))
+      return;
+    for (const Call::Argument &argument : call.arguments)
+      if (writable(argument.expression->getType()))
+        invalidate(flow, points(flow, argument.expression), Ends::Into,
+                   End::Why::Reached, call.at, call.callee,
+                   argument.expression);
+    if (writesThroughObject(call)) {
+      Value reached;
+      if (llvm::isa<clang::CXXThisExpr>(call.object->IgnoreParenImpCasts())) {
+        // RFC 0044 amendment 3 stands for a `const` member function of the
+        // class's own: what its reference members name is a root of the
+        // function's own. One that is not `const` may change it.
+        if (!call.method->isConst())
+          reached.add(
+              {.root = {.kind = RootKind::This, .beyond = true}, .depth = 0});
+      } else {
+        reached = viewOf(flow, objectOf(flow, call));
+      }
+      invalidate(flow, reached, Ends::Into, End::Why::Reached, call.at,
+                 call.method);
     }
   }
 
@@ -3802,8 +4284,13 @@ private:
   void declare(Flow &flow, const clang::VarDecl &variable) {
     const clang::VarDecl *canonical = variable.getCanonicalDecl();
     unmove(flow, {canonical, nullptr});
-    if (!variable.hasLocalStorage())
+    if (!variable.hasLocalStorage()) {
+      // RFC 0052 §5.3: a `static` callable is kept.
+      if (keepsCallables(variable.getType()))
+        keptCallable(variable.getInit(), variable.getLocation(),
+                     "the static '" + variable.getNameAsString() + "'");
       return;
+    }
     if (kinds.threadRules) {
       if (CxxKinds::guardClass(variable.getType()))
         declareGuard(flow, variable);
@@ -3812,6 +4299,13 @@ private:
           variable.getInit() != nullptr)
         moveLends(flow, variable.getInit(), canonical);
     }
+    // RFC 0052 §5.3: a copy or a move of a local keeper keeps its lambdas.
+    if (const clang::Expr *init = variable.getInit())
+      for (const clang::LambdaExpr *lambda :
+           llvm::SmallVector<const clang::LambdaExpr *, 1>(
+               keptIn(returnedName(init))))
+        if (!llvm::is_contained(keptLambdas[canonical], lambda))
+          keptLambdas[canonical].push_back(lambda);
     // §7: what a constructor keeps of its arguments (a callable taken by
     // value, a WEAVEC_ESCAPES parameter) the new local holds.
     const Value kept = keptBy(flow, variable.getInit());
@@ -3842,7 +4336,62 @@ private:
     for (const Call::Argument &argument : describe(*construct).arguments)
       if (keeps(argument.parameter))
         kept.add(stored(flow, argument));
+    // RFC 0052 §6: a shared pointer the aliasing constructor makes is a
+    // view of what its second argument points into.
+    if (CxxKinds::aliasing(*construct->getConstructor()))
+      kept.add(pointee(flow, construct->getArg(1)));
     return kept;
+  }
+
+  /// RFC 0052 §5.3: the lambdas each local the function made keeps, which
+  /// the function sees: a call on the local, or one it is passed to, may
+  /// call them.
+  llvm::DenseMap<const clang::VarDecl *,
+                 llvm::SmallVector<const clang::LambdaExpr *, 1>>
+      keptLambdas;
+
+  void keepLambda(const clang::VarDecl *keeper, const clang::Expr *given) {
+    const clang::LambdaExpr *lambda = lambdaOf(given);
+    if (keeper == nullptr || lambda == nullptr)
+      return;
+    auto &lambdas = keptLambdas[keeper->getCanonicalDecl()];
+    if (!llvm::is_contained(lambdas, lambda))
+      lambdas.push_back(lambda);
+  }
+
+  /// The local a construction initializes where it is declared.
+  [[nodiscard]] const clang::VarDecl *
+  declaredBy(const clang::Expr *construct) const {
+    const clang::Stmt *parent = parents.getParent(construct);
+    while (parent != nullptr &&
+           llvm::isa<clang::ExprWithCleanups, clang::CXXBindTemporaryExpr,
+                     clang::ParenExpr>(parent))
+      parent = parents.getParent(parent);
+    const auto *declaration = llvm::dyn_cast_or_null<clang::DeclStmt>(parent);
+    return declaration == nullptr || !declaration->isSingleDecl()
+               ? nullptr
+               : llvm::dyn_cast<clang::VarDecl>(declaration->getSingleDecl());
+  }
+
+  /// The lambdas a local keeper named by `expression` (or a pointer to
+  /// one) keeps.
+  [[nodiscard]] llvm::ArrayRef<const clang::LambdaExpr *>
+  keptIn(const clang::Expr *expression) {
+    if (expression == nullptr)
+      return {};
+    expression = strip(expression)->IgnoreParenImpCasts();
+    if (const auto *unary = llvm::dyn_cast<clang::UnaryOperator>(expression);
+        unary != nullptr && unary->getOpcode() == clang::UO_AddrOf)
+      expression = unary->getSubExpr()->IgnoreParenImpCasts();
+    const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(expression);
+    const clang::VarDecl *variable =
+        named == nullptr ? nullptr : variableOf(*named);
+    if (variable == nullptr)
+      return {};
+    const auto found = keptLambdas.find(variable->getCanonicalDecl());
+    return found == keptLambdas.end()
+               ? llvm::ArrayRef<const clang::LambdaExpr *>()
+               : llvm::ArrayRef<const clang::LambdaExpr *>(found->second);
   }
 
   /// A local that is constructed where it is declared.
@@ -3890,6 +4439,25 @@ private:
     }
   }
 
+  /// `std::initializer_list`: a library view whose only members point at
+  /// the array of `const` elements the compiler made for it.
+  [[nodiscard]] static bool initializerList(clang::QualType type) {
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record == nullptr || !isLibrary(*record) || !record->hasDefinition())
+      return false;
+    return llvm::any_of(
+               record->getDefinition()->fields(),
+               [](const clang::FieldDecl *field) {
+                 return field->getType()->isPointerType() &&
+                        field->getType()->getPointeeType().isConstQualified();
+               }) &&
+           llvm::isa<clang::ClassTemplateSpecializationDecl>(record) &&
+           record->getDefinition()->field_begin() !=
+               record->getDefinition()->field_end() &&
+           std::next(record->getDefinition()->field_begin(), 2) ==
+               record->getDefinition()->field_end();
+  }
+
   /// The local a `return` names, through the copy or move that returns it.
   [[nodiscard]] static const clang::Expr *
   returnedName(const clang::Expr *expression) {
@@ -3917,6 +4485,8 @@ private:
       if (const auto found = flow.borrows.find(keeper);
           found != flow.borrows.end())
         value.loans = found->second.loans;
+    } else {
+      value = keptBy(flow, returnedName(expression));
     }
     // §7: a callable returned in a type that hides its captures owns them.
     if (!type->isReferenceType() && kinds.erased(type) && !kinds.view(type))
@@ -3957,6 +4527,28 @@ private:
     for (const Loan &loan : value.loans) {
       if (!localRoot(loan.root))
         continue;
+      // RFC 0052 §6: a value built from a borrow (a struct with a pointer
+      // member, a list, an aliasing shared pointer, a range adaptor).
+      const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+      if (record != nullptr && !kinds.viewClass(record) &&
+          !kinds.erased(type)) {
+        const bool list = initializerList(type);
+        const std::string written = spell(expression, ast);
+        error(
+            statement.getReturnLoc(), rule::Escape,
+            list ? "the 'std::initializer_list' that is returned points "
+                   "into the array its braces made, which does not outlive "
+                   "the function"
+                 : (written.size() <= 40 ? written : std::string("the value")) +
+                       " holds a borrow of " + nameOf(loan.root) +
+                       " and is returned",
+            statement.getReturnLoc(),
+            list ? "return a container that owns its elements "
+                   "('std::vector', 'std::array')"
+                 : "return what owns its data, or take " + nameOf(loan.root) +
+                       " as a parameter so that the caller keeps it");
+        return;
+      }
       const bool whole = CxxKinds::pointerLike(type) && loan.depth == 0;
       error(statement.getReturnLoc(), rule::Escape,
             whole ? "a " +
@@ -3974,11 +4566,35 @@ private:
     }
   }
 
+  /// RFC 0052 §5.3: a callable that initializes a member or an element of
+  /// an aggregate is kept by it.
+  void keptInList(const clang::InitListExpr &list) {
+    const clang::CXXRecordDecl *record = list.getType()->getAsCXXRecordDecl();
+    if (record != nullptr && record->hasDefinition() &&
+        list.getType()->isAggregateType() && !record->isUnion()) {
+      auto field = record->field_begin();
+      for (unsigned i = record->getNumBases();
+           i < list.getNumInits() && field != record->field_end(); ++i, ++field)
+        if (keepsCallables(field->getType()))
+          keptCallable(list.getInit(i), list.getInit(i)->getExprLoc(),
+                       "'" + field->getNameAsString() + "'");
+      return;
+    }
+    if (const clang::ArrayType *array = ast.getAsArrayType(list.getType());
+        array != nullptr && keepsCallables(array->getElementType()))
+      for (const clang::Expr *init : list.inits())
+        keptCallable(init, init->getExprLoc(), "an element of an array");
+  }
+
   void initialize(Flow &flow, const clang::CXXCtorInitializer &initializer) {
     const clang::FieldDecl *field = initializer.getMember();
     if (field == nullptr || initializer.getInit() == nullptr)
       return;
     const clang::QualType type = field->getType();
+    if (keepsCallables(type) &&
+        keptCallable(initializer.getInit(), initializer.getSourceLocation(),
+                     "'" + field->getNameAsString() + "'"))
+      return;
     if (!kinds.tracked(type) || type->isFunctionPointerType())
       return;
     const clang::Expr *init = initializer.getInit();
@@ -3988,7 +4604,7 @@ private:
         {.root = {.kind = RootKind::This, .field = field}, .depth = 0});
     storedOutside(target, value, initializer.getSourceLocation(),
                   "'" + field->getNameAsString() + "'",
-                  /*viewTarget=*/!type->isPointerType());
+                  /*viewTarget=*/!type->isPointerType() && viewOrErased(type));
     if (type->isPointerType())
       switchingStore(value, initializer.getSourceLocation(),
                      "'" + field->getNameAsString() + "'",
@@ -4028,6 +4644,9 @@ private:
                    llvm::dyn_cast<clang::BinaryOperator>(statement)) {
       if (binary->getOpcode() == clang::BO_Assign)
         assign(flow, *binary);
+    } else if (const auto *list =
+                   llvm::dyn_cast<clang::InitListExpr>(statement)) {
+      keptInList(*list);
     } else if (const auto *ret = llvm::dyn_cast<clang::ReturnStmt>(statement)) {
       returned(flow, *ret);
     } else if (llvm::isa<clang::CallExpr, clang::CXXConstructExpr>(statement)) {

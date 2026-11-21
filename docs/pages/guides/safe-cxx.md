@@ -33,7 +33,7 @@ When the compiler can write what an error asks for, its note says the text and w
 
 - An **owner** is an object: a local, a member, an element of a container, what a `std::unique_ptr` or a `std::optional` holds. Destructors release, so safe C++ writes no `new` and no `delete` (`raw-owner`).
 - A **borrow** is a reference, a pointer, an iterator, a `std::string_view`, a `std::span` or a lambda that captures by reference, kept in a local or passed down a call. It ends when what it points into is destroyed, moved, assigned or changed (`stale-borrow`).
-- A **view** is an object whose type holds a borrow: a struct with a `std::string_view` or a reference member, a `std::vector<std::string_view>`, a `std::function` made from a capturing lambda. It is not returned or stored past what it points into (`escape`).
+- A **view** is an object whose type holds a borrow: a struct with a `std::string_view`, a reference or a raw pointer member, a `std::vector<std::string_view>`, a `std::function` made from a capturing lambda, a `std::initializer_list`, a range adaptor. A value made from a borrow is a view of what it was made from when one of its members could point there (`R{&x}`, `std::views::all(v)`, a shared pointer made by the aliasing constructor). It is not returned or stored past what it points into (`escape`).
 - A **reference** is a raw pointer kept in a member or an element. The rules do not follow it, and the guards check it when it is used. What an object owns is not changed through one, nor through a `std::shared_ptr`, unless its class is `WEAVEC_ALIASED` (`owner-path`, [sharing](#sharing)).
 
 A raw pointer may also carry a bound, as in Safe C: `const T *WEAVEC_COUNTED_BY(n) p` points to `n` elements, `WEAVEC_ENDED_BY(e)` to those before `e`, `WEAVEC_NULL_TERMINATED` to a string, on parameters, results and members. An array keeps its length as a pointer, a container's `data()` has its `size()`, and each access through such a pointer is compared with its bound. New code writes `std::span`; code being converted keeps its pointers and declares their bounds ([Convert C++ in place](/guides/convert-cxx/)).
@@ -46,6 +46,12 @@ A borrow into an owner ends when the owner is destroyed, moved or assigned, when
 
 - A member function that has a `const` overload with the same parameters only gives access, and ends nothing: `operator[]`, `at`, `front`, `data`, `begin`, `end`, `find`. (`operator[]` of a `std::map` inserts, has no `const` overload, and ends borrows; use `at` or `find`.)
 - Changing an _element_ ends borrows into that element's own data, not borrows of the container's elements: a loop that edits each item is fine, a loop that pushes to the vector it iterates is not.
+
+What a call could reach is read from types ([RFC 0052](/rfcs/0052-what-a-call-may-reach/)), and the default is that it may:
+
+- A reference or pointer a function returns points into every argument whose type can hold it, and a member function's into its object as well. `char &first(std::string &s)` returns into `s`; `std::map::find(key)` returns into the map and not into the `std::string` key, which cannot hold a map's node. When a function returns into one parameter only, write `WEAVEC_LIFETIMEBOUND` on it; `--weavec-fix` proposes it when every `return` gives a borrow of that parameter.
+- `const` on a view is shallow. A `std::span<T>`, a struct that holds a `T &` or a `T *`, a lambda that captures by reference: given to a function of the program, any of them reaches what it points to, whatever the parameter's `const`, and so does a call of a member function of such a view of the program's class (`setter.clear()` where `setter` holds a reference). A `std::span<const T>` or a `const T *` reaches nothing a call could change. A change made through any borrow (`std::ref(v).get() = x`, `span[0] = x`) is a change of what it names.
+- A lambda the function can see ends the borrows into what its body changes where it is called, and at every call it is passed to: `std::visit`, `std::invoke`, an algorithm, a function of the program. A function that is given a callable believes it reaches nothing its other parameters reach, so passing a lambda beside an object it changes, `f(v, [&v] { … })`, is `call-alias`, as Rust rejects the closure where it is made.
 
 As in Rust, the fix is one of: take the borrow again after the change, keep an index, copy the value out first, or declare the callee's parameter `const`.
 
@@ -325,7 +331,7 @@ private:
 
 ### Callbacks
 
-A callable that captures by reference is a view. Pass it down freely, as a template parameter or as a `std::function` for the call. One that is kept captures by value: copies, moved owners, or a `std::shared_ptr` to what it needs. A function that keeps a callable takes it by value (`std::function<void()> handler`), and one that only calls it takes it by reference to `const` or as a template parameter: the compiler rejects a caller that passes a lambda capturing a local by reference where it would be kept past the local, and rejects a function that keeps a callable it took by reference. A callable returned as a `std::function` owns what it captured. (`WEAVEC_ESCAPES`, written after a parameter's type, says "kept" where the type does not.)
+A callable that captures by reference is a view. Pass it down freely, as a template parameter or as a `std::function` for the call, but not beside an object it changes (`call-alias`). One that is kept (in a member, an element, a `static`, by a parameter that keeps it) captures by value: copies, moved owners, or a `std::shared_ptr` or `std::weak_ptr` to what it needs; it captures no reference, no `this` and no pointer. A callback that needs its object takes it as an argument (`std::function<void(Panel &)>`), or, for a class shared by `std::shared_ptr`, captures `[weak = weak_from_this()]` and locks it. A callable that a local of the same function keeps (`Timer timer([&count] { … })`) is one the function sees, and a call on the local may run it. A function that keeps a callable takes it by value (`std::function<void()> handler`), and one that only calls it takes it by reference to `const` or as a template parameter: the compiler rejects a caller that passes a lambda capturing a local by reference where it would be kept past the local, and rejects a function that keeps a callable it took by reference. A callable returned as a `std::function` owns what it captured. (`WEAVEC_ESCAPES`, written after a parameter's type, says "kept" where the type does not.)
 
 ```cpp accepted
 template <typename F> void each_even(const std::vector<int> &values, F visit) {
@@ -742,7 +748,7 @@ Each of these stops when it runs in the checked build (`-fweavec-safe-checks=ful
 
 - a dangling raw pointer member or element (a reference);
 - an object of a `WEAVEC_ALIASED` class that another holder changed under a borrow;
-- a callable that captured `this`, or an object a parameter refers to, and is kept by an object that outlives it; and a stored callable that changes the container it is being called from;
+- a stored callable that changes the container it is being called from, through a `std::shared_ptr` it captured;
 - an element moved out of a container (`std::move(v[i])`) and used again;
 - the address of a pointer parameter itself (`return &p;`), and views kept in a C array (`std::string_view parts[4]`; a `std::array` of them is followed);
 - a container's iterators passed to a standard algorithm the standard forbids them for (`v.assign(v.begin() + 1, v.end())`);

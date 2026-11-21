@@ -708,3 +708,239 @@ Accepted as drafted on 2026-11-21.
 - **D8. The cost limit.** New errors on G2's corpus are at most 2 per
   thousand safe functions, each with a fix or a stated reason. S0 returns
   to the owner if the design exceeds it.
+
+## Implementation amendments
+
+These record where the implementation departs from the design above, from
+building it and from what S0 and the gates found. They override the body.
+
+1. **Reach follows what an object owns (§2, D2).** `CxxKinds::reaches`
+   follows bases, members, elements and the pointees of the pointers an
+   owner keeps of its own blocks: a library class whose destructor does
+   something (`std::string`, `std::vector`, `std::any`, `std::map`'s
+   nodes), a class of the program that declares a destructor, and the
+   members of either (the union `std::any` keeps its pointer in). It does
+   not follow a reference member, nor a pointer of a class that is not an
+   owner: where a view points is followed by the view's own loans, which
+   `points` adds to a result wherever §3 asks for a view argument. Pointer
+   reach made a copied lambda reach what it captured by reference, so a
+   range adaptor made from a temporary closure borrowed the closure (RFC
+   0044's `f90`). Each class is visited once per question, and a chain is
+   followed to 64 classes, not ten: libc++'s `std::variant` has eleven
+   bases above its union.
+2. **A view made at an object of its member's type points at it (§6).**
+   `std::ref(v)`, a span of an array and a struct of a reference to its
+   argument's type borrow the object itself, not what it holds
+   (`CxxKinds::pointsAt`); a change of the object's value keeps them. So a
+   change through them is a change of the object (§4.2): `w.get() = K` and
+   `span[0] = K` end the borrows into it. A reference or pointer a call
+   returns at a root of a type it is not related to is inside that root
+   (`fit`): `rv[0]` of a `ref_view` at a vector is an element. Two errors of
+   the existing tests were artifacts of the old depth and go:
+   `cxx-views.cpp`'s `lexerChanged` (a `Parser` holding `Lexer &` after the
+   lexer is assigned) and `cxx-thread-lent.cpp`'s `t.join()` after
+   `v.push_back` (the thread was given `std::ref(v)`).
+3. **§4.1 is for the program's functions.** A view given to a function of
+   the program reaches what it points to; the library's functions are
+   trusted with what their specification allows (X-A4): an iterator
+   comparison or `std::find` over a container's iterators ends nothing,
+   which is _Unresolved question_ 2's answer for the library's side. On
+   `this`, RFC 0044's amendment 3 stands for a `const` member function of
+   the class; one that is not `const` reaches what the class's reference
+   members name.
+4. **What a lambda changes (§5.1).** A capture by copy is the lambda's
+   own: what it changes of the enclosing function is only what the copy
+   points to, and through a `std::shared_ptr` it captured, what other
+   holders already change (RFC 0044 §8). Of `*this`, a body that names
+   members changes those members (Rust's disjoint captures), one that calls
+   a member function that is not `const` all of it. A lambda the body calls
+   or passes on adds what it changes.
+5. **What `call-alias` and the calls leave to other rules (§5.2).** A
+   callable passed for a parameter that keeps it is checked by §5.3, not
+   by `call-alias` or at the call; one a thread start is given is RFC
+   0046's. Constructing the library's callable from a lambda
+   (`std::function` from `[&v] { … }`) does not run it; the call it is then
+   given may.
+6. **A kept callable a local keeps is one the function sees (§5.3, D6).**
+   A callable passed to the constructor of a local, or to a member function
+   of a local that keeps it (RFC 0044's amendment 6 already let it capture
+   the function's locals), stays visible: a call on that local, or one it
+   is passed to, applies the callable's changes (the `Runs` end), and a
+   copy or a move of the local keeps them. D6's rule applies to every other
+   keeper. S0 measured six of the errors D6 as drafted gave (kv's test
+   clock, RFC 0046's `c26`) to be this case, none a hole. A keeper is what
+   erases its callables (`std::function`, a container of them); a thread
+   object is not one (RFC 0046).
+7. **A class that borrows only through raw pointers (§6, D7).** It is a
+   view to the flow (`CxxKinds::borrowing`): made, returned and kept as one.
+   Stored into through its member functions, it keeps references, as a
+   pointer member always has (RFC 0044 §8): a local's borrow stored in it is
+   `escape`, a pointer into another member of the same object is not
+   (the guide's LRU cache keeps its links in an `Order` beside the map that
+   owns them). A library class with a trivial destructor and a pointer or
+   reference member (`std::initializer_list`, `std::ranges::ref_view`, a
+   `filter_view`) is such a class too, without becoming a view class for
+   the rest of the checker: the fast mode's trusted functions read view
+   classes, and G6 needs their code unchanged. `mayBorrow` reads the
+   library's classes by their members as it does the program's; a view
+   passed by value is asked about what its members name
+   (`mayBorrowThrough`).
+8. **`WEAVEC_ESCAPES` (RFC 0048 §4).** A member function of the program
+   keeps the address a pointer or reference parameter is given only if the
+   parameter says so; the flow now believes it of a store through a member
+   call, as the checker already checks it of a safe callee. S0 found seven
+   errors on libzmq's conversion that came from the flow not reading it.
+9. **`lifetimebound` on `this` (§3).** Read from the member function's
+   type, in any of its declarations.
+10. **E8 (§9)** is RFC 0049's E7 extended to C++: a `return` of a borrow of
+    the parameter through members, subscripts, dereferences and member
+    calls, for a reference local as for a pointer one.
+11. **The messages.** As _Diagnostics_ lists, with two forms of the
+    `Runs` end: "before the call of 'f', which changes 'v'" when the lambda
+    itself is called, "before the call to 'run', which may call 'f', which
+    changes 'v'" when it is passed. A value returned with a borrow is
+    "'R{&x}' holds a borrow of 'x' and is returned"; a list is "the
+    'std::initializer_list' that is returned points into the array its
+    braces made".
+12. **Not this RFC's: a variant of trivially destructible alternatives.** A
+    borrow into `std::variant<unsigned long, const char *>` survives a
+    switch of alternative: RFC 0044 ends borrows only at changes of objects
+    that hold owners. Found while writing the tests; future work with the
+    other storage that changes type in place.
+
+## Measured gates
+
+darwin-arm64, Homebrew LLVM 23.1.0, main at `fecadb17`, 2026-11-21. The
+baseline is the round's frozen main (`build/probe-2026-11-21/tc`); the
+gates' agents had a frozen copy of this branch's compiler
+(`build/rfc52/tc`). Evidence is in `build/rfc52/` (not committed). The
+library grows by 874 lines of code (28,337 to 29,211; 1,088 lines in all),
+in `SafeCxxFlow.cpp`, `SafeCxxKinds.h`, `SafeCxx.cpp` and `SafeFix.cpp`.
+
+**S0.** The prototype extended to §4, §5.1's generic lambdas, §5.3 and §6
+rejected all of the round's holes it was measured on. The new errors went
+from 68 to 20 as the prototype's own bugs were fixed (amendments 1, 3, 5,
+6, 8: reach through views' pointers, the library's operators under §4.1,
+thread starts, by-copy captures, `WEAVEC_ESCAPES` ignored); the 20 left are
+G2's.
+
+**G1, the round: passes.** All 24 lifetimes holes and the types area's H2
+to H5, H9 and H10 (`p06`, `p07`, `p08`, `p10`, `p18`, `p19`, `p23`, `p25`,
+`p26`) are rejected, pinned by `test/Safe/cxx-reach-callables.cpp`,
+`-results`, `-views`, `-values`, `-kept` and `-aliased`, with the new
+messages and their notes in `cxx-reach-notes.cpp`.
+
+**G2, correct code: passes, narrowly.** New errors against main:
+
+| Corpus | Safe functions | New errors |
+| --- | ---: | ---: |
+| interp made safe (RFC 0051) | 692 | 0 |
+| kv made safe (RFC 0051) | 515 | 1 |
+| RFC 0044's 90 correct files | 561 | 2 |
+| RFC 0046's 40 correct files | 78 | 3 |
+| tinyxml2 made safe (RFC 0049) | 403 | 0 |
+| yaml-cpp made safe (RFC 0049) | 2,428 | 0 |
+| json port (RFC 0049) | 94 | 0 |
+| libzmq's converted files (92) | 3,729 | 13 |
+| nng's converted files (Safe C) | 2,371 | 0 |
+| `test/Safe`'s accepted lines | | 1 |
+| All | 10,871 | 20 (1.84 per thousand) |
+
+Without nng, whose Safe C this RFC cannot change, the rate is 2.35 per
+thousand of 8,500. Each error, with its fix or the reason there is none:
+
+- **D6, a kept callable that captures `this` (5):** RFC 0044's `f54`
+  (`button.set_on_click([this] { … })`, twice) and RFC 0046's `c27` (an
+  actor's `post([this] { … })` into its own mailbox, three times). Fix:
+  take the object as the callable's argument, or `[weak =
+  weak_from_this()]`.
+- **D6, a kept callable that captures a view by value (1):**
+  `cxx-views.cpp`'s `events.keep([sv] { … })`, a `std::string_view`
+  parameter kept by an object that outlives the call: a real hazard the
+  test had accepted. Fix: capture a `std::string`.
+- **D5, a callable beside what it changes (1):** kv's `wal_->replay([this,
+  …] { apply(…); })`, which calls a member function of `this` while a member
+  of `this` runs it. Rust rejects it. Fix: collect the records in a local
+  and apply them after the call (what the G3 agent did).
+- **D4, `const` on a view is shallow (7):** libzmq's `msg_t`, a class with
+  raw pointer members and no destructor, so a view (D7); a borrow of its
+  data ends at its `size()` and `flags()` (`const`, six) and `set_flags()`
+  (one). No fix but taking the borrow after the call.
+- **D3, results by reach (5):** libzmq's `metadata_t::get(const
+  std::string &)` returning `const char *` borrows from its temporary key
+  (three errors; fix `WEAVEC_LIFETIMEBOUND` on `this`), and
+  `socket_base_t::create(…, ctx_t *parent, …)`'s result is taken to point
+  into `*parent`, which owns sockets (two; no fix: a factory's result
+  borrows nothing, and no annotation says so).
+- **D7, a struct with a pointer member (1):** libzmq's `endpoint_t peer`
+  (a socket pointer and options) is a view of the `this` it came from, which
+  a call given `this` then ends.
+
+**G3, the loop: fails for interp.** Fresh agents with the frozen compiler
+and the brief of RFC 0051 made the two trial programs, as written, safe with
+all tests passing in both builds: kv in 13 minutes (limit 19.5, RFC 0051's
+13), interp in 10.5 minutes (limit 9, RFC 0051's 6). interp's time went to
+one design decision §7 forced: its lists, maps and environments are shared
+and changed through `std::shared_ptr`, so they are `WEAVEC_ALIASED`, and an
+aliased class now owns no `std::variant` at any depth, which its `Value`
+was; the agent replaced the variant by a tagged class. kv's agent reported
+two false rejections that are not this RFC's (two members of one object
+moved in one statement; a view's member function taking a
+`std::string_view` it does not keep), and interp's one this RFC's (a
+member `find(const Value &key)` borrowing from its temporary key, fixed by
+`lifetimebound` on `this`).
+
+**G4, a fresh round: fails.** Two fresh agents, briefed as the round's and
+told what this RFC closes, wrote 225 probes; every hole below was rerun.
+
+- Lifetimes, 169 probes: 47 holes and 19 programs the rules accept that
+  the checked build stops. 27 are callables the flow does not see or does
+  not read: a lambda reached through a pointer, a `std::pair`, a
+  `std::vector`, `?:` or a factory's result; `std::bind` and
+  `std::bind_front`; member function pointers, `std::mem_fn` and
+  `std::invoke` of one; a capture that is a view by value (`[r =
+  std::ref(v)]`, a span); and the same passed beside `v` (`call-alias`
+  misses) or kept (D6 reads only lambdas). Eight are results (a member of
+  a struct with a pointer member, a `std::function`'s result, an
+  out-parameter of `optional<reference_wrapper>`, a `pair`, `vector` or
+  `optional` of pointers returned); seven are library containers of views
+  made from braces (`vector<reference_wrapper<V>>{v}`); three are
+  `bind_front(&L::f, &l)` outliving `l`; two are a `thread_local` global
+  that no call is taken to reach.
+- Types, 56 probes: 24 holes of these classes and one of another
+  (`std::as_writable_bytes` writing over a string's pointer, which the RFC's
+  _No object in bytes_ assumes `pointer-bytes` rejects). The classes: a
+  lambda reached through a `std::pair`, `std::any`, `std::optional`,
+  `std::variant`, `std::array`, a function's result, `std::ref` or `?:`; a
+  change through the lambda's own local reference or pointer to a capture;
+  an init capture that holds a view; a functor class of the program
+  (`std::visit(Vis{v}, …)`, kept in a `std::function`); a view class
+  reached through a base, a `unique_ptr<Base>` or a `unique_ptr` of a view
+  (Unresolved question 4 answered: a hole); a `thread_local`; a `mutable`
+  member changed through `const`; and `~T() = default` taken for an owner.
+
+What they share: §5.1 reads the body of a lambda the function can see,
+found by the form of its expression, and §6 a value built from a borrow by
+the call that builds it; every other way to hold a callable or a view is a
+form the rules do not name, which is the shape of the list this RFC set out
+to replace. A sound version needs the default the RFC gives calls also for
+callables: a call of any callable value, or a call it is passed to, ends
+the borrows into what the value's own loans reach, whether or not its body
+can be read; and a library container of views made from what it is given.
+That is a change to D5 and D7 for the owner to decide.
+
+**G5, compile time: passes.** Release compilers of main and of this branch,
+`-std=c++20 -O2 -fweavec-safe -c`, interleaved, the median of five CPU
+times per file: interp made safe 1.001, kv made safe 0.999, the json port
+0.999, RFC 0044's files 1.003; all 1.001 (limit 1.03). Files that fail
+under either compiler are left out of both (kv's `store.cpp`, seven of RFC
+0044's files).
+
+**G6, same code: passes.** Of 510 objects (G2's corpus, `test/cases`,
+`test/Guards`), 376 are byte-identical to main's Release compiler's, and 79
+differ only where two compiles by main itself differ (the order of a table
+of 16-byte records in `__const`, which varies between runs; 78 libzmq units
+built with `-g` and tinyxml2); 11 compile under main only (the new errors),
+44 under neither.
+
+Status stays **Accepted**: G3 and G4 fail.

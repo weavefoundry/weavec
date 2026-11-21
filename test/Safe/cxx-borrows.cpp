@@ -291,7 +291,7 @@ void libraryHandlesIt(std::vector<std::string> &v) {
   std::sort(v.begin(), v.end());
 }
 void callableChanges(std::vector<int> &v) {
-  std::for_each(v.begin(), v.end(), [&](int x) { v.push_back(x); }); // expected-error {{'v.begin()' points into 'v', which the callable passed with it may change [weavec-safe:call-alias]}}
+  std::for_each(v.begin(), v.end(), [&](int x) { v.push_back(x); }); // expected-error {{the lambda may change 'v', which is passed with it [weavec-safe:call-alias]}}
 }
 int callableReads(const std::vector<int> &v, std::vector<int> &out) {
   std::for_each(v.begin(), v.end(), [&](int x) { out.push_back(x); });
