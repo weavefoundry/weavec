@@ -71,6 +71,9 @@ struct DriverOptions {
   /// link gets for the runtime's library; unset means the toolchain's
   /// runtime directory, empty means none. Link-only, never forwarded.
   std::optional<std::string> rpath;
+  /// `-f[no-]weavec-definitions` (RFC 0051 §5.2): a link compares the
+  /// records of its safe units first. Link-only, never forwarded.
+  bool definitions = true;
   /// The flags consumed, in order, for forwarding to `-cc1` jobs.
   std::vector<std::string> spellings;
 

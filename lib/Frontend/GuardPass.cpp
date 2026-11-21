@@ -1117,6 +1117,12 @@ llvm::PreservedAnalyses GuardInsertPass::run(llvm::Module &module,
   if (module.getDataLayout().getPointerSizeInBits() != 64)
     return llvm::PreservedAnalyses::all();
   guard::ModuleContext context(module, options);
+  // RFC 0051: nothing undefined in a safe function, before anything else
+  // reads its code.
+  for (llvm::Function &function : module)
+    if (!guard::skips(function) && guard::definesSafe(context, function))
+      guard::defineSafe(context, function);
+  guard::emitDefinitions(context);
   guard::thunkLibraryAddresses(context, module);
   // RFC 0045: before the safe functions are prepared, which clones see.
   guard::prepareFast(context, module);

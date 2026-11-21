@@ -106,12 +106,16 @@ static llvm::json::Value rowJson(const LedgerRow &row) {
 
 llvm::json::Value fixJson(const RuleFix &fix) {
   llvm::json::Array edits;
-  for (const FixEdit &edit : fix.edits)
-    edits.push_back(
-        llvm::json::Object{{.K = "file", .V = edit.file},
-                           {.K = "offset", .V = edit.offset},
-                           {.K = "text", .V = edit.text},
-                           {.K = "needsInclude", .V = edit.needsInclude}});
+  for (const FixEdit &edit : fix.edits) {
+    llvm::json::Object object{{.K = "file", .V = edit.file},
+                              {.K = "offset", .V = edit.offset},
+                              {.K = "text", .V = edit.text},
+                              {.K = "needsInclude", .V = edit.needsInclude}};
+    // RFC 0051 §4.1: what a removal takes out.
+    if (!edit.removed.empty())
+      object["removed"] = edit.removed;
+    edits.push_back(std::move(object));
+  }
   return llvm::json::Object{{.K = "level", .V = fix.level},
                             {.K = "declaration", .V = fix.declaration},
                             {.K = "name", .V = fix.name},
@@ -168,6 +172,7 @@ bool readFix(const llvm::json::Value &value, RuleFix &fix) {
             {.file = text(*edit, "file"),
              .offset = number(*edit, "offset"),
              .text = text(*edit, "text"),
+             .removed = text(*edit, "removed"),
              .needsInclude = edit->getBoolean("needsInclude").value_or(false)});
   return true;
 }
@@ -287,7 +292,8 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                              {.K = "owns", .V = function.owns},
                              {.K = "starts", .V = function.starts},
                              {.K = "locks", .V = function.locks},
-                             {.K = "sends", .V = function.sends}};
+                             {.K = "sends", .V = function.sends},
+                             {.K = "handlers", .V = function.handlers}};
     // RFC 0047 §7.
     if (function.surveyed)
       entry["surveyed"] = true;
@@ -362,6 +368,28 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                             {.K = "placedLocals",
                              .V = static_cast<std::int64_t>(
                                  ledger.placedLocals)}}},
+                   // RFC 0051 §8: what the unit's options defined, and
+                   // what GuardDefine placed in its safe functions.
+                   {.K = "defined",
+                    .V = llvm::json::Object{{.K = "unit", .V = unit.defined},
+                                            {.K = "unreachable",
+                                             .V = static_cast<std::int64_t>(
+                                                 ledger.defined.unreachable)},
+                                            {.K = "missingReturn",
+                                             .V = static_cast<std::int64_t>(
+                                                 ledger.defined.missingReturn)},
+                                            {.K = "division",
+                                             .V = static_cast<std::int64_t>(
+                                                 ledger.defined.division)},
+                                            {.K = "shifts",
+                                             .V = static_cast<std::int64_t>(
+                                                 ledger.defined.shifts)},
+                                            {.K = "conversions",
+                                             .V = static_cast<std::int64_t>(
+                                                 ledger.defined.conversions)},
+                                            {.K = "probed",
+                                             .V = static_cast<std::int64_t>(
+                                                 ledger.defined.probed)}}},
                    {.K = "functions", .V = std::move(functions)},
                    {.K = "fields", .V = std::move(fields)},
                    {.K = "partial", .V = unit.partial},
@@ -483,6 +511,12 @@ struct Audit {
   llvm::json::Array threads;
   llvm::json::Array sends;
   llvm::json::Array threadGlobals;
+  /// RFC 0051 §8: what (N1) to (N6) rest on: the units with safe functions
+  /// not compiled with -fweavec-safe (their library code keeps the command
+  /// line's arithmetic), and the functions that are not safe and register
+  /// a signal handler.
+  llvm::json::Array undefinedUnits;
+  llvm::json::Array handlers;
   std::set<std::string> libraryNames;
   std::set<std::string> fields;
   unsigned safe = 0;
@@ -550,6 +584,10 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
     llvm::StringMap<std::string> tiers;
     if (const llvm::json::Object *summary = unit->getObject("summary"))
       audit.placed += summary->getInteger("placedLocals").value_or(0);
+    bool unitDefined = false;
+    if (const llvm::json::Object *defined = unit->getObject("defined"))
+      unitDefined = defined->getBoolean("unit").value_or(false);
+    bool hasSafe = false;
     if (const llvm::json::Array *functions = unit->getArray("functions"))
       for (const llvm::json::Value &value : *functions) {
         const llvm::json::Object *function = value.getAsObject();
@@ -571,15 +609,23 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
         }
         if (tier == "safe") {
           ++audit.safe;
+          hasSafe = true;
           continue;
         }
         audit.trusted.push_back(llvm::json::Object(*function));
+        if (function->getInteger("handlers").value_or(0) != 0)
+          audit.handlers.push_back(llvm::json::Object(*function));
         if (function->getInteger("starts").value_or(0) != 0 ||
             function->getBoolean("locks").value_or(false))
           audit.threads.push_back(llvm::json::Object(*function));
         if (function->getBoolean("sends").value_or(false))
           audit.sends.push_back(llvm::json::Object(*function));
       }
+    if (hasSafe && !unitDefined && !unit->getBoolean("partial").value_or(false))
+      audit.undefinedUnits.push_back(llvm::json::Object{
+          {.K = "file", .V = unit->getString("source").value_or("").str()},
+          {.K = "line", .V = 0},
+          {.K = "source", .V = unit->getString("source").value_or("").str()}});
     if (const llvm::json::Array *fields = unit->getArray("fields"))
       for (const llvm::json::Value &value : *fields)
         if (const llvm::json::Object *field = value.getAsObject();
@@ -816,7 +862,16 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
                "{0:2}",
                llvm::json::Value(llvm::json::Object{
                    {.K = "schema", .V = "weavec-audit"},
-                   {.K = "version", .V = 8},
+                   {.K = "version", .V = 9},
+                   {.K = "undefined",
+                    .V = llvm::json::Object{{.K = "units",
+                                             .V = llvm::json::Value(
+                                                 llvm::json::Array(
+                                                     audit.undefinedUnits))},
+                                            {.K = "handlers",
+                                             .V = llvm::json::Value(
+                                                 llvm::json::Array(
+                                                     audit.handlers))}}},
                    {.K = "functions", .V = audit.functions},
                    {.K = "placedLocals", .V = audit.placed},
                    {.K = "safe", .V = audit.safe},
@@ -864,6 +919,26 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
     }
   };
   out << audit.safe << " of " << audit.functions << " functions safe\n";
+  // RFC 0051 §8: what the guarantee that nothing is undefined rests on.
+  if (audit.safe == audit.functions && audit.functions != 0 &&
+      audit.undefinedUnits.empty() && audit.handlers.empty()) {
+    out << "nothing undefined: every function is safe, and every unit with "
+           "safe functions was compiled with -fweavec-safe\n";
+  } else if (!audit.undefinedUnits.empty() || !audit.handlers.empty()) {
+    out << "\nundefined behavior (what (N1) to (N6) rest on):\n";
+    for (const llvm::json::Value &value : audit.undefinedUnits)
+      out << "  " << value.getAsObject()->getString("source").value_or("")
+          << ": safe functions in a unit not compiled with -fweavec-safe "
+             "(the library code it instantiates keeps the command line's "
+             "arithmetic)\n";
+    for (const llvm::json::Value &value : audit.handlers) {
+      const llvm::json::Object &entry = *value.getAsObject();
+      out << "  " << where(entry) << ": "
+          << entry.getString("function").value_or("")
+          << " registers a signal handler (code that is not safe; the "
+             "handler runs between any two instructions)\n";
+    }
+  }
   if (audit.placed != 0)
     out << audit.placed
         << " locals placed in typed memory (their addresses are kept)\n";

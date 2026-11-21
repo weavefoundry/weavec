@@ -1,14 +1,15 @@
 // RFC 0044 §1, §12: -fweavec-safe in a C++ unit. Under
-// -fweavec-safe-checks=full the rules check the unit and change nothing in
-// what is compiled: the object is the one the unit gives without the flag,
-// every guard kept; the fast mode (RFC 0045) compiles it otherwise. The
+// -fweavec-safe-checks=full the rules check the unit and every guard is
+// kept; since RFC 0051 the unit's arithmetic is defined, its stops placed
+// and its definitions recorded, so its object is not the one the unit gives
+// without the flag; the fast mode (RFC 0045) compiles it otherwise too. The
 // ledger lists each function's tier and each member that owns, refers,
 // borrows, shares or erases; the summary line counts them; the audit lists
 // what the rules rest on.
 // RUN: rm -rf %t && mkdir -p %t/ledger
 // RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -fweavec-safe-checks=full -fweavec-summary -fweavec-ledger=%t/ledger/ -c %s -o %t/safe.o 2>&1 | FileCheck %s --check-prefix=SUMMARY
 // RUN: %weavec_cxx -std=c++20 -O2 -c %s -o %t/plain.o
-// RUN: cmp %t/safe.o %t/plain.o
+// RUN: not cmp -s %t/safe.o %t/plain.o
 // RFC 0045: the fast mode (the default) compiles the unit otherwise.
 // RUN: %weavec_cxx -std=c++20 -O2 -fweavec-safe -fweavec-safe-checks=bounds -c %s -o %t/bounds.o
 // RUN: not cmp -s %t/bounds.o %t/plain.o
@@ -92,7 +93,7 @@ int main() {
 // LEDGER: "tier": "safe"
 // LEDGER: "function": "main"
 // LEDGER: "tier": "safe"
-// LEDGER: "version": 12
+// LEDGER: "version": 13
 // AUDIT: 4 of 5 functions safe
 // AUDIT: functions that are not safe
 // AUDIT-NEXT: safe-cxx-units.cpp:{{[0-9]+}}: raw (guarded)
@@ -103,7 +104,7 @@ int main() {
 // AUDIT: erased members
 // AUDIT-NEXT: safe-cxx-units.cpp:{{[0-9]+}}: Cache.onChange
 // JSON-DAG: "schema": "weavec-audit"
-// JSON-DAG: "version": 8
+// JSON-DAG: "version": 9
 // JSON-DAG: "shared": [
 // JSON-DAG: "erased": [
 // REPORT: weavec: heap-use-after-free at {{.*}}safe-cxx-units.cpp:{{[0-9]+}}:

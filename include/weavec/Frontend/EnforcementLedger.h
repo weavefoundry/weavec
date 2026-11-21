@@ -34,7 +34,7 @@
 namespace weavec::frontend {
 
 /// The version of the `weavec-ledger` JSON this writes.
-inline constexpr unsigned EnforcementLedgerVersion = 12;
+inline constexpr unsigned EnforcementLedgerVersion = 13;
 
 /// What the pass decided for one access.
 struct LedgerRow {
@@ -69,6 +69,8 @@ struct LedgerFunction {
   unsigned starts = 0;
   bool locks = false;
   bool sends = false;
+  /// RFC 0051 §8: the signal handlers it registers.
+  unsigned handlers = 0;
   /// RFC 0047 §7: under -fweavec-safe-survey, a function that is not safe
   /// was surveyed (its errors are among the unit's, RFC 0049 §7).
   bool surveyed = false;
@@ -103,6 +105,20 @@ struct LedgerLibrary {
   std::string reason;
 };
 
+/// RFC 0051 §8: whether the unit was compiled with -fweavec-safe, so that
+/// its options define arithmetic in the library code it instantiates too,
+/// and what GuardDefine placed in its safe functions.
+struct LedgerDefined {
+  bool unit = false;
+  std::uint64_t unreachable = 0;
+  std::uint64_t missingReturn = 0;
+  std::uint64_t division = 0;
+  std::uint64_t shifts = 0;
+  std::uint64_t conversions = 0;
+  /// Safe functions whose frames are probed page by page.
+  std::uint64_t probed = 0;
+};
+
 /// The rows of one unit, and their counts by outcome. The pass adds a row
 /// for each access when it inserts the access's guard, and later says, for
 /// each copy of that guard the optimizer left (inlining and unrolling copy
@@ -123,6 +139,7 @@ struct EnforcementLedger {
   std::uint64_t typedSites = 0;
   /// RFC 0048 §5.1: the locals placed in typed memory.
   std::uint64_t placedLocals = 0;
+  LedgerDefined defined;
   std::uint64_t guarded = 0;
   std::uint64_t proven = 0;
   std::uint64_t unguarded = 0;
@@ -165,6 +182,8 @@ struct EnforcementUnit {
   /// `trap`, `report` or `verify`.
   std::string checks;
   bool zeroInit = true;
+  /// RFC 0051 §8: compiled with -fweavec-safe.
+  bool defined = false;
   /// RFC 0045 §1: `fast` or `full` for a unit compiled as safe, else empty.
   std::string safe;
   /// RFC 0049 §7: the compile's directory and the driver's command line

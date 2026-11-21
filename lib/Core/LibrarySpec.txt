@@ -171,7 +171,10 @@
 #   (std::async); fresh: one whose result shares its object with no other
 #   handle (std::make_shared).
 #   Row clauses spawns (the C function starts a thread) and unshared (it
-#   keeps state of its own between calls) are RFC 0046's too.
+#   keeps state of its own between calls) are RFC 0046's too. RFC 0051: the
+#   row clause handler, the function registers code the system runs between
+#   any two instructions of the program (a signal handler), which a safe
+#   function does not call (but signal with SIG_IGN or SIG_DFL).
 #
 # OVERLOADS
 #   A name may have several rows; a call uses the first whose arity it
@@ -834,7 +837,11 @@ cnd_destroy (rw) -> void;
 tss_create (w, fn) -> int;
 call_once (rw, fn) -> void;
 
-sigaction (int, r:null-ok, w:null-ok) -> int;
+sigaction (int, r:null-ok, w:null-ok) -> int handler;
+signal (int, none:null-ok) -> ptr handler;
+bsd_signal (int, none:null-ok) -> ptr handler;
+sigset (int, none:null-ok) -> ptr handler;
+sigvec (int, r:null-ok, w:null-ok) -> int handler;
 sigemptyset (w) -> int;
 sigfillset (w) -> int;
 sigaddset (rw, int) -> int;

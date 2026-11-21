@@ -352,6 +352,10 @@ A rule never tries to prove something about the code: it rejects a construct. Wh
 
 The ownership rules are checked only when the program compiles. In the checked mode (`-fweavec-safe-checks=full`) nothing at run time rests on them: every released block waits in the quarantine for a sweep, and no guard is removed because of them.
 
+### What safe code can rely on
+
+A safe function has no behavior C leaves undefined ([RFC 0051](/rfcs/0051-nothing-undefined/); [the list](/reference/undefined/) has each of the 221 items of C23's Annex J.2 and what disposes of it). Signed arithmetic wraps, a shift's count is taken modulo the width, a conversion from floating point saturates, every local starts as zeroes and a loop may run forever. A division by zero or of the least value by -1, `__builtin_unreachable()` reached, the end of a function that must return a value reached, and a full stack stop with a report (`division-by-zero`, `division-overflow`, `unreachable`, `missing-return`, `stack-exhaustion`). `restrict`, `__builtin_assume` and the attributes that assert are errors ([`assumed`](/reference/rules/#assumed)); bytes do not become a `bool`; a signal handler is registered by a `WEAVEC_GUARDED` function ([`signal-handler`](/reference/rules/#signal-handler)); a call through a declaration without a prototype, a format that does not match, and unsequenced changes are Clang's errors; and two safe units that declare one function or global two ways do not link ([`definition-mismatch`](/reference/rules/#definition-mismatch)).
+
 ## Converting a module
 
 1. Compile the file with `-fsyntax-only -fweavec-safe` and read the errors (`--weavec-explain` for any rule that is new to you); mark functions that need inline assembly or `setjmp` `WEAVEC_GUARDED` first.
