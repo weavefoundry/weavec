@@ -1122,6 +1122,7 @@ llvm::PreservedAnalyses GuardInsertPass::run(llvm::Module &module,
   for (llvm::Function &function : module)
     if (!guard::skips(function) && guard::definesSafe(context, function))
       guard::defineSafe(context, function);
+  guard::defineAllocations(context, module);
   guard::emitDefinitions(context);
   guard::thunkLibraryAddresses(context, module);
   // RFC 0045: before the safe functions are prepared, which clones see.

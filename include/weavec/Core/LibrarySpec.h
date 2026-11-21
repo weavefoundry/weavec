@@ -116,6 +116,11 @@ struct LibDisjoint {
 /// given.
 struct LibWrapper {
   std::string name;
+  /// `wrapper(name, limit)`: the wrapper takes the limit of the array field
+  /// its first written argument names (RFC 0037 §10) before the site, as a
+  /// fortified form's object size, though no fortified form passes one: a
+  /// call that writes a buffer its caller gives without a size (`gcvt`).
+  bool limit = false;
 
   friend bool operator==(const LibWrapper &, const LibWrapper &) = default;
 };
@@ -203,6 +208,14 @@ struct LibraryEntry {
   bool owned = false;
   /// `value(t)` (Int): the result equals `t` (`strlen` is `strlen(a0)`).
   std::optional<LibTerm> value;
+  /// `fills(t)` (RFC 0051 amendment 18): every byte the call writes into its
+  /// first written argument is `t` (`memset`'s `fills(a1)`, `bzero`'s
+  /// `fills(0)`), so that a fill with zero is known for one.
+  std::optional<LibTerm> fills;
+  /// `permutes` (RFC 0051 amendment 18): the call only reorders the
+  /// elements of its first written argument (`qsort`): what it writes was
+  /// the object's own.
+  bool permutes = false;
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<LibDisjoint> disjoint = {};
   /// `wide`: the row's strings end in a zero `wchar_t`, and `count` and

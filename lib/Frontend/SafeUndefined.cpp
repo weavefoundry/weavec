@@ -15,9 +15,10 @@
 //                   malloc, alloc_size, alloc_align, assume_aligned,
 //                   returns_nonnull, nonnull, `vectorize(assume_safety)`);
 //                   its fix, certain, deletes it
-//   pointer-bytes   bytes written into an object that holds a `bool` (a
-//                   library call's written argument, a bit cast to it), but
-//                   a whole object zeroed or copied from its own type
+//   pointer-bytes   bytes written into an object that holds a `bool`, or
+//                   in C++ a pointer (a library call's written argument, a
+//                   bit cast to it), but a whole object zeroed or copied
+//                   from its own type
 //   union-pointer   a `bool` member read from a union whose other members
 //                   share its bytes
 //   signal-handler  a call that registers code the system runs between any
@@ -43,7 +44,9 @@
 
 #include "llvm/ADT/StringRef.h"
 
+#include <cstdint>
 #include <cstring>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -96,6 +99,78 @@ static std::string boolMember(clang::QualType type,
     if (holdsBool(field->getType()))
       return field->getName().str();
   return "";
+}
+
+/// Whether `type` is or holds a pointer (a member pointer, a function
+/// pointer): bytes written into it would forge one.
+static bool holdsPointer(clang::QualType type, unsigned depth = 0) {
+  if (type.isNull() || depth > 8)
+    return false;
+  type = type.getCanonicalType();
+  if (type->isAnyPointerType() || type->isMemberPointerType() ||
+      type->isReferenceType())
+    return true;
+  if (const auto *array = llvm::dyn_cast<clang::ArrayType>(type.getTypePtr()))
+    return holdsPointer(array->getElementType(), depth + 1);
+  const clang::RecordDecl *record = type->getAsRecordDecl();
+  if (record == nullptr || record->getDefinition() == nullptr)
+    return false;
+  record = record->getDefinition();
+  if (const auto *cxx = llvm::dyn_cast<clang::CXXRecordDecl>(record)) {
+    if (cxx->isDynamicClass())
+      return true;
+    for (const clang::CXXBaseSpecifier &base : cxx->bases())
+      if (holdsPointer(base.getType(), depth + 1))
+        return true;
+  }
+  return llvm::any_of(record->fields(), [&](const clang::FieldDecl *field) {
+    return holdsPointer(field->getType(), depth + 1);
+  });
+}
+
+/// The member of `type` (a record) that is or holds the pointer, for the
+/// message.
+static std::string pointerMember(clang::QualType type) {
+  type = type.getCanonicalType();
+  if (const auto *array = llvm::dyn_cast<clang::ArrayType>(type.getTypePtr()))
+    return pointerMember(array->getElementType());
+  const clang::RecordDecl *record = type->getAsRecordDecl();
+  if (record == nullptr || record->getDefinition() == nullptr)
+    return "";
+  for (const clang::FieldDecl *field : record->getDefinition()->fields())
+    if (holdsPointer(field->getType()))
+      return field->getName().str();
+  return "";
+}
+
+/// The type of what a library call's pointer argument points to, before
+/// it converts to the parameter's type: through the implicit conversions,
+/// to an array's element (an array passed by name decays to a pointer to
+/// it), and through an explicit cast to `void *`, which writes no bytes
+/// itself (`static_cast<void *>(&r)`); null when it is no pointer.
+static clang::QualType writtenPointee(const clang::Expr *argument) {
+  const clang::Expr *at = argument->IgnoreParens();
+  for (;;) {
+    if (const auto *implicit = llvm::dyn_cast<clang::ImplicitCastExpr>(at)) {
+      at = implicit->getSubExpr()->IgnoreParens();
+      continue;
+    }
+    if (const auto *cast = llvm::dyn_cast<clang::ExplicitCastExpr>(at);
+        cast != nullptr && cast->getType()->isVoidPointerType()) {
+      const clang::QualType from = cast->getSubExpr()->getType();
+      if (from->isPointerType() || from->isArrayType()) {
+        at = cast->getSubExpr()->IgnoreParens();
+        continue;
+      }
+    }
+    break;
+  }
+  const clang::QualType type = at->getType();
+  if (const clang::ArrayType *array = type->getAsArrayTypeUnsafe())
+    return array->getElementType();
+  if (type->isPointerType())
+    return type->getPointeeType();
+  return {};
 }
 
 namespace {
@@ -209,10 +284,10 @@ public:
   }
 
   bool VisitBuiltinBitCastExpr(clang::BuiltinBitCastExpr *cast) {
-    if (holdsBool(cast->getType()) &&
+    if ((holdsBool(cast->getType()) || forges(cast->getType())) &&
         !clang::ASTContext::hasSameUnqualifiedType(
             cast->getType(), cast->getSubExpr()->getType()))
-      boolBytes(cast->getExprLoc(), cast->getType());
+      writtenBytes(cast->getExprLoc(), cast->getType());
     return true;
   }
 
@@ -451,8 +526,43 @@ private:
                  "or read the bytes and assign each member");
   }
 
-  /// A library call that writes bytes into an object holding a `bool`, and
-  /// one that registers a signal handler.
+  /// In C++, a pointer is made only from what it points to: bytes written
+  /// into an object that holds one would forge it. (C's rule is at the
+  /// conversion to `void *`, SafeCheck.cpp.)
+  [[nodiscard]] bool forges(clang::QualType type) const {
+    return ast.getLangOpts().CPlusPlus && holdsPointer(type);
+  }
+
+  void pointerBytes(clang::SourceLocation at, clang::QualType type) {
+    // A library class's member is its own business.
+    const clang::RecordDecl *record = type->getAsRecordDecl();
+    const std::string member =
+        record != nullptr && sources.isInSystemHeader(record->getLocation())
+            ? std::string()
+            : pointerMember(type);
+    const std::string name =
+        type.getUnqualifiedType().getAsString(ast.getPrintingPolicy());
+    report(at, rule::PointerBytes,
+           type->isAnyPointerType() || type->isMemberPointerType()
+               ? "bytes are written into a pointer, which they would forge"
+               : "bytes are written into a '" + name +
+                     "', which holds a pointer" +
+                     (member.empty() ? std::string() : " ('" + member + "')") +
+                     " they would forge",
+           "copy the object from one of its own type, or zero it whole; "
+           "make a pointer from what it points to");
+  }
+
+  /// Bytes written into `type`: the rule for what it holds.
+  void writtenBytes(clang::SourceLocation at, clang::QualType type) {
+    if (holdsBool(type))
+      boolBytes(at, type);
+    else
+      pointerBytes(at, type);
+  }
+
+  /// A library call that writes bytes into an object holding a `bool` or
+  /// (in C++) a pointer, and one that registers a signal handler.
   void library(const clang::CallExpr &call, const clang::FunctionDecl &callee) {
     if (callee.getIdentifier() == nullptr)
       return;
@@ -487,42 +597,78 @@ private:
           (parameter.access != core::LibraryParam::Access::Write &&
            parameter.access != core::LibraryParam::Access::ReadWrite))
         continue;
-      const clang::QualType given =
-          call.getArg(i)->IgnoreParenImpCasts()->getType();
-      if (!given->isPointerType() || !holdsBool(given->getPointeeType()) ||
-          zeroOrCopy(call, i, given->getPointeeType(), *match))
+      const clang::QualType pointee = writtenPointee(call.getArg(i));
+      if (pointee.isNull() ||
+          (!holdsBool(pointee) && (!forges(pointee) || !counted(parameter))) ||
+          harmless(call, i, static_cast<unsigned>(row), pointee, *match))
         continue;
-      boolBytes(call.getArg(i)->getExprLoc(), given->getPointeeType());
+      writtenBytes(call.getArg(i)->getExprLoc(), pointee);
       return;
     }
   }
 
-  /// A fill with zero, or a copy whose source has the destination's type.
-  bool zeroOrCopy(const clang::CallExpr &call, unsigned index,
-                  clang::QualType type, const core::LibraryMatch &match) const {
+  /// Whether the call writes as many bytes behind the parameter as its
+  /// caller says (`memcpy`'s, `read`'s, `fread`'s count): bytes, which may
+  /// forge a pointer. One the library writes as its own object (`strtod`'s
+  /// end, `localtime_r`'s `tm`, a `FILE`) has a constant size or none.
+  [[nodiscard]] static bool counted(const core::LibraryParam &parameter) {
+    return parameter.bytes.has_value() &&
+           parameter.bytes->kind != core::LibTerm::Kind::Constant;
+  }
+
+  /// Whether the bytes the call writes behind call argument `index` (row
+  /// argument `row`) forge nothing: none (a count of zero), the object's
+  /// own reordered (`permutes`), a fill with zero (`fills`), or a copy
+  /// whose source has the destination's type.
+  bool harmless(const clang::CallExpr &call, unsigned index, unsigned row,
+                clang::QualType type, const core::LibraryMatch &match) const {
+    const core::LibraryEntry &entry = *match.entry;
+    const auto integer = [&](unsigned argument) -> std::optional<std::int64_t> {
+      const int at = match.callArgument(argument);
+      if (at < 0 || static_cast<unsigned>(at) >= call.getNumArgs())
+        return std::nullopt;
+      const clang::Expr *value = call.getArg(static_cast<unsigned>(at));
+      clang::Expr::EvalResult result;
+      if (value->isValueDependent() || !value->EvaluateAsInt(result, ast))
+        return std::nullopt;
+      return result.Val.getInt().tryExtValue();
+    };
+    const core::LibTerm::Values values{.argument = integer, .stringLength = {}};
+    const core::LibraryParam &written = entry.params[row];
+    if (written.bytes && written.bytes->evaluate(values) == 0)
+      return true;
+    if (firstWritten(entry) == row &&
+        (entry.permutes || (entry.fills && entry.fills->evaluate(values) == 0)))
+      return true;
     for (unsigned i = 0; i < call.getNumArgs(); ++i) {
       if (i == index)
         continue;
-      const clang::Expr *argument = call.getArg(i)->IgnoreParenImpCasts();
-      const int row = match.rowArgument(i);
-      if (row < 0 ||
-          static_cast<std::size_t>(row) >= match.entry->params.size())
+      const int other = match.rowArgument(i);
+      if (other < 0 || static_cast<std::size_t>(other) >= entry.params.size())
         continue;
       const core::LibraryParam &parameter =
-          match.entry->params[static_cast<std::size_t>(row)];
-      if (parameter.type == core::LibraryParam::Type::Pointer &&
-          parameter.access == core::LibraryParam::Access::Read &&
-          argument->getType()->isPointerType() &&
-          clang::ASTContext::hasSameUnqualifiedType(
-              argument->getType()->getPointeeType(), type))
-        return true;
-      clang::Expr::EvalResult value;
-      if (parameter.type == core::LibraryParam::Type::Int && i == index + 1 &&
-          !argument->isValueDependent() &&
-          argument->EvaluateAsInt(value, ast) && value.Val.getInt().isZero())
+          entry.params[static_cast<std::size_t>(other)];
+      if (parameter.type != core::LibraryParam::Type::Pointer ||
+          parameter.access != core::LibraryParam::Access::Read)
+        continue;
+      const clang::QualType source = writtenPointee(call.getArg(i));
+      if (!source.isNull() &&
+          clang::ASTContext::hasSameUnqualifiedType(source, type))
         return true;
     }
     return false;
+  }
+
+  /// The row argument a call of `entry` writes first, which `fills` and
+  /// `permutes` are of.
+  [[nodiscard]] static std::optional<unsigned>
+  firstWritten(const core::LibraryEntry &entry) {
+    for (unsigned index = 0; index < entry.params.size(); ++index)
+      if (entry.params[index].type == core::LibraryParam::Type::Pointer &&
+          (entry.params[index].access == core::LibraryParam::Access::Write ||
+           entry.params[index].access == core::LibraryParam::Access::ReadWrite))
+        return index;
+    return std::nullopt;
   }
 
   /// Whether a `handler` call registers code: a function pointer that is
@@ -594,7 +740,7 @@ private:
   /// `std::bit_cast`: a library function whose body is one bit cast.
   void bitCast(const clang::CallExpr &call, const clang::FunctionDecl &callee) {
     if (!sources.isInSystemHeader(callee.getLocation()) ||
-        !holdsBool(call.getType()))
+        (!holdsBool(call.getType()) && !forges(call.getType())))
       return;
     const clang::FunctionDecl *definition = callee.getDefinition();
     const auto *body = llvm::dyn_cast_or_null<clang::CompoundStmt>(
@@ -611,7 +757,7 @@ private:
         clang::ASTContext::hasSameUnqualifiedType(call.getArg(0)->getType(),
                                                   call.getType()))
       return;
-    boolBytes(call.getExprLoc(), call.getType());
+    writtenBytes(call.getExprLoc(), call.getType());
   }
 };
 
