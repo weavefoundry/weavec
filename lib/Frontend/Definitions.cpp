@@ -6,27 +6,36 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// RFC 0051 §5. The record is text, one entry a line after the header line,
-// each field separated by a tab:
+// RFC 0051 §5. A unit's record is a table the comparison reads and a string
+// area it reads only to report a mismatch, so that a link touches little of
+// each object:
 //
-//   T <name> <hash> <file>:<line>:<column> <description>
-//       a C++ class, struct, union or enumeration other units can name (its
-//       qualified name): Clang's ODR hash of its definition, its layout
-//       (size, alignment, each base's and field's offset) and the WeaveC
-//       annotations of the class and its members
-//   F <symbol> <hash> <place> <description>
-//       a function with external linkage the unit defines or names: its
-//       type, `noreturn`, and the annotations of its parameters and result
-//   G <symbol> <hash> <place> <description>
-//       a global with external linkage the unit defines or names: its type
-//       (with its array bound), and its annotations
-//   C <tag> <hash> <place> <description> <user>,<user>...
-//       a C struct, union or enumeration that a recorded function or global
-//       names in its type: C has no one-definition rule, so two units'
-//       differ only where they share a user
+//   "weavec-defs 2\n"  u32 count  u32 string bytes
+//   count entries of 40 bytes, little-endian:
+//     u8 kind, 3 bytes of zero, u32 name, u64 key, u64 hash, u32 place,
+//     u32 description, u32 users, 4 bytes of zero
+//   the strings, each ending in a zero byte (the u32s are their offsets)
 //
-// A unit's record ends in a zero byte, so that a linked image's section,
-// the units' records one after another, is read the same way.
+// The kinds:
+//
+//   T  a C++ class, struct, union or enumeration other units can name (its
+//      qualified name): Clang's ODR hash of its definition, its layout (size,
+//      alignment, each base's and field's offset) and the WeaveC annotations
+//      of the class and its members
+//   F  a function with external linkage the unit defines or names (its
+//      symbol): its result's and parameters' types, `noreturn`, and the
+//      annotations of its parameters and result
+//   G  a global with external linkage the unit defines or names: its type
+//      (with its array bound), its alignment, and its annotations
+//   C  a C struct, union or enumeration that a recorded function or global
+//      names in its type, with those declarations (`users`, comma-separated):
+//      C has no one-definition rule, so two units' differ only where they
+//      share a user
+//
+// `key` is a hash of the kind and the name, `hash` of what the units must
+// agree on. The record is in a section the linker does not copy into the
+// image it links (Mach-O's debug attribute, ELF's SHF_EXCLUDE): an image
+// carries none of its units' records.
 //
 //===----------------------------------------------------------------------===//
 
@@ -46,6 +55,8 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
 
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
@@ -96,14 +107,6 @@ static std::string attributeText(const clang::Decl &declaration) {
     text += name.str() + ";";
   }
   return text;
-}
-
-/// No tab or line break inside a field.
-static std::string field(llvm::StringRef text) {
-  std::string out;
-  for (const char c : text)
-    out.push_back(c == '\t' || c == '\n' || c == '\r' ? ' ' : c);
-  return out;
 }
 
 namespace {
@@ -268,25 +271,44 @@ public:
       entry.users = users;
       add(std::move(entry));
     }
-    std::string out = (DefinitionsHeader + "\n").str();
-    for (const Entry &entry : entries) {
-      out.push_back(entry.kind);
-      out += "\t" + field(entry.name) + "\t" +
-             llvm::utohexstr(entry.hash, /*LowerCase=*/true) + "\t" +
-             field(entry.place) + "\t" + field(entry.description);
-      if (entry.kind == 'C') {
-        out += '\t';
-        bool first = true;
-        for (const std::string &user : entry.users) {
-          if (!first)
-            out += ',';
-          out += user;
-          first = false;
-        }
+    std::string strings;
+    llvm::StringMap<std::uint32_t> offsets;
+    const auto string = [&](llvm::StringRef text) {
+      const auto [found, added] =
+          offsets.try_emplace(text, static_cast<std::uint32_t>(strings.size()));
+      if (added) {
+        strings += text;
+        strings.push_back('\0');
       }
-      out.push_back('\n');
+      return found->second;
+    };
+    std::string table;
+    const auto put = [](std::string &into, std::uint64_t value,
+                        unsigned bytes) {
+      for (unsigned i = 0; i < bytes; ++i)
+        into.push_back(static_cast<char>((value >> (8 * i)) & 0xFFU));
+    };
+    for (const Entry &entry : entries) {
+      std::string users;
+      for (const std::string &user : entry.users) {
+        if (!users.empty())
+          users += ',';
+        users += user;
+      }
+      table.push_back(entry.kind);
+      table.append(3, '\0');
+      put(table, string(entry.name), 4);
+      put(table, llvm::xxh3_64bits(std::string(1, entry.kind) + entry.name), 8);
+      put(table, entry.hash, 8);
+      put(table, string(entry.place), 4);
+      put(table, string(entry.description), 4);
+      put(table, string(users), 4);
+      put(table, 0, 4);
     }
-    return out;
+    std::string out = DefinitionsHeader.str();
+    put(out, entries.size(), 4);
+    put(out, strings.size(), 4);
+    return out + table + strings;
   }
 
 private:
@@ -462,7 +484,11 @@ void guard::emitDefinitions(ModuleContext &module) {
   record->setSection(triple.isOSBinFormatMachO() ? DefinitionsSectionMachO.str()
                                                  : DefinitionsSectionELF.str());
   record->setAlignment(llvm::Align(1));
-  llvm::appendToUsed(module.module, {record});
+  // Not copied into a linked image: ELF's SHF_EXCLUDE (Mach-O's is the
+  // section's debug attribute).
+  record->setMetadata(llvm::LLVMContext::MD_exclude,
+                      llvm::MDNode::get(module.context, {}));
+  llvm::appendToCompilerUsed(module.module, {record});
 }
 
 //===----------------------------------------------------------------------===//
@@ -471,17 +497,23 @@ void guard::emitDefinitions(ModuleContext &module) {
 
 namespace {
 
-/// One entry as read: views into the section's bytes, which the
-/// comparison keeps mapped.
+/// One entry as read: its key and hash, and where its strings are in the
+/// section's bytes, which the comparison keeps mapped.
 struct Recorded {
   char kind = 'T';
-  llvm::StringRef name;
-  llvm::StringRef hash;
-  llvm::StringRef place;
-  llvm::StringRef description;
-  llvm::StringRef users;
+  std::uint64_t key = 0;
+  std::uint64_t hash = 0;
+  const char *strings = nullptr;
+  std::uint32_t name = 0;
+  std::uint32_t place = 0;
+  std::uint32_t description = 0;
+  std::uint32_t users = 0;
   /// Index into the comparison's inputs' names.
   unsigned from = 0;
+
+  [[nodiscard]] llvm::StringRef text(std::uint32_t offset) const {
+    return strings + offset;
+  }
 };
 
 /// The comparison's state: the mapped inputs, their names, the entries.
@@ -491,37 +523,56 @@ struct Records {
   std::vector<std::string> names;
   std::vector<Recorded> entries;
   DefinitionsCompared found;
+  /// The input defines the allocator's symbol strongly.
+  bool allocator = false;
+};
+
+/// What one read of a link's inputs looks for.
+struct Wanted {
+  bool compare = true;
+  llvm::StringRef allocator;
 };
 
 } // namespace
 
+/// A little-endian integer of `bytes` bytes at `at`.
+static std::uint64_t little(const char *at, unsigned bytes) {
+  std::uint64_t value = 0;
+  for (unsigned i = 0; i < bytes; ++i)
+    value |= static_cast<std::uint64_t>(static_cast<unsigned char>(at[i]))
+             << (8 * i);
+  return value;
+}
+
 /// The records of a section's contents.
 static void readRecords(llvm::StringRef contents, unsigned from,
                         Records &records) {
-  while (!contents.empty()) {
-    const auto [unit, rest] = contents.split('\0');
-    contents = rest;
-    llvm::StringRef lines = unit;
-    const auto [header, body] = lines.split('\n');
-    if (header != DefinitionsHeader)
-      continue;
+  constexpr std::size_t Header = DefinitionsHeader.size() + 8;
+  constexpr std::size_t EntryBytes = 40;
+  while (contents.size() >= Header && contents.starts_with(DefinitionsHeader)) {
+    const char *at = contents.data() + DefinitionsHeader.size();
+    const std::uint64_t count = little(at, 4);
+    const std::uint64_t bytes = little(at + 4, 4);
+    const std::uint64_t size = Header + (count * EntryBytes) + bytes;
+    if (contents.size() < size)
+      return;
     ++records.found.safe;
-    lines = body;
-    while (!lines.empty()) {
-      const auto [line, next] = lines.split('\n');
-      lines = next;
-      llvm::SmallVector<llvm::StringRef, 6> fields;
-      line.split(fields, '\t');
-      if (fields.size() < 5 || fields[0].size() != 1)
-        continue;
-      records.entries.push_back({.kind = fields[0][0],
-                                 .name = fields[1],
-                                 .hash = fields[2],
-                                 .place = fields[3],
-                                 .description = fields[4],
-                                 .users = fields.size() > 5 ? fields[5] : "",
-                                 .from = from});
+    const char *table = contents.data() + Header;
+    const char *strings = table + (count * EntryBytes);
+    for (std::uint64_t i = 0; i < count; ++i) {
+      const char *entry = table + (i * EntryBytes);
+      records.entries.push_back(
+          {.kind = entry[0],
+           .key = little(entry + 8, 8),
+           .hash = little(entry + 16, 8),
+           .strings = strings,
+           .name = static_cast<std::uint32_t>(little(entry + 4, 4)),
+           .place = static_cast<std::uint32_t>(little(entry + 24, 4)),
+           .description = static_cast<std::uint32_t>(little(entry + 28, 4)),
+           .users = static_cast<std::uint32_t>(little(entry + 32, 4)),
+           .from = from});
     }
+    contents = contents.drop_front(size);
   }
 }
 
@@ -549,8 +600,51 @@ static void readObject(const llvm::object::ObjectFile &object, std::string from,
   }
 }
 
+/// Whether `file` defines `symbol` as a strong global.
+static bool definesStrongly(const llvm::object::SymbolicFile &file,
+                            llvm::StringRef symbol) {
+  std::string name;
+  for (const llvm::object::BasicSymbolRef &each : file.symbols()) {
+    llvm::Expected<std::uint32_t> flags = each.getFlags();
+    if (!flags) {
+      llvm::consumeError(flags.takeError());
+      continue;
+    }
+    if ((*flags & llvm::object::BasicSymbolRef::SF_Undefined) != 0 ||
+        (*flags & llvm::object::BasicSymbolRef::SF_Global) == 0 ||
+        (*flags & llvm::object::BasicSymbolRef::SF_Weak) != 0)
+      continue;
+    name.clear();
+    llvm::raw_string_ostream os(name);
+    if (llvm::Error error = each.printName(os)) {
+      llvm::consumeError(std::move(error));
+      continue;
+    }
+    if (name == symbol)
+      return true;
+  }
+  return false;
+}
+
+/// What a link wants of one of its objects, or of an archive's member: its
+/// records, and whether a relocatable one (not a linked image, whose
+/// definitions are its own) defines the allocator.
+static void readFile(const llvm::object::Binary &binary, std::string from,
+                     const Wanted &wanted, Records &records) {
+  const auto *file = llvm::dyn_cast<llvm::object::SymbolicFile>(&binary);
+  if (file == nullptr)
+    return;
+  const auto *object = llvm::dyn_cast<llvm::object::ObjectFile>(file);
+  if (!wanted.allocator.empty() && !records.allocator &&
+      (object == nullptr || object->isRelocatableObject()))
+    records.allocator = definesStrongly(*file, wanted.allocator);
+  if (wanted.compare && object != nullptr)
+    readObject(*object, std::move(from), records);
+}
+
 /// Reads `path`: an object, a linked image or each member of an archive.
-static void readInput(const std::string &path, Records &records) {
+static void readInput(const std::string &path, const Wanted &wanted,
+                      Records &records) {
   if (!llvm::sys::fs::is_regular_file(path))
     return;
   llvm::Expected<llvm::object::OwningBinary<llvm::object::Binary>> binary =
@@ -561,8 +655,8 @@ static void readInput(const std::string &path, Records &records) {
   }
   records.binaries.push_back(std::move(*binary));
   const llvm::object::Binary *read = records.binaries.back().getBinary();
-  if (const auto *object = llvm::dyn_cast<llvm::object::ObjectFile>(read)) {
-    readObject(*object, path, records);
+  if (llvm::isa<llvm::object::SymbolicFile>(read)) {
+    readFile(*read, path, wanted, records);
     return;
   }
   const auto *archive = llvm::dyn_cast<llvm::object::Archive>(read);
@@ -582,12 +676,22 @@ static void readInput(const std::string &path, Records &records) {
     if (!name)
       llvm::consumeError(name.takeError());
     records.members.push_back(std::move(*member));
-    if (const auto *object = llvm::dyn_cast<llvm::object::ObjectFile>(
-            records.members.back().get()))
-      readObject(*object, std::move(from), records);
+    readFile(*records.members.back(), std::move(from), wanted, records);
   }
   llvm::consumeError(std::move(error));
 }
+
+/// The comparison of what each input's read found.
+static DefinitionsCompared compareRecords(std::vector<Records> &each,
+                                          llvm::raw_ostream &errors);
+
+/// Compares one entry with those met before of its kind and name.
+static void compareEntry(
+    const Recorded &entry, llvm::ArrayRef<const Recorded *> seen,
+    llvm::DenseMap<std::uint64_t, llvm::SmallVector<const Recorded *, 2>> &more,
+    llvm::DenseSet<std::uint64_t> &reported,
+    llvm::ArrayRef<llvm::StringRef> names, DefinitionsCompared &found,
+    llvm::raw_ostream &errors);
 
 /// What the error says the two places disagree on.
 static llvm::StringRef what(char kind) {
@@ -607,85 +711,124 @@ static bool shareUser(llvm::StringRef a, llvm::StringRef b) {
   return false;
 }
 
-DefinitionsCompared compareDefinitions(llvm::ArrayRef<std::string> inputs,
-                                       llvm::raw_ostream &errors) {
-  // Each input read on its own (in parallel: reading is the comparison's
-  // cost), then their entries in the link's order.
+LinkRead readLink(llvm::ArrayRef<std::string> inputs, bool compare,
+                  llvm::StringRef allocator, llvm::raw_ostream &errors) {
+  // Each input read once, on its own (in parallel: reading is the cost),
+  // then their entries in the link's order.
+  const Wanted wanted{.compare = compare, .allocator = allocator};
   std::vector<Records> each(inputs.size());
-  llvm::parallelFor(0, inputs.size(),
-                    [&](std::size_t i) { readInput(inputs[i], each[i]); });
-  Records records;
-  for (Records &one : each) {
-    const auto offset = static_cast<unsigned>(records.names.size());
-    for (std::string &name : one.names)
-      records.names.push_back(std::move(name));
-    for (Recorded &entry : one.entries) {
-      entry.from += offset;
-      records.entries.push_back(entry);
-    }
-    records.found.objects += one.found.objects;
-    records.found.safe += one.found.safe;
-  }
-  DefinitionsCompared &found = records.found;
-  // For each kind and name, the first entry of each hash met (one, unless
-  // the units disagree); for C's tags, each entry, which only those that
-  // share a user are compared with.
-  llvm::StringMap<llvm::SmallVector<const Recorded *, 1>> first;
-  llvm::StringSet<> reported;
-  std::string key;
-  for (const Recorded &entry : records.entries) {
-    key.assign(1, entry.kind);
-    key += entry.name;
-    auto &seen = first[key];
-    if (seen.empty()) {
-      if (entry.kind == 'T' || entry.kind == 'C')
-        ++found.types;
-      else if (entry.kind == 'F')
-        ++found.functions;
-      else
-        ++found.globals;
-    }
-    const Recorded *against = nullptr;
-    bool same = false;
-    for (const Recorded *other : seen) {
-      if (entry.kind == 'C' && !shareUser(entry.users, other->users))
-        continue;
-      if (other->hash == entry.hash) {
-        same = true;
-        if (entry.kind != 'C')
-          break;
-        continue;
-      }
-      against = other;
+  llvm::parallelFor(0, inputs.size(), [&](std::size_t i) {
+    readInput(inputs[i], wanted, each[i]);
+  });
+  LinkRead read;
+  for (std::size_t i = 0; i < each.size(); ++i)
+    if (each[i].allocator) {
+      read.allocator = inputs[i];
       break;
     }
-    if (entry.kind == 'C' || !same)
-      seen.push_back(&entry);
-    if (against == nullptr || !reported.insert(key).second)
-      continue;
-    ++found.mismatches;
-    llvm::StringRef shown = entry.name;
-    if (entry.kind == 'F') {
-      // A function is named by its qualified name, not its symbol.
-      const llvm::StringRef description = entry.description;
-      const std::size_t open = description.find('(');
-      if (open != llvm::StringRef::npos)
-        shown = description.take_front(open).rsplit(' ').second;
-    }
-    errors << "weavec-cc: error: '" << shown << "' is " << what(entry.kind)
-           << " differently in two safe units "
-              "[weavec-safe:definition-mismatch]\n";
-    for (const Recorded *side : {against, &entry}) {
-      const bool declared = side->kind == 'F' || side->kind == 'G';
-      errors << side->place << ": note: here it is " << (declared ? "'" : "")
-             << side->description << (declared ? "'" : "") << " ("
-             << records.names[side->from] << ")\n";
-    }
-    errors << "weavec-cc: note: a program has one definition of each name: "
-              "put a type only one file uses in an unnamed namespace, or "
-              "define it in one header both include\n";
+  if (!compare)
+    return read;
+  read.definitions = compareRecords(each, errors);
+  return read;
+}
+
+static DefinitionsCompared compareRecords(std::vector<Records> &each,
+                                          llvm::raw_ostream &errors) {
+  // The entries stay where each input's read put them: the comparison
+  // walks them in the link's order, naming their inputs from `names`.
+  DefinitionsCompared found;
+  std::vector<llvm::StringRef> names;
+  std::size_t total = 0;
+  for (Records &one : each) {
+    const auto offset = static_cast<unsigned>(names.size());
+    for (const std::string &name : one.names)
+      names.emplace_back(name);
+    for (Recorded &entry : one.entries)
+      entry.from += offset;
+    total += one.entries.size();
+    found.objects += one.found.objects;
+    found.safe += one.found.safe;
   }
+  // For each kind and name, the first entry met; `more` holds the first
+  // entry of each other hash met (none, unless the units disagree) and,
+  // for C's tags, each other entry, which only those that share a user
+  // are compared with.
+  llvm::DenseMap<std::uint64_t, const Recorded *> first;
+  first.reserve(static_cast<unsigned>(total));
+  llvm::DenseMap<std::uint64_t, llvm::SmallVector<const Recorded *, 2>> more;
+  llvm::DenseSet<std::uint64_t> reported;
+  llvm::SmallVector<const Recorded *, 4> seen;
+  for (const Records &one : each)
+    for (const Recorded &entry : one.entries) {
+      const auto [met, inserted] = first.try_emplace(entry.key, &entry);
+      if (inserted) {
+        if (entry.kind == 'T' || entry.kind == 'C')
+          ++found.types;
+        else if (entry.kind == 'F')
+          ++found.functions;
+        else
+          ++found.globals;
+        continue;
+      }
+      // The common case: one more unit that agrees with the first.
+      if (entry.kind != 'C' && met->second->hash == entry.hash)
+        continue;
+      seen.assign({met->second});
+      const auto others = more.find(entry.key);
+      if (others != more.end())
+        seen.append(others->second.begin(), others->second.end());
+      compareEntry(entry, seen, more, reported, names, found, errors);
+    }
   return found;
+}
+
+/// Compares one entry with those met before of its kind and name.
+static void compareEntry(
+    const Recorded &entry, llvm::ArrayRef<const Recorded *> seen,
+    llvm::DenseMap<std::uint64_t, llvm::SmallVector<const Recorded *, 2>> &more,
+    llvm::DenseSet<std::uint64_t> &reported,
+    llvm::ArrayRef<llvm::StringRef> names, DefinitionsCompared &found,
+    llvm::raw_ostream &errors) {
+  const Recorded *against = nullptr;
+  bool same = false;
+  for (const Recorded *other : seen) {
+    if (entry.kind == 'C' &&
+        !shareUser(entry.text(entry.users), other->text(other->users)))
+      continue;
+    if (other->hash == entry.hash) {
+      same = true;
+      if (entry.kind != 'C')
+        break;
+      continue;
+    }
+    against = other;
+    break;
+  }
+  if (entry.kind == 'C' || !same)
+    more[entry.key].push_back(&entry);
+  if (against == nullptr || !reported.insert(entry.key).second)
+    return;
+  ++found.mismatches;
+  llvm::StringRef shown = entry.text(entry.name);
+  if (entry.kind == 'F') {
+    // A function is named by its qualified name, not its symbol.
+    const llvm::StringRef description = entry.text(entry.description);
+    const std::size_t open = description.find('(');
+    if (open != llvm::StringRef::npos)
+      shown = description.take_front(open).rsplit(' ').second;
+  }
+  errors << "weavec-cc: error: '" << shown << "' is " << what(entry.kind)
+         << " differently in two safe units "
+            "[weavec-safe:definition-mismatch]\n";
+  for (const Recorded *side : {against, &entry}) {
+    const bool declared = side->kind == 'F' || side->kind == 'G';
+    errors << side->text(side->place) << ": note: here it is "
+           << (declared ? "'" : "") << side->text(side->description)
+           << (declared ? "'" : "") << " (" << names[side->from] << ")\n";
+  }
+  errors << "weavec-cc: note: a program has one definition of each name: "
+            "put a type only one file uses in an unnamed namespace, or "
+            "define it in one header both include\n";
 }
 
 } // namespace weavec::frontend

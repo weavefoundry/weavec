@@ -1650,7 +1650,7 @@ sign.c:5:1: error: non-void function does not return a value in all control path
 
 ## definition-mismatch
 
-The safe units of a program agree on what they share ([RFC 0051](/rfcs/0051-nothing-undefined/) §5): each records the layout and the WeaveC annotations of every type other units can name (a C++ class outside an unnamed namespace; in C, a struct a shared declaration names), the declaration of every function it defines or calls, and the type of every global it defines or names, and `weavec-cc` compares the records of a link's objects, archives and libraries before the linker runs. Two that disagree are an error, and the program is not linked:
+The safe units of a program agree on what they share ([RFC 0051](/rfcs/0051-nothing-undefined/) §5): each records the layout and the WeaveC annotations of every type other units can name (a C++ class outside an unnamed namespace; in C, a struct a shared declaration names), the declaration of every function it defines or calls, and the type of every global it defines or names, and `weavec-cc` compares the records of a link's objects and the members of its archives before the linker runs (a linked image keeps no record: a shared library's units are compared when it is linked). Two that disagree are an error, and the program is not linked:
 
 ```text
 weavec-cc: error: 'Entry' is defined differently in two safe units [weavec-safe:definition-mismatch]

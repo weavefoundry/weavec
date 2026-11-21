@@ -899,7 +899,8 @@ or Linux. The units are then compiled without guards, as under
 accesses are not guarded`.
 
 When an input of the link, an object or a member of an archive, defines
-`malloc` strongly, `noteProgramAllocator` prints a note: the loader binds
+`malloc` strongly, `checkLinkInputs` prints a note (the same read of the
+inputs compares their safe units' definitions, RFC 0051 §5): the loader binds
 `malloc` to the program's definition first, so the program keeps its
 allocator, its heap is untracked (unless it poisons it through ASan's
 interface), guards pass on it, and releases are not validated. Stack and

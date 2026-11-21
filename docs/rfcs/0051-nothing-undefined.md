@@ -1,6 +1,6 @@
 # RFC 0051: Nothing undefined
 
-- **Status**: Accepted
+- **Status**: Implemented
 - **Authors**: WeaveC authors
 - **Created**: 2026-11-20
 - **Tracking issue**: TBD
@@ -1312,8 +1312,10 @@ building it and from what the gates found. They override the body.
    an array of unknown bound is not recorded. In C a tag is compared only
    between entries that share a user, as designed.
 10. **The comparison (§5.2), as built.** It reads the link's file inputs
-    (objects, every member of an archive, linked images), in parallel; a
-    library named by `-l` is not read. It runs only for an enforcing link.
+    (objects, every member of an archive), each once and in parallel, in
+    the read that also finds the program's own allocator (RFC 0032 §2.6);
+    a library named by `-l` is not read, and a linked image has no record
+    (amendment 16). It runs only for an enforcing link.
     The summary line is printed only with `-fweavec-summary`. The audit
     does not say whether a link was compared (a ledger is a unit's).
 11. **The audit (§8), as built.** Version 9 lists the units with safe
@@ -1338,6 +1340,26 @@ building it and from what the gates found. They override the body.
     (`test/Driver/definitions.cpp`: a type, a global through an archive, C's
     shared and private tags, agreement and its summary line,
     `-fno-weavec-definitions`).
+15. **The comparison's gate (2026-11-20).** The owner kept G4's bound on
+    the comparison at the link at 2% of libzmq's link: the RFC stays
+    Accepted until a change meets it. Amendment 16's change meets it
+    (_Measured gates_).
+16. **The record is not kept through a link (§5.1).** §5.1 kept the
+    record in `__DATA` so that an image could be compared with a shared
+    library it links against; kept, the records were half of libzmq's
+    shared library (2.87 of 5.67 MB), loaded with it. The section is
+    instead one a linker does not copy into what it links: on Mach-O
+    `__DWARF,__weavec_defs` with the `debug` attribute, on ELF
+    `.weavec.defs` marked `SHF_EXCLUDE`. A shared library's safe units are
+    compared with each other when it is linked, not with the images that
+    link against it: those are covered as one without the section is
+    (unresolved question 7, (N-A3)). The record is compact (version 2): a
+    header, the counts, then entries of 40 bytes (a kind; a key, the hash
+    of the kind and the name; the hash; offsets into one table of the
+    unit's strings, each string once). libzmq's 108 objects hold 11,988
+    entries in 3.1 MB. The comparison walks each input's entries where its
+    read put them, and an entry that agrees with the first of its name
+    costs one lookup.
 
 ## Measured gates
 
@@ -1353,7 +1375,7 @@ and in the Linux container (aarch64, libstdc++, glibc). The evidence is in
 | G1 Tests | **Pass.** `test/Guards/ir-defined.c`, `ir-defined.cpp`, `unreachable.cpp`, `missing-return.c`, `missing-return.cpp`, `division.c`, `stack-exhaustion.cpp` (each kind's report line; a thread with a 256 KiB stack and recursion on the main thread); `test/Safe/assumed.c`, `assumed.cpp`, `signal-handler.cpp`, `bool-bytes.cpp`, `defined.c`, `defined.cpp`, `fix-assumed.cpp`, `undefined-translation.c`, `undefined-translation.cpp`; `test/Driver/safe-flags.cpp`, `definitions.cpp`, `safe-sanitizers.cpp`; `LibrarySpecTest.RowsNameSignalHandlers`; CTest `undefined-list`. `ctest --preset dev` passes 55 of 55, lit 176 of 176; the Linux container's `ci-release` 55 of 55. |
 | G2 The list is closed (D1) | **Pass.** 221 C items and 80 C++ entries, each with a disposition of §1 (and amendment 1's two) and a test that exists; none says "undefined" (`scripts/check-undefined.py`). |
 | G3 The probes | **Pass.** All 16 programs of `build/rfc51/probe` are rejected when they compile or link, or stop with a report, in the fast and the checked build: 32 of 32 (`g3.sh`): `missing-return`, `unreachable`, `stack-exhaustion` (three), `division-by-zero`, `definition-mismatch` (two), `assumed`, `pointer-bytes`, `union-pointer`, `signal-handler`, `pointer-cast` and Clang's `-Winvalid-noreturn`, `-Wformat`, `-Wformat-security`. |
-| G4 Cost (D8) | **Pass for run time; fail for the comparison.** Fast, against main's fast build, median of seven interleaved: RFC 0048's `json` port 0.99, RFC 0049's 1.00, the LRU port 1.00, tinyxml2 1.00, yaml-cpp 1.02, the interpreter 1.00, the key-value server 1.08 and 0.95 in two runs (its benchmark writes a log; 21 runs the second time), jsmn 1.01, sds 0.99, cJSON 1.01, inih 1.00, tinyexpr 1.01 (user time). Compiles: tinyxml2 1.006, the `json` port 1.013, the interpreter's largest file 1.016. The comparison at the link: 4 ms of libzmq's 98 ms link (4.3%; the gate asks 2%), down from 30 ms when it was first built; all of it is reading the 108 objects. |
+| G4 Cost (D8) | **Pass.** Fast, against main's fast build, median of seven interleaved: RFC 0048's `json` port 0.99, RFC 0049's 1.00, the LRU port 1.00, tinyxml2 1.00, yaml-cpp 1.02, the interpreter 1.00, the key-value server 1.08 and 0.95 in two runs (its benchmark writes a log; 21 runs the second time), jsmn 1.01, sds 0.99, cJSON 1.01, inih 1.00, tinyexpr 1.01 (user time). Compiles: tinyxml2 1.006, the `json` port 1.013, the interpreter's largest file 1.016. The comparison at the link (amendment 16), median of 50 interleaved links of libzmq's 108 objects with and without `-fno-weavec-definitions`, timed in the driver: 0.11 ms of a 95 ms link (0.11%) with a `Release` build of the compiler (`build/rfc51/rel`), 0.9 ms (0.9%) with the `dev` preset's `Debug` build; the whole link's medians differ by less than their noise (-2.0%, +1.4%, +0.3% in three rounds of 25). The read the comparison shares with the allocator's check is 1.2 ms either way. It was 30 ms when first built, and 4 ms (4.3%) before amendment 16. |
 | G5 Natural code | **Recorded.** The two trial programs as written: one new error (the key-value server's `sigaction` in a safe function; its fix, `WEAVEC_GUARDED` on the function that installs the handler, is one token). RFC 0044's 90 and RFC 0046's 40 correct files: none. Safe C's five conversions, tinyxml2, yaml-cpp, both `json` ports and the LRU port: none. libzmq (RFC 0049's conversion, 50,000 lines): 10, all `pointer-cast` for one idiom (a derived engine's member functions stored in the base's member pointer, applied to `this`, which is the derived object: correct code the rule cannot tell from the wrong use), and no `definition-mismatch` once amendment 9's two false ones were fixed. nng (65,000 lines of C): 6 (five `pointer-bytes` for a `bool *` given as `void *` to a safe getter that writes through it, one `union-pointer` for a tagged union with a `bool` member): correct code. None of these has a certain fix; no `assumed` error arose in any of them, so `--weavec-fix`'s removals were tested only by `test/Safe/fix-assumed.cpp`. |
 | G6 No false stop | **Pass.** Both builds, no report of a new kind: the interpreter 37 of 37, the key-value server 289 of 289, RFC 0049's `json` port 645 of 646 (the one case no program passes: `check.py` decodes stdout with `replace`, and the case expects a lone surrogate), tinyxml2 517 of 517. |
 | G7 The loop is not worse | **Pass.** The `json` port by a fresh agent with the frozen compiler: 2 rounds to a clean build, 6 min 23 s to `check.py`'s result (RFC 0050: 2 rounds, 5 min 17 s); no rule error in any round; it put its internal types in an unnamed namespace, as `definition-mismatch` advises. The interpreter made safe again by a fresh agent: clean at the third compile, about 6 minutes to both builds passing (this RFC's trial: the second, 6 minutes), the same five false rejections the first agent recorded (none from this RFC). |
@@ -1363,8 +1385,8 @@ and in the Linux container (aarch64, libstdc++, glibc). The evidence is in
 What the numbers say about the owner's goal: a safe program's every
 compile now means what the guarantees page's first sentence says, item by
 item of both languages' lists, at no measurable run-time cost and with one
-new error in 7,354 lines of natural code. The comparison at the link misses
-its gate by 2 ms on libzmq, and the rules that close the C++ list's
+new error in 7,354 lines of natural code, and a comparison at the link
+that costs a tenth of a millisecond of libzmq's. The rules that close the C++ list's
 member-pointer and base-destructor rows, and C's `bool`-through-`void *`
 and tagged-union rows, reject correct code in the two large conversions:
 the price of closing the list without an analysis. The cost the trial

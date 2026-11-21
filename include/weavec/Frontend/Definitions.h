@@ -11,10 +11,11 @@
 // annotations of each type other units can name, the declaration of each
 // function it defines or calls, the type of each global it defines or
 // names; each as a name, a hash and a place. The record goes in a section
-// of the unit's object (`__DATA,__weavec_defs`, `.weavec.defs`), and
-// `weavec-cc` compares the records of every input of a link before the
-// linker runs: two that disagree are an error, and the program is not
-// linked. Nothing is inferred from another unit: it is a comparison.
+// of the unit's object that a linked image does not keep
+// (`__DWARF,__weavec_defs`, `.weavec.defs`), and `weavec-cc` compares the
+// records of every object of a link before the linker runs: two that
+// disagree are an error, and the program is not linked. Nothing is
+// inferred from another unit: it is a comparison.
 //
 //===----------------------------------------------------------------------===//
 
@@ -35,13 +36,14 @@ namespace weavec::frontend {
 
 struct SafeUnit;
 
-/// The section's names: Mach-O's segment and section, and ELF's.
+/// The section's names: Mach-O's segment, section and attributes (debug:
+/// the linker does not copy it into the image it links), and ELF's.
 inline constexpr llvm::StringLiteral DefinitionsSectionMachO =
-    "__DATA,__weavec_defs";
+    "__DWARF,__weavec_defs,regular,debug";
 inline constexpr llvm::StringLiteral DefinitionsSectionName = "__weavec_defs";
 inline constexpr llvm::StringLiteral DefinitionsSectionELF = ".weavec.defs";
-/// The first line of each unit's record.
-inline constexpr llvm::StringLiteral DefinitionsHeader = "weavec-defs 1";
+/// The bytes each unit's record starts with.
+inline constexpr llvm::StringLiteral DefinitionsHeader = "weavec-defs 2\n";
 
 /// §5.1: the record of a unit with safe functions, from its AST at the end
 /// of the unit; empty when it has none.
@@ -58,12 +60,22 @@ struct DefinitionsCompared {
   unsigned mismatches = 0;
 };
 
-/// §5.2: compares the records of `inputs` (objects, archives, linked
-/// images), writes an error and its notes to `errors` for each name two
-/// of them disagree on, and returns what it found.
-[[nodiscard]] DefinitionsCompared
-compareDefinitions(llvm::ArrayRef<std::string> inputs,
-                   llvm::raw_ostream &errors);
+/// What one read of a link's inputs found.
+struct LinkRead {
+  DefinitionsCompared definitions;
+  /// The first input that is (or, an archive, holds) a relocatable object
+  /// defining the allocator's symbol strongly: the program's own allocator
+  /// (RFC 0032 §2.6); empty for none.
+  std::string allocator;
+};
+
+/// §5.2: reads each of `inputs` (objects, archives, linked images) once, in
+/// parallel: with `compare`, compares the safe units' records, writing an
+/// error and its notes to `errors` for each name two disagree on; with an
+/// `allocator` symbol, finds the input that defines it.
+[[nodiscard]] LinkRead readLink(llvm::ArrayRef<std::string> inputs,
+                                bool compare, llvm::StringRef allocator,
+                                llvm::raw_ostream &errors);
 
 } // namespace weavec::frontend
 

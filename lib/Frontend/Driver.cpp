@@ -1221,120 +1221,32 @@ static bool addRuntimeLibraries(clang::driver::Compilation &compilation,
   return true;
 }
 
-/// Calls `visit(file)` for the object at `path`, or for each object member of
-/// the archive there, until one answers true. A linked image (a shared
-/// library, an executable) is not visited: its definitions are its own.
-template <typename Visit>
-static bool anyRelocatableObject(const std::string &path, const Visit &visit) {
-  if (!llvm::sys::fs::is_regular_file(path))
-    return false;
-  llvm::Expected<llvm::object::OwningBinary<llvm::object::Binary>> binary =
-      llvm::object::createBinary(path);
-  if (!binary) {
-    llvm::consumeError(binary.takeError());
-    return false;
-  }
-  if (const auto *file =
-          llvm::dyn_cast<llvm::object::SymbolicFile>(binary->getBinary())) {
-    const auto *object = llvm::dyn_cast<llvm::object::ObjectFile>(file);
-    if (object != nullptr && !object->isRelocatableObject())
-      return false;
-    return visit(*file);
-  }
-  const auto *archive =
-      llvm::dyn_cast<llvm::object::Archive>(binary->getBinary());
-  if (archive == nullptr)
-    return false;
-  bool found = false;
-  llvm::Error error = llvm::Error::success();
-  for (const llvm::object::Archive::Child &child : archive->children(error)) {
-    llvm::Expected<std::unique_ptr<llvm::object::Binary>> member =
-        child.getAsBinary();
-    if (!member) {
-      llvm::consumeError(member.takeError());
-      continue;
-    }
-    if (const auto *file =
-            llvm::dyn_cast<llvm::object::SymbolicFile>(member->get());
-        file != nullptr && visit(*file)) {
-      found = true;
-      break;
-    }
-  }
-  llvm::consumeError(std::move(error));
-  return found;
-}
-
-/// Calls `visit(name, weak)` for each global definition of `file` until one
-/// answers true.
-template <typename Visit>
-static bool anyGlobalDefinition(const llvm::object::SymbolicFile &file,
-                                const Visit &visit) {
-  for (const llvm::object::BasicSymbolRef &symbol : file.symbols()) {
-    llvm::Expected<std::uint32_t> flags = symbol.getFlags();
-    if (!flags) {
-      llvm::consumeError(flags.takeError());
-      continue;
-    }
-    if ((*flags & llvm::object::BasicSymbolRef::SF_Undefined) != 0 ||
-        (*flags & llvm::object::BasicSymbolRef::SF_Global) == 0)
-      continue;
-    std::string name;
-    llvm::raw_string_ostream os(name);
-    if (llvm::Error error = symbol.printName(os)) {
-      llvm::consumeError(std::move(error));
-      continue;
-    }
-    if (visit(name, (*flags & llvm::object::BasicSymbolRef::SF_Weak) != 0))
-      return true;
-  }
-  return false;
-}
-
-/// A program that defines the allocator keeps it: the loader binds
-/// `malloc` to the program's definition before the runtime's. Says so once,
-/// naming the first input of the link, an object or a member of an archive,
-/// that defines `malloc` strongly.
-static void noteProgramAllocator(const clang::driver::Command &link,
-                                 const llvm::Triple &target) {
-  const llvm::StringRef malloc = target.isOSDarwin() ? "_malloc" : "malloc";
-  for (const clang::driver::InputInfo &input : link.getInputInfos()) {
-    if (!input.isFilename())
-      continue;
-    const std::string path = input.getFilename();
-    const bool defines =
-        anyRelocatableObject(path, [&](const llvm::object::SymbolicFile &file) {
-          return anyGlobalDefinition(file,
-                                     [&](const std::string &name, bool weak) {
-                                       return !weak && name == malloc;
-                                     });
-        });
-    if (defines) {
-      llvm::errs() << "weavec-cc: note: '" << path
-                   << "' defines the allocator, which serves the program "
-                      "instead of the WeaveC runtime's: the heap is "
-                      "untracked, guards pass on it and releases are not "
-                      "validated\n";
-      return;
-    }
-  }
-}
-
-/// RFC 0051 §5.2: compares the records of the link's safe units, from its
-/// inputs (objects, archives, linked images named on its line); false when
-/// two disagree, and the link does not run.
-static bool compareLinkDefinitions(const clang::driver::Command &link,
-                                   const DriverOptions &weavec) {
-  if (!weavec.definitions) {
+/// The checks a link's inputs get before the linker runs, from one read of
+/// each (RFC 0051 §5.2): a program that defines the allocator keeps it (the
+/// loader binds `malloc` to the program's definition before the runtime's),
+/// which is said once, naming the first input, an object or an archive,
+/// that defines `malloc` strongly; and the records of the link's safe units
+/// are compared. False when two disagree, and the link does not run.
+static bool checkLinkInputs(const clang::driver::Command &link,
+                            const DriverOptions &weavec,
+                            const llvm::Triple &target) {
+  if (!weavec.definitions)
     llvm::errs() << "weavec-cc: note: -fno-weavec-definitions: the safe units "
                     "of this link were not compared (RFC 0051)\n";
-    return true;
-  }
   std::vector<std::string> inputs;
   for (const clang::driver::InputInfo &input : link.getInputInfos())
     if (input.isFilename())
       inputs.emplace_back(input.getFilename());
-  const DefinitionsCompared found = compareDefinitions(inputs, llvm::errs());
+  const LinkRead read =
+      readLink(inputs, weavec.definitions,
+               target.isOSDarwin() ? "_malloc" : "malloc", llvm::errs());
+  if (!read.allocator.empty())
+    llvm::errs() << "weavec-cc: note: '" << read.allocator
+                 << "' defines the allocator, which serves the program "
+                    "instead of the WeaveC runtime's: the heap is "
+                    "untracked, guards pass on it and releases are not "
+                    "validated\n";
+  const DefinitionsCompared &found = read.definitions;
   if (found.safe != 0 && weavec.summary.value_or(false) &&
       found.mismatches == 0) {
     const std::string output = link.getOutputFilenames().empty()
@@ -1608,14 +1520,14 @@ int runDriver(llvm::ArrayRef<const char *> commandLine, void *mainAddress) {
                          llvm::StringRef(job.getArguments().front()) == "-cc1";
     if (status != 0 && !compile)
       continue;
-    // The objects exist now: a program-defined allocator is visible.
+    // The objects exist now: their safe units' definitions can be compared,
+    // and a program-defined allocator is visible.
     if (job.getSource().getKind() == clang::driver::Action::LinkJobClass &&
-        weavec.enforces()) {
-      noteProgramAllocator(job, compilation->getDefaultToolChain().getTriple());
-      if (!compareLinkDefinitions(job, weavec)) {
-        status = 1;
-        continue;
-      }
+        weavec.enforces() &&
+        !checkLinkInputs(job, weavec,
+                         compilation->getDefaultToolChain().getTriple())) {
+      status = 1;
+      continue;
     }
     const clang::driver::Command *failing = nullptr;
     const int rc = compilation->ExecuteCommand(job, failing);
