@@ -1,6 +1,6 @@
 # RFC 0052: What a call may reach
 
-- **Status**: Draft
+- **Status**: Accepted
 - **Authors**: WeaveC authors
 - **Created**: 2026-11-21
 - **Tracking issue**: TBD
@@ -684,6 +684,8 @@ examples of _Bugs caught_.
   `push_back(std::string_view)` says what it keeps.
 
 ## Decisions to accept
+
+Accepted as drafted on 2026-11-21.
 
 - **D1. Scope.** Safe C++ borrows only. Threads, the link, Safe C and the
   fast mode's beliefs are later work.

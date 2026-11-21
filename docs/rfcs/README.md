@@ -101,6 +101,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0049](0049-errors-that-carry-their-fix.md) | Errors that carry their fix | Accepted |
 | [0050](0050-checked-once.md) | Checked once | Accepted |
 | [0051](0051-nothing-undefined.md) | Nothing undefined | Implemented |
-| [0052](0052-what-a-call-may-reach.md) | What a call may reach | Draft |
+| [0052](0052-what-a-call-may-reach.md) | What a call may reach | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.
