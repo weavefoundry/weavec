@@ -1,6 +1,6 @@
 # RFC 0053: Callables and containers by their loans
 
-- **Status**: Draft
+- **Status**: Draft (S0 measured; returned to the owner: D5 exceeds D8)
 - **Authors**: WeaveC authors
 - **Created**: 2026-11-21
 - **Tracking issue**: TBD
@@ -130,6 +130,78 @@ little room: 1.84 new errors per thousand safe functions against D8's 2.
 S0 measures both forms of D1 (with and without the narrowing) on the same
 corpus before anything else is built, and returns to the owner if D8's
 limit is exceeded.
+
+### Measured: S0 (`build/rfc53/s0/`)
+
+A prototype of §1 to §8 on RFC 0052's branch (`prototype.diff`, 341 lines
+in `SafeCxxFlow.cpp` and `SafeCxxKinds.h`), each decision behind a switch,
+measured against RFC 0052's compiler (`build/rfc52/tc`) on RFC 0052's G2
+corpus (`measure.py`: 10,413 safe functions in the RFC 0044 and RFC 0046
+files, interp and kv made safe, tinyxml2, yaml-cpp, the json port, libzmq's
+and nng's conversions) and on the 71 holes and 19 programs the checked
+build stops (`holes.sh`, 90 programs).
+
+| Decisions | New errors | Per thousand | Programs rejected (of 90) |
+| --- | ---: | ---: | ---: |
+| RFC 0052 | — | — | 0 |
+| D1 (narrowed) and D2 | 0 | 0.00 | 62 |
+| D1 without the narrowing, and D2 | 16 | 1.54 | 62 |
+| D1 to D7, as drafted | 247 | 23.72 | 72 |
+| … without D4 | 155 | 14.89 | 70 |
+| … without D5 | 161 | 15.46 | 71 |
+| … without D7 | 102 | 9.80 | 70 |
+| … without D3, or without D6 | 247 | 23.72 | 70, 69 |
+| D1, D2, D3, D6, D7 read at the caller | 2 | 0.19 | 69 |
+| … and D4 | 18 | 1.73 | 71 |
+
+So:
+
+- **The narrowing (Unresolved question 1) buys 16 errors and no hole.**
+  Without it, every lambda that captures `this` is taken to change all of
+  `*this`, and RFC 0046's thread pools pass one beside a member (16
+  `call-alias`); with it, a body that names members changes those members,
+  as RFC 0052 amendment 4 reads it. Keep it.
+- **D1, D2, D3 and D6 cost nothing** on this corpus and reject 67 of the
+  90 programs between them. A callable read by its loans is the default
+  the code was already written to: none of the corpus's lambdas, binders or
+  `std::function`s holds a borrow across a call of it that the call could
+  change.
+- **D7 as drafted cost 145 errors**, all `owner-path` in tinyxml2's and
+  yaml-cpp's own `const` member functions over their `mutable` caches,
+  because the prototype read `mutable` into what a `const` member function
+  of the class itself may do. Read only at the caller (a `const` call on an
+  object with `mutable` owners ends the caller's borrows into it, and asks
+  nothing of the class), it costs 2 (tinyxml2, `owner-path` in a derived
+  class calling its base's `const` function) and closes the 2 `mutable`
+  holes. §7 is amended to say so.
+- **D4 costs 16** for 2 more programs: 5 `escape`s of a local's address
+  kept in a container of pointers (libzmq's timer map, whose entries hold
+  a `void *`, which reaches everything), and borrows of kv's `Executor`
+  through a container of views. It fits D8 with D1 to D3, D6 and D7
+  (1.73), with little room.
+- **D5 as drafted costs 86 for one program.** Taking every polymorphic
+  class to hold a borrow makes every `std::unique_ptr<Expr>` a parser
+  returns a view of the parser (interp's 80), and every virtual call a
+  barrier (RFC 0044's shapes). D5 needs a narrower form before S1: a
+  candidate is to reach only through objects of a polymorphic class the
+  function was given or got from a call, at a virtual call or a call they
+  are passed to, and never to make a smart pointer to a base a view. S0
+  will measure it before S1.
+
+The 19 programs the combination D1 to D4, D6, D7 still accepts are D5's 3
+(a view behind a base, a `unique_ptr<Base>`, a `unique_ptr` of a view), 13
+of D4's form the prototype does not reach yet (a `std::array` or
+`std::optional` of reference wrappers made from braces, `vector<long *>{&x}`
+returned, a pointer member assigned past its local's scope, an aliasing
+`shared_ptr` stored, an out parameter of `optional<reference_wrapper>`,
+`pair`, `vector` and `optional` of pointers returned), a lambda in a
+`std::array`, a lambda reached through a pointer passed beside what it
+changes, and a function's `static` returned by reference (D6).
+
+RFC 0052's own G2 left 20 new errors against main; with D1 to D4, D6 and
+D7 the two RFCs together give 38 in 10,413 functions against main (3.6
+per thousand), which D8 as written does not limit, since each RFC is
+measured against the one before.
 
 ## Soundness
 
@@ -314,9 +386,12 @@ what it converts. This answers RFC 0052's _Unresolved question_ 4.
   that a function of the program returned with no argument it could point
   into, ends at every call of a function of the program and at every
   change through another such result.
-- A class with a `mutable` member that holds owners is changed through a
-  `const` reference or a `const` member function as through one that is not
-  `const`.
+- A `const` call on an object of a class with a `mutable` member that
+  holds owners (a `const` member function, or passing it by `const`
+  reference) ends the caller's borrows into the object as a call that is
+  not `const` does. It asks nothing of the class's own `const` member
+  functions (`owner-path` stands as RFC 0044 has it), which S0 measured
+  to cost 145 errors over tinyxml2's and yaml-cpp's caches.
 - A class of the program is an owner of what its pointers point to only if
   its destructor is user-provided; one declared `= default` is not.
 
@@ -466,11 +541,13 @@ Each is pinned by a `test/Safe/` test with its note.
 - **D4. The library's containers of views are views** of what they are made
   from, however they are made.
 - **D5. A virtual call that is not final** reaches what its object's loans
-  reach.
+  reach. S0 measured the drafted form (every polymorphic class may hold a
+  borrow) at 86 errors for one program; a narrower form is to be drafted
+  and measured before S1.
 - **D6. A borrow into a mutable global** ends at every call of a function
   of the program.
-- **D7. `mutable` makes `const` shallow; `= default` is no owner's
-  destructor.**
+- **D7. `mutable` makes `const` shallow for a caller; `= default` is no
+  owner's destructor.**
 - **D8. The cost limit** stays RFC 0052's: at most 2 new errors per
   thousand safe functions on G2's corpus, each with a fix or a stated
   reason, measured against RFC 0052's compiler. S0 returns to the owner if
