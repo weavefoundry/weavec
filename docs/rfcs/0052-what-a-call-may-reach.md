@@ -731,7 +731,16 @@ building it and from what S0 and the gates found. They override the body.
 2. **A view made at an object of its member's type points at it (§6).**
    `std::ref(v)`, a span of an array and a struct of a reference to its
    argument's type borrow the object itself, not what it holds
-   (`CxxKinds::pointsAt`); a change of the object's value keeps them. So a
+   (`CxxKinds::pointsAt`); a change of the object's value keeps them. That
+   holds only when nothing the view holds could name what the object owns:
+   every borrowing member of the view names the object's type or a type the
+   object does not reach, and the object owns none of its own type. A
+   `Parser` of `Lexer &` and `std::string_view` can point into the lexer's
+   text, and a `Ref` of `Node &` made from a tree's node can name a child;
+   both borrow what the object holds, as before this RFC, and an assignment
+   of the object ends them. (As first built, one such member was enough,
+   and both compiled and wrote to freed memory in the fast mode;
+   `cxx-reach-points-at.cpp` pins them.) So a
    change through them is a change of the object (§4.2): `w.get() = K` and
    `span[0] = K` end the borrows into it. A reference or pointer a call
    returns at a root of a type it is not related to is inside that root
@@ -816,6 +825,10 @@ gates' agents had a frozen copy of this branch's compiler
 (`build/rfc52/tc`). Evidence is in `build/rfc52/` (not committed). The
 library grows by 874 lines of code (28,337 to 29,211; 1,088 lines in all),
 in `SafeCxxFlow.cpp`, `SafeCxxKinds.h`, `SafeCxx.cpp` and `SafeFix.cpp`.
+Amendment 2's narrowing, made after the gates, adds 40 more in
+`SafeCxxKinds.h`; against the branch as the gates measured it, it gives no
+new error on G2's corpus, and G1's holes stay rejected
+(`build/rfc52/points-at/`).
 
 **S0.** The prototype extended to §4, §5.1's generic lambdas, §5.3 and §6
 rejected all of the round's holes it was measured on. The new errors went
