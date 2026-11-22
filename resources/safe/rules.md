@@ -364,7 +364,9 @@ _Fix_ ([`fix`](#fix)): `WEAVEC_ESCAPES` on the parameter, or after the parameter
 
 A borrow or a view of a local is not returned, and is not stored where it outlives the function's locals: in a member of `*this`, through a parameter, in a global. That covers a reference or a `std::string_view` of a local, a lambda that captures a local by reference, and a `std::vector` of views into a local buffer. A view member is assigned only from parameters that are themselves views (a `std::string_view`, a `std::span`, a pointer), which callers can see, or bound in the constructor; it is not made to point into another member of the same object, which would break when the object is moved. A `std::function`, a `std::thread` or a `std::any` made from a view is a view. A function that keeps a callable it was passed (in a member, a container, a global) takes it by value, `std::function<void()> handler`, which says so; one that only calls it takes `const std::function<void()> &` or a template parameter. (`WEAVEC_ESCAPES`, written after the type, says "kept" of a parameter taken another way, and of a pointer.) What is passed for a parameter that keeps is not a callable that captures a local by reference, nor the address of a local, unless the object that keeps it is itself a local of the same function, which then counts as a view of what the callable captured. A callable that is returned as a `std::function` owns what it captured.
 
-A callable that is kept (in a member, an element, a `static`, by a parameter that keeps it) captures no reference, no `this` and no pointer or view ([RFC 0052](/rfcs/0052-what-a-call-may-reach/) §5.3): it captures values and owners, a `std::shared_ptr` or a `std::weak_ptr` included, so calling it later reaches nothing a borrow points into. For a class that derives from `std::enable_shared_from_this`, capture `[weak = weak_from_this()]` and lock it in the body; otherwise capture by value what the body uses, or take the object as the callable's argument. A callable a local of the same function keeps (a `Timer timer([&count] { … })`) is one the function sees: a call on the local may run it. A value whose members could hold a borrow of what it was made from (a struct with a pointer member, a `std::initializer_list`, a shared pointer made by the aliasing constructor, a range adaptor) is a view of it, and is not returned or kept past a local it borrows.
+A callable that is kept (in a member, an element, a `static`, by a parameter that keeps it), of any type (a lambda, a binder of `std::ref(x)` or of `this`, a functor that holds a reference, a factory's result), captures no reference, no `this` and no pointer or view ([RFC 0052](/rfcs/0052-what-a-call-may-reach/) §5.3, [RFC 0053](/rfcs/0053-callables-and-containers-by-their-loans/) §3): it captures values and owners, a `std::shared_ptr` or a `std::weak_ptr` included, so calling it later reaches nothing a borrow points into. For a class that derives from `std::enable_shared_from_this`, capture `[weak = weak_from_this()]` and lock it in the body; otherwise capture by value what the body uses, or take the object as the callable's argument. A callable a local of the same function keeps (a `Timer timer([&count] { … })`) is one the function sees: a call on the local may run it. A value whose members could hold a borrow of what it was made from (a struct with a pointer member, a `std::initializer_list`, a shared pointer made by the aliasing constructor, a range adaptor, a container of pointers made from braces) is a view of it, and is not returned or kept past a local it borrows; a class whose destructor is `= default` is not an owner.
+
+A function's callers read its result by its type ([RFC 0053](/rfcs/0053-callables-and-containers-by-their-loans/) §6, §7), so a function returns a value with a borrow of a parameter only if the value's type shows it (a member could name what the parameter reaches) or the parameter is `WEAVEC_LIFETIMEBOUND`: a `std::unique_ptr<Task>` whose derived class holds a reference to the parameter needs the mark, and its callers then see the borrow. It returns no reference or pointer into a global that is not `const`, which a later call may change. And a function that keeps a borrow of a reference parameter in what another parameter refers to (an out parameter) declares the first one `WEAVEC_ESCAPES`, so that its callers see what the out parameter then borrows.
 
 ```cpp rejected
 std::string read_line(int n);
@@ -435,6 +437,26 @@ Span numbers() {
 std::initializer_list<int> defaults() { return {1, 2, 3}; }
 ```
 
+```cpp rejected
+struct Task {
+  virtual void run() = 0;
+  virtual ~Task() = default;
+};
+struct Count : Task {
+  int &count;
+  explicit Count(int &count) : count(count) {}
+  void run() override { ++count; }
+};
+std::unique_ptr<Task> counting(int &count) {
+  return std::make_unique<Count>(count);     // 'std::unique_ptr<Task>' does not show it
+}
+```
+
+```cpp rejected
+thread_local std::vector<long> history;
+long &latest() { return history.back(); }    // a later call may change 'history'
+```
+
 ```cpp accepted
 std::string read_line(int n);
 std::string first_word(int n) {              // owns what it returns
@@ -477,6 +499,18 @@ int count_here() {
 }
 std::function<std::size_t()> length_of(const std::string &text) {
   return [text] { return text.size(); };     // owns its copy
+}
+struct Task {
+  virtual void run() = 0;
+  virtual ~Task() = default;
+};
+struct Count : Task {
+  int &count;
+  explicit Count(int &count) : count(count) {}
+  void run() override { ++count; }
+};
+std::unique_ptr<Task> counting(int &count WEAVEC_LIFETIMEBOUND) {   // callers see it
+  return std::make_unique<Count>(count);
 }
 struct Document {
   std::string buffer;
@@ -1257,9 +1291,14 @@ A borrow (a reference, a pointer, an iterator, a `std::string_view`, a `std::spa
 - was changed: a member function that is not `const` and has no `const` twin was called on it (`push_back`, `erase`, `clear`, `reset`, `operator[]` of a map, which inserts), or it was passed to a function through a reference or pointer that is not `const`;
 - was changed through another borrow of it: a reference, a pointer, a `std::reference_wrapper`'s `get()`, a span's element, a call's result;
 - could have been reached by a call ([RFC 0052](/rfcs/0052-what-a-call-may-reach/)): the call was given a view that points into it (a `std::span<T>`, a struct that holds a pointer or a reference), whatever the view's own `const`; or it was a member function of such a view of the program's class (`m.flip()`, where `m` holds a reference to the owner);
-- was changed by a lambda the function can see, where the lambda is called and at every call it is passed to (`std::visit`, `std::invoke`, an algorithm, a function of the program).
+- was reached by a callable the function holds, where it is called and at every call it is passed to (`std::visit`, `std::invoke`, an algorithm, a function of the program; [RFC 0053](/rfcs/0053-callables-and-containers-by-their-loans/)). Any callable is a view: a lambda wherever it is held (in a `std::pair`, a `std::optional`, an array, behind a pointer), a `std::bind` or `std::bind_front`, a `std::mem_fn` or a pointer to a member function with its object, a functor of the program, a factory's result. Its call reaches what its loans reach: what it captured by reference, and where the views it holds point, and what the views and callables those name reach in turn. A library object that holds a lambda or functor with state (a range adaptor such as `std::views::transform`'s, and its iterators) runs it at a library call that is not an element access. A lambda the function wrote narrows that: a capture its body only reads ends nothing, and neither does a binder that holds only views of `const` (`std::bind(print, std::cref(v))`);
+- was reached by a virtual call that is not `final` on an object made from a borrow of it (a class derived from an interface that holds a reference to it), or by a call such an object was passed to;
+- is in a global that is not `const`, or that has a `mutable` owner (a `thread_local`, a function's `static`), and code of the program ran between: a call of a function of the program, a call through a pointer to a function, a constructor, destructor or assignment it wrote (also one a library function runs, as `push_back` or `reset` does), or a library function given a function (`std::invoke(flip)`, a comparator): any of them may change it. A reference or pointer a function of the program returns with nothing it could point into is at a global, which a call may assign but not destroy;
+- was given to a `const` member function, or passed by reference to `const`, when its class has a `mutable` member that owns something (a cache): `mutable` makes `const` shallow for the caller.
 
 A reference or pointer a function returns points into every argument whose type can hold what it names, and a member function's into its object as well: `char &first(std::string &s)` returns into `s`; `std::map::find(key)` returns into the map, not into a `std::string` key. When a function returns into one parameter only, say so with `WEAVEC_LIFETIMEBOUND` on it (on the function, after its `const`, for `this`); the fixer proposes it when every `return` of a function in the unit gives a borrow of that parameter.
+
+The library's containers, optionals, pairs, tuples, arrays and smart pointers of views or pointers are views of what they are made from, however they are made: from braces (`std::vector<std::reference_wrapper<Value>> values{v}`), by conversion, as a function's result (`std::pair<std::string *, int>`), through an out parameter. What they give access to (`values[0].get()`, `*opt`, `pair.first`, a copy out of a `std::any`) points where they do. Assigning a `std::tuple` or `std::pair` of references assigns what they refer to.
 
 The checker does not know which element a borrow points to, so a change of the container ends every borrow into it. Changing an element (`item.name += "x"`) ends borrows into that element's own data, not the loop over the container. Take the borrow again after the change, keep an index instead, or make the callee's parameter `const` when it changes nothing.
 
@@ -1302,6 +1341,47 @@ void reset(Value &v) {
   auto to_number = [&v] { v = 0L; };
   std::string &text = std::get<std::string>(v);
   to_number();
+  text += "!";
+}
+```
+
+```cpp rejected
+using Value = std::variant<std::string, long>;
+void to_number(Value &v) { v = 0L; }
+void reset(Value &v) {
+  auto convert = std::bind(to_number, std::ref(v));
+  std::string &text = std::get<std::string>(v);
+  convert();                               // may change what 'convert' holds, 'v'
+  text += "!";
+}
+```
+
+```cpp rejected
+using Value = std::variant<std::string, long>;
+void reset(Value &v) {
+  std::vector<std::reference_wrapper<Value>> values{v};
+  std::string &text = std::get<std::string>(v);
+  values[0].get() = 0L;                    // a view of 'v'
+  text += "!";
+}
+```
+
+```cpp rejected
+using Value = std::variant<std::string, long>;
+struct Task {
+  virtual void run() = 0;
+  virtual ~Task() = default;
+};
+struct Reset : Task {
+  Value &target;
+  explicit Reset(Value &target) : target(target) {}
+  void run() override { target = 0L; }
+};
+void start(Task &task) { task.run(); }
+void reset(Value &v) {
+  Reset task(v);
+  std::string &text = std::get<std::string>(v);
+  start(task);                             // reaches what 'task' holds
   text += "!";
 }
 ```
@@ -1352,6 +1432,16 @@ std::size_t keep(std::string &a, std::string &b) {
   const std::string &l = longer(a, b);
   b += "!";                                // 'l' borrows from 'a' only
   return l.size();
+}
+using Value = std::variant<std::string, long>;
+void print(const Value &v);
+std::size_t show(Value &v) {
+  auto show_it = [&v] { print(v); };       // only reads 'v'
+  auto show_too = std::bind(print, std::cref(v));
+  std::string &text = std::get<std::string>(v);
+  show_it();
+  show_too();
+  return text.size();
 }
 ```
 
@@ -1440,7 +1530,7 @@ Pass only the pointer the callee changes, an index into it, or make the other pa
 
 In one call of a function of the program, an argument through which the callee could change what an object owns (a reference or pointer that is not `const`, the object of a member function that is not `const`) is not passed beside a borrow into the same object. The standard library's own functions are trusted with such arguments (`v.push_back(v[0])`, `std::sort(v.begin(), v.end())`).
 
-A callable that may change an object (a lambda the function can see that changes what it captured, or `*this`) is not passed beside that object or a borrow into it, to any function: `f(v, [&v] { … })`, `std::visit([&v](auto &x) { … }, v)`, `obj.visit([&obj] { … })` ([RFC 0052](/rfcs/0052-what-a-call-may-reach/) §5.2). In exchange, a function believes that a callable it is given reaches nothing its other parameters and `this` reach, so a visitor that loops over its own container and calls the callable it was lent is accepted. Collect the changes in a local and apply them after the call, or let the callable return what to change.
+A callable whose loans reach an object (a lambda the function can see that changes what it captured, or `*this`; any other callable that holds a borrow of it: a binder of `std::ref(v)`, a functor, a factory's result, a lambda behind a pointer another one captured) is not passed beside that object or a borrow into it, to any function: `f(v, [&v] { … })`, `std::visit([&v](auto &x) { … }, v)`, `obj.visit([&obj] { … })`, `run(v, std::bind(reset, std::ref(v)))` ([RFC 0052](/rfcs/0052-what-a-call-may-reach/) §5.2, [RFC 0053](/rfcs/0053-callables-and-containers-by-their-loans/) §2). In exchange, a function believes that a callable it is given reaches nothing its other parameters and `this` reach, so a visitor that loops over its own container and calls the callable it was lent is accepted. Collect the changes in a local and apply them after the call, or let the callable return what to change.
 
 ```cpp rejected
 void append(std::vector<std::string> &to, const std::string &s);

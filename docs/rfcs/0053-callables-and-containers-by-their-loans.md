@@ -583,3 +583,234 @@ Accepted on 2026-11-22 as S0 measured them: D1 with the narrowing
   thousand safe functions on G2's corpus, each with a fix or a stated
   reason, measured against RFC 0052's compiler. S0 returns to the owner if
   the design exceeds it.
+
+## Implementation amendments
+
+These record where the implementation departs from the design above, from
+building it and from what the gates found. They override the body.
+
+1. **A callable that holds only views of `const` reaches nothing (§1).** A
+   binder or functor whose borrowing members all name `const` objects that
+   are not views, callables or classes with `mutable` owners
+   (`std::bind(print, std::cref(v))`) only reads: its call, a call it is
+   passed to and `call-alias` end nothing for it (`CxxKinds::readsOnly`).
+   What its call returns still points where its loans reach.
+2. **A callable's loans reach the callables they name (§1, §2).** A lambda
+   behind a pointer another lambda captured (`[gp] { (*gp)(); }`) runs
+   where the outer one runs: the reach of a call includes the loans of
+   every callable local its own loans name (`reachOf`).
+3. **D4, as built (§5).** An array made from braces (the elements of a
+   `std::array`) points where its elements do. A block of pointers an owner
+   keeps (`std::vector<T *>`'s) borrows what they point to, and a class
+   made from a list copies its elements: `std::vector<long *>{&x}` borrows
+   `x`, not the array the braces made. A member call through a pointer to
+   a class that borrows and owns nothing (`o->get()` of an optional of a
+   reference wrapper) points where the class does. A pointer read from a
+   member or an element of a local of a library class the flow follows (a
+   `std::pair`, an optional, a container of pointers) points where the
+   local's loans do (`heldIn`). A pointer member of a class of the program
+   stays a reference (RFC 0044 §8), tested where it is loaded: reading the
+   loans of a local of such a class cost 7 errors in G2 (yaml-cpp's
+   iterator values and simple keys, libzmq's endpoints) for no hole. Only
+   the address of a local assigned to one is followed, so the struct does
+   not outlive it (`Keep k; { long x; k.p = &x; }`).
+4. **Out parameters (§5).** A safe function that stores a borrow of a
+   reference parameter in a view that another parameter refers to (`o =
+   std::ref(std::get<std::string>(v))` for an `optional<reference_wrapper>`
+   out parameter) is `escape` unless the first parameter says
+   `WEAVEC_ESCAPES`, as RFC 0048 §4 asks of every kept address. A caller
+   then takes the out parameter's local to borrow what it passed for the
+   kept parameter: at it, and into it unless the local's type points at
+   it (RFC 0052 amendment 2). A raw pointer kept this way stays a
+   reference.
+5. **Assigning a shared pointer (§5).** A local assigned a shared pointer
+   that the aliasing constructor made holds that pointer's borrow, and no
+   longer the one it held.
+6. **D6's results are at a global, and the callee is checked (§7).** A
+   reference or pointer a function of the program returns with nothing it
+   could point into is at "the globals", depth 0, which a call may assign
+   but not destroy. Taking it to be inside one cost 7 errors in G2: a
+   reference to a singleton (`Logger &l = Logger::instance(); l.set(…)`)
+   was ended by its own member calls. In exchange, a safe function returns
+   no reference or pointer into a global that is not `const` (`escape`:
+   `std::string &name() { return std::get<std::string>(g); }`), which
+   closes the `thread_local` result of the round.
+7. **_Unresolved question_ 3: the callee says it (§6).** A safe function
+   returns a value with a borrow of a parameter only if the value's type
+   shows it as its callers read it (a member could name what the parameter
+   reaches) or the parameter is `WEAVEC_LIFETIMEBOUND`; a shared pointer
+   made from a shared pointer parameter shares its ownership. A caller
+   reads a value a `lifetimebound` parameter gives as borrowing at the
+   argument and into it, whatever the value's type. So a
+   `std::unique_ptr<Base>` factory of a derived class that holds a
+   reference is told to mark it, and its callers see the borrow
+   (`t09`). This costs nothing on G2's corpus.
+8. **_Unresolved question_ 2.** A pointer to a function holds no loans, as
+   drafted; the round's `c19` (`call(&g)`) is rejected through the
+   function the callable reaches. No probe of G4 needed more.
+9. **A member of a local that is changed takes borrows only if it is
+   followed (RFC 0052 §7).** `cfg.client_command.assign(args.begin(),
+   args.end())` copies strings into a vector of owners: the local `cfg`
+   does not borrow `args`. (RFC 0052 widened every such local; amendment 7
+   above made it visible as one error in kv.)
+10. **One report for a store.** A store a callee's parameter keeps
+    (`registry.keep(&local)` of a class that borrows) is reported as kept
+    by the callee, and not again as a store in its object.
+11. **Messages (Diagnostics).** As built: a callable whose body the
+    function did not write "may change what '<callable>' holds, '<o>'"; a
+    lambda it wrote "changes '<o>'", as RFC 0052 has it. A virtual call is
+    "the virtual call to '<f>' may reach through '<object>'", and its note
+    names a `final` class. A call through a pointer to a member function
+    is "the call through a pointer to a member function". A borrow into a
+    global "points into the global '<g>', which the call to '<f>' may
+    change". `call-alias` keeps RFC 0052's "'<callable>' may change '<o>',
+    which is passed with it". New `escape`s: "what is returned holds a
+    borrow of '<p>', which its type '<T>' does not show"; "what is returned
+    points into the global '<g>', which a call of the program may change";
+    "'<o>' would keep a borrow of the parameter '<p>', which is lent for
+    the call only".
+12. **§10's E9 is not built.** With the narrowing, a lambda whose every use
+    of a capture is a read (`constUse`) already ends nothing, so each
+    remaining error at its call has a use that is not a read (a function
+    taking the capture by reference that is not `const`), where a `const &`
+    capture would not compile. The note says what to do; no fix is
+    written. The other two rows of §10 are notes, as drafted.
+
+The rest were made after G4's round (`build/rfc53/g4`), whose agents had
+the compiler as amendments 1 to 12 left it. Each closes holes of the round
+in this RFC's classes, or brings code in line with RFC 0044 and 0052; they
+cost nothing on G2's corpus, and amendment 22 removes 7 of its errors.
+
+13. **D7 through every object (§7).** `mutable` is read through bases,
+    through the library's classes of a class with a `mutable` owner (a
+    `std::optional`, `std::vector` or `std::pair` of one), and in a `const`
+    global; a capture of such an object is never narrowed as read only.
+    What a call changes only through a `mutable` member ends the caller's
+    borrows and asks nothing of `owner-path`, as §7 says (read into the
+    class's own `const` functions, the wider reading gave 30 `owner-path`
+    errors in yaml-cpp and tinyxml2; read at the caller, it removed
+    tinyxml2's two of S0 and gave one other).
+14. **A binder of a view of an erased callable is not read only (§1).** A
+    functor over a `const std::function *` calls what the function holds.
+15. **D6, as built (§7).** The program's code also runs in a constructor,
+    destructor or assignment the program wrote, of a local, a temporary or
+    an object a library function makes, copies or destroys (`push_back`,
+    `reset`); in a call through a pointer to a function; and in a library
+    function given a function (`std::invoke(flip)`, an algorithm's
+    comparator). Each ends the borrows into the globals. A view a function
+    of the program returns with nothing it could point into (a struct of a
+    reference to a function's `thread_local`) is at the globals too.
+16. **A view of a view (§1, §5; RFC 0052 §4.1).** What a call reaches
+    through a view, a callable or the object of a member function includes
+    what the local views it names point to, transitively: a holder of an
+    `M &`, given to a function or called, reaches what `M` refers to.
+17. **What erases its contents gives copies of them (§5).**
+    `std::any_cast<T>(a)` by value points where `a`'s contents do.
+18. **An assignment is no accessor (RFC 0044 §6).** C++23's libc++ gives
+    `std::pair` and `std::tuple` `const` assignments and `swap`s, which made
+    the assignment that is not `const` look like one that only gives
+    access. A function that returns nothing, or an assignment, is never an
+    accessor, whatever twins it has.
+19. **Libraries' objects of references and destructors (§5).** An
+    assignment of a library object of references (`std::tuple<V &>`)
+    changes what they refer to; a library call that runs a destructor or
+    assignment the program wrote (`reset` of an optional of a view) reaches
+    what the object's views point to; so does the destructor of a local or
+    a temporary of the program's class.
+20. **A library object that holds a callable runs it (§1, §4).** A range
+    adaptor and its iterators (`std::views::transform`'s, `filter`'s), or
+    anything of the library whose type arguments hold a lambda or functor
+    of the program with state, or an erased callable, run it at a library
+    call given or called on them, unless the call only accesses an element
+    (it has a `const` twin): a vector of lambdas gives one and runs none.
+    A deleter, comparator or hash without state holds no loan, and a
+    library callable counts only through what it holds
+    (`std::reference_wrapper<V>` has a call operator for every `V`).
+21. **Types deeper than the search follows (RFC 0052 §2).** A class
+    nested more than 64 levels deep is taken to borrow and to write
+    through what it holds; it was taken to borrow nothing.
+22. **A C library's struct is no view (§5).** `std::unique_ptr<std::FILE,
+    Closer>` owns a `FILE`, whose pointers point into what the C library
+    keeps (X-A1): a C struct of a system header is not a view for D4. This
+    removes kv's 7 errors of S0 (its `Logger` holds one).
+
+## Measured gates
+
+darwin-arm64, Homebrew LLVM 23.1.0, main at `0af7123f` (RFC 0052, PR 79),
+2026-11-22. G2's baseline is main's frozen compiler (`build/rfc53/main-tc`);
+the agents of G3 and G4 had a frozen copy of this branch's compiler as
+amendments 1 to 12 left it (`build/rfc53/tc`). Evidence is in
+`build/rfc53/` (not committed). The library grows by 737 lines of code
+(29,544 to 30,281; 951 lines in all), in `SafeCxxFlow.cpp` and
+`SafeCxxKinds.h`.
+
+**G1, RFC 0052's round: passes.** All 90 programs are rejected: the 47
+lifetimes holes, the 24 types holes and the 19 programs the checked build
+stopped (`s0/holes.sh`), pinned by `test/Safe/cxx-loans-callables.cpp`,
+`-kept`, `-containers`, `-results` and `-objects` (written from the round's
+files by `s1/gen-tests.py`). `std::as_writable_bytes` stays out, as §1 of
+_Bugs deliberately not caught_ has it.
+
+**G2, correct code: passes.** 10 new errors in 10,413 safe functions
+against main (0.96 per thousand; D8 allows 2), with `s1/measure.py`:
+
+- libzmq's timers (5): a `void *` argument kept in the timer map; `void *`
+  reaches every type (RFC 0052 D2), so the map is a container of views of
+  the local passed. No fix is written; the conversion passes the timer's
+  own storage.
+- kv (1): the address of a local `Server` kept in a global for the signal
+  handler, which is the bug the rule is for; G3's agent replaced it with a
+  pipe.
+- yaml-cpp (3): the iteration over a node's children continues after a
+  call given one of them, which the node's iterator values may reach (two);
+  a pointer to a local indent marker kept in the scanner's stack of
+  pointers. Fixes: collect the children first; keep the marker in the
+  stack.
+- tinyxml2 (1): a borrow of a new attribute, taken from the element, ends
+  at a `const` call of the element, whose base has `mutable` strings (D7,
+  read at the caller). Fix: take the attribute after the call.
+
+**G3, the loop: passes.** Fresh agents with the frozen compiler and RFC
+0052's brief made the two trial programs, as written, safe with all tests
+passing in both builds: interp in about 4 minutes (limit 9, 1.5 times RFC
+0051's 6; RFC 0052's took 10.5) and kv in about 12 (limit 19.5; RFC
+0052's 13). Both stay free of errors under the final compiler. interp's
+agent reported no false rejection of this RFC's; kv's reported one,
+`executor.execute_line(line)` making a named `Executor` (which holds a
+`Store &`) a view of `line` (RFC 0052 §7's widening, not this RFC's), and
+four of other RFCs.
+
+**G4, a fresh round: fails.** Two fresh agents, briefed as RFC 0052's and
+told what both RFCs close, wrote 226 probes: 74 holes (48 lifetimes, 26
+types), every one rerun (`g4/rerun.sh`). Amendments 13 to 21 reject 62 of
+them (`test/Safe/cxx-loans-round-lifetimes.cpp`, `-round-types`). These
+12 are still accepted:
+
+- a polymorphic object made from a borrow and held in a library container
+  (`std::vector<std::unique_ptr<Base>>`, `std::optional` of one): its
+  virtual calls reach nothing (4);
+- a `std::reference_wrapper` of a polymorphic object or of a view (`rb.get().run()`,
+  `r.get().flip()`) (2);
+- `std::tie`'s tuple assigned (1);
+- an optional of a class with a destructor that writes through its
+  reference, reset: such a class is an owner (RFC 0044), not a view (1);
+- a class derived from a library's polymorphic base (`std::exception`)
+  (1);
+- a view nested 65 or more levels deep (2);
+- a span over an array of reference wrappers (1).
+
+The round also found no program the rules accept that the checked build
+stops.
+
+**G5, compile time: passes.** With Release compilers of main and this
+branch, interleaved, the median of 5 CPU times per file (`g5/g5.py`): 0.999
+of main's (interp made safe 0.991, kv 1.000, the json port 0.993, RFC
+0044's files 1.000); limit 1.03.
+
+**G6, same code: passes.** Of 512 objects (G2's corpus, `test/cases`,
+`test/Guards`), 375 are byte-identical to main's Release compiler's, and
+77 differ only where two compiles by main itself differ (RFC 0052's
+`__const` table order, and paths under `-g`); 5 compile under main only
+(the new errors), 55 under neither (`g6/g6.py`, `g6/recheck.py`).
+
+Status stays **Accepted**: G4 fails.

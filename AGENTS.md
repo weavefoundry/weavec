@@ -115,11 +115,23 @@ lambda the function sees changes what its body changes where it is called
 and passed, a callable passed beside what it changes is `call-alias` for
 every callee, a kept callable captures no reference, `this` or pointer,
 and a value built from a borrow (a struct with a pointer member, a
-`std::initializer_list`, the aliasing `shared_ptr`) is a view of it. Full
-picture: `docs/architecture.md`. Design and the reasoning behind it:
-`docs/rfcs/`. Read `0052-what-a-call-may-reach.md` first (reach, results, views,
-callables, values built from borrows; its *Implementation amendments* and
-*Measured gates*), then `0051-nothing-undefined.md` (the list and its
+`std::initializer_list`, the aliasing `shared_ptr`) is a view of it. Since
+RFC 0053 every callable is a view (a lambda wherever it is held, a binder,
+a functor, a pointer to a member function with its object) whose call, or
+a call it is passed to, ends the borrows into what its loans reach, unless
+the function wrote it and its body only reads a capture; the library's
+containers of views or pointers are views however they are made; a
+virtual call reaches what its object was made from; a call of the program
+may change any mutable global; `mutable` makes `const` shallow for a
+caller; and a function returns no borrow its type does not show unless
+the parameter is `WEAVEC_LIFETIMEBOUND`. Full picture:
+`docs/architecture.md`. Design and the reasoning behind it: `docs/rfcs/`.
+Read `0053-callables-and-containers-by-their-loans.md` first (callables by
+their loans, containers of views, polymorphic objects, globals,
+`mutable`; its *Implementation amendments* and *Measured gates*), then
+`0052-what-a-call-may-reach.md` (reach, results, views, callables, values
+built from borrows; its *Implementation amendments* and *Measured
+gates*), then `0051-nothing-undefined.md` (the list and its
 dispositions, the definitions and the stops, the rules, the comparison at
 the link; its *Implementation amendments* and *Measured gates*), then
 `0050-checked-once.md` (what a fast unit
@@ -318,6 +330,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Change what a fast unit believes, kept parameters or placed locals (RFC 0048) | `typedAccess`, `typedPointer`, `checkStep`, `inHand`, `escapeCheck`, `placeLocals` and the split of inline functions in `lib/Frontend/GuardSafe.cpp`; `shadowless` in `GuardFast.cpp`; the plain frames in `escapes` (`GuardExpand.cpp`); the heap string check in `expand` (`GuardExpand.cpp`) and `__weavec_rt_string_entry` in `runtime/weavec_guard.c`; `Kept` and `keptAddresses` in `lib/Frontend/SafeCxx.cpp`, the placement marks in `SafeChecker` (`SafeCheck.cpp`); the `call-args` and `index-single` cases `positionIntoSingle`, `libraryAccess`, `readsEnd` in `SafeCheck.cpp`; the pools' slot lists in `runtime/weavec_alloc.c`; tests `test/Safe/cxx-kept.cpp`, `cxx-ends.cpp`, `test/Guards/placed-local.cpp`, `ir-typed-cxx.cpp`, `ir-strings.c`, `stack-escape-entry.cpp`, `test/Driver/safe-checks-modes.cpp` |
 | Change the fixes errors carry, the evidence, or `--weavec-fix` (RFC 0049) | `FixPlanner` in `lib/Frontend/SafeFix.cpp` (wants, evidence E1–E7, edits, notes), the `want(...)` calls beside the rules' reports in `SafeCheck.cpp`, `SafeCxx.cpp`, `SafeCxxFlow.cpp`; `include/weavec/Frontend/RuleFix.h`; the fixer in `lib/Frontend/Fixer.cpp`; the ledger's `errors`, `evidence`, `command`, `files` and the audit's plan in `EnforcementLedger.cpp`; tests `test/Safe/fix-*.c*`, `notes.c`, `test/Driver/safe-fix*.cpp`, `safe-survey.cpp`, `unittests/Frontend/RuleFixTest.cpp`; the rules' page `fix` |
 | Change what a safe function leaves undefined (definitions, stops, probes, the rules that reject what asserts, the comparison at the link) | `lib/Frontend/GuardDefine.cpp` (`defineSafe`, run first by GuardInsert), the safe unit's options and `promoteSafeWarnings`, `assumingFlag`, `checkLinkInputs` in `lib/Frontend/Driver.cpp`; `lib/Frontend/SafeUndefined.cpp` (`assumed`, `signal-handler`, `bool` bytes, member pointers, owners of a base); `lib/Frontend/Definitions.cpp` (`recordDefinitions`, `emitDefinitions`, `readLink`); the `handler` row clause of `lib/Core/LibrarySpec.txt`; `__weavec_rt_unreachable`, `__weavec_rt_missing_return`, `__weavec_rt_division`, `__ubsan_handle_missing_return` in `runtime/weavec_guard.c`; the alternate signal stacks and `stack-exhaustion` in `runtime/weavec_report.c` (RFC 0051); the list `resources/safe/undefined.md` and `scripts/check-undefined.py`; tests `test/Guards/ir-defined.c*`, `unreachable.cpp`, `missing-return.c*`, `division.c`, `stack-exhaustion.cpp`, `test/Safe/assumed.c*`, `signal-handler.cpp`, `bool-bytes.cpp`, `defined.c*`, `undefined-translation.c*`, `fix-assumed.cpp`, `test/Driver/safe-flags.cpp`, `definitions.cpp` |
+| Change what a callable or a container holds (callables by their loans, the narrowing, binders and pointers to member functions, the library's containers of views, out parameters, polymorphic objects, globals, `mutable`, `= default`, results a type does not show; RFC 0053) | `anyCallable`, `reachOf`, `lambdaReach`, `changedBy`, `deepen`, `holdsCallable`, `closures`, `keptCallable`, `heldIn`, `outStored`, `onlyPolymorphic`, `known`, `shows`, `changesGlobals`, `referencesIn`, the `Global` roots and the `escape` cases of `returned` in `lib/Frontend/SafeCxxFlow.cpp`; `libraryOfViews`, `readsOnly`, `polymorphicHolder`, `mutableOwners`, `runsProgram`, `ownsBlocks`, `changesOnly` in `SafeCxxKinds.h`; tests `test/Safe/cxx-loans-*.cpp` |
 | Change what a call may reach (reach by types, results, views' shallow `const`, lambdas' changes, `call-alias` for callables, kept callables, values built from borrows; RFC 0052) | `reaches`, `writesThrough`, `pointsAt`, `borrowing`, `mayBorrow`, `keptCapture` in `lib/Frontend/SafeCxxKinds.h`; `result`, `fit`, `lambdaChanges`, `lambdaObjects`, `closures`, `keptCallable`, `keptLambdas`, the `Reached` and `Runs` ends in `lib/Frontend/SafeCxxFlow.cpp`; `keptDefault` in `SafeCxx.cpp`; E8 in `lifetime` (`SafeFix.cpp`); tests `test/Safe/cxx-reach-*.cpp` |
 | Add an annotation                    | Don't, without an RFC: `WEAVEC_UNSAFE` and Safe C's are the only ones (`UnsafeRegions.h`, `SafeCheck.h`, `weavec.h`, `docs/annotations.md`) |
 | Change build flags / warnings        | `cmake/WeaveCWarnings.cmake`, `cmake/WeaveCLLVM.cmake` |
