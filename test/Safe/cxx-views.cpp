@@ -120,8 +120,8 @@ std::unique_ptr<Parser> onTheHeap() {
 }
 int lexerChanged(Lexer &lexer) {
   Parser p(lexer);
-  lexer = Lexer{}; // a view made from a reference points into it
-  return p.parse(); // expected-error {{'p' points into 'lexer', which 'operator=' may have changed [weavec-safe:stale-borrow]}}
+  lexer = Lexer{}; // RFC 0052 §6: a view made from a reference to its own
+  return p.parse(); // type names the object, which an assignment keeps
 }
 int lexerGone() {
   std::unique_ptr<Parser> p;
@@ -181,14 +181,14 @@ struct Button {
   std::function<void()> onClick;
   int clicks = 0;
   void countInto(int &count) {
-    onClick = [&count] { ++count; }; // expected-error {{'this->onClick' would keep a borrow of the parameter 'count', which is lent for the call only [weavec-safe:escape]}}
+    onClick = [&count] { ++count; }; // expected-error {{the lambda is kept by 'this->onClick' and captures 'count' by reference [weavec-safe:escape]}}
   }
   void countShared(std::shared_ptr<int> count) {
     onClick = [count] { ++*count; };
   }
   void countLocal() {
     int local = 0;
-    onClick = [&local] { ++local; }; // expected-error {{a borrow of 'local' is stored in 'this->onClick', which outlives it [weavec-safe:escape]}}
+    onClick = [&local] { ++local; }; // expected-error {{the lambda is kept by 'this->onClick' and captures 'local' by reference [weavec-safe:escape]}}
   }
 };
 struct Cache {
@@ -255,10 +255,10 @@ void wire(Events &events) {
   int count = 0;
   events.callNow([&] { ++count; });
   events.declared([count] { (void)count; });
-  events.declared([&] { ++count; }); // expected-error {{a borrow of 'count' is stored in what 'declared' keeps, which outlives it [weavec-safe:escape]}}
+  events.declared([&] { ++count; }); // expected-error {{the lambda is kept by what 'declared' keeps and captures 'count' by reference [weavec-safe:escape]}}
   Timer timer([&count] { ++count; }); // a local keeper holds the borrow
   ByValueTimer other([&count] { ++count; });
-  events.keep([&] { ++count; }); // expected-error {{a borrow of 'count' is stored in what 'keep' keeps, which outlives it [weavec-safe:escape]}}
+  events.keep([&] { ++count; }); // expected-error {{the lambda is kept by what 'keep' keeps and captures 'count' by reference [weavec-safe:escape]}}
   events.keep([count] { (void)count; });
   const std::function<int()> get = [&] { return count; };
   count += callNow(get) + callNow([&] { return count; });
@@ -269,7 +269,7 @@ void wire(Events &events) {
 Timer returnsKeeper() {
   int count = 0;
   Timer timer([&count] { ++count; });
-  return timer; // expected-error {{what is returned points into 'count', which does not outlive the function [weavec-safe:escape]}}
+  return timer; // expected-error {{'timer' holds a borrow of 'count' and is returned [weavec-safe:escape]}}
 }
 int keeperOutlives() {
   Events events;
@@ -281,11 +281,11 @@ int keeperOutlives() {
   return 0;
 }
 void keepsViewParameter(Events &events, std::string_view sv) {
-  events.keep([&sv] { (void)sv.size(); }); // expected-error {{a borrow of 'sv' is stored in what 'keep' keeps, which outlives it [weavec-safe:escape]}}
-  events.keep([sv] { (void)sv.size(); });
+  events.keep([&sv] { (void)sv.size(); }); // expected-error {{the lambda is kept by what 'keep' keeps and captures 'sv' by reference [weavec-safe:escape]}}
+  events.keep([sv] { (void)sv.size(); }); // expected-error {{the lambda is kept by what 'keep' keeps and captures 'sv', which holds a borrow [weavec-safe:escape]}}
 }
 void keepsTemporary(Events &events, const std::string &prefix) {
-  events.keep([&prefix] { (void)prefix.size(); }); // expected-error {{what 'keep' keeps would keep a borrow of the parameter 'prefix', which is lent for the call only [weavec-safe:escape]}}
+  events.keep([&prefix] { (void)prefix.size(); }); // expected-error {{the lambda is kept by what 'keep' keeps and captures 'prefix' by reference [weavec-safe:escape]}}
 }
 std::function<int()> returnsCapture(const std::string &name) {
   return [&name] { return int(name.size()); }; // expected-error {{the callable that is returned captures 'name' by reference, and its type does not show it [weavec-safe:escape]}}

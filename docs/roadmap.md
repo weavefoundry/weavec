@@ -4,7 +4,7 @@ Rough ordering of the major pieces of work. This page is the one-screen view;
 the design detail and the reasoning live in the [RFCs](rfcs/README.md) each
 milestone links to. Everything here is subject to change as we learn.
 
-The design today is [RFC 0051](rfcs/0051-nothing-undefined.md) for what a safe function may not leave undefined (the list of the two languages' undefined behavior, the definitions and the stops, the rules that reject what asserts, the comparison of safe units at the link), [RFC 0050](rfcs/0050-checked-once.md) for what a fast safe unit checks once (views, the typed allocator's paths, Safe C's library calls), [RFC 0049](rfcs/0049-errors-that-carry-their-fix.md) for the fixes errors carry and `--weavec-fix`, [RFC 0048](rfcs/0048-safe-code-without-the-shadow.md) for what a fast safe unit checks and believes, [RFC 0047](rfcs/0047-conversion-in-place.md) for converting existing C++, [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
+The design today is [RFC 0052](rfcs/0052-what-a-call-may-reach.md) for what a call may reach in safe C++ (reach by types, results, views, callables, values built from borrows), [RFC 0051](rfcs/0051-nothing-undefined.md) for what a safe function may not leave undefined (the list of the two languages' undefined behavior, the definitions and the stops, the rules that reject what asserts, the comparison of safe units at the link), [RFC 0050](rfcs/0050-checked-once.md) for what a fast safe unit checks once (views, the typed allocator's paths, Safe C's library calls), [RFC 0049](rfcs/0049-errors-that-carry-their-fix.md) for the fixes errors carry and `--weavec-fix`, [RFC 0048](rfcs/0048-safe-code-without-the-shadow.md) for what a fast safe unit checks and believes, [RFC 0047](rfcs/0047-conversion-in-place.md) for converting existing C++, [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
 sweep and colors of [RFC 0037](rfcs/0037-complete-sweep-and-colors.md), the
 reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
 and the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
@@ -12,7 +12,35 @@ milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
-## Now: RFC 0051 — Nothing undefined
+## Now: RFC 0052 — What a call may reach
+
+Design: [RFC 0052 — What a call may reach](rfcs/0052-what-a-call-may-reach.md)
+(Accepted, built; its _Implementation amendments_ and _Measured gates_ say
+how). A probe round found 24 safe C++ programs that misuse a borrow, each
+through a way to change an object the borrow rules did not list. RFC 0052
+makes the default deny: what a call may reach is read from types; a
+reference or pointer a call returns points into every argument whose type
+can hold it; `const` on a view is shallow; a lambda the function sees ends
+what its body changes where it is called and passed; a callable passed
+beside what it changes is `call-alias`; a kept callable captures no
+reference, `this` or pointer; and a value built from a borrow is a view of
+it.
+
+- [x] **The RFC**, accepted as drafted on 2026-11-21.
+- [x] **S0 to S5**: measured first (20 new errors in 10,871 safe
+      functions, under D8's 2 per thousand), then reach and results,
+      views, callables, values built from borrows, the fixes (E8), the
+      pages.
+- [x] **The round's holes** (G1): all 24 lifetimes holes and the types
+      area's 9 are rejected.
+- [ ] **A fresh round** (G4): 71 more holes of the same classes, through
+      callables the flow does not read (`std::bind`, a lambda in a `pair`
+      or behind a pointer, a functor), library containers of views, and a
+      view behind a base. The fix is D5's default for every callable value.
+- [ ] **The loop** (G3): interp in 10.5 minutes (asks 9); kv in 13 (asks
+      19.5).
+
+## Before: RFC 0051 — Nothing undefined
 
 Design: [RFC 0051 — Nothing undefined](rfcs/0051-nothing-undefined.md)
 (Accepted, built; its _Implementation amendments_ and _Measured gates_ say

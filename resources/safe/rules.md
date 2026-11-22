@@ -364,6 +364,8 @@ _Fix_ ([`fix`](#fix)): `WEAVEC_ESCAPES` on the parameter, or after the parameter
 
 A borrow or a view of a local is not returned, and is not stored where it outlives the function's locals: in a member of `*this`, through a parameter, in a global. That covers a reference or a `std::string_view` of a local, a lambda that captures a local by reference, and a `std::vector` of views into a local buffer. A view member is assigned only from parameters that are themselves views (a `std::string_view`, a `std::span`, a pointer), which callers can see, or bound in the constructor; it is not made to point into another member of the same object, which would break when the object is moved. A `std::function`, a `std::thread` or a `std::any` made from a view is a view. A function that keeps a callable it was passed (in a member, a container, a global) takes it by value, `std::function<void()> handler`, which says so; one that only calls it takes `const std::function<void()> &` or a template parameter. (`WEAVEC_ESCAPES`, written after the type, says "kept" of a parameter taken another way, and of a pointer.) What is passed for a parameter that keeps is not a callable that captures a local by reference, nor the address of a local, unless the object that keeps it is itself a local of the same function, which then counts as a view of what the callable captured. A callable that is returned as a `std::function` owns what it captured.
 
+A callable that is kept (in a member, an element, a `static`, by a parameter that keeps it) captures no reference, no `this` and no pointer or view ([RFC 0052](/rfcs/0052-what-a-call-may-reach/) §5.3): it captures values and owners, a `std::shared_ptr` or a `std::weak_ptr` included, so calling it later reaches nothing a borrow points into. For a class that derives from `std::enable_shared_from_this`, capture `[weak = weak_from_this()]` and lock it in the body; otherwise capture by value what the body uses, or take the object as the callable's argument. A callable a local of the same function keeps (a `Timer timer([&count] { … })`) is one the function sees: a call on the local may run it. A value whose members could hold a borrow of what it was made from (a struct with a pointer member, a `std::initializer_list`, a shared pointer made by the aliasing constructor, a range adaptor) is a view of it, and is not returned or kept past a local it borrows.
+
 ```cpp rejected
 std::string read_line(int n);
 std::string_view first_word(int n) {
@@ -411,6 +413,28 @@ std::function<std::size_t()> length_of(const std::string &text) {
 }
 ```
 
+```cpp rejected
+struct Panel {
+  int clicks = 0;
+  std::function<void()> on_click = [this] { ++clicks; };
+};
+```
+
+```cpp rejected
+struct Span {
+  const long *data;
+  long size;
+};
+Span numbers() {
+  long values[3] = {1, 2, 3};
+  return Span{values, 3};
+}
+```
+
+```cpp rejected
+std::initializer_list<int> defaults() { return {1, 2, 3}; }
+```
+
 ```cpp accepted
 std::string read_line(int n);
 std::string first_word(int n) {              // owns what it returns
@@ -424,6 +448,18 @@ struct Button {
   std::function<void()> on_click;
   void count_into(std::shared_ptr<int> count) { on_click = [count] { ++*count; }; }
 };
+struct Panel {
+  int clicks = 0;
+  std::function<void(Panel &)> on_click = [](Panel &self) { ++self.clicks; };
+};
+struct Span {
+  const long *data;
+  long size;
+};
+Span numbers(const std::vector<long> &values) {   // the caller keeps the values
+  return Span{values.data(), static_cast<long>(values.size())};
+}
+std::vector<int> defaults() { return {1, 2, 3}; }
 struct Events {
   std::vector<std::function<void()>> handlers;
   void subscribe(std::function<void()> handler) { handlers.push_back(std::move(handler)); }
@@ -1218,7 +1254,12 @@ A borrow (a reference, a pointer, an iterator, a `std::string_view`, a `std::spa
 
 - was destroyed: the end of a local's scope, the end of the statement for a temporary;
 - was moved or assigned;
-- was changed: a member function that is not `const` and has no `const` twin was called on it (`push_back`, `erase`, `clear`, `reset`, `operator[]` of a map, which inserts), or it was passed to a function through a reference or pointer that is not `const`.
+- was changed: a member function that is not `const` and has no `const` twin was called on it (`push_back`, `erase`, `clear`, `reset`, `operator[]` of a map, which inserts), or it was passed to a function through a reference or pointer that is not `const`;
+- was changed through another borrow of it: a reference, a pointer, a `std::reference_wrapper`'s `get()`, a span's element, a call's result;
+- could have been reached by a call ([RFC 0052](/rfcs/0052-what-a-call-may-reach/)): the call was given a view that points into it (a `std::span<T>`, a struct that holds a pointer or a reference), whatever the view's own `const`; or it was a member function of such a view of the program's class (`m.flip()`, where `m` holds a reference to the owner);
+- was changed by a lambda the function can see, where the lambda is called and at every call it is passed to (`std::visit`, `std::invoke`, an algorithm, a function of the program).
+
+A reference or pointer a function returns points into every argument whose type can hold what it names, and a member function's into its object as well: `char &first(std::string &s)` returns into `s`; `std::map::find(key)` returns into the map, not into a `std::string` key. When a function returns into one parameter only, say so with `WEAVEC_LIFETIMEBOUND` on it (on the function, after its `const`, for `this`); the fixer proposes it when every `return` of a function in the unit gives a borrow of that parameter.
 
 The checker does not know which element a borrow points to, so a change of the container ends every borrow into it. Changing an element (`item.name += "x"`) ends borrows into that element's own data, not the loop over the container. Take the borrow again after the change, keep an index instead, or make the callee's parameter `const` when it changes nothing.
 
@@ -1246,6 +1287,39 @@ void drop_negative(std::vector<int> &v) {
 }
 ```
 
+```cpp rejected
+char &first(std::string &s) { return s[0]; }
+void grow(std::string &s) {
+  char &c = first(s);
+  s.append(100, 'g');
+  c = 'X';
+}
+```
+
+```cpp rejected
+using Value = std::variant<std::string, long>;
+void reset(Value &v) {
+  auto to_number = [&v] { v = 0L; };
+  std::string &text = std::get<std::string>(v);
+  to_number();
+  text += "!";
+}
+```
+
+```cpp rejected
+using Value = std::variant<std::string, long>;
+struct Setter {
+  Value &target;
+  void clear() const { target = 0L; }
+};
+void reset(Value &v) {
+  const Setter setter{v};
+  std::string &text = std::get<std::string>(v);
+  setter.clear();                          // reaches what 'setter' refers to
+  text += "!";
+}
+```
+
 ```cpp accepted
 int first_after_growing(std::vector<int> &v) {
   v.push_back(1);
@@ -1265,6 +1339,19 @@ void drop_negative(std::vector<int> &v) {
 void rename_all(std::vector<std::string> &names) {
   for (std::string &name : names)
     name += "!";                           // changes an element, not the vector
+}
+char &first(std::string &s) { return s[0]; }
+void grow(std::string &s) {
+  s.append(100, 'g');
+  char &c = first(s);                      // taken after the change
+  c = 'X';
+}
+const std::string &longer(const std::string &a WEAVEC_LIFETIMEBOUND,
+                          const std::string &b);
+std::size_t keep(std::string &a, std::string &b) {
+  const std::string &l = longer(a, b);
+  b += "!";                                // 'l' borrows from 'a' only
+  return l.size();
 }
 ```
 
@@ -1351,7 +1438,9 @@ Pass only the pointer the callee changes, an index into it, or make the other pa
 
 ### In C++
 
-In one call of a function of the program, an argument through which the callee could change what an object owns (a reference or pointer that is not `const`, the object of a member function that is not `const`) is not passed beside a borrow into the same object. The standard library's own functions are trusted with such arguments (`v.push_back(v[0])`, `std::sort(v.begin(), v.end())`); what is rejected there is a callable that changes an object it captured by reference, passed beside a borrow into that object.
+In one call of a function of the program, an argument through which the callee could change what an object owns (a reference or pointer that is not `const`, the object of a member function that is not `const`) is not passed beside a borrow into the same object. The standard library's own functions are trusted with such arguments (`v.push_back(v[0])`, `std::sort(v.begin(), v.end())`).
+
+A callable that may change an object (a lambda the function can see that changes what it captured, or `*this`) is not passed beside that object or a borrow into it, to any function: `f(v, [&v] { … })`, `std::visit([&v](auto &x) { … }, v)`, `obj.visit([&obj] { … })` ([RFC 0052](/rfcs/0052-what-a-call-may-reach/) §5.2). In exchange, a function believes that a callable it is given reaches nothing its other parameters and `this` reach, so a visitor that loops over its own container and calls the callable it was lent is accepted. Collect the changes in a local and apply them after the call, or let the callable return what to change.
 
 ```cpp rejected
 void append(std::vector<std::string> &to, const std::string &s);
@@ -1364,6 +1453,14 @@ void duplicate(std::vector<int> &v) {
 }
 ```
 
+```cpp rejected
+using Value = std::variant<std::string, long>;
+void each_word(Value &v, const std::function<void(std::string &)> &fn);
+void count(Value &v) {
+  each_word(v, [&v](std::string &) { v = 0L; });
+}
+```
+
 ```cpp accepted
 void append(std::vector<std::string> &to, const std::string &s);
 void repeat_first(std::vector<std::string> &v) {
@@ -1373,6 +1470,13 @@ void repeat_first(std::vector<std::string> &v) {
 void duplicate(std::vector<int> &v) {
   const std::vector<int> copy = v;
   v.insert(v.end(), copy.begin(), copy.end());
+}
+using Value = std::variant<std::string, long>;
+void each_word(Value &v, const std::function<void(std::string &)> &fn);
+void count(Value &v) {
+  long words = 0;
+  each_word(v, [&words](std::string &) { ++words; });
+  v = words;                               // changed after the call
 }
 ```
 

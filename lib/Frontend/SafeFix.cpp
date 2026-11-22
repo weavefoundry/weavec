@@ -2008,7 +2008,10 @@ struct FixPlanner::Impl {
           return;
         const clang::Decl *from = origin(value, definition);
         any = true;
-        every = every && from == own;
+        // RFC 0052 E8: in C++, a borrow of the parameter (`a[0]`,
+        // `a.front()`, `a.name`, `*a.p`) is as good.
+        every = every && (from == own || (ast.getLangOpts().CPlusPlus &&
+                                          borrowed(value) == own));
       }
       for (const clang::Stmt *child : statement->children())
         self(child, self);
@@ -2026,6 +2029,36 @@ struct FixPlanner::Impl {
     return planned;
   }
 
+  /// RFC 0052 E8: the parameter a returned borrow is taken from, through
+  /// members, subscripts, dereferences and member calls.
+  static const clang::ParmVarDecl *borrowed(const clang::Expr *expression) {
+    for (unsigned step = 0; expression != nullptr && step < 16; ++step) {
+      expression = expression->IgnoreImplicit()->IgnoreParens();
+      if (const auto *named = llvm::dyn_cast<clang::DeclRefExpr>(expression))
+        return llvm::dyn_cast<clang::ParmVarDecl>(named->getDecl());
+      if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(expression))
+        expression = member->getBase();
+      else if (const auto *subscript =
+                   llvm::dyn_cast<clang::ArraySubscriptExpr>(expression))
+        expression = subscript->getBase();
+      else if (const auto *unary =
+                   llvm::dyn_cast<clang::UnaryOperator>(expression))
+        expression = unary->getSubExpr();
+      else if (const auto *call =
+                   llvm::dyn_cast<clang::CXXMemberCallExpr>(expression))
+        expression = call->getImplicitObjectArgument();
+      else if (const auto *operation =
+                   llvm::dyn_cast<clang::CXXOperatorCallExpr>(expression);
+               operation != nullptr && operation->getNumArgs() >= 1 &&
+               llvm::isa_and_nonnull<clang::CXXMethodDecl>(
+                   operation->getDirectCallee()))
+        expression = operation->getArg(0);
+      else
+        return nullptr;
+    }
+    return nullptr;
+  }
+
   /// E7 for an error of the C++ flow, whose message names a local first:
   /// the calls that gave it a value whose callee returns one parameter.
   std::vector<Planned> fromMessage(const RuleError &error,
@@ -2041,6 +2074,21 @@ struct FixPlanner::Impl {
     const std::string name = error.message.substr(open + 1, close - open - 1);
     LocalValues values;
     localValues(function->getBody(), values);
+    // RFC 0052 E8: a reference local's value too.
+    const auto references = [&](const clang::Stmt *statement,
+                                const auto &self) -> void {
+      if (statement == nullptr)
+        return;
+      if (const auto *declaration = llvm::dyn_cast<clang::DeclStmt>(statement))
+        for (const clang::Decl *each : declaration->decls())
+          if (const auto *variable = llvm::dyn_cast<clang::VarDecl>(each);
+              variable != nullptr && variable->hasInit() &&
+              variable->getType()->isReferenceType())
+            values[variable].push_back(variable->getInit());
+      for (const clang::Stmt *child : statement->children())
+        self(child, self);
+    };
+    references(function->getBody(), references);
     std::vector<Planned> planned;
     for (const auto &[variable, given] : values) {
       if (variable->getName() != name)

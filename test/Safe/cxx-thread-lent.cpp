@@ -156,7 +156,7 @@ void throughRef() {
   std::vector<int> v;
   std::thread t([](std::vector<int> &w) { w.push_back(1); }, std::ref(v));
   v.push_back(2); // expected-error {{'v' is used while the thread 't' may be changing it [weavec-safe:thread-lent]}}
-  t.join(); // expected-error {{'t' points into 'v', which 'push_back' may have changed [weavec-safe:stale-borrow]}}
+  t.join(); // RFC 0052 §6: 'std::ref(v)' names 'v' itself, which 'push_back' keeps
 }
 void outlives() {
   std::jthread t;
