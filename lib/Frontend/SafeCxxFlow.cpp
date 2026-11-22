@@ -841,7 +841,7 @@ private:
                              ? flow.borrows.end()
                              : flow.borrows.find(variable);
       const clang::CXXRecordDecl *record =
-          found == flow.borrows.end()
+          variable == nullptr || found == flow.borrows.end()
               ? nullptr
               : variable->getType()->getAsCXXRecordDecl();
       if (record == nullptr || !isLibrary(*record) ||

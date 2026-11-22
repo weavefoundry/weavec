@@ -423,6 +423,8 @@ int hole() {
 } // namespace h02_transform_begin
 
 // lifetimes/h03_transform_to
+// (Where the library has std::ranges::to.)
+#if defined(__cpp_lib_ranges_to_container)
 namespace h03_transform_to {
 int hole() {
   V v = std::string("hello");
@@ -434,6 +436,7 @@ int hole() {
   std::printf("long now %lx %zu\n", std::get<long>(v), out.size());
 }
 } // namespace h03_transform_to
+#endif
 
 // lifetimes/h08_view2_transform
 namespace h08_view2_transform {
