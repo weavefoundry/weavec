@@ -1,6 +1,6 @@
 # RFC 0053: Callables and containers by their loans
 
-- **Status**: Draft (S0 measured, D5 narrowed and measured)
+- **Status**: Accepted
 - **Authors**: WeaveC authors
 - **Created**: 2026-11-21
 - **Tracking issue**: TBD
@@ -558,6 +558,9 @@ Each is pinned by a `test/Safe/` test with its note.
   amendment 12).
 
 ## Decisions to accept
+
+Accepted on 2026-11-22 as S0 measured them: D1 with the narrowing
+(_Unresolved question_ 1), D5 as §6 has it, D7 read at the caller.
 
 - **D1. Callables by their loans:** a call of any callable value, or a call
   it is passed to, ends the borrows into what its loans reach; a lambda's
