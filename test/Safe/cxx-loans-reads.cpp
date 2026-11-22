@@ -20,12 +20,12 @@
 
 using V = std::variant<std::string, long>;
 
-void log(const V &v) { std::printf("%zu\n", v.index()); }
+void report(const V &v) { std::printf("%zu\n", v.index()); }
 void touch(V &v) { v = 1L; }
 
 // The body only reads 'v': its call ends nothing.
 std::size_t reads(V &v) {
-  auto print = [&v] { log(v); };
+  auto print = [&v] { report(v); };
   std::string &s = std::get<std::string>(v);
   print();
   return s.size();
@@ -39,14 +39,14 @@ std::size_t passes(V &v) {
 }
 // A capture by reference to const is read.
 std::size_t constant(V &v) {
-  auto print = [&w = std::as_const(v)] { log(w); };
+  auto print = [&w = std::as_const(v)] { report(w); };
   std::string &s = std::get<std::string>(v);
   print();
   return s.size();
 }
 // A binder of a function that only reads, by `std::cref`, reads.
 std::size_t bound(V &v) {
-  auto print = std::bind(log, std::cref(v));
+  auto print = std::bind(report, std::cref(v));
   std::string &s = std::get<std::string>(v);
   print();
   return s.size();
