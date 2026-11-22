@@ -4738,10 +4738,9 @@ private:
   /// global.
   static void changesGlobals(Flow &flow, clang::SourceLocation at,
                              const clang::NamedDecl *by) {
-    invalidate(
-        flow,
-        Value{.loans = {{.root = {.kind = RootKind::Global}, .depth = 0}}},
-        Ends::Into, End::Why::Called, at, by);
+    Value globals;
+    globals.loans.push_back({.root = {.kind = RootKind::Global}, .depth = 0});
+    invalidate(flow, globals, Ends::Into, End::Why::Called, at, by);
   }
 
   [[nodiscard]] static std::optional<Place>
