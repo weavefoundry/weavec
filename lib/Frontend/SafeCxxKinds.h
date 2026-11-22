@@ -1173,7 +1173,9 @@ public:
         function->getTemplateInstantiationPattern();
     const clang::FunctionDecl &mine = pattern != nullptr ? *pattern : *function;
     const unsigned index = parameter.getFunctionScopeIndex();
-    if (index >= mine.getNumParams() || changesOnly(mine))
+    // (Read on the instantiation: libstdc++'s `swap` returns an
+    // `enable_if<…>::type` as written.)
+    if (index >= mine.getNumParams() || changesOnly(*function))
       return false;
     const clang::QualType type = mine.getParamDecl(index)->getType();
     if (!type->isLValueReferenceType() ||

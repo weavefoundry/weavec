@@ -710,7 +710,10 @@ cost nothing on G2's corpus, and amendment 22 removes 7 of its errors.
     `std::pair` and `std::tuple` `const` assignments and `swap`s, which made
     the assignment that is not `const` look like one that only gives
     access. A function that returns nothing, or an assignment, is never an
-    accessor, whatever twins it has.
+    accessor, whatever twins it has (read on the instantiation, since
+    libstdc++'s `swap` returns an `enable_if<…>::type` as written). The
+    round's holes that use `std::bind_front` are pinned for libc++ only:
+    libstdc++'s does not compile them.
 19. **Libraries' objects of references and destructors (§5).** An
     assignment of a library object of references (`std::tuple<V &>`)
     changes what they refer to; a library call that runs a destructor or

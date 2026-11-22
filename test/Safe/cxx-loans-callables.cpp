@@ -87,6 +87,8 @@ int hole() {
 } // namespace q09_bind
 
 // lifetimes/q10_bind_front
+// (libc++ only: libstdc++'s std::bind_front does not compile it.)
+#if defined(_LIBCPP_VERSION)
 namespace q10_bind_front {
 void set(V &v) { v = K; }
 int hole() {
@@ -98,6 +100,7 @@ int hole() {
   std::printf("long now %lx\n", std::get<long>(v));
 }
 } // namespace q10_bind_front
+#endif
 
 // lifetimes/q21_fn_from_factory
 namespace q21_fn_from_factory {
@@ -231,6 +234,8 @@ int hole() {
 } // namespace q55_run_lambdaptr
 
 // lifetimes/q56_run_memfn
+// (libc++ only: libstdc++'s std::bind_front does not compile it.)
+#if defined(_LIBCPP_VERSION)
 namespace q56_run_memfn {
 void run(V &v, const std::function<void()> &cb) { std::string &s = std::get<std::string>(v); cb(); s[0] = 'Z'; }
 struct M { V &v; void flip() { v = K; } };
@@ -240,6 +245,7 @@ int hole() {
   std::printf("long now %lx\n", std::get<long>(v));
 }
 } // namespace q56_run_memfn
+#endif
 
 // lifetimes/q57_run_fnfactory
 namespace q57_run_fnfactory {

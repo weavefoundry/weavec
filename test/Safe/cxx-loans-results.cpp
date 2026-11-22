@@ -93,6 +93,8 @@ int hole() {
 } // namespace w13_fn_ref_result
 
 // lifetimes/v20_ret_memfn
+// (libc++ only: libstdc++'s std::bind_front does not compile it.)
+#if defined(_LIBCPP_VERSION)
 namespace v20_ret_memfn {
 __attribute__((noinline)) long smash() { volatile long a[32]; for (int i = 0; i < 32; i++) a[i] = 0x2222222222222222L; return a[3]; }
 struct L { long x = 5; long get() const { return x; } };
@@ -101,16 +103,22 @@ int hole() {
   auto r = mk(); smash(); std::printf("%lx\n", r());
 }
 } // namespace v20_ret_memfn
+#endif
 
 // lifetimes/v20b_ret_memfn_write
+// (libc++ only: libstdc++'s std::bind_front does not compile it.)
+#if defined(_LIBCPP_VERSION)
 namespace v20b_ret_memfn_write {
 struct L { long x = 5; void set() { x = 0x4444444444444444L; } };
 __attribute__((noinline)) auto mk() { L l; return std::bind_front(&L::set, &l); } // expected-error {{'std::bind_front(&L::set, &l)' holds a borrow of 'l' and is returned [weavec-safe:escape]}}
 template <class F> __attribute__((noinline)) void victim(F &f) { volatile long a[8] = {1, 1, 1, 1, 1, 1, 1, 1}; f(); long m = 0; for (int i = 0; i < 8; i++) m |= a[i]; std::printf("victim locals OR (should be 1): %lx\n", m); }
 int hole() { auto r = mk(); victim(r); }
 } // namespace v20b_ret_memfn_write
+#endif
 
 // lifetimes/d03_dead_memfn
+// (libc++ only: libstdc++'s std::bind_front does not compile it.)
+#if defined(_LIBCPP_VERSION)
 namespace d03_dead_memfn {
 struct Bus { std::function<void()> f; };
 void setl(long &x) { x = 0x4141414141414141L; }
@@ -123,8 +131,11 @@ __attribute__((noinline)) void reg(Bus &b) {
 }
 int hole() { Bus b; reg(b); probe(); b.f(); std::printf("dead frame read %lx\n", probe2()); }
 } // namespace d03_dead_memfn
+#endif
 
 // lifetimes/d03b_dead_memfn_reuse
+// (libc++ only: libstdc++'s std::bind_front does not compile it.)
+#if defined(_LIBCPP_VERSION)
 namespace d03b_dead_memfn_reuse {
 struct Bus { std::function<void()> f; };
 struct L { long x = 5; void flip() { x = 0x4141414141414141L; } };
@@ -137,8 +148,11 @@ int hole() {
   std::printf("other L, never written: %lx\n", other->x);
 }
 } // namespace d03b_dead_memfn_reuse
+#endif
 
 // lifetimes/d03c_dead_memfn_frame
+// (libc++ only: libstdc++'s std::bind_front does not compile it.)
+#if defined(_LIBCPP_VERSION)
 namespace d03c_dead_memfn_frame {
 struct Bus { std::function<void()> f; };
 struct L { long x = 5; void flip() { x = 0x4141414141414141L; } };
@@ -151,3 +165,4 @@ int hole() {
   victim(b);
 }
 } // namespace d03c_dead_memfn_frame
+#endif

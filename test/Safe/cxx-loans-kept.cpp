@@ -48,6 +48,8 @@ int hole() {
 } // namespace k03_kept_bind
 
 // lifetimes/k04_kept_bindfront
+// (libc++ only: libstdc++'s std::bind_front does not compile it.)
+#if defined(_LIBCPP_VERSION)
 namespace k04_kept_bindfront {
 struct Bus { std::function<void()> f; void fire() const { f(); } };
 void set(V &v) { v = K; }
@@ -61,6 +63,7 @@ int hole() {
   std::printf("long now %lx\n", std::get<long>(v));
 }
 } // namespace k04_kept_bindfront
+#endif
 
 // lifetimes/k07_kept_factory
 namespace k07_kept_factory {
@@ -78,6 +81,8 @@ int hole() {
 } // namespace k07_kept_factory
 
 // lifetimes/k08_kept_memfn
+// (libc++ only: libstdc++'s std::bind_front does not compile it.)
+#if defined(_LIBCPP_VERSION)
 namespace k08_kept_memfn {
 struct Bus { std::function<void()> f; void fire() const { f(); } };
 struct M { V &v; void flip() { v = K; } };
@@ -91,8 +96,11 @@ int hole() {
   std::printf("long now %lx\n", std::get<long>(v));
 }
 } // namespace k08_kept_memfn
+#endif
 
 // lifetimes/k12_this_bindfront
+// (libc++ only: libstdc++'s std::bind_front does not compile it.)
+#if defined(_LIBCPP_VERSION)
 namespace k12_this_bindfront {
 struct C {
   V v = std::string("hello");
@@ -103,6 +111,7 @@ struct C {
 };
 int hole() { C c; c.setup(); c.run(); std::printf("long now %lx\n", std::get<long>(c.v)); }
 } // namespace k12_this_bindfront
+#endif
 
 // types/t36a_functor_ref_function
 namespace t36a_functor_ref_function {
@@ -131,6 +140,8 @@ int hole() {
 } // namespace t36b_functor_kept
 
 // lifetimes/v19_ret_fn_bind
+// (libc++ only: libstdc++'s std::bind_front does not compile it.)
+#if defined(_LIBCPP_VERSION)
 namespace v19_ret_fn_bind {
 __attribute__((noinline)) long smash() { volatile long a[32]; for (int i = 0; i < 32; i++) a[i] = 0x2222222222222222L; return a[3]; }
 __attribute__((noinline)) std::function<long()> mk() { long x = 5; return std::bind_front([](long *y) { return *y; }, &x); } // expected-error {{what is returned points into 'x', which does not outlive the function [weavec-safe:escape]}}
@@ -138,3 +149,4 @@ int hole() {
   auto r = mk(); smash(); std::printf("%lx\n", r());
 }
 } // namespace v19_ret_fn_bind
+#endif
