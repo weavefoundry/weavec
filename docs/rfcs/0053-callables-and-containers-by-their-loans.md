@@ -743,8 +743,8 @@ darwin-arm64, Homebrew LLVM 23.1.0, main at `0af7123f` (RFC 0052, PR 79),
 2026-11-22. G2's baseline is main's frozen compiler (`build/rfc53/main-tc`);
 the agents of G3 and G4 had a frozen copy of this branch's compiler as
 amendments 1 to 12 left it (`build/rfc53/tc`). Evidence is in
-`build/rfc53/` (not committed). The library grows by 737 lines of code
-(29,544 to 30,281; 951 lines in all), in `SafeCxxFlow.cpp` and
+`build/rfc53/` (not committed). The library grows by 794 lines of code
+(29,544 to 30,338; 1,027 lines in all), in `SafeCxxFlow.cpp` and
 `SafeCxxKinds.h`.
 
 **G1, RFC 0052's round: passes.** All 90 programs are rejected: the 47

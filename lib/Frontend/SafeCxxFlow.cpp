@@ -4098,10 +4098,6 @@ private:
     return objects;
   }
 
-  /// RFC 0052 §5.1 (D5): a call of a lambda the function can see, or a
-  /// call it is passed to, ends the borrows into what its body may change.
-  /// A callable the function cannot see is lent (and believed, §5.2) or
-  /// kept (and captures nothing, §5.3): its call ends nothing.
   /// RFC 0053 §1: a callable type: a lambda, an erased callable, any class
   /// with a call operator (a functor, a binder), a pointer to one, or a
   /// pointer to a member function.
@@ -4246,17 +4242,35 @@ private:
                  call.at, call.method, call.object);
     }
     // A call through a pointer to a member function reaches what its object
-    // points to, as a member function of a view does.
+    // points to, as a member function of a view does, and changes its
+    // object as a call of the member function does (RFC 0044 §6, rule 2;
+    // RFC 0053 §7 for one that is `const`).
     if (const auto *plain = llvm::dyn_cast<clang::CallExpr>(&expression))
       if (const auto *member = llvm::dyn_cast<clang::BinaryOperator>(
               plain->getCallee()->IgnoreParens());
           member != nullptr && member->isPtrMemOp()) {
         const clang::Expr *of = member->getLHS();
-        invalidate(flow,
-                   deepen(flow, of->getType()->isPointerType()
-                                    ? viewOf(flow, pointee(flow, of))
-                                    : viewOf(flow, object(flow, of))),
-                   Ends::Into, End::Why::Reached, call.at, nullptr, of);
+        const bool pointer = of->getType()->isPointerType();
+        const Value target = pointer ? pointee(flow, of) : object(flow, of);
+        const clang::QualType type =
+            pointer ? of->getType()->getPointeeType() : of->getType();
+        const auto *to =
+            member->getRHS()->getType()->getAs<clang::MemberPointerType>();
+        const auto *prototype =
+            to == nullptr
+                ? nullptr
+                : to->getPointeeType()->getAs<clang::FunctionProtoType>();
+        const bool constant = prototype != nullptr && prototype->isConst();
+        const bool changes =
+            constant ? kinds.mutableOwners(type) : kinds.holdsOwners(type);
+        const Value reached = deepen(flow, viewOf(flow, target));
+        if (changes && !constant)
+          owners(target, call.at, spell(of, ast), nullptr, of, type);
+        if (changes)
+          invalidate(flow, target, Ends::Into, End::Why::Changed, call.at,
+                     nullptr);
+        invalidate(flow, reached, Ends::Into, End::Why::Reached, call.at,
+                   nullptr, of);
       }
     // RFC 0053 §1, §4: a library object that holds a callable (a range
     // adaptor, `std::views::transform`'s view and its iterators) runs it
@@ -4294,7 +4308,11 @@ private:
         kinds.erased(llvm::cast<clang::CXXConstructorDecl>(call.callee)
                          ->getFunctionObjectParameterType()))
       return;
-    if (llvm::isa_and_nonnull<clang::CXXConstructorDecl>(call.callee))
+    // A copy or a move of a callable runs nothing. (Any other constructor
+    // given one may call it, as a function may: RFC 0053 §1.)
+    if (const auto *constructor =
+            llvm::dyn_cast_or_null<clang::CXXConstructorDecl>(call.callee);
+        constructor != nullptr && constructor->isCopyOrMoveConstructor())
       return;
     for (const Call::Argument &argument : call.arguments)
       if (anyCallable(argument.expression->getType()) &&
@@ -4385,8 +4403,12 @@ private:
   /// RFC 0052 §5.3 (D6): a callable that is kept (in a member, an element,
   /// a global or a `static`; by a parameter that keeps it) captures no
   /// reference, no `this` and no pointer or view. Whether it was reported.
+  /// `into` is the keeper's own object, where a call on it stores what it
+  /// is given: what points into the keeper itself (the position of
+  /// `erase(it)` or `insert(it, f)`) brings it no borrow.
   bool keptCallable(const Flow &flow, const clang::Expr *given,
-                    clang::SourceLocation at, const std::string &keeper) {
+                    clang::SourceLocation at, const std::string &keeper,
+                    const Value *into = nullptr) {
     const clang::LambdaExpr *lambda = lambdaOf(given);
     if (lambda == nullptr) {
       // RFC 0053 §3 (D2): any other callable, by its loans: a binder, a
@@ -4404,8 +4426,14 @@ private:
           named ? viewOf(flow, object(flow, source)) : points(flow, given);
       // What a parameter or a member was handed is its giver's to check;
       // an owner shared by a `std::shared_ptr` is kept by it.
-      const auto *const loan = llvm::find_if(held.loans, [](const Loan &each) {
-        return !each.root.beyond && each.root.kind != RootKind::Global &&
+      const auto *const loan = llvm::find_if(held.loans, [&](const Loan &each) {
+        const bool own =
+            into != nullptr &&
+            llvm::any_of(into->loans, [&](const Loan &object) {
+              return each.root == object.root && each.depth > object.depth;
+            });
+        return !own && !each.root.beyond &&
+               each.root.kind != RootKind::Global &&
                (each.root.variable() == nullptr ||
                 !CxxKinds::shared(
                     each.root.variable()->getType()->getAsCXXRecordDecl()));
@@ -4492,7 +4520,7 @@ private:
       for (const Call::Argument &argument : call.arguments)
         keptReported |= keptCallable(flow, argument.expression,
                                      argument.expression->getExprLoc(),
-                                     spell(call.object, ast));
+                                     spell(call.object, ast), &target);
     // §7: a view that is assigned, or that may store what it is passed.
     const clang::VarDecl *view =
         call.object != nullptr ? viewLocal(call.object) : nullptr;
@@ -4953,9 +4981,15 @@ private:
     flow.borrows[canonical] = std::move(borrow);
   }
 
-  /// The arguments a construction passes for parameters that keep them.
+  /// The arguments a construction passes for parameters that keep them;
+  /// a copy or a move of a local that kept some (`b = a`, `auto b =
+  /// std::move(a)`) holds what that local holds.
   [[nodiscard]] Value keptBy(const Flow &flow, const clang::Expr *init) {
     Value kept;
+    if (const clang::VarDecl *keeper = copiedKeeper(init))
+      if (const auto found = flow.borrows.find(keeper);
+          found != flow.borrows.end())
+        kept.loans = found->second.loans;
     const auto *construct =
         llvm::dyn_cast_or_null<clang::CXXConstructExpr>(strip(init));
     if (construct == nullptr)
@@ -4968,6 +5002,22 @@ private:
     if (CxxKinds::aliasing(*construct->getConstructor()))
       kept.add(pointee(flow, construct->getArg(1)));
     return kept;
+  }
+
+  /// The local keeper (a local of a type that is not followed, which holds
+  /// what it was given to keep) that `init` copies or moves.
+  [[nodiscard]] const clang::VarDecl *
+  copiedKeeper(const clang::Expr *init) const {
+    const clang::Expr *source = returnedName(init);
+    if (source == nullptr)
+      return nullptr;
+    if (const auto *plain =
+            llvm::dyn_cast<clang::CallExpr>(source->IgnoreParenImpCasts());
+        plain != nullptr && passesThrough(*plain) && plain->getNumArgs() == 1)
+      source = plain->getArg(0);
+    const clang::VarDecl *keeper = ownObject(source);
+    return keeper != nullptr && !kinds.tracked(keeper->getType()) ? keeper
+                                                                  : nullptr;
   }
 
   /// RFC 0052 §5.3: the lambdas each local the function made keeps, which

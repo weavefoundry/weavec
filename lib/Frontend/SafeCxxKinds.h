@@ -890,13 +890,8 @@ public:
       record = record->getDefinition();
     if (record == nullptr)
       return false;
-    // (A class met again while it is asked is answered by its other parts.)
-    if (const auto found = mutables.find(record); found != mutables.end())
-      return found->second;
-    mutables[record] = false;
-    const bool answer = computeMutableOwners(*record);
-    mutables[record] = answer;
-    return answer;
+    return held(mutables, record,
+                [&] { return computeMutableOwners(*record); });
   }
 
   [[nodiscard]] bool computeMutableOwners(const clang::CXXRecordDecl &record) {
@@ -934,12 +929,7 @@ public:
       record = record->getDefinition();
     if (record == nullptr || record->isLambda())
       return false;
-    if (const auto found = programs.find(record); found != programs.end())
-      return found->second;
-    programs[record] = false;
-    const bool answer = computeRunsProgram(*record);
-    programs[record] = answer;
-    return answer;
+    return held(programs, record, [&] { return computeRunsProgram(*record); });
   }
 
   [[nodiscard]] bool computeRunsProgram(const clang::CXXRecordDecl &record) {
@@ -1274,6 +1264,41 @@ private:
   bool assumed = false;
   llvm::DenseMap<const clang::CXXRecordDecl *, LockedClass> locks;
 
+  /// A question that holds of a class when it holds of something the class
+  /// has (RFC 0053's D6 and D7): its settled answers, the classes being
+  /// asked, and whether an answer leaned on one of them. A class met again
+  /// while it is asked adds nothing its other parts do not, so there it is
+  /// taken not to hold; an answer that leaned on that is kept only if it
+  /// holds, which no such assumption can undo, or if no class is still
+  /// being asked. (Kept while its class was still asked, a "no" would
+  /// answer for every class that has this one, whichever was asked first.)
+  struct Held {
+    llvm::DenseMap<const clang::CXXRecordDecl *, bool> answers;
+    llvm::SmallPtrSet<const clang::CXXRecordDecl *, 8> asking;
+    bool leaned = false;
+  };
+
+  template <typename Compute>
+  [[nodiscard]] static bool
+  held(Held &question, const clang::CXXRecordDecl *record, Compute compute) {
+    if (const auto found = question.answers.find(record);
+        found != question.answers.end())
+      return found->second;
+    if (question.asking.contains(record)) {
+      question.leaned = true;
+      return false;
+    }
+    question.asking.insert(record);
+    const bool outer = question.leaned;
+    question.leaned = false;
+    const bool answer = compute();
+    question.asking.erase(record);
+    if (answer || !question.leaned || question.asking.empty())
+      question.answers[record] = answer;
+    question.leaned = !question.asking.empty() && (question.leaned || outer);
+    return answer;
+  }
+
   [[nodiscard]] bool fact(Fact which, clang::QualType type) {
     type = type.getCanonicalType().getUnqualifiedType();
     const std::pair<const clang::Type *, unsigned> key{
@@ -1396,8 +1421,8 @@ private:
   llvm::DenseMap<const clang::CXXRecordDecl *, bool> writers;
   llvm::DenseMap<const clang::CXXRecordDecl *, bool> borrowers;
   llvm::DenseMap<const clang::CXXRecordDecl *, bool> selfOwners;
-  llvm::DenseMap<const clang::CXXRecordDecl *, bool> mutables;
-  llvm::DenseMap<const clang::CXXRecordDecl *, bool> programs;
+  Held mutables;
+  Held programs;
   llvm::DenseMap<const clang::CXXRecordDecl *, bool> erasures;
   llvm::DenseMap<const clang::CXXMethodDecl *, bool> accessors;
   llvm::DenseMap<std::pair<const clang::Type *, const clang::Type *>, bool>
