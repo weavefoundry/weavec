@@ -28,6 +28,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "SafeCheckImpl.h"
+#include "SafeTypes.h"
 #include "weavec/Core/LibrarySpec.h"
 
 #include "clang/AST/ASTContext.h"
@@ -2284,6 +2285,7 @@ private:
       storeOwner(flow, destination, target, source, by, /*drop=*/true);
       return;
     }
+    clearTagged(flow, destination, target);
     if (destination.place.path.empty() &&
         borrowLocals.contains(destination.place.root)) {
       if (const Value value = classify(source);
@@ -2308,6 +2310,40 @@ private:
       if (state.bits == 0)
         state = absent(flow, value.place.place);
       state.copied = by;
+    }
+  }
+
+  /// RFC 0054 §3.4: a store of a tagged union's tag clears the union, a
+  /// store of null into each of its owners: one that still owns its block
+  /// would leak.
+  void clearTagged(Flow &flow, const Located &destination,
+                   const clang::Expr *target) {
+    const auto *member =
+        llvm::dyn_cast<clang::MemberExpr>(target->IgnoreParenImpCasts());
+    const auto *tag =
+        member != nullptr
+            ? llvm::dyn_cast<clang::FieldDecl>(member->getMemberDecl())
+            : nullptr;
+    const clang::FieldDecl *unionField = tag != nullptr ? tagOf(*tag) : nullptr;
+    if (unionField == nullptr || !destination.named ||
+        destination.place.path.empty())
+      return;
+    Place base = destination.place;
+    base.path.pop_back();
+    const clang::RecordDecl *self = unionField->getType()->getAsRecordDecl();
+    for (const clang::FieldDecl *each : self->getDefinition()->fields()) {
+      if (!isOwnerType(each->getType()))
+        continue;
+      const Place place = base.with(stepOf(unionField)).with(stepOf(each));
+      // (Only an owner that holds on every path: the flow does not follow
+      // the tag, and an owner one path released is the member of another
+      // tag on the others.)
+      if (const OwnerState state = stateOf(flow, place);
+          (state.bits & StateHolds) != 0 && state.fresh)
+        dropCheck(flow, place, target,
+                  "is cleared by the store of '" + tag->getNameAsString() +
+                      "'");
+      flow.owners[place] = OwnerState{.bits = StateNull};
     }
   }
 

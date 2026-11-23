@@ -1901,6 +1901,153 @@ static void testHeapStacks(void) {
   CHECK(!object.live && object.released != 0);
 }
 
+/*===-- RFC 0054: which type is at an address -----------------------------===*/
+
+/* Two structs, the second beginning with the first, and a third of the same
+ * size that does not; their layouts as a unit gives them. */
+struct TestLayout1 {
+  struct __weavec_rt_layout head;
+  struct __weavec_rt_part parts[1];
+};
+static char shapeName[] = "struct shape";
+static char circleName[] = "struct circle";
+static char squareName[] = "struct square";
+static char longName[] = "long";
+static struct __weavec_rt_layout shapeLayout;
+static struct TestLayout1 circleLayout;
+static struct TestLayout1 squareLayout;
+static struct __weavec_rt_layout longLayout;
+/* A struct whose second word is a pointer. */
+static struct TestLayout1 holderLayout;
+static struct __weavec_rt_type holderType = {0x6105, 0, &holderLayout.head, 0};
+
+static void makeLayouts(void) {
+  static int made;
+  if (made)
+    return;
+  made = 1;
+  shapeLayout.identity = 0x5101;
+  shapeLayout.size = 4;
+  shapeLayout.flags = WeavecRtLayoutPlain;
+  shapeLayout.name = (int64_t)((intptr_t)shapeName - (intptr_t)&shapeLayout.name);
+  circleLayout.head.identity = 0x5102;
+  circleLayout.head.size = 16;
+  circleLayout.head.count = 1;
+  circleLayout.head.name =
+      (int64_t)((intptr_t)circleName - (intptr_t)&circleLayout.head.name);
+  circleLayout.parts[0].identity = 0x5101;
+  circleLayout.parts[0].elements = 1;
+  squareLayout = circleLayout;
+  squareLayout.head.identity = 0x5103;
+  squareLayout.head.name =
+      (int64_t)((intptr_t)squareName - (intptr_t)&squareLayout.head.name);
+  longLayout.identity = 0x5104;
+  longLayout.size = 8;
+  longLayout.flags = WeavecRtLayoutPlain | WeavecRtLayoutScalar;
+  longLayout.name = (int64_t)((intptr_t)longName - (intptr_t)&longLayout.name);
+  holderLayout.head.identity = 0x5105;
+  holderLayout.head.size = 16;
+  holderLayout.head.count = 1;
+  holderLayout.parts[0].offset = 8;
+  holderLayout.parts[0].elements = 1;
+  holderLayout.parts[0].flags = WeavecRtPartPointer;
+}
+
+static struct __weavec_rt_type circleType = {0x6102, 0, &circleLayout.head, 0};
+static struct __weavec_rt_type squareType = {0x6103, 0, &squareLayout.head, 0};
+static void *volatile castBlock;
+
+static void castCircle(void) {
+  __weavec_rt_cast(castBlock, &circleLayout.head, &trapSite);
+}
+static void castLong(void) { __weavec_rt_cast(castBlock, &longLayout, &trapSite); }
+
+static void testTypeAtHeap(void) {
+  /* A block records the type its allocation names: a conversion to it, or
+   * to the struct it begins with, passes; one to another type stops, and
+   * its report names the block's type. */
+  char line[512];
+  makeLayouts();
+  castBlock = opaque(malloc(16));
+  __weavec_rt_note_type(castBlock, &circleType);
+  __weavec_rt_cast(castBlock, &circleLayout.head, &trapSite);
+  __weavec_rt_cast(castBlock, &shapeLayout, &trapSite);
+  free(castBlock);
+  castBlock = opaque(malloc(16));
+  __weavec_rt_note_type(castBlock, &squareType);
+  CHECK(trapsIn(castCircle));
+  firstLine(castCircle, line, sizeof line);
+  CHECK(strstr(line, "weavec: bad-cast at rt_test.c:1:2: 0x") != NULL);
+  CHECK(strstr(line, "is not a 'struct circle'") != NULL);
+  free(castBlock);
+  /* A scalar views a struct's bytes where no pointer is. */
+  castBlock = opaque(malloc(16));
+  __weavec_rt_note_type(castBlock, &holderType);
+  __weavec_rt_cast(castBlock, &longLayout, &trapSite);
+  castBlock = (char *)castBlock + 8;
+  CHECK(trapsIn(castLong));
+  free((char *)castBlock - 8);
+}
+
+static void testTypeAtArray(void) {
+  /* A block holds an array of its type: each element's start is one. */
+  makeLayouts();
+  castBlock = opaque(malloc(64));
+  __weavec_rt_note_type(castBlock, &circleType);
+  __weavec_rt_cast((char *)castBlock + 32, &circleLayout.head, &trapSite);
+  free(castBlock);
+}
+
+static void castMiddle(void) {
+  __weavec_rt_cast((char *)castBlock + 8, &circleLayout.head, &trapSite);
+}
+
+static void testTypeAtUntyped(void) {
+  /* D5: a block with no type takes its first checked conversion's at its
+   * start; a later one of another type stops. Elsewhere in it, believed. */
+  makeLayouts();
+  castBlock = opaque(malloc(16));
+  __weavec_rt_cast(castBlock, &squareLayout.head, &trapSite);
+  CHECK(trapsIn(castCircle));
+  free(castBlock);
+  castBlock = opaque(malloc(32));
+  CHECK(!trapsIn(castMiddle));
+  free(castBlock);
+}
+
+static void testFrameRecords(void) {
+  /* A recorded local answers for its scope, every element of an array of
+   * it; a popped one is no longer asked. */
+  long storage[4]; /* two 16-byte objects */
+  uint32_t depth;
+  makeLayouts();
+  depth = __weavec_rt_frame_push(storage, &squareLayout.head, sizeof storage);
+  castBlock = &storage[2];
+  CHECK(trapsIn(castCircle));
+  __weavec_rt_cast(&storage[2], &squareLayout.head, &trapSite);
+  __weavec_rt_frame_pop(depth);
+  /* Unrecorded: believed. */
+  __weavec_rt_cast(&storage[2], &circleLayout.head, &trapSite);
+}
+
+static uint64_t memberTag = 1;
+static struct __weavec_rt_member memberRecord;
+static char memberName[] = "text";
+static char tagName[] = "kind";
+static void unionFails(void) {
+  memberRecord.member =
+      (int64_t)((intptr_t)memberName - (intptr_t)&memberRecord.member);
+  memberRecord.tag = (int64_t)((intptr_t)tagName - (intptr_t)&memberRecord.tag);
+  __weavec_rt_union_fail(memberTag, &memberRecord, &trapSite);
+}
+
+static void testUnionMember(void) {
+  char line[512];
+  firstLine(unionFails, line, sizeof line);
+  CHECK(strcmp(line, "weavec: union-member at rt_test.c:1:2: 'text' read "
+                     "while 'kind' is 1\n") == 0);
+}
+
 static const struct {
   const char *name;
   void (*run)(void);
@@ -1962,6 +2109,11 @@ static const struct {
     {"unwinder", testUnwinder},
     {"stack-store", testStackStore},
     {"heap-stacks", testHeapStacks},
+    {"type-at-heap", testTypeAtHeap},
+    {"type-at-array", testTypeAtArray},
+    {"type-at-untyped", testTypeAtUntyped},
+    {"frame-records", testFrameRecords},
+    {"union-member", testUnionMember},
 };
 
 int main(int argc, char **argv) {

@@ -29,7 +29,7 @@ WEAVEC_SAFE __attribute__((noinline)) void remember(struct cache *c) {
 // IR: call {{.*}}@__weavec_rt_reference_fail(
 WEAVEC_SAFE __attribute__((noinline)) int recall(struct cache *c) {
   // CHECK: weavec: heap-use-after-free at {{.*}}reference-load.c:[[@LINE+3]]:{{[0-9]+}}: reference to 0x{{[0-9a-f]+}} loaded from a field
-  // CHECK: is the 4-byte heap block at 0x{{[0-9a-f]+}}; it was released
+  // CHECK: is the 4-byte heap block {{(of type '[^']*' )?}}at 0x{{[0-9a-f]+}}; it was released
   // REPORT: weavec: heap-use-after-free at {{.*}}reference-load.c:[[@LINE+1]]
   return c->last->v;
 }

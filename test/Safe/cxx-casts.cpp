@@ -47,7 +47,7 @@ char *unconst(const Header &h) {
   return (char *)(&h); // expected-error {{a pointer is converted to a pointer to another type [weavec-safe:pointer-cast]}}
 }
 int down(Base &b) {
-  return static_cast<Derived &>(b).x; // expected-error {{a base is converted to a derived class without a check [weavec-safe:pointer-cast]}}
+  return static_cast<Derived &>(b).x; // RFC 0054 §2.2: checked where it is made
 }
 std::unique_ptr<Node> make() { return std::unique_ptr<Node>(new Node); }
 void remake(std::unique_ptr<Node> &p) { p.reset(new Node); }

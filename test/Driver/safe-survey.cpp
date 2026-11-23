@@ -46,7 +46,7 @@ int hits = 0; // a global that is not safe to share: its error is in the plan
 // LEDGER: "function": "first"
 // LEDGER: "surveyed": true
 // LEDGER: "partial": false
-// LEDGER: "version": 13
+// LEDGER: "version": 14
 
 // AUDIT: conversion: 3 of 7 functions safe (43%); 2 more have no error
 // AUDIT-NEXT: fixes: 0 certain, 1 likely ('weavec-cc --weavec-fix <ledger>' applies them)
@@ -61,7 +61,7 @@ int hits = 0; // a global that is not safe to share: its error is in the plan
 // AUDIT: aliased classes
 // AUDIT-NEXT: survey-slice.h:{{[0-9]+}}: Slice
 
-// JSON-DAG: "version": 9
+// JSON-DAG: "version": 10
 // JSON-DAG: "conversion": {
 // JSON-DAG: "choices": []
 // JSON-DAG: "likely": 1

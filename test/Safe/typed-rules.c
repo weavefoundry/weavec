@@ -111,13 +111,15 @@ long pun(struct node *n) {
   return ((struct plain *)n)->a; // expected-error {{converting 'struct node *' to 'struct plain *': 'struct node' holds a pointer [weavec-safe:pointer-cast]}}
 }
 
+// RFC 0054 §2.1: checked where they are made (a `struct small` is there;
+// the object is plain).
 int fromVoid(void *context) {
-  struct small *s = context; // expected-error {{converting 'void *' to 'struct small *' in a safe function: a 'void *' may hide memory that holds pointers [weavec-safe:pointer-cast]}}
+  struct small *s = context;
   return s->x;
 }
 
 void bytesFromVoid(void *context) {
-  char *b = context; // expected-error {{[weavec-safe:pointer-cast]}}
+  char *b = context;
   b[0] = 0;
 }
 

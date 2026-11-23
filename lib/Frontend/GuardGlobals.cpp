@@ -71,8 +71,9 @@ void instrumentGlobals(ModuleContext &module) {
   if (globals.empty() && module.frames.empty())
     return;
   llvm::LLVMContext &context = module.context;
-  auto *recordType = llvm::StructType::get(
-      context, {module.ptr, module.i64, module.i64, module.i64, module.i64});
+  auto *recordType =
+      llvm::StructType::get(context, {module.ptr, module.i64, module.i64,
+                                      module.i64, module.i64, module.i64});
   auto *arrayType = llvm::ArrayType::get(recordType, globals.size());
   auto *array = new llvm::GlobalVariable(
       module.module, arrayType, /*isConstant=*/true,
@@ -84,6 +85,13 @@ void instrumentGlobals(ModuleContext &module) {
     const std::uint64_t padded = paddedSize(size);
     const std::string name = global->getName().str();
     const std::string location = definitionOf(*global);
+    // RFC 0054 §1.2: the global's layout, which a checked conversion of a
+    // pointer into it reads.
+    llvm::Constant *typeLayout = nullptr;
+    if (module.options.safe != nullptr)
+      if (const auto found = module.options.safe->globalTypes.find(name);
+          found != module.options.safe->globalTypes.end())
+        typeLayout = layoutGlobal(module, found->second);
     auto *zone = llvm::ArrayType::get(module.i8, padded - size);
     auto *wrapped = llvm::StructType::get(context, {type, zone});
     auto *initializer = llvm::ConstantStruct::get(
@@ -107,7 +115,10 @@ void instrumentGlobals(ModuleContext &module) {
                      module.relative(module.text(name), array, {0, index}),
                      location.empty() ? llvm::ConstantInt::get(module.i64, 0)
                                       : module.relative(module.text(location),
-                                                        array, {0, index})}));
+                                                        array, {0, index}),
+                     typeLayout == nullptr
+                         ? llvm::ConstantInt::get(module.i64, 0)
+                         : module.relative(typeLayout, array, {0, index, 5})}));
   }
   array->setInitializer(llvm::ConstantArray::get(arrayType, records));
   auto *framesType = llvm::ArrayType::get(module.ptr, module.frames.size());

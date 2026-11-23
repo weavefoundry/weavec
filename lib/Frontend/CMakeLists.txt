@@ -32,6 +32,9 @@ weavec_add_library(
           # RFC 0044: Safe C++.
           SafeCxx.cpp
           SafeCxxFlow.cpp
+          # RFC 0054: one of several types.
+          SafeTypes.cpp
+          GuardTypes.cpp
           # RFC 0040 §4.2: weavec-cc --weavec-symbolize.
           Symbolizer.cpp
           UnsafeRegions.cpp

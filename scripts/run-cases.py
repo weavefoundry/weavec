@@ -60,7 +60,7 @@ RESOURCE_INCLUDE = ROOT / "resources" / "include"
 # ---------------------------------------------------------------------------
 
 # The `version` of the enforcement ledger this runner reads.
-LEDGER_VERSION = 13
+LEDGER_VERSION = 14
 # Run-time report kinds (runtime/weavec_report.c).
 KINDS = (
     "heap-buffer-overflow", "heap-use-after-free", "stack-buffer-overflow",
@@ -73,6 +73,8 @@ KINDS = (
     # RFC 0051 section 3: what a safe function leaves undefined stops.
     "unreachable", "missing-return", "division-by-zero", "division-overflow",
     "stack-exhaustion",
+    # RFC 0054: one of several types, checked where it is chosen.
+    "bad-cast", "union-member",
 )
 LEDGER_REASONS = {
     "GUARDED": ("access", "range", "string", "checked-call", "loop-range",

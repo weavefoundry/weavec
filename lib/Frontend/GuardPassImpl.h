@@ -593,6 +593,31 @@ void dropUntrackedLifetimes(const ModuleContext &module,
 /// (Y4): a safe function's pointer result is not into its own frame.
 void checkResults(ModuleContext &module, llvm::Function &function);
 
+/// RFC 0054 (GuardTypes.cpp). §1.1: the layout constant of the unit's type
+/// `key` (SafeUnit::layouts), once; null for a type it has none of.
+llvm::Constant *layoutGlobal(ModuleContext &module, llvm::StringRef key);
+/// RFC 0045 §2 as RFC 0054 §1.2 amends it: an allocation site's record of
+/// its type, `{key, cache, layout, type}`.
+llvm::GlobalVariable *typeRecord(ModuleContext &module, std::uint64_t key,
+                                 llvm::StringRef layoutKey);
+/// §2.2, §3.3: a safe function's checked conversions and tagged unions'
+/// accesses and tag stores, as checks.
+void expandTypeMarkers(ModuleContext &module, llvm::Function &function);
+/// Clang's declarations of the markers, once none is called.
+void dropTypeMarkerDeclarations(const llvm::Module &ir);
+/// §2.2: what a checked conversion gives, `__weavec.object(p, size)`, is
+/// one object of `size` bytes: its size, when `value` is one.
+[[nodiscard]] std::optional<std::uint64_t>
+checkedObject(const llvm::Value &value);
+/// In GuardExpand: the checked objects are their pointers again.
+void dropObjects(const llvm::Module &ir);
+/// §1.2: a safe function's recorded locals, pushed and popped with their
+/// scopes.
+void recordLocals(ModuleContext &module, llvm::Function &function);
+/// §1.2: in a unit that does not pool its blocks, each allocation whose type
+/// Clang inferred records it with the runtime.
+void noteAllocations(ModuleContext &module, llvm::Module &ir);
+
 } // namespace weavec::frontend::guard
 
 #endif // WEAVEC_LIB_FRONTEND_GUARDPASSIMPL_H

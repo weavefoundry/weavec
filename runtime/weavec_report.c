@@ -464,7 +464,15 @@ static int describeHeap(uintptr_t address) {
     put(&line, "the ");
   }
   putUnsigned(&line, object->size, 10);
-  put(&line, object->live ? "-byte heap object at " : "-byte heap block at ");
+  put(&line, object->live ? "-byte heap object " : "-byte heap block ");
+  /* RFC 0054 section 1.2: of the type its allocation or a conversion gave
+   * it. */
+  if (object->type != 0) {
+    put(&line, "of type '");
+    put(&line, weavecRtLayoutName(weavecRtTypeLayout(object->type)));
+    put(&line, "' ");
+  }
+  put(&line, "at ");
   putHex(&line, object->base);
   if (object->live)
     putWhose(&line, "allocated", &report.allocated);
@@ -734,6 +742,11 @@ static void writeJson(struct Line *line) {
   if (report.memory == HeapMemory) {
     putJsonHex(line, ",\"object\":{\"memory\":\"heap\",\"base\":", report.heap.base);
     putNumber(line, ",\"size\":", report.heap.size);
+    /* RFC 0054 section 1.2: the type its allocation or a conversion gave it. */
+    if (report.heap.type != 0) {
+      put(line, ",\"type\":");
+      putJson(line, weavecRtLayoutName(weavecRtTypeLayout(report.heap.type)));
+    }
     put(line, report.heap.live ? ",\"state\":\"live\"" : ",\"state\":\"released\"");
     put(line, ",\"released\":");
     if (!report.heap.live && report.released.count != 0)
@@ -937,6 +950,23 @@ void weavecRtFailMessage(const char *kind, const char *message,
     finish();
   }
   trapNow();
+}
+
+void weavecRtFailTyped(const char *kind, const char *message,
+                       uintptr_t address, const struct __weavec_rt_site *site) {
+  if (reportsOnce(site) && seenSite(kind, site))
+    return;
+  if (begin(kind, site)) {
+    struct Line line = {report.what, report.what + sizeof report.what - 1};
+    put(&line, message);
+    *line.at = 0;
+    report.message = message;
+    captureAccess();
+    if (address != 0)
+      describe(address);
+    finish();
+  }
+  stop(site);
 }
 
 /* A report whose object paragraph is `address`'s, or the one
@@ -1388,7 +1418,8 @@ __attribute__((destructor)) static void printStats(void) {
       "allocations", "releases",     "recycled slots", "huge blocks",
       "slow guards", "range guards", "string guards",  "stack unpoisons",
       "sweeps", "typed allocations", "releases to a pool",
-      "pooled slots moved to the quarantine"};
+      "pooled slots moved to the quarantine", "conversions checked",
+      "conversions believed"};
   char text[400];
   struct Line line = {text, text + sizeof text - 2};
   int i;

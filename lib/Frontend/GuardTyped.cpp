@@ -66,6 +66,7 @@ static llvm::StringRef annotationName(const llvm::IntrinsicInst &call) {
 
 void readTypedFields(ModuleContext &module, llvm::Module &ir) {
   std::vector<llvm::IntrinsicInst *> calls;
+  std::vector<llvm::IntrinsicInst *> spoken;
   for (llvm::Function &function : ir)
     for (llvm::Instruction &instruction : llvm::instructions(function))
       if (auto *call = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction);
@@ -74,6 +75,10 @@ void readTypedFields(ModuleContext &module, llvm::Module &ir) {
         const llvm::StringRef name = annotationName(*call);
         if (name == FieldAnnotation || name == CountAnnotation)
           calls.push_back(call);
+        // RFC 0054 §3: a tagged union's annotations say nothing to the code
+        // (its marks do): they go wherever they are.
+        else if (name == TaggedByAnnotation || name == WhenAnnotation)
+          spoken.push_back(call);
       }
   for (llvm::IntrinsicInst *call : calls) {
     // Several annotations of one field chain: each names the field's
@@ -110,6 +115,10 @@ void readTypedFields(ModuleContext &module, llvm::Module &ir) {
     }
   }
   for (llvm::IntrinsicInst *call : calls) {
+    call->replaceAllUsesWith(call->getArgOperand(0));
+    call->eraseFromParent();
+  }
+  for (llvm::IntrinsicInst *call : spoken) {
     call->replaceAllUsesWith(call->getArgOperand(0));
     call->eraseFromParent();
   }

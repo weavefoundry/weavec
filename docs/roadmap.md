@@ -4,7 +4,7 @@ Rough ordering of the major pieces of work. This page is the one-screen view;
 the design detail and the reasoning live in the [RFCs](rfcs/README.md) each
 milestone links to. Everything here is subject to change as we learn.
 
-The design today is [RFC 0053](rfcs/0053-callables-and-containers-by-their-loans.md) for callables and containers by their loans and [RFC 0052](rfcs/0052-what-a-call-may-reach.md) for what a call may reach in safe C++ (reach by types, results, views, callables, values built from borrows), [RFC 0051](rfcs/0051-nothing-undefined.md) for what a safe function may not leave undefined (the list of the two languages' undefined behavior, the definitions and the stops, the rules that reject what asserts, the comparison of safe units at the link), [RFC 0050](rfcs/0050-checked-once.md) for what a fast safe unit checks once (views, the typed allocator's paths, Safe C's library calls), [RFC 0049](rfcs/0049-errors-that-carry-their-fix.md) for the fixes errors carry and `--weavec-fix`, [RFC 0048](rfcs/0048-safe-code-without-the-shadow.md) for what a fast safe unit checks and believes, [RFC 0047](rfcs/0047-conversion-in-place.md) for converting existing C++, [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
+The design today is [RFC 0054](rfcs/0054-one-of-several-types.md) for values of one of several types (tagged unions, checked conversions and downcasts), [RFC 0053](rfcs/0053-callables-and-containers-by-their-loans.md) for callables and containers by their loans and [RFC 0052](rfcs/0052-what-a-call-may-reach.md) for what a call may reach in safe C++ (reach by types, results, views, callables, values built from borrows), [RFC 0051](rfcs/0051-nothing-undefined.md) for what a safe function may not leave undefined (the list of the two languages' undefined behavior, the definitions and the stops, the rules that reject what asserts, the comparison of safe units at the link), [RFC 0050](rfcs/0050-checked-once.md) for what a fast safe unit checks once (views, the typed allocator's paths, Safe C's library calls), [RFC 0049](rfcs/0049-errors-that-carry-their-fix.md) for the fixes errors carry and `--weavec-fix`, [RFC 0048](rfcs/0048-safe-code-without-the-shadow.md) for what a fast safe unit checks and believes, [RFC 0047](rfcs/0047-conversion-in-place.md) for converting existing C++, [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
 sweep and colors of [RFC 0037](rfcs/0037-complete-sweep-and-colors.md), the
 reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
 and the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
@@ -12,7 +12,38 @@ milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
-## Now: RFC 0053 — Callables and containers by their loans
+## Now: RFC 0054 — One of several types
+
+Design: [RFC 0054 — One of several types](rfcs/0054-one-of-several-types.md)
+(Accepted, built; its _Implementation amendments_ and _Measured gates_ say
+how). A third of the rule errors of C as written had no fix at all: a
+union that holds a pointer, and a `void *` or a base converted back to what
+it points to. Each is now a checked form: a union says its tag
+(`WEAVEC_TAGGED_BY`, `WEAVEC_WHEN`) and its members are used under a
+comparison the compiler adds; a conversion asks the runtime, which records
+the type of every block, global and recorded local, whether an object of
+the target type is there; a C++ downcast compares the type information its
+vtable names. `bad-cast` and `union-member` stop the program in both builds.
+Runtime ABI 49, ledger 14, audit 10, `weavec.h` 3.5.
+
+- [x] **The RFC**, accepted as drafted on 2026-11-22.
+- [x] **S0 to S5**: measured first (checked casts 1.009, member checks
+      1.006, a conversion 4.3 ns), then the records, the conversions, the
+      downcasts, the tagged unions, E9, the ledger, the audit and the pages.
+- [x] **The loop** (G3): the trial interpreter made safe in 6 minutes with
+      its casts kept, at 1.62 times the program as written (asks 1.70).
+- [x] **A conversion** (G5): nng from 60% to 86% of its functions safe.
+- [x] **Cost** (G7, G8): within 1.01 of main's fast build (the LRU port
+      1.019, 1 ms), 1.02 of its checked one; compiles 1.006.
+- [ ] **The survey** (G2): 583 of 1,014 `pointer-cast` errors gone (asks
+      600); `--weavec-fix` clears 402 of 1,853 `union-pointer` errors (asks
+      half: mujs's tag overlaps its union, Lua tests its tag by bits).
+- [ ] **New C** (G4): a json port in Safe C in 7.5 minutes, but at 3.0 times
+      Rust (asks 1.5; Clang's build of it is 1.55).
+- [ ] **A round** (G6): 33 holes found and 29 closed; 4 left, each memory
+      with no record of its type.
+
+## Before: RFC 0053 — Callables and containers by their loans
 
 Design: [RFC 0053 — Callables and containers by their loans](rfcs/0053-callables-and-containers-by-their-loans.md)
 (Accepted, built; its _Implementation amendments_ and _Measured gates_ say

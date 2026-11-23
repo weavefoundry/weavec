@@ -23,6 +23,7 @@ messages; these cases pin what must be reported and what must stop.
 | `detection/` | RFC 0034's detection set: one program per directory, each with a fixed twin ([Detection cases](#detection-cases)) |
 | `detection-blind/` | 48 blind single-file bug programs with `-DFIX` twins (its `README.md`) |
 | `detection/cxx/` | RFC 0039's C++ detection probes, one class per file, each with a `-DFIX` twin |
+| `sum/` | RFC 0054's values of one of several types: tagged unions and checked conversions, each bug with a `_ok` twin |
 
 A file under an `Inputs/` directory is never a case: it holds units,
 headers and input files that cases share.

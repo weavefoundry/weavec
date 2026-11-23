@@ -34,7 +34,7 @@
 namespace weavec::frontend {
 
 /// The version of the `weavec-ledger` JSON this writes.
-inline constexpr unsigned EnforcementLedgerVersion = 13;
+inline constexpr unsigned EnforcementLedgerVersion = 14;
 
 /// What the pass decided for one access.
 struct LedgerRow {
@@ -74,6 +74,8 @@ struct LedgerFunction {
   /// RFC 0047 §7: under -fweavec-safe-survey, a function that is not safe
   /// was surveyed (its errors are among the unit's, RFC 0049 §7).
   bool surveyed = false;
+  /// RFC 0054 §4: not safe, and only converts and calls.
+  bool adapter = false;
 };
 
 /// RFC 0043 §11: a pointer field of a struct the unit defines, and its
@@ -139,6 +141,10 @@ struct EnforcementLedger {
   std::uint64_t typedSites = 0;
   /// RFC 0048 §5.1: the locals placed in typed memory.
   std::uint64_t placedLocals = 0;
+  /// RFC 0054 §5: the checked conversions and the checked accesses of a
+  /// tagged union's members in safe code.
+  std::uint64_t checkedCasts = 0;
+  std::uint64_t checkedMembers = 0;
   LedgerDefined defined;
   std::uint64_t guarded = 0;
   std::uint64_t proven = 0;

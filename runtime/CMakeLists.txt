@@ -27,6 +27,7 @@ add_library(
   weavec_stack.c
   weavec_sweep.c
   weavec_symbolize.c
+  weavec_types.c
   weavec_rt.h)
 # RFC 0039: what the library and the archive (WEAVEC_RT_ARCHIVE) define
 # differently: the unwinding interposers, and Darwin's weak allocation

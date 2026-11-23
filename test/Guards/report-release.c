@@ -42,7 +42,7 @@ int main(int argc, char **argv) {
 // DOUBLE: weavec: double-free at {{.*}}report-release.c:20:{{[0-9]+}}: free of 0x[[P:[0-9a-f]+]]
 // DOUBLE-NEXT: #0 0x{{[0-9a-f]+}} in drop {{.*}}report-release.c:20
 // DOUBLE-NEXT: #1 0x{{[0-9a-f]+}} in main {{.*}}report-release.c:29
-// DOUBLE: weavec: 0x[[P]] is the 8-byte heap block at 0x[[P]], released by thread T0:
+// DOUBLE: weavec: 0x[[P]] is the 8-byte heap block {{(of type '[^']*' )?}}at 0x[[P]], released by thread T0:
 // DOUBLE-NEXT: #0 0x{{[0-9a-f]+}} in drop {{.*}}report-release.c:20
 // DOUBLE-NEXT: #1 0x{{[0-9a-f]+}} in main {{.*}}report-release.c:28
 // DOUBLE: weavec: the block was allocated by thread T0:
@@ -53,8 +53,8 @@ int main(int argc, char **argv) {
 // POINTER: weavec: double-free at {{.*}}report-release.c:32{{(:[0-9]+)?}}: free of 0x{{[0-9a-f]+}}
 // POINTER-NEXT: #0 0x{{[0-9a-f]+}} in main {{.*}}report-release.c:32
 
-// INSIDE: weavec: invalid-free at {{.*}}report-release.c:34:{{[0-9]+}}: free of 0x{{[0-9a-f]+}}: inside the 8-byte heap block at 0x{{[0-9a-f]+}}
-// INSIDE: is 4 bytes inside the 8-byte heap object at 0x{{[0-9a-f]+}}, allocated by thread T0:
+// INSIDE: weavec: invalid-free at {{.*}}report-release.c:34:{{[0-9]+}}: free of 0x{{[0-9a-f]+}}: inside the 8-byte heap block {{(of type '[^']*' )?}}at 0x{{[0-9a-f]+}}
+// INSIDE: is 4 bytes inside the 8-byte heap object {{(of type '[^']*' )?}}at 0x{{[0-9a-f]+}}, allocated by thread T0:
 // INSIDE-NEXT: #0 0x{{[0-9a-f]+}} in make {{.*}}report-release.c:16
 
 // STACK: weavec: invalid-free at {{.*}}report-release.c:38:{{[0-9]+}}: free of 0x{{[0-9a-f]+}}: not heap memory

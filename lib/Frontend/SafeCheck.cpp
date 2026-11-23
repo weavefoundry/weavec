@@ -18,6 +18,7 @@
 
 #include "SafeCheckImpl.h"
 #include "SafeCxxKinds.h"
+#include "SafeTypes.h"
 #include "weavec/Core/LibrarySpec.h"
 #include "weavec/Frontend/Definitions.h"
 #include "weavec/Frontend/UnsafeRegions.h"
@@ -38,6 +39,7 @@
 #include "clang/Lex/MacroInfo.h"
 #include "clang/Lex/Pragma.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Sema/Sema.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -942,6 +944,7 @@ public:
     inferLocals();
     if (cxx)
       collectSteps(function.getBody());
+    collectContainers(function.getBody());
     if (const auto *constructor =
             llvm::dyn_cast<clang::CXXConstructorDecl>(&function)) {
       for (const clang::CXXCtorInitializer *initializer : constructor->inits())
@@ -1087,7 +1090,8 @@ public:
       break;
     case clang::CK_BitCast:
       if (cast->getType()->isPointerType() &&
-          cast->getSubExpr()->getType()->isPointerType())
+          cast->getSubExpr()->getType()->isPointerType() &&
+          !containerCasts.contains(cast))
         checkPointerCast(*cast);
       break;
     case clang::CK_LValueBitCast:
@@ -1118,14 +1122,21 @@ public:
         member->isArrow() ? member->getBase()->getType()->getPointeeType()
                           : member->getBase()->getType();
     const clang::RecordDecl *record = base->getAsRecordDecl();
+    // RFC 0054 §3: a tagged union's member is read under its tag's check.
     if (record == nullptr || !record->isUnion() ||
-        !holdsPointers(member->getType()) || isAssignedTo(*member))
+        !holdsPointers(member->getType()) || isAssignedTo(*member) ||
+        taggedMember(*member))
       return true;
+    // RFC 0054 §4, E9: the tag the code already tests.
+    std::string tag;
+    if (auto wanted = tagWant(*member, ast, &tag))
+      want(member->getMemberLoc(), std::move(*wanted));
     report(member->getMemberLoc(), rule::UnionPointer,
            "reading union member '" + member->getMemberDecl()->getName().str() +
                "' may reinterpret another member's bytes as a pointer",
-           "keep a tag beside the union and one struct per variant, or "
-           "read the member in a WEAVEC_GUARDED helper function");
+           "say which field tells which member is live: 'WEAVEC_TAGGED_BY(" +
+               (tag.empty() ? std::string("<tag>") : tag) +
+               ")' on the union and 'WEAVEC_WHEN(…)' on its members");
     return true;
   }
 
@@ -2224,6 +2235,31 @@ private:
         cast.getSubExpr()->IgnoreParenImpCasts());
     if (call == nullptr)
       return;
+    // RFC 0054 §2.1: a reallocation keeps its block's bytes: it gives a type
+    // that holds pointers only from a pointer of that type (or null).
+    if (const clang::FunctionDecl *callee = call->getDirectCallee();
+        callee != nullptr && call->getNumArgs() > 0 && holdsPointers(to))
+      if (const auto match = core::LibrarySpec::shipped().lookup(
+              callee->getName().str(), call->getNumArgs());
+          match && match->entry != nullptr && !match->entry->params.empty() &&
+          match->entry->params[0].effect ==
+              core::LibraryParam::Effect::Realloc) {
+        const clang::Expr *old = call->getArg(0)->IgnoreParenImpCasts();
+        if (!old->isNullPointerConstant(
+                ast, clang::Expr::NPC_ValueDependentIsNotNull) &&
+            !(old->getType()->isPointerType() &&
+              clang::ASTContext::hasSameUnqualifiedType(
+                  old->getType()->getPointeeType(), to))) {
+          report(cast.getExprLoc(), rule::PointerCast,
+                 "'" + callee->getNameAsString() +
+                     "' keeps the bytes of its block: they become a '" +
+                     to.getAsString() + "' only from a '" + to.getAsString() +
+                     " *'",
+                 "reallocate a pointer of the type it holds, or allocate a "
+                 "new block and copy into it");
+          return;
+        }
+      }
     clang::QualType sized =
         clang::infer_alloc::inferPossibleType(call, ast, &cast);
     // (`sizeof(T[n])` sizes `T`s.)
@@ -2266,10 +2302,43 @@ private:
                    "the field WEAVEC_BORROWED");
   }
 
+  /// RFC 0054 §2.1 (c): the parts of each container_of the function
+  /// converts: its subtraction and its view of the member as bytes.
+  void collectContainers(const clang::Stmt *statement) {
+    if (statement == nullptr)
+      return;
+    if (const auto *cast = llvm::dyn_cast<clang::CastExpr>(statement))
+      if (const auto conversion = checkedConversion(*cast, ast);
+          conversion && conversion->arithmetic != nullptr) {
+        containerArithmetic.insert(
+            conversion->arithmetic->getOperatorLoc().getRawEncoding());
+        for (const clang::Expr *at = conversion->arithmetic->getLHS();;) {
+          const auto *inner = llvm::dyn_cast<clang::CastExpr>(at);
+          if (inner == nullptr) {
+            if (const auto *paren = llvm::dyn_cast<clang::ParenExpr>(at)) {
+              at = paren->getSubExpr();
+              continue;
+            }
+            break;
+          }
+          containerCasts.insert(inner);
+          at = inner->getSubExpr();
+        }
+      }
+    for (const clang::Stmt *child : statement->children())
+      collectContainers(child);
+  }
+  llvm::DenseSet<clang::SourceLocation::UIntTy> containerArithmetic;
+  llvm::DenseSet<const clang::CastExpr *> containerCasts;
+
   void single(clang::SourceLocation at, const clang::Expr *pointer) {
     // A system header's macro (glibc's ctype through __ctype_b_loc) is not
     // the program's to annotate; its access keeps its guard.
     if (ast.getSourceManager().isInSystemMacro(at))
+      return;
+    // RFC 0054 §2.1 (c): container_of's subtraction is checked where its
+    // result is converted.
+    if (containerArithmetic.contains(at.getRawEncoding()))
       return;
     want(at, {.kind = Want::Kind::Bound,
               .declaration = nullptr,
@@ -2799,6 +2868,10 @@ private:
         cast.getSubExpr()->isNullPointerConstant(
             ast, clang::Expr::NPC_ValueDependentIsNotNull))
       return;
+    // RFC 0054 §2.1: the conversions checked where they are made, and a
+    // struct taken as its first member.
+    if (checkedConversion(cast, ast) || upcastToFirstMember(from, to))
+      return;
     if (from->isFunctionType() || to->isFunctionType()) {
       report(cast.getExprLoc(), rule::PointerCast,
              "a function pointer cannot convert to another type in a safe "
@@ -2859,8 +2932,19 @@ private:
     if (call == nullptr)
       return false;
     const clang::FunctionDecl *callee = call->getDirectCallee();
-    if (callee == nullptr)
-      return false;
+    // RFC 0054 §2.1: an indirect call's `void *` parameter without a bound
+    // is a handle too (a vtable of callbacks given their object).
+    if (callee == nullptr) {
+      const clang::QualType calleeType = call->getCallee()->getType();
+      const auto *prototype =
+          calleeType->isPointerType()
+              ? calleeType->getPointeeType()->getAs<clang::FunctionProtoType>()
+              : nullptr;
+      return prototype != nullptr &&
+             cast.getType()->getPointeeType()->isVoidType() &&
+             index < prototype->getNumParams() &&
+             !boundedBy(annotationsOf(prototype->getParamType(index), ast));
+    }
     const unsigned builtin = callee->getBuiltinID();
     // RFC 0042: whole objects only, so that no
     // pointer is half written.
@@ -2881,6 +2965,12 @@ private:
       return whole;
     const auto match = core::LibrarySpec::shipped().lookup(
         callee->getName().str(), call->getNumArgs());
+    // RFC 0054 §2.1: a `void *` parameter without a bound is a handle: the
+    // callee reaches the bytes only through a conversion, which is checked.
+    if (!match.has_value() && cast.getType()->getPointeeType()->isVoidType() &&
+        index < callee->getNumParams() &&
+        !boundedBy(annotationsOf(callee->getParamDecl(index)->getType(), ast)))
+      return true;
     if (!match.has_value())
       return !unit.isSafe(callee->getName()) &&
              !hasAnnotateAttr(*callee, SafeAnnotation);
@@ -2967,16 +3057,19 @@ public:
   }
   /// A function, or those of a namespace, made as the namespace closes.
   void markIn(clang::Decl &declaration) {
-    if (auto *function = llvm::dyn_cast<clang::FunctionDecl>(&declaration))
+    if (auto *function = llvm::dyn_cast<clang::FunctionDecl>(&declaration)) {
       markPlaced(*function);
-    else if (llvm::isa<clang::NamespaceDecl, clang::LinkageSpecDecl,
-                       clang::ExportDecl>(declaration))
+      markTypes(*function);
+    } else if (llvm::isa<clang::NamespaceDecl, clang::LinkageSpecDecl,
+                         clang::ExportDecl>(declaration)) {
       for (clang::Decl *each :
            llvm::cast<clang::DeclContext>(declaration).decls())
         markIn(*each);
+    }
   }
   void HandleInlineFunctionDefinition(clang::FunctionDecl *function) override {
     markPlaced(*function);
+    markTypes(*function);
   }
 
   /// RFC 0042 §5: a C unit's struct is annotated when its definition
@@ -2998,6 +3091,9 @@ public:
     // rules cannot walk.
     if (compiler.getDiagnostics().hasFatalErrorOccurred())
       return;
+    // RFC 0054 §2.3: the rules read the code as it was written.
+    if (typeMarks)
+      typeMarks->undo();
     Declarations &declarations = declarationsFor(ast);
     if (out->fast)
       listLocalTypes(ast, *out);
@@ -3012,11 +3108,38 @@ public:
         }
         bool VisitFunctionDecl(clang::FunctionDecl *function) {
           checker->markPlaced(*function);
+          // RFC 0054 §2.3: marked after the rules, from this walk.
+          if (checker->typeMarks)
+            checker->typeMarks->found.push_back(function);
+          return true;
+        }
+        // RFC 0054 §1.1: the sites whose types the runtime needs layouts of.
+        bool VisitCXXNewExpr(clang::CXXNewExpr *expression) {
+          if (checker->typeMarks)
+            checker->typeMarks->layouts.site(*expression);
+          return true;
+        }
+        bool VisitCastExpr(clang::CastExpr *cast) {
+          if (checker->typeMarks)
+            checker->typeMarks->layouts.site(*cast);
+          return true;
+        }
+        bool VisitCallExpr(clang::CallExpr *call) {
+          if (checker->typeMarks)
+            checker->typeMarks->layouts.site(*call);
+          return true;
+        }
+        bool VisitVarDecl(clang::VarDecl *variable) {
+          if (checker->typeMarks)
+            checker->typeMarks->layouts.site(*variable);
           return true;
         }
         // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method,readability-make-member-function-const)
       } functions;
       functions.checker = this;
+      if (!typeMarks)
+        typeMarks = std::make_unique<TypeMarks>(ast, *out);
+      typeMarks->walked = true;
       functions.TraverseDecl(ast.getTranslationUnitDecl());
     }
     if (ast.getLangOpts().CPlusPlus) {
@@ -3033,10 +3156,12 @@ public:
         FunctionCheck check(ast, function, *out, reportTo, bounds.tableOf,
                             &fixes());
         check.run();
+        checkTaggedUnions(ast, function, typeReport(), &fixes());
         return check.usesBounds();
       };
       bounds.checkRecord = [&](const clang::RecordDecl &record) {
         declarations.checkRecord(record);
+        checkTaggedRecord(record, typeReport());
       };
       bounds.owner = [this](const ErrorOwner *each) {
         owner = each == nullptr ? std::nullopt : std::optional(*each);
@@ -3053,6 +3178,7 @@ public:
           },
           bounds);
       out->pointeeSizes = declarations.laterSizes();
+      finishTypes(ast);
       finish();
       return;
     }
@@ -3063,8 +3189,10 @@ public:
     // A struct's bounds matter to safe code only: a guarded unit keeps
     // compiling whatever its structs say (Clang checks its own counted_by).
     if (!safe.empty())
-      for (const clang::RecordDecl *record : records)
+      for (const clang::RecordDecl *record : records) {
         declarations.checkRecord(*record);
+        checkTaggedRecord(*record, typeReport());
+      }
     for (const clang::FunctionDecl *function : safe) {
       out->functions[function->getName()].safe = true;
       out->definedSafe.insert(function->getName());
@@ -3090,6 +3218,8 @@ public:
                             llvm::StringRef note) {
                        report(at, rule, message, note, noteAt);
                      });
+      // RFC 0054 §3.2: tagged unions' rules.
+      checkTaggedUnions(ast, *function, typeReport(), &fixes());
     }
     // RFC 0047 §7: the guarded functions, as if they were safe; what the
     // ownership rules record of a function goes to a copy of the unit.
@@ -3114,10 +3244,97 @@ public:
                        });
       }
     owner.reset();
+    finishTypes(ast);
     finish();
   }
 
 private:
+  /// RFC 0054 §2.3: the marks of the unit's safe functions.
+  std::unique_ptr<TypeMarks> typeMarks;
+
+  [[nodiscard]] TypeRuleReport typeReport() {
+    return [this](clang::SourceLocation at, llvm::StringRef rule,
+                  const std::string &message,
+                  const std::string &note) { report(at, rule, message, note); };
+  }
+
+  /// Whether a function the unit makes code for is safe (as `markPlaced`
+  /// finds it in C++).
+  [[nodiscard]] bool safeToMark(const clang::FunctionDecl &function) const {
+    const clang::ASTContext &ast = function.getASTContext();
+    const clang::SourceManager &sources = ast.getSourceManager();
+    if (!function.doesThisDeclarationHaveABody() ||
+        function.isDependentContext() ||
+        sources.isInSystemHeader(function.getLocation()))
+      return false;
+    if (!ast.getLangOpts().CPlusPlus)
+      return isSafe(function, sources);
+    if (hasAnnotateAttr(function, UnsafeAnnotation) ||
+        hasAnnotateAttr(function, GuardedAnnotation))
+      return false;
+    bool safe = unitSafe || inSafeFile(*out, sources, function.getLocation());
+    for (const clang::DeclContext *context = &function; context != nullptr;
+         context = context->getParent())
+      if (const auto *declaration = llvm::dyn_cast<clang::Decl>(context);
+          declaration != nullptr &&
+          llvm::isa<clang::FunctionDecl, clang::CXXRecordDecl>(declaration) &&
+          (hasAnnotateAttr(*declaration, SafeAnnotation) ||
+           hasAnnotateAttr(*declaration, GuardedAnnotation)))
+        return hasAnnotateAttr(*declaration, SafeAnnotation);
+    return safe;
+  }
+
+  /// RFC 0054 §2.3: a safe function's checked forms are marked before its
+  /// code is made.
+  void markTypes(clang::FunctionDecl &function) {
+    if (!out->annotates || !safeToMark(function))
+      return;
+    if (!typeMarks) {
+      typeMarks = std::make_unique<TypeMarks>(function.getASTContext(), *out);
+      if (compiler.hasSema())
+        typeMarks->markVTable = [this](const clang::CXXRecordDecl &record,
+                                       clang::SourceLocation at) {
+          // (Sema takes the class by a pointer that is not `const`.)
+          compiler.getSema().MarkVTableUsed(
+              // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+              at, const_cast<clang::CXXRecordDecl *>(&record),
+              /*DefinitionRequired=*/true);
+        };
+    }
+    typeMarks->mark(function);
+  }
+
+  /// After the rules: the marks again, those of the functions whose code is
+  /// made at the unit's end, and the layouts of the unit's types.
+  void finishTypes(clang::ASTContext &ast) {
+    if (!out->annotates)
+      return;
+    if (!typeMarks)
+      typeMarks = std::make_unique<TypeMarks>(ast, *out);
+    typeMarks->redo();
+    // (C++: the walk before the rules found the functions and the sites.)
+    if (typeMarks->walked) {
+      for (clang::FunctionDecl *function : typeMarks->found)
+        markTypes(*function);
+      return;
+    }
+    struct Functions final : clang::RecursiveASTVisitor<Functions> {
+      SafeChecker *checker = nullptr;
+      // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method,readability-make-member-function-const)
+      [[nodiscard]] static bool shouldVisitTemplateInstantiations() {
+        return true;
+      }
+      bool VisitFunctionDecl(clang::FunctionDecl *function) {
+        checker->markTypes(*function);
+        return true;
+      }
+      // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method,readability-make-member-function-const)
+    } functions;
+    functions.checker = this;
+    functions.TraverseDecl(ast.getTranslationUnitDecl());
+    typeMarks->collect();
+  }
+
   clang::CompilerInstance &compiler;
   std::shared_ptr<SafeUnit> out;
   bool unitSafe;
@@ -3140,6 +3357,13 @@ private:
             if (const clang::RecordDecl *record =
                     list->getType()->getAsRecordDecl())
               checkCountedInit(ast, *list, *record, reportTo);
+          // RFC 0054 §2: a global's initializer runs no check.
+          if (const auto *cast = llvm::dyn_cast<clang::CastExpr>(statement);
+              cast != nullptr && checkedConversion(*cast, ast))
+            report(cast->getExprLoc(), rule::PointerCast,
+                   "a conversion in a global's initializer is not checked",
+                   "initialize the global with a pointer of its own type, or "
+                   "convert where the pointer is used");
           for (const clang::Stmt *child : statement->children())
             walk(child);
         };
@@ -3150,8 +3374,11 @@ private:
       const auto *variable = llvm::dyn_cast<clang::VarDecl>(declaration);
       if (variable != nullptr && variable->hasGlobalStorage() &&
           variable->hasInit() &&
-          !ast.getSourceManager().isInSystemHeader(variable->getLocation()))
+          !ast.getSourceManager().isInSystemHeader(variable->getLocation())) {
         walk(variable->getInit());
+        // RFC 0054 §3.2: the tag a global's initializer gives its union.
+        checkTaggedExpression(ast, *variable->getInit(), typeReport());
+      }
     }
   }
 
@@ -3463,7 +3690,8 @@ private:
          .starts = 0,
          .locks = false,
          .sends = false,
-         .handlers = safeFunction ? 0 : countHandlers(function)});
+         .handlers = safeFunction ? 0 : countHandlers(function),
+         .adapter = !safeFunction && convertsAndCalls(function)});
   }
 
   void reportMismatch(const clang::FunctionDecl &function,

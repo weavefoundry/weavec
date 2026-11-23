@@ -1769,6 +1769,10 @@ struct FixPlanner::Impl {
       if (std::optional<Planned> each = removal(want.removal, want.replacement))
         planned.push_back(std::move(*each));
       return planned;
+    case Want::Kind::Write:
+      if (std::optional<Planned> each = written(want))
+        planned.push_back(std::move(*each));
+      return planned;
     }
     return {};
   }
@@ -1823,6 +1827,74 @@ struct FixPlanner::Impl {
                                  .text = replacement,
                                  .removed = text,
                                  .needsInclude = false});
+    return planned;
+  }
+
+  /// RFC 0054 §4: a fix a rule spells itself (E9's tag, a tag stored
+  /// first): its insertions and the text it takes out, in one file.
+  std::optional<Planned> written(const Want &want) {
+    Planned planned;
+    for (const auto &[at, text] : want.insertions) {
+      const clang::SourceLocation spelled = sources.getFileLoc(at);
+      if (spelled.isInvalid())
+        return std::nullopt;
+      planned.insertions.emplace_back(spelled, text);
+    }
+    std::string removed;
+    if (want.removal.isValid()) {
+      const clang::CharSourceRange range =
+          sources.getExpansionRange(want.removal);
+      bool invalid = false;
+      removed = clang::Lexer::getSourceText(range, sources, ast.getLangOpts(),
+                                            &invalid)
+                    .str();
+      if (invalid || removed.empty())
+        return std::nullopt;
+      planned.removals.push_back(clang::CharSourceRange::getCharRange(
+          range.getBegin(),
+          range.isTokenRange()
+              ? clang::Lexer::getLocForEndOfToken(range.getEnd(), 0, sources,
+                                                  ast.getLangOpts())
+              : range.getEnd()));
+    }
+    if (planned.insertions.empty() && planned.removals.empty())
+      return std::nullopt;
+    planned.at = !planned.insertions.empty()
+                     ? planned.insertions.front().first
+                     : planned.removals.front().getBegin();
+    planned.what = want.description;
+    planned.fix.level = want.level;
+    planned.fix.declaration =
+        want.declaration != nullptr
+            ? key(want.declaration)
+            : path(planned.at) + ":" +
+                  std::to_string(sources.getSpellingLineNumber(planned.at)) +
+                  ":" +
+                  std::to_string(sources.getSpellingColumnNumber(planned.at));
+    planned.fix.name = want.declaration != nullptr ? nameOf(want.declaration)
+                                                   : want.description;
+    planned.fix.aspect = want.aspect;
+    planned.fix.fact = want.fact;
+    planned.fix.text = planned.what;
+    if (!planned.removals.empty()) {
+      const clang::SourceLocation begin = planned.removals.front().getBegin();
+      planned.fix.edits.push_back({.file = path(begin),
+                                   .offset = sources.getFileOffset(begin),
+                                   .text = {},
+                                   .removed = removed,
+                                   .needsInclude = false});
+    }
+    for (const auto &[at, text] : planned.insertions)
+      planned.fix.edits.push_back(
+          {.file = path(at),
+           .offset = sources.getFileOffset(at),
+           .text = text,
+           .needsInclude = want.macros && !defined(at)});
+    // (Edits in offset order, as the fixer writes them.)
+    llvm::stable_sort(
+        planned.fix.edits, [](const FixEdit &a, const FixEdit &b) {
+          return a.file != b.file ? a.file < b.file : a.offset < b.offset;
+        });
     return planned;
   }
 
@@ -2160,12 +2232,14 @@ FixPlanner::attach(clang::SourceLocation at, RuleError &error,
              "' objects are kept";
     } else {
       text = "fix (" + each.fix.level + "): " +
-             (each.fix.aspect == "copy" || each.fix.aspect == "removal"
+             (each.fix.aspect == "copy" || each.fix.aspect == "removal" ||
+                      each.fix.aspect == "tag" || each.fix.aspect == "order"
                   ? each.what
                   : "declare it '" + each.what + "'");
       std::set<std::string> elsewhere;
       for (const auto &[place, inserted] : each.insertions)
-        if (place != each.at && each.fix.aspect != "copy") {
+        if (place != each.at && each.fix.aspect != "copy" &&
+            each.fix.aspect != "tag" && each.fix.aspect != "order") {
           const clang::PresumedLoc there = impl->sources.getPresumedLoc(place);
           if (there.isValid())
             elsewhere.insert(std::string(there.getFilename()) + ":" +

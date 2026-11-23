@@ -25,7 +25,7 @@ WEAVEC_SAFE struct node *typed(void *v, char *WEAVEC_SIZED_BY(n) b, size_t n) {
   (void)p;
   struct node *fresh = malloc(sizeof *fresh);
   free(fresh);
-  return (struct node *)v;        // expected-error {{converting 'void *' to 'struct node *' would read memory as a type that holds pointers [weavec-safe:pointer-cast]}} expected-error {{'v' is borrowed for this call and cannot be returned}}
+  return (struct node *)v;        // RFC 0054: checked where it is made. expected-error {{'v' is borrowed for this call and cannot be returned}}
 }
 
 WEAVEC_SAFE void bytes(struct node *n, struct node *m, struct pair *q) {

@@ -16,7 +16,7 @@ struct node {
   long w;
 };
 
-// CHECK-DAG: @[[TYPE:__weavec.type[.0-9]*]] = private global { i64, i64 } { i64 {{-?[0-9]+}}, i64 0 }, align 16
+// CHECK-DAG: @[[TYPE:__weavec.type[.0-9]*]] = private global { i64, i64, ptr, i64 } { i64 {{-?[0-9]+}}, i64 0, ptr @__weavec.layout.{{[0-9A-F]+}}, i64 0 }, align 16
 // CHECK-DAG: @[[TYPED:__weavec.site[.0-9]*]] = private unnamed_addr constant { i64, i32, i16, i16 } {{.*}}, i16 16 }
 // CHECK-LABEL: define {{.*}} @make.weavec.safe(
 // CHECK: call noalias ptr @__weavec_rt_alloc_typed(i64 16, i32 0, ptr @__weavec.type
