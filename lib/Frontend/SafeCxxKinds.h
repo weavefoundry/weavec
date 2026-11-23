@@ -394,8 +394,16 @@ public:
     Seen seen;
     if (!pointees(given, named, seen, 0, false))
       return true;
+    // RFC 0053 §5: or keep copies of the view's elements, which point
+    // where they do (a vector made from a list of pointers or of
+    // reference wrappers).
     return llvm::any_of(named, [&](clang::QualType pointee) {
-      return mayBorrow(record, pointee);
+      const clang::CXXRecordDecl *of = pointee->getAsCXXRecordDecl();
+      return mayBorrow(record, pointee) ||
+             (pointee->isPointerType() && !pointee->isFunctionPointerType() &&
+              mayBorrow(record, pointee->getPointeeType())) ||
+             (of != nullptr && borrowing(of) &&
+              reaches(ast.getCanonicalTagType(record), pointee));
     });
   }
 
@@ -682,11 +690,20 @@ public:
       return !type->isFunctionPointerType() &&
              !type->getPointeeType().isConstQualified();
     const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
-    if (record == nullptr || erased(type) || depth > Deepest)
+    if (record == nullptr || erased(type))
       return false;
+    // RFC 0053: a type deeper than the search follows may write through
+    // what it holds.
+    if (depth > Deepest)
+      return true;
     record = record->getDefinition();
     if (record == nullptr)
       return false;
+    // RFC 0053 §6 (D5): a class derived from a polymorphic one may write
+    // through what it holds.
+    if (!isLibrary(*record) && record->isPolymorphic() &&
+        !record->hasAttr<clang::FinalAttr>())
+      return true;
     if (const auto found = writers.find(record); found != writers.end())
       return found->second;
     writers[record] = false;
@@ -772,14 +789,18 @@ public:
                                unsigned depth = 0) {
     if (record != nullptr)
       record = record->getDefinition();
-    if (record == nullptr || depth > Deepest)
+    if (record == nullptr)
       return false;
-    if (viewClass(record))
+    // RFC 0053: a class deeper than the search follows may borrow.
+    if (depth > Deepest || viewClass(record))
       return true;
     if (record->isLambda() ||
-        (isLibrary(*record) ? !record->hasTrivialDestructor()
-                            : record->hasUserDeclaredDestructor()))
+        (isLibrary(*record)
+             ? !record->hasTrivialDestructor() && !libraryOfViews(*record)
+             : ownsBlocks(*record)))
       return false;
+    if (isLibrary(*record) && libraryOfViews(*record))
+      return true;
     if (const auto found = borrowers.find(record); found != borrowers.end())
       return found->second;
     borrowers[record] = false;
@@ -830,6 +851,115 @@ public:
         return name + ", which holds a borrow";
     }
     return {};
+  }
+
+  /// RFC 0053 §7 (D7): a class of the program is an owner only if its
+  /// destructor does something it wrote (not `= default`).
+  [[nodiscard]] static bool ownsBlocks(const clang::CXXRecordDecl &record) {
+    const clang::CXXDestructorDecl *destructor = record.getDestructor();
+    return destructor != nullptr && destructor->isUserProvided();
+  }
+
+  /// RFC 0053 §1: an object of `type` (a binder, a functor) holds views of
+  /// `const` objects only, none of which may be changed through `const`
+  /// (a view, a callable, a `mutable` owner): a call of it only reads.
+  [[nodiscard]] bool readsOnly(clang::QualType type) {
+    llvm::SmallVector<clang::QualType, 4> named;
+    Seen seen;
+    if (!pointees(type, named, seen, 0, false) || named.empty())
+      return false;
+    return llvm::all_of(named, [&](clang::QualType pointee) {
+      const clang::CXXRecordDecl *record = pointee->getAsCXXRecordDecl();
+      return pointee.isConstQualified() && !erased(pointee) &&
+             !(tracked(pointee) && writesThrough(pointee)) &&
+             (record == nullptr || !record->isLambda()) &&
+             !mutableOwners(pointee);
+    });
+  }
+
+  /// RFC 0053 §7 (D7): a class of the program with a `mutable` member that
+  /// holds owners, in it or in a member: a `const` call may change it.
+  /// A base counts, and so does an element or a type argument of the
+  /// library's (a `std::optional`, a `std::vector`, a `std::pair` of one).
+  [[nodiscard]] bool mutableOwners(clang::QualType type) {
+    type = type.getNonReferenceType();
+    while (const clang::ArrayType *array = ast.getAsArrayType(type))
+      type = array->getElementType();
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record != nullptr)
+      record = record->getDefinition();
+    if (record == nullptr)
+      return false;
+    return held(mutables, record,
+                [&] { return computeMutableOwners(*record); });
+  }
+
+  [[nodiscard]] bool computeMutableOwners(const clang::CXXRecordDecl &record) {
+    if (isLibrary(record)) {
+      const auto *specialization =
+          llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(&record);
+      return specialization != nullptr &&
+             llvm::any_of(typeArguments(*specialization),
+                          [&](clang::QualType argument) {
+                            return mutableOwners(argument);
+                          });
+    }
+    return llvm::any_of(record.bases(),
+                        [&](const clang::CXXBaseSpecifier &base) {
+                          return mutableOwners(base.getType());
+                        }) ||
+           llvm::any_of(record.fields(), [&](const clang::FieldDecl *field) {
+             return (field->isMutable() && holdsOwners(field->getType())) ||
+                    mutableOwners(field->getType());
+           });
+  }
+
+  /// RFC 0053 §7 (D6): making, copying or destroying an object of `type`
+  /// runs code of the program (a constructor or destructor it wrote, in
+  /// the class, a member, a base, or an element of the library's), which
+  /// may change any global.
+  [[nodiscard]] bool runsProgram(clang::QualType type) {
+    type = type.getNonReferenceType();
+    while (const clang::ArrayType *array = ast.getAsArrayType(type))
+      type = array->getElementType();
+    if (type->isPointerType())
+      return false;
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record != nullptr)
+      record = record->getDefinition();
+    if (record == nullptr || record->isLambda())
+      return false;
+    return held(programs, record, [&] { return computeRunsProgram(*record); });
+  }
+
+  [[nodiscard]] bool computeRunsProgram(const clang::CXXRecordDecl &record) {
+    if (isLibrary(record)) {
+      const auto *specialization =
+          llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(&record);
+      return specialization != nullptr &&
+             llvm::any_of(typeArguments(*specialization),
+                          [&](clang::QualType argument) {
+                            return runsProgram(argument);
+                          });
+    }
+    const auto wrote = [](const clang::FunctionDecl *special) {
+      return special != nullptr && special->isUserProvided();
+    };
+    return wrote(record.getDestructor()) ||
+           llvm::any_of(record.ctors(), wrote) ||
+           llvm::any_of(record.methods(),
+                        [&](const clang::CXXMethodDecl *method) {
+                          return (method->isCopyAssignmentOperator() ||
+                                  method->isMoveAssignmentOperator()) &&
+                                 wrote(method);
+                        }) ||
+           llvm::any_of(record.bases(),
+                        [&](const clang::CXXBaseSpecifier &base) {
+                          return runsProgram(base.getType());
+                        }) ||
+           llvm::any_of(record.fields(), [&](const clang::FieldDecl *field) {
+             return runsProgram(field->getType());
+           });
   }
 
   /// The note of a kept callable's `escape` (RFC 0052 §9).
@@ -931,7 +1061,33 @@ public:
   /// A local of this type has a set of borrows the rules follow.
   [[nodiscard]] bool tracked(clang::QualType type) {
     return view(type) || erased(type) ||
-           borrowing(type.getNonReferenceType()->getAsCXXRecordDecl());
+           borrowing(type.getNonReferenceType()->getAsCXXRecordDecl()) ||
+           polymorphicHolder(type);
+  }
+
+  /// RFC 0053 §6 (D5): a polymorphic class of the program that is not
+  /// final, or a library template of one (a smart pointer to a base):
+  /// followed by the flow, with the loans of what it was made from and
+  /// none by default.
+  [[nodiscard]] bool polymorphicHolder(clang::QualType type,
+                                       unsigned depth = 0) {
+    type = type.getNonReferenceType();
+    if (type->isPointerType())
+      type = type->getPointeeType();
+    const clang::CXXRecordDecl *record = type->getAsCXXRecordDecl();
+    if (record != nullptr)
+      record = record->getDefinition();
+    if (record == nullptr || depth > 4)
+      return false;
+    if (!isLibrary(*record))
+      return record->isPolymorphic() && !record->hasAttr<clang::FinalAttr>();
+    const auto *specialization =
+        llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(record);
+    return specialization != nullptr &&
+           llvm::any_of(typeArguments(*specialization),
+                        [&](clang::QualType argument) {
+                          return polymorphicHolder(argument, depth + 1);
+                        });
   }
 
   /// A view that points elsewhere (`std::string_view`, an iterator, a
@@ -954,7 +1110,10 @@ public:
   /// §6: a non-const member function with a const overload of the same
   /// parameters only gives access.
   [[nodiscard]] bool accessor(const clang::CXXMethodDecl &method) {
-    if (method.isConst() || method.isStatic())
+    // An assignment or a swap changes its object, whatever twins it has
+    // (C++23's `const` assignment of a `std::pair` or `std::tuple` of
+    // references).
+    if (method.isConst() || method.isStatic() || changesOnly(method))
       return false;
     const auto [found, inserted] =
         accessors.try_emplace(method.getCanonicalDecl(), false);
@@ -1004,7 +1163,9 @@ public:
         function->getTemplateInstantiationPattern();
     const clang::FunctionDecl &mine = pattern != nullptr ? *pattern : *function;
     const unsigned index = parameter.getFunctionScopeIndex();
-    if (index >= mine.getNumParams())
+    // (Read on the instantiation: libstdc++'s `swap` returns an
+    // `enable_if<…>::type` as written.)
+    if (index >= mine.getNumParams() || changesOnly(*function))
       return false;
     const clang::QualType type = mine.getParamDecl(index)->getType();
     if (!type->isLValueReferenceType() ||
@@ -1024,6 +1185,16 @@ public:
                  clang::ASTContext::hasSameUnqualifiedType(
                      twin->getPointeeType(), type->getPointeeType());
         });
+  }
+
+  /// An assignment, or a function that gives no access (returns nothing:
+  /// `swap`), whose `const` twin is not one that only reads.
+  [[nodiscard]] static bool changesOnly(const clang::FunctionDecl &function) {
+    return function.getReturnType()->isVoidType() ||
+           (function.isOverloadedOperator() &&
+            (function.getOverloadedOperator() == clang::OO_Equal ||
+             clang::isCompoundAssignmentOperator(
+                 function.getOverloadedOperator())));
   }
 
   /// A library class Clang marks as an owner (a container, a smart
@@ -1092,6 +1263,41 @@ private:
   llvm::DenseSet<std::pair<const clang::Type *, unsigned>> visiting;
   bool assumed = false;
   llvm::DenseMap<const clang::CXXRecordDecl *, LockedClass> locks;
+
+  /// A question that holds of a class when it holds of something the class
+  /// has (RFC 0053's D6 and D7): its settled answers, the classes being
+  /// asked, and whether an answer leaned on one of them. A class met again
+  /// while it is asked adds nothing its other parts do not, so there it is
+  /// taken not to hold; an answer that leaned on that is kept only if it
+  /// holds, which no such assumption can undo, or if no class is still
+  /// being asked. (Kept while its class was still asked, a "no" would
+  /// answer for every class that has this one, whichever was asked first.)
+  struct Held {
+    llvm::DenseMap<const clang::CXXRecordDecl *, bool> answers;
+    llvm::SmallPtrSet<const clang::CXXRecordDecl *, 8> asking;
+    bool leaned = false;
+  };
+
+  template <typename Compute>
+  [[nodiscard]] static bool
+  held(Held &question, const clang::CXXRecordDecl *record, Compute compute) {
+    if (const auto found = question.answers.find(record);
+        found != question.answers.end())
+      return found->second;
+    if (question.asking.contains(record)) {
+      question.leaned = true;
+      return false;
+    }
+    question.asking.insert(record);
+    const bool outer = question.leaned;
+    question.leaned = false;
+    const bool answer = compute();
+    question.asking.erase(record);
+    if (answer || !question.leaned || question.asking.empty())
+      question.answers[record] = answer;
+    question.leaned = !question.asking.empty() && (question.leaned || outer);
+    return answer;
+  }
 
   [[nodiscard]] bool fact(Fact which, clang::QualType type) {
     type = type.getCanonicalType().getUnqualifiedType();
@@ -1215,6 +1421,8 @@ private:
   llvm::DenseMap<const clang::CXXRecordDecl *, bool> writers;
   llvm::DenseMap<const clang::CXXRecordDecl *, bool> borrowers;
   llvm::DenseMap<const clang::CXXRecordDecl *, bool> selfOwners;
+  Held mutables;
+  Held programs;
   llvm::DenseMap<const clang::CXXRecordDecl *, bool> erasures;
   llvm::DenseMap<const clang::CXXMethodDecl *, bool> accessors;
   llvm::DenseMap<std::pair<const clang::Type *, const clang::Type *>, bool>
@@ -1225,6 +1433,29 @@ private:
   /// nest deeper than ten (libc++'s `std::variant` has eleven bases above
   /// its union).
   static constexpr unsigned Deepest = 64;
+
+  /// RFC 0053 §5 (D4): a library template one of whose type arguments is a
+  /// pointer or a class that borrows (`std::vector<T *>`,
+  /// `std::optional<std::reference_wrapper<T>>`, `std::unique_ptr<Flip>`):
+  /// a view of what it is made from, however it is made.
+  [[nodiscard]] bool libraryOfViews(const clang::CXXRecordDecl &record) {
+    const auto *specialization =
+        llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(&record);
+    if (specialization == nullptr || erased(ast.getCanonicalTagType(&record)))
+      return false;
+    return llvm::any_of(
+        typeArguments(*specialization), [&](clang::QualType argument) {
+          if (pointerLike(argument))
+            return true;
+          // (A C library's struct, `FILE`, points into what the C library
+          // keeps.)
+          const clang::CXXRecordDecl *of = argument->getAsCXXRecordDecl();
+          return of != nullptr && of != &record &&
+                 (!isLibrary(*of) || !of->isCLike() ||
+                  llvm::isa<clang::ClassTemplateSpecializationDecl>(of)) &&
+                 borrowing(of, 1);
+        });
+  }
 
   /// The classes a search has visited, owned or not.
   using Seen =
@@ -1258,7 +1489,7 @@ private:
     const bool owner =
         !record->isLambda() &&
         (owned || (isLibrary(*record) ? !record->hasTrivialDestructor()
-                                      : record->hasUserDeclaredDestructor()));
+                                      : ownsBlocks(*record)));
     const auto member = [&](clang::QualType of, bool borrowed) {
       while (const clang::ArrayType *array = ast.getAsArrayType(of))
         of = array->getElementType();
@@ -1301,7 +1532,7 @@ private:
     const bool owner =
         !record->isLambda() &&
         (owned || (isLibrary(*record) ? !record->hasTrivialDestructor()
-                                      : record->hasUserDeclaredDestructor()));
+                                      : ownsBlocks(*record)));
     const auto member = [&](clang::QualType type, bool borrowed) {
       while (const clang::ArrayType *array = ast.getAsArrayType(type))
         type = array->getElementType();
@@ -1312,9 +1543,14 @@ private:
         if (type->isFunctionPointerType())
           return false;
         if (owner && !borrowed) {
-          // An owner's own block: what is in it may borrow.
-          const clang::CXXRecordDecl *of =
-              type->getPointeeType()->getAsCXXRecordDecl();
+          // An owner's own block: what is in it may borrow. RFC 0053 §5:
+          // a block of pointers (`std::vector<T *>`'s) borrows what they
+          // point to.
+          const clang::QualType block = type->getPointeeType();
+          if (block->isPointerType())
+            return !block->isFunctionPointerType() &&
+                   reaches(given, block->getPointeeType());
+          const clang::CXXRecordDecl *of = block->getAsCXXRecordDecl();
           return of != nullptr &&
                  keepsBorrow(of, given, seen, depth + 1, false);
         }
@@ -1360,7 +1596,7 @@ private:
     const bool owner =
         !record->isLambda() &&
         (owned || (isLibrary(*record) ? !record->hasTrivialDestructor()
-                                      : record->hasUserDeclaredDestructor()));
+                                      : ownsBlocks(*record)));
     const auto member = [&](clang::QualType type) {
       while (const clang::ArrayType *array = ast.getAsArrayType(type))
         type = array->getElementType();
