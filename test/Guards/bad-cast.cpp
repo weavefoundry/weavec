@@ -12,6 +12,8 @@
 // RUN: not --crash %t.fast 2 2>&1 | FileCheck %s --check-prefix=PLAIN
 // RUN: not --crash %t.fast 3 2>&1 | FileCheck %s --check-prefix=VOID
 // RUN: not --crash %t.fast 4 2>&1 | FileCheck %s --check-prefix=SECOND
+// RUN: not --crash %t.fast 5 2>&1 | FileCheck %s --check-prefix=GROWN
+// RUN: not --crash %t.full 5 2>&1 | FileCheck %s --check-prefix=GROWN
 #include <cstdio>
 #include <memory>
 #include <weavec.h>
@@ -31,6 +33,17 @@ struct B2 { virtual ~B2() = default; long two = 2; };
 struct D final : B1, B2 { long d = 3; };
 struct Twin { D d; B2 extra; };
 struct Client { double load = 0; };
+// A class with virtual functions derived from one without: the check asks
+// the records, since the base has no vtable to read.
+struct Data { long first = 0x41414141; };
+struct Active : Data { virtual ~Active() = default; long v = 9; };
+// A class template's instance derives from a class too, so a local of that
+// class is recorded.
+struct Root { long tag = 1; };
+template <class T> struct Grown : Root { T more[8] = {}; };
+// An array `new` of a class with a destructor puts a cookie before the
+// elements: the block records no type, and its elements convert back.
+struct Item { long a = 1, b = 2; ~Item() { a = 0; } };
 
 __attribute__((noinline)) double radius(const Shape &shape) {
   // VIRTUAL: weavec: bad-cast at {{.*}}bad-cast.cpp:[[@LINE+2]]:{{[0-9]+}}: 0x{{[0-9a-f]+}} is not a 'Circle'
@@ -49,6 +62,21 @@ __attribute__((noinline)) long ticks(void *context) {
 __attribute__((noinline)) long fromSecond(B2 &b) {
   // SECOND: weavec: bad-cast at {{.*}}bad-cast.cpp:[[@LINE+1]]:{{[0-9]+}}: 0x{{[0-9a-f]+}} is not a 'D'
   return static_cast<D &>(b).d;
+}
+
+__attribute__((noinline)) long active(Data &data) {
+  return static_cast<Active &>(data).v;
+}
+__attribute__((noinline)) long grown(Root &root) {
+  // GROWN: weavec: bad-cast at {{.*}}bad-cast.cpp:[[@LINE+1]]:{{[0-9]+}}: 0x{{[0-9a-f]+}} is not a 'Grown<long>'
+  return static_cast<Grown<long> &>(root).more[7];
+}
+__attribute__((noinline)) long notGrown() {
+  Root root;
+  return grown(root);
+}
+__attribute__((noinline)) long item(void *context) {
+  return static_cast<Item *>(context)->b;
 }
 
 WEAVEC_GUARDED int main(int argc, char **argv) {
@@ -73,8 +101,15 @@ WEAVEC_GUARDED int main(int argc, char **argv) {
     auto client = std::make_unique<Client>();
     return (int)ticks(client.get());
   }
-  // OK: 2 2 8 5
-  std::printf("%g %g %ld %ld\n", radius(*circle), radius(*ring), wide(wideOne.get()),
-              ticks(server.get()));
+  if (mode == '5')
+    return (int)notGrown();
+  auto activeOne = std::make_unique<Active>();
+  auto grownOne = std::make_unique<Grown<long>>();
+  Item *items = new Item[4];
+  // OK: 2 2 8 5 9 0 2 2
+  std::printf("%g %g %ld %ld %ld %ld %ld %ld\n", radius(*circle), radius(*ring),
+              wide(wideOne.get()), ticks(server.get()), active(*activeOne),
+              grown(*grownOne), item(items), item(items + 3));
+  delete[] items;
   return 0;
 }

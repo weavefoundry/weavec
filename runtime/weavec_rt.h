@@ -442,6 +442,9 @@ void weavecRtSetBlockType(uintptr_t base, uint32_t type);
  * use (0 when the table is full), and the layout and name of an index. */
 uint32_t weavecRtTypeIndex(const struct __weavec_rt_layout *layout);
 const struct __weavec_rt_layout *weavecRtTypeLayout(uint32_t type);
+/* The thread's frame records of the frames below `frame`, which are gone
+ * (weavec_types.c). */
+void weavecRtSettleFrames(uintptr_t frame);
 /* RFC 0048 section 3: whether `address` lies in a live slot's object or on
  * the byte after it. */
 int weavecRtInLiveBlock(uintptr_t address);

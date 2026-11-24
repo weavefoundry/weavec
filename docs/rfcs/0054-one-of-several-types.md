@@ -801,6 +801,9 @@ building it and from what S0 and the gates found. They override the body.
    and which reads a word that may not be a vtable. The checker asks Sema
    for the classes' vtables (`MarkVTableUsed`), so the unit has their type
    information; a unit that still does not is answered by the records.
+   A downcast from a class without virtual functions to one with them
+   (the source has no vtable to read) is answered by the records, as a
+   conversion between classes without them is.
 4. **A member's check is made right before each access (§3.3)**, of its
    loads, stores and memory intrinsics, not where its address is computed:
    C may evaluate a call that stores the tag in between (G6's `t25`).
@@ -813,7 +816,9 @@ building it and from what S0 and the gates found. They override the body.
    `union-pointer` (G6's `t03`, `t04`, `p01` to `p03`, `p08` to `p11`).
 6. **Initializers (§3.2).** An initializer list, a compound literal or a
    global's initializer that sets a member sets the tag to a constant the
-   member is for (G6's `t01`, `t07`, `t08`, `p04`).
+   member is for (G6's `t01`, `t07`, `t08`, `p04`). A union given whole
+   (`{.kind = TEXT, .u = v}`) is `union-pointer`: its bytes may be another
+   member's, which no tag was checked for.
 7. **One tag, one union, at most 64 bits** (`bad-annotation`; G6's `t02`,
    `t29`, `p05`). `WEAVEC_WHEN`'s values are taken with their sign, so a
    `long` tag of -1 compares.
@@ -843,7 +848,10 @@ building it and from what S0 and the gates found. They override the body.
     options a unit must match); a unit that does not pool records the type
     with `__weavec_rt_note_type` after the allocation; a placed local of
     the checked build too. A block's type is a slot map beside the pools'
-    (`slotTypes`), and a huge block's record.
+    (`slotTypes`), and a huge block's record. A block an array `new`
+    puts a cookie in (the C++ ABI's: the element type has a destructor, or
+    its usual `operator delete[]` takes the size) records no type, since
+    its elements do not begin it; their conversions are believed.
 13. **A block is an array of its type** only when its size is a multiple of
     the type's: the bytes after a first object of another size (nng's
     protocol data at `s + 1`) have no record and are believed (G5).
@@ -857,7 +865,11 @@ building it and from what S0 and the gates found. They override the body.
     member of one) of a class this unit derives from bound to a reference.
     Recording every address in C++ cost 15% on tinyxml2 (its `Query*`
     locals). A record covers the whole local (an array's every element,
-    G6's `t43`); a thread keeps 1,024.
+    G6's `t43`); a thread keeps 1,024. A record goes with its scope, and
+    where control lands from frames that are gone: an exception's landing
+    pad and the handler that catches it, and every return of a `setjmp`
+    (`__weavec_rt_landed` drops the records below its frame), so a frame
+    that grows the stack again past them is not answered with their types.
 16. **Not built: guarded frames' objects (§1.2's table).** A local of a
     frame of code that is not safe has no record and is believed.
 17. **Two more conversions are errors.** A checked form in a global's
@@ -868,7 +880,11 @@ building it and from what S0 and the gates found. They override the body.
     as a `void *` parameter without a bound, of a direct or an indirect
     call: the callee reaches its bytes only through a checked conversion.
     `pointer-bytes` had rejected the context pattern in the caller (G4,
-    G5's vtables of callbacks).
+    G5's vtables of callbacks). An indirect call's callee is then a safe
+    function or code that is not safe, which is trusted to keep the bytes
+    it is given: a safe function does not take the address of a library
+    function that writes through a pointer argument (`memcpy`, `read`), an
+    error of `pointer-bytes`.
 19. **E9, as built (§4).** A read under no test does not block the fix (it
     is checked when it runs); a read under another field's test leaves the
     choice to the program; a member that holds a pointer and is read under

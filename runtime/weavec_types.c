@@ -171,6 +171,20 @@ void __weavec_rt_frame_pop(uint32_t depth) {
     frameDepth = depth;
 }
 
+/* Control landed in the frame above `frame`, from frames that are gone: an
+ * exception's landing pad, a handler that caught it, or a `setjmp` that
+ * returned (from `longjmp`, or the first time, when no frame below is
+ * live). Their records go, which a frame that grows the stack again past
+ * them would otherwise find. */
+void weavecRtSettleFrames(uintptr_t frame) {
+  uint32_t top = frameDepth;
+  if (frameRecords == NULL)
+    return;
+  while (top != 0 && frameRecords[top - 1].address < frame)
+    --top;
+  frameDepth = top;
+}
+
 /* The recorded local of this thread that holds `address`, or null. */
 static const struct FrameRecord *recordAt(uintptr_t address) {
   const uintptr_t sp = (uintptr_t)__builtin_frame_address(0);

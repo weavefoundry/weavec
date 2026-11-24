@@ -53,6 +53,18 @@ long apart(struct value *v) {
 long unspoken(const struct value *v) {
   return v->as.spare; // expected-error {{'spare' has no 'WEAVEC_WHEN': no value of 'kind' is for it [weavec-safe:union-pointer]}}
 }
+// A union given whole has a member no tag was checked for.
+const char *forge(long bits) {
+  union payload u = {.spare = bits};
+  struct value v = {.kind = KIND_TEXT, .as = u}; // expected-error {{'as' is initialized as a whole union, whose member 'kind' does not say [weavec-safe:union-pointer]}}
+  return v.kind == KIND_TEXT ? v.as.text : 0;
+}
+const char *assigned(long bits) {
+  union payload u = {.spare = bits};
+  struct value v = {.kind = KIND_TEXT};
+  v.as = u; // expected-error {{[weavec-safe:union-pointer]}}
+  return v.kind == KIND_TEXT ? v.as.text : 0;
+}
 void late(struct value *v, const char *WEAVEC_ESCAPES s) {
   v->as.text = s; // expected-error {{'text' is stored before 'kind' is set, and the store of 'kind' clears it [weavec-safe:union-pointer]}}
   v->kind = KIND_TEXT;

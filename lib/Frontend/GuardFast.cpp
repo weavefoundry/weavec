@@ -171,6 +171,12 @@ static const core::LibraryEntry *typedRow(const llvm::CallBase &call) {
   return match->entry;
 }
 
+bool arrayNew(const llvm::CallBase &call) {
+  const core::LibraryEntry *row = typedRow(call);
+  return row != nullptr && row->typed->name == "new_typed" &&
+         (row->typedFlags & 1U) != 0;
+}
+
 /// Why an allocation a fast unit's code makes is not typed: a row that
 /// gives an owner without a typed form, or one that reallocates.
 static llvm::StringRef untypedReason(const llvm::CallBase &call) {
@@ -247,11 +253,14 @@ static void markAllocations(ModuleContext &module, llvm::Module &ir) {
         !typeIdentified(module, name->getString()))
       continue;
     // An array `new`, which may put a cookie before its elements, apart.
-    const bool array =
-        row->typed->name == "new_typed" && (row->typedFlags & 1U) != 0;
-    // RFC 0054 §1.2: with the type's layout, which the block records.
+    const bool array = arrayNew(*call);
+    // RFC 0054 §1.2: with the type's layout, which the block records,
+    // unless a cookie comes before its elements.
     llvm::GlobalVariable *record = typeRecord(
-        module, typeKey(module, name->getString(), array), name->getString());
+        module, typeKey(module, name->getString(), array),
+        array && module.options.safe->cookieTypes.contains(name->getString())
+            ? llvm::StringRef()
+            : name->getString());
     llvm::CallBase *marked = llvm::CallBase::addOperandBundle(
         call, module.context.getOrInsertBundleTag(TypeBundle)->getValue(),
         llvm::OperandBundleDef(TypeBundle.str(),

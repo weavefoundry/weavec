@@ -328,7 +328,12 @@ std::optional<Conversion> checkedConversion(const clang::CastExpr &cast,
     out.target = target.getUnqualifiedType();
     out.source = source.getUnqualifiedType();
     out.reference = reference;
-    out.polymorphic = derived->isPolymorphic();
+    // Read through the source's vtable (amendment 3), which only a
+    // source with virtual functions has; a downcast from a class without
+    // them asks the type records, as C's conversions do.
+    const auto *from = source->getAsCXXRecordDecl();
+    out.polymorphic = from != nullptr && from->hasDefinition() &&
+                      from->getDefinition()->isPolymorphic();
     // The base's offset in the derived class, along the cast's path (from
     // the derived class down).
     const clang::CXXRecordDecl *at = derived->getDefinition();
@@ -621,7 +626,11 @@ std::string TypeLayouts::layoutOf(clang::QualType type) {
 }
 
 void TypeLayouts::site(const clang::CXXNewExpr &expression) {
-  (void)layoutOf(expression.getAllocatedType());
+  const std::string key = layoutOf(expression.getAllocatedType());
+  if (!key.empty() && expression.isArray() &&
+      (expression.doesUsualArrayDeleteWantSize() ||
+       expression.getAllocatedType().isDestructedType()))
+    unit.cookieTypes.insert(key);
 }
 
 void TypeLayouts::site(const clang::CastExpr &cast) {
@@ -1116,22 +1125,47 @@ const llvm::DenseSet<const clang::CXXRecordDecl *> &TypeMarks::bases() {
     fresh.push_back(each);
     basesRead = each;
   }
-  std::function<void(const clang::Decl *)> read = [&](const clang::Decl *each) {
-    if (const auto *record = llvm::dyn_cast<clang::CXXRecordDecl>(each);
-        record != nullptr && record->hasDefinition()) {
-      for (const clang::CXXBaseSpecifier &base :
-           record->getDefinition()->bases())
-        if (const auto *decl = base.getType()->getAsCXXRecordDecl())
-          knownBases.insert(decl->getCanonicalDecl());
-      for (const clang::Decl *inner : record->decls())
-        read(inner);
-    }
-    if (const auto *context = llvm::dyn_cast<clang::NamespaceDecl>(each))
-      for (const clang::Decl *inner : context->decls())
-        read(inner);
+  const auto basesOf = [&](const clang::CXXRecordDecl &record) {
+    if (!record.hasDefinition())
+      return;
+    for (const clang::CXXBaseSpecifier &base : record.getDefinition()->bases())
+      if (const auto *decl = base.getType()->getAsCXXRecordDecl())
+        knownBases.insert(decl->getCanonicalDecl());
   };
+  // Every class: nested, local to a function, in a linkage block, a
+  // template's pattern (its bases that do not depend on a parameter) and
+  // the instances made so far.
+  struct Reader final : clang::RecursiveASTVisitor<Reader> {
+    TypeMarks *self = nullptr;
+    const std::function<void(const clang::CXXRecordDecl &)> *basesOf = nullptr;
+    // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method,readability-make-member-function-const)
+    [[nodiscard]] static bool shouldVisitTemplateInstantiations() {
+      return true;
+    }
+    bool VisitCXXRecordDecl(clang::CXXRecordDecl *record) {
+      (*basesOf)(*record);
+      return true;
+    }
+    bool VisitClassTemplateDecl(clang::ClassTemplateDecl *pattern) {
+      self->classTemplates.push_back(pattern);
+      return true;
+    }
+    // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method,readability-make-member-function-const)
+  };
+  const std::function<void(const clang::CXXRecordDecl &)> reads = basesOf;
+  Reader reader;
+  reader.self = this;
+  reader.basesOf = &reads;
   for (const clang::Decl *declaration : fresh)
-    read(declaration);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): read only.
+    reader.TraverseDecl(const_cast<clang::Decl *>(declaration));
+  // A template's instances made since it was read (a base that depends on
+  // a parameter, `template <class T> struct D : T`).
+  for (const clang::ClassTemplateDecl *pattern : classTemplates)
+    for (const clang::ClassTemplateSpecializationDecl *instance :
+         pattern->specializations())
+      if (instance->hasDefinition() && instancesRead.insert(instance).second)
+        basesOf(*instance);
   return knownBases;
 }
 
@@ -1748,8 +1782,22 @@ private:
       const auto tagged = taggedUnion(*field);
       if (!tagged || !tagged->problem.empty())
         continue;
-      const auto *payload =
-          llvm::dyn_cast_or_null<clang::InitListExpr>(initOf(field));
+      const clang::Expr *init = initOf(field);
+      const auto *payload = llvm::dyn_cast_or_null<clang::InitListExpr>(
+          init != nullptr ? init->IgnoreParenImpCasts() : nullptr);
+      // A union given whole (`.u = v`) has a member no tag was checked
+      // for: `v`'s bytes may be another member's.
+      if (init != nullptr && payload == nullptr &&
+          !llvm::isa<clang::ImplicitValueInitExpr>(init)) {
+        report(init->getExprLoc(), "union-pointer",
+               "'" + field->getNameAsString() +
+                   "' is initialized as a whole union, whose member '" +
+                   tagged->tagName + "' does not say",
+               "initialize one member, '." + field->getNameAsString() +
+                   ".<member> = …', with a value of '" + tagged->tagName +
+                   "' it is for");
+        continue;
+      }
       const clang::FieldDecl *chosen =
           payload != nullptr ? payload->getInitializedFieldInUnion() : nullptr;
       if (chosen == nullptr || payload->getNumInits() == 0 ||

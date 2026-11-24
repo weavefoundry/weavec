@@ -3,6 +3,7 @@
 // RUN: %weavec_cc -fsyntax-only -fweavec-safe -Xclang -verify -Xclang -verify-ignore-unexpected=note %s
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 #include <weavec.h>
 
 struct node { struct node *next; int v; };
@@ -44,3 +45,21 @@ typedef int (*binary)(int, int);
 int callback(void *p) {
   return ((binary)p)(1, 2); // expected-error {{[weavec-safe:pointer-cast]}}
 }
+
+// Amendment 18: a struct with pointers is a `void *` handle to a direct or
+// an indirect call, so a library function that writes through a pointer
+// has no address in a safe function (it would forge the handle's pointers).
+typedef void (*visit)(void *context);
+void each(struct node *n, visit f) { f(n); }
+typedef void *(*copier)(void *, const void *, size_t);
+void copy(struct node *n, const unsigned char *WEAVEC_COUNTED_BY(16) bytes,
+          copier c) {
+  c(n, bytes, sizeof *n);
+}
+void forge(struct node *n, const unsigned char *WEAVEC_COUNTED_BY(16) bytes) {
+  copy(n, bytes, memcpy); // expected-error {{'memcpy' writes bytes through a pointer it is given; called through its address, it could forge the pointers of what it writes [weavec-safe:pointer-bytes]}}
+  copier c = &memmove; // expected-error {{'memmove' writes bytes through a pointer it is given; called through its address, it could forge the pointers of what it writes [weavec-safe:pointer-bytes]}}
+  copy(n, bytes, c);
+  memcpy(n, n, sizeof *n);
+}
+void release(struct node *n) { each(n, free); }

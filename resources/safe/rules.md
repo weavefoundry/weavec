@@ -275,6 +275,13 @@ void clear(struct item *it) {
 
 Copy whole objects (`*d = *s`), zero whole objects (`memset(p, 0, n * sizeof *p)`).
 
+A struct with pointers may be given as a `void *` without a bound (a callback's context) to any call, direct or through a function pointer: the callee reaches it only through a checked conversion ([RFC 0054](/rfcs/0054-one-of-several-types/)). So a safe function does not take the address of a library function that writes through a pointer argument (`memcpy`, `memset`, `read`, `fgets` and the rest): called through a pointer, it would write the context's bytes unchecked. Call it by name.
+
+```c rejected
+typedef void *(*copier)(void *, const void *, size_t);
+copier pick(void) { return memcpy; }
+```
+
 A `bool` is 0 or 1 ([RFC 0051](/rfcs/0051-nothing-undefined/)): bytes are not written into an object that holds one, by a library call that writes its argument (`memcpy`, `fread`, `read`, `recv` and the rest) or through a byte pointer, but a whole object zeroed or copied from one of its own type. Give the member the type `uint8_t`, or read the bytes and assign each member.
 
 ```c rejected
@@ -354,7 +361,7 @@ union value { long number; char *text; };
 char first(union value *v) { return v->text[0]; }
 ```
 
-Of a tagged union, four uses are rejected, each because a pointer into the union would outlive the check of its tag: the address of a member (a pointer to `const` of a member without pointers is allowed), a member array passed as a pointer that can write, the union copied, passed or returned apart from its struct (copy the struct), and a member stored before its tag in the same block (the store of the tag would clear it). A member with no `WEAVEC_WHEN` is not used.
+Of a tagged union, four uses are rejected, each because a pointer into the union would outlive the check of its tag: the address of a member (a pointer to `const` of a member without pointers is allowed), a member array passed as a pointer that can write, the union copied, passed or returned apart from its struct, or given whole to an initializer of its struct (copy the struct, or initialize one member), and a member stored before its tag in the same block (the store of the tag would clear it). A member with no `WEAVEC_WHEN` is not used.
 
 ```c rejected
 enum kind { KIND_NUMBER, KIND_TEXT };

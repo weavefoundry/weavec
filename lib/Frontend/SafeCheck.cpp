@@ -1011,7 +1011,53 @@ public:
     // 2: growth against the shadow).
     if (op->isIncrementDecrementOp())
       writesString(*op->getSubExpr(), op->getExprLoc());
+    if (!cxx && op->getOpcode() == clang::UO_AddrOf)
+      checkLibraryAddress(*op);
     return true;
+  }
+
+  /// RFC 0054 §2.1 (amendment 18): an indirect call may pass a struct that
+  /// holds pointers as a `void *` without a bound, since its callee is a
+  /// safe function, which reaches the bytes only through a checked
+  /// conversion, or code that is not safe, which is trusted to keep them.
+  /// A library function that writes through a pointer it is given is
+  /// neither, so a safe function does not take its address.
+  void checkLibraryAddress(const clang::Expr &address) {
+    const auto *reference = llvm::dyn_cast<clang::DeclRefExpr>(
+        (llvm::isa<clang::UnaryOperator>(address)
+             ? llvm::cast<clang::UnaryOperator>(address).getSubExpr()
+             : llvm::cast<clang::CastExpr>(address).getSubExpr())
+            ->IgnoreParens());
+    const auto *taken =
+        reference != nullptr
+            ? llvm::dyn_cast<clang::FunctionDecl>(reference->getDecl())
+            : nullptr;
+    if (taken == nullptr)
+      return;
+    // The callee of a direct call is not an address taken.
+    for (const clang::DynTypedNode &parent : ast.getParents(address))
+      if (const auto *call = parent.get<clang::CallExpr>();
+          call != nullptr && call->getCallee()->IgnoreParens() == &address)
+        return;
+    const auto match = core::LibrarySpec::shipped().lookup(
+        taken->getName().str(), taken->getNumParams());
+    if (!match.has_value())
+      return;
+    for (const core::LibraryParam &parameter : match->entry->params)
+      if (parameter.type == core::LibraryParam::Type::Pointer &&
+          parameter.effect == core::LibraryParam::Effect::Borrow &&
+          (parameter.access == core::LibraryParam::Access::Write ||
+           parameter.access == core::LibraryParam::Access::ReadWrite)) {
+        report(address.getExprLoc(), rule::PointerBytes,
+               "'" + taken->getName().str() +
+                   "' writes bytes through a pointer it is given; called "
+                   "through its address, it could forge the pointers of "
+                   "what it writes",
+               "call '" + taken->getName().str() +
+                   "' by name, where its arguments are checked, or take its "
+                   "address in a function that is not safe");
+        return;
+      }
   }
 
   bool VisitBinaryOperator(clang::BinaryOperator *op) {
@@ -1093,6 +1139,9 @@ public:
           cast->getSubExpr()->getType()->isPointerType() &&
           !containerCasts.contains(cast))
         checkPointerCast(*cast);
+      break;
+    case clang::CK_FunctionToPointerDecay:
+      checkLibraryAddress(*cast);
       break;
     case clang::CK_LValueBitCast:
     case clang::CK_LValueToRValueBitCast:

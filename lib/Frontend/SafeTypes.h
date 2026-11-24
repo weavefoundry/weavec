@@ -38,6 +38,7 @@ class CastExpr;
 class CXXNewExpr;
 class CXXRecordDecl;
 class CallExpr;
+class ClassTemplateDecl;
 class Expr;
 class FieldDecl;
 class FunctionDecl;
@@ -197,6 +198,10 @@ private:
   llvm::DenseSet<const clang::CXXRecordDecl *> knownBases;
   /// The last of the unit's top-level declarations `bases` has read.
   const clang::Decl *basesRead = nullptr;
+  /// The class templates read, whose instances `bases` reads as they are
+  /// made, and the instances read.
+  std::vector<const clang::ClassTemplateDecl *> classTemplates;
+  llvm::DenseSet<const clang::CXXRecordDecl *> instancesRead;
 };
 
 /// §3.2: what `union-pointer` and `bad-annotation` report.

@@ -410,6 +410,11 @@ struct SafeUnit {
   /// its recorded locals, by their mark's index.
   llvm::StringMap<std::string> globalTypes;
   std::vector<std::string> recordedLocals;
+  /// The allocated types an array `new` puts a cookie before (the C++
+  /// ABI's: a destructor, or a usual `operator delete[]` that takes the
+  /// size): such a block records no type, since its elements do not begin
+  /// it.
+  llvm::StringSet<> cookieTypes;
 
   /// Whether `name` is a safe function defined in the unit.
   [[nodiscard]] bool isSafe(llvm::StringRef name) const {

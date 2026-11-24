@@ -639,6 +639,11 @@ void noteAllocations(ModuleContext &module, llvm::Module &ir) {
     if (name == nullptr || !call->getType()->isPointerTy() ||
         !module.options.safe->layouts.contains(name->getString()))
       continue;
+    // A block an array `new` puts a cookie in records no type: its
+    // elements do not begin it.
+    if (arrayNew(*call) &&
+        module.options.safe->cookieTypes.contains(name->getString()))
+      continue;
     llvm::GlobalVariable *record = typeRecord(
         module, typeKey(module, name->getString(), false), name->getString());
     llvm::Instruction *after = nullptr;

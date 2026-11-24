@@ -600,6 +600,9 @@ llvm::Constant *layoutGlobal(ModuleContext &module, llvm::StringRef key);
 /// its type, `{key, cache, layout, type}`.
 llvm::GlobalVariable *typeRecord(ModuleContext &module, std::uint64_t key,
                                  llvm::StringRef layoutKey);
+/// Whether `call` is an array `new` (its row's `typed(new_typed, …)` flag
+/// 1), which may put a cookie before its elements (GuardFast.cpp).
+bool arrayNew(const llvm::CallBase &call);
 /// §2.2, §3.3: a safe function's checked conversions and tagged unions'
 /// accesses and tag stores, as checks.
 void expandTypeMarkers(ModuleContext &module, llvm::Function &function);

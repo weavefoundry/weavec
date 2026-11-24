@@ -279,11 +279,15 @@ static void markUnwound(uintptr_t high) {
 void __weavec_rt_landed(void) {
   const uintptr_t frame = (uintptr_t)__builtin_frame_address(0);
   markUnwound(frame);
+  weavecRtSettleFrames(frame);
   /* (A cleanup resumes: the frames above are marked from here.) */
   unwindLow = unwindLow != 0 && unwindLow < frame ? frame : unwindLow;
 }
 
-void weavecRtCaught(uintptr_t frame) { markUnwound(frame), unwindLow = 0; }
+void weavecRtCaught(uintptr_t frame) {
+  markUnwound(frame), unwindLow = 0;
+  weavecRtSettleFrames(frame);
+}
 
 /*===-- The C++ library's checks (section 6) -------------------------------===*/
 
