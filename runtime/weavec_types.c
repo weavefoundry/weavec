@@ -19,8 +19,10 @@
 
 #include "weavec_rt.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 
 /*===-- The table of types ------------------------------------------------===*/
 
@@ -89,7 +91,8 @@ const struct __weavec_rt_layout *weavecRtTypeLayout(uint32_t type) {
  * popped where it ends. An entry below the stack pointer belongs to a frame
  * that is gone (a non-local exit skipped its pop) and is dropped where it
  * is met. A thread with more than FrameRecords recorded locals records no
- * more of them, which are then believed. */
+ * more of them, which are then believed (as are all of a thread's when its
+ * list cannot be mapped). */
 enum { FrameRecords = 1024 };
 
 struct FrameRecord {
@@ -98,22 +101,64 @@ struct FrameRecord {
   const struct __weavec_rt_layout *layout;
 };
 
-static __thread struct FrameRecord frameRecords[FrameRecords];
+/* The list is mapped on a thread's first push and unmapped when the thread
+ * ends: the static TLS block keeps only a pointer and a depth, since a
+ * runtime a program that weavec-cc did not link loads with dlopen must fit
+ * glibc's small surplus of static TLS (the allocator's cache copy is
+ * initial-exec), which a list of FrameRecords entries does not. */
+static __thread struct FrameRecord *frameRecords;
 static __thread uint32_t frameDepth;
+static pthread_key_t frameKey;
+static pthread_once_t frameKeyOnce = PTHREAD_ONCE_INIT;
+static int frameKeyReady;
+
+static void dropFrameRecords(void *list) {
+  frameRecords = NULL;
+  frameDepth = 0;
+  (void)munmap(list, FrameRecords * sizeof(struct FrameRecord));
+}
+
+static void makeFrameKey(void) {
+  frameKeyReady = pthread_key_create(&frameKey, dropFrameRecords) == 0;
+}
+
+/* The calling thread's list, mapped if it has none; null when it cannot
+ * be. */
+static struct FrameRecord *ownFrameRecords(void) {
+  void *list;
+  if (frameRecords != NULL)
+    return frameRecords;
+  (void)pthread_once(&frameKeyOnce, makeFrameKey);
+  if (!frameKeyReady)
+    return NULL;
+  list = mmap(NULL, FrameRecords * sizeof(struct FrameRecord),
+              PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (list == MAP_FAILED)
+    return NULL;
+  if (pthread_setspecific(frameKey, list) != 0) {
+    (void)munmap(list, FrameRecords * sizeof(struct FrameRecord));
+    return NULL;
+  }
+  frameRecords = (struct FrameRecord *)list;
+  return frameRecords;
+}
 
 uint32_t __weavec_rt_frame_push(const void *address,
                                 const struct __weavec_rt_layout *layout,
                                 uint64_t size) {
   const uint32_t depth = frameDepth;
   const uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
+  struct FrameRecord *const list = ownFrameRecords();
   uint32_t top = depth;
+  if (list == NULL)
+    return depth;
   /* The entries of frames that are gone. */
-  while (top != 0 && frameRecords[top - 1].address < sp)
+  while (top != 0 && list[top - 1].address < sp)
     --top;
   if (top < FrameRecords) {
-    frameRecords[top].address = (uintptr_t)address;
-    frameRecords[top].size = size;
-    frameRecords[top].layout = layout;
+    list[top].address = (uintptr_t)address;
+    list[top].size = size;
+    list[top].layout = layout;
     frameDepth = top + 1;
   } else {
     frameDepth = top;

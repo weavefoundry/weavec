@@ -310,31 +310,31 @@ followed by the stack and the released block's paragraph. The test is exact for 
 
 Each error ends with `[weavec-safe:<rule>]`. The [rules reference](/reference/rules/) gives each one's rejected example and its rewrite; `weavec-cc --weavec-explain <rule>` prints the same section.
 
-| Rule             | Rejects                                                                                                                                  |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `index-single`   | indexing or offsetting a pointer to one object (`p[1]`, `p + 2`, `p++`); `p[0]` is `*p`                                                  |
-| `int-to-pointer` | an integer converted to a pointer, other than the constant null                                                                          |
+| Rule             | Rejects                                                                                                                                                 |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index-single`   | indexing or offsetting a pointer to one object (`p[1]`, `p + 2`, `p++`); `p[0]` is `*p`                                                                 |
+| `int-to-pointer` | an integer converted to a pointer, other than the constant null                                                                                         |
 | `pointer-cast`   | a conversion that could forge a pointer and is not one the runtime checks (a `void *` to a struct, a struct to one that begins with it, `container_of`) |
-| `pointer-bytes`  | writing an object that holds pointers as bytes, or copying or zeroing part of one                                                        |
-| `union-pointer`  | reading a member that holds a pointer of a union without a tag; a tagged union's member's address, or the union apart from its struct    |
-| `escape`         | keeping a pointer parameter after the call (stored in memory, returned) unless it is `WEAVEC_ESCAPES` or `WEAVEC_LIFETIMEBOUND`          |
-| `call-args`      | a pointer to one object passed, stored or returned where a declaration gives a bound, or given to a library call that may access more    |
-| `variadic`       | a variadic call the [library table](https://github.com/weavefoundry/weavec/blob/main/lib/Core/LibrarySpec.txt) does not describe         |
-| `no-asm`         | inline assembly, `setjmp`, `longjmp`, `__builtin_frame_address`, computed `goto`                                                         |
-| `unsafe-block`   | a `WEAVEC_UNSAFE` block inside a safe function                                                                                           |
-| `bad-annotation` | a bound that names nothing of the right type, or differs between declarations                                                            |
-| `cxx`            | a safe function in C++                                                                                                                   |
-| `counted-pair`   | a count changed without its pointer in the adjacent statement (other than a step), or a struct initializer whose count exceeds its array |
-| `string-index`   | a string indexed or offset by a variable, or stepped back, before its length is known                                                    |
-| `string-write`   | a store through a `WEAVEC_NULL_TERMINATED` pointer, or passing it where the callee may write                                             |
-| `field-address`  | the address of a pointer field leaving the function                                                                                      |
-| `owner-moved`    | an owner used after it was moved or released (a second release included), or before the `realloc` that took it was tested                |
-| `owner-leak`     | an owner dropped while it may still hold a block: at a return, at the end of its scope, when assigned over, when its struct is released  |
-| `owner-source`   | something other than an owner's value stored in an owner (a borrow, a literal, an address, arithmetic), and an owner stepped             |
-| `owner-path`     | an owner moved, released or replaced through a reference, a pointer to `const` or a global read in place                                 |
-| `owner-slot`     | an element or `*pp` moved out of or released without an assignment to the same place in the next statement                               |
-| `stale-borrow`   | a borrow used after the owner it was taken below was moved, released or replaced, by the function or by a call that could                |
-| `call-alias`     | one call given a pointer it could change owners through and another argument above, below or equal to it                                 |
+| `pointer-bytes`  | writing an object that holds pointers as bytes, or copying or zeroing part of one                                                                       |
+| `union-pointer`  | reading a member that holds a pointer of a union without a tag; a tagged union's member's address, or the union apart from its struct                   |
+| `escape`         | keeping a pointer parameter after the call (stored in memory, returned) unless it is `WEAVEC_ESCAPES` or `WEAVEC_LIFETIMEBOUND`                         |
+| `call-args`      | a pointer to one object passed, stored or returned where a declaration gives a bound, or given to a library call that may access more                   |
+| `variadic`       | a variadic call the [library table](https://github.com/weavefoundry/weavec/blob/main/lib/Core/LibrarySpec.txt) does not describe                        |
+| `no-asm`         | inline assembly, `setjmp`, `longjmp`, `__builtin_frame_address`, computed `goto`                                                                        |
+| `unsafe-block`   | a `WEAVEC_UNSAFE` block inside a safe function                                                                                                          |
+| `bad-annotation` | a bound that names nothing of the right type, or differs between declarations                                                                           |
+| `cxx`            | a safe function in C++                                                                                                                                  |
+| `counted-pair`   | a count changed without its pointer in the adjacent statement (other than a step), or a struct initializer whose count exceeds its array                |
+| `string-index`   | a string indexed or offset by a variable, or stepped back, before its length is known                                                                   |
+| `string-write`   | a store through a `WEAVEC_NULL_TERMINATED` pointer, or passing it where the callee may write                                                            |
+| `field-address`  | the address of a pointer field leaving the function                                                                                                     |
+| `owner-moved`    | an owner used after it was moved or released (a second release included), or before the `realloc` that took it was tested                               |
+| `owner-leak`     | an owner dropped while it may still hold a block: at a return, at the end of its scope, when assigned over, when its struct is released                 |
+| `owner-source`   | something other than an owner's value stored in an owner (a borrow, a literal, an address, arithmetic), and an owner stepped                            |
+| `owner-path`     | an owner moved, released or replaced through a reference, a pointer to `const` or a global read in place                                                |
+| `owner-slot`     | an element or `*pp` moved out of or released without an assignment to the same place in the next statement                                              |
+| `stale-borrow`   | a borrow used after the owner it was taken below was moved, released or replaced, by the function or by a call that could                               |
+| `call-alias`     | one call given a pointer it could change owners through and another argument above, below or equal to it                                                |
 
 A rule never tries to prove something about the code: it rejects a construct. When code needs something the rules reject, keep that piece in a small `WEAVEC_GUARDED` helper function and call it; the helper's own accesses stay guarded, and the audit lists it.
 

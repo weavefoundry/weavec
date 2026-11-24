@@ -35,6 +35,6 @@ WEAVEC_SAFE double record(void) {
 }
 
 // CHECK-LABEL: define {{.*}} @make(
-// CHECK: %[[BLOCK:.*]] = call ptr @calloc(
+// CHECK: %[[BLOCK:[^ ]*]] = call {{.*}}ptr @calloc(
 // CHECK-NEXT: call void @__weavec_rt_note_type(ptr %[[BLOCK]], ptr @[[TYPE]])
 struct circle *make(void) { return calloc(1, sizeof(struct circle)); }
