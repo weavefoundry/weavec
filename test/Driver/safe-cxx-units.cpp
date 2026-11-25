@@ -93,7 +93,7 @@ int main() {
 // LEDGER: "tier": "safe"
 // LEDGER: "function": "main"
 // LEDGER: "tier": "safe"
-// LEDGER: "version": 13
+// LEDGER: "version": 14
 // AUDIT: 4 of 5 functions safe
 // AUDIT: functions that are not safe
 // AUDIT-NEXT: safe-cxx-units.cpp:{{[0-9]+}}: raw (guarded)
@@ -104,7 +104,7 @@ int main() {
 // AUDIT: erased members
 // AUDIT-NEXT: safe-cxx-units.cpp:{{[0-9]+}}: Cache.onChange
 // JSON-DAG: "schema": "weavec-audit"
-// JSON-DAG: "version": 9
+// JSON-DAG: "version": 10
 // JSON-DAG: "shared": [
 // JSON-DAG: "erased": [
 // REPORT: weavec: heap-use-after-free at {{.*}}safe-cxx-units.cpp:{{[0-9]+}}:

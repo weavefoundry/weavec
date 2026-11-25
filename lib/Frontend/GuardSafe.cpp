@@ -358,13 +358,10 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
                         llvm::AllocaInst &alloca, llvm::StringRef type = {}) {
   llvm::LLVMContext &context = module.context;
   const std::uint64_t alignment = alloca.getAlign().value();
-  std::string name;
-  if (fastUnit(module)) {
-    name = type.str();
-    if (name.empty()) {
-      llvm::raw_string_ostream text(name);
-      alloca.getAllocatedType()->print(text);
-    }
+  std::string name = type.str();
+  if (fastUnit(module) && name.empty()) {
+    llvm::raw_string_ostream text(name);
+    alloca.getAllocatedType()->print(text);
   }
   // A type its name does not tell from another of the unit's is not typed.
   const bool typed =
@@ -377,17 +374,7 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
       "free", llvm::Type::getVoidTy(context), module.ptr);
   llvm::GlobalVariable *record = nullptr;
   if (typed) {
-    auto *recordType = llvm::StructType::get(context, {module.i64, module.i64});
-    record = new llvm::GlobalVariable(
-        module.module, recordType, /*isConstant=*/false,
-        llvm::GlobalValue::PrivateLinkage,
-        llvm::ConstantStruct::get(
-            recordType,
-            {llvm::ConstantInt::get(module.i64,
-                                    typeKey(module, name, /*array=*/false)),
-             llvm::ConstantInt::get(module.i64, 0)}),
-        "__weavec.type");
-    record->setAlignment(llvm::Align(16));
+    record = typeRecord(module, typeKey(module, name, /*array=*/false), name);
     allocate = module.runtime(
         "alloc_typed",
         llvm::FunctionType::get(module.ptr,
@@ -418,6 +405,12 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
     return builder.CreateBinaryIntrinsic(llvm::Intrinsic::umax, bytes,
                                          llvm::ConstantInt::get(module.i64, 1));
   };
+  // RFC 0054 §1.2: a block that is not pooled still records its type.
+  llvm::GlobalVariable *noted =
+      !typed && !name.empty() && module.options.safe != nullptr &&
+              module.options.safe->layouts.contains(name)
+          ? typeRecord(module, typeKey(module, name, /*array=*/false), name)
+          : nullptr;
   auto allocateAt = [&](llvm::IRBuilder<> &builder) {
     llvm::Value *bytes = bytesAt(builder);
     llvm::Value *block = nullptr;
@@ -439,6 +432,12 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
       builder.CreateMemSet(block, llvm::ConstantInt::get(module.i8, 0), rounded,
                            llvm::MaybeAlign(alignment));
     }
+    if (noted != nullptr)
+      builder.CreateCall(
+          module.runtime("note_type", llvm::FunctionType::get(
+                                          llvm::Type::getVoidTy(module.context),
+                                          {module.ptr, module.ptr}, false)),
+          {block, noted});
     builder.CreateStore(block, slot);
   };
   auto releaseAt = [&](llvm::IRBuilder<> &builder) {
@@ -1039,6 +1038,9 @@ private:
       return globalSize(value).has_value();
     if (boundedField(value) != nullptr)
       return true;
+    // RFC 0054 §2.2: a checked conversion's object.
+    if (checkedObject(*value))
+      return true;
     if (const auto *call = llvm::dyn_cast<llvm::CallInst>(value)) {
       const FunctionBounds *callee = calleeBounds(module, *call);
       if (allocationSize(*call).has_value())
@@ -1213,6 +1215,13 @@ private:
     }
     auto *call = llvm::cast<llvm::CallInst>(value);
     llvm::IRBuilder<> builder(call->getNextNode());
+    if (const auto size = checkedObject(*call)) {
+      constantSizes[value] = {.bytes = *size, .mayBeNull = true};
+      return known[value] = {.lo = call,
+                             .hi = builder.CreateGEP(
+                                 module.i8, call,
+                                 llvm::ConstantInt::get(module.i64, *size))};
+    }
     llvm::Value *bytes = nullptr;
     const FunctionBounds *callee = calleeBounds(module, *call);
     const llvm::SmallVector<llvm::Value *, 8> arguments =
@@ -2264,7 +2273,8 @@ private:
           return false;
         continue;
       }
-      if (llvm::isa<llvm::ConstantPointerNull>(next) || known.contains(next))
+      if (llvm::isa<llvm::ConstantPointerNull>(next) || known.contains(next) ||
+          checkedObject(*next))
         continue;
       const auto *call = llvm::dyn_cast<llvm::CallBase>(next);
       if (call == nullptr || llvm::isa<llvm::IntrinsicInst>(call))

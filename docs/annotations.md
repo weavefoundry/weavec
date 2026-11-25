@@ -7,7 +7,7 @@ in C++, [RFC 0044](rfcs/0044-safe-cxx.md) and
 [its guide](pages/guides/safe-cxx.md)).
 `weavec-cc` puts the header on the system include path
 (`#include <weavec.h>`) and defines `__WEAVEC__` to `1` in every unit it
-compiles with WeaveC enabled. The header is at version 3.4
+compiles with WeaveC enabled. The header is at version 3.5
 (`WEAVEC_H_VERSION_MAJOR`, `WEAVEC_H_VERSION_MINOR`): 3.0 added
 `WEAVEC_OWNED` and made `WEAVEC_SAFE` name the one safe tier
 ([RFC 0043](rfcs/0043-ownership.md)), below; 3.1 adds no macro and gives
@@ -16,7 +16,9 @@ _In C++_ below); 3.2 adds `WEAVEC_SENDS` ([RFC 0046](rfcs/0046-thread-safety.md)
 3.3 adds `WEAVEC_SAFE_FILE` and `WEAVEC_ALIASED` and gives the bounds their
 meaning in C++ ([RFC 0047](rfcs/0047-conversion-in-place.md)); 3.4 adds no
 macro and lets `WEAVEC_ESCAPES` follow a reference's `&` and a member
-function's parameter list ([RFC 0048](rfcs/0048-safe-code-without-the-shadow.md)).
+function's parameter list ([RFC 0048](rfcs/0048-safe-code-without-the-shadow.md));
+3.5 adds `WEAVEC_TAGGED_BY` and `WEAVEC_WHEN`, a union's tag
+([RFC 0054](rfcs/0054-one-of-several-types.md)).
 
 `WEAVEC_UNSAFE` expands to `__attribute__((annotate("weavec.unsafe")))`
 under compilers that understand Clang's `annotate` attribute and to nothing
@@ -82,6 +84,8 @@ region too, with no source change.
 | `T *WEAVEC_ESCAPES p`                                      | after a parameter type's `*`                                                                                                                | The function may keep `p` (as a reference) after it returns; callers must not pass a stack address.                                                                                                                                                                                                          |
 | `T *WEAVEC_BORROWED f`                                     | after a field type's `*`                                                                                                                    | The field may hold a borrowed pointer when its struct is a local variable; a pointer loaded from it is borrowed.                                                                                                                                                                                             |
 | `T *p WEAVEC_LIFETIMEBOUND`                                | after a parameter's name                                                                                                                    | The function's result may point into `p` (Clang's `lifetimebound`).                                                                                                                                                                                                                                          |
+| `union { … } u WEAVEC_TAGGED_BY(tag)`, `WEAVEC_TAGGED_BY(tag, mask)` | after a union field's name, or after an anonymous union's closing brace | RFC 0054 §3: `tag`, an integer or enumeration field of the same struct (at most 64 bits, the tag of no other union), says which member is live (`tag & mask` with a mask). A safe function uses a member after a comparison of the tag the compiler adds (`union-member` when it fails), a store of a new value to the tag clears the union, and no member's address is taken. Expands to `annotate("weavec.tagged_by", "<tag>[, <mask>]")`. |
+| `T m WEAVEC_WHEN(value, …)`                                | after a member of a tagged union | The constant values of the tag the member is for. Every member that holds a pointer has one; a member without one is not used by safe code. Expands to `annotate("weavec.when", value, …)`. |
 
 ### In C++
 

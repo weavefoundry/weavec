@@ -297,6 +297,9 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
     // RFC 0047 §7.
     if (function.surveyed)
       entry["surveyed"] = true;
+    // RFC 0054 §4.
+    if (function.adapter)
+      entry["adapter"] = true;
     functions.push_back(std::move(entry));
   }
   llvm::json::Array fields;
@@ -345,66 +348,68 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
        .V = llvm::json::Object{{.K = "name", .V = "weavec-cc"},
                                {.K = "version", .V = WEAVEC_VERSION_STRING}}},
       {.K = "units",
-       .V =
-           llvm::json::Array{
-               llvm::json::Object{
-                   {.K = "source", .V = unit.source},
-                   {.K = "object", .V = unit.object},
-                   {.K = "target", .V = unit.target},
-                   {.K = "config", .V = std::move(config)},
-                   {.K = "summary",
-                    .V =
-                        llvm::json::Object{
-                            {.K = "accesses",
-                             .V = static_cast<std::int64_t>(ledger.accesses())},
-                            {.K = "proven",
-                             .V = static_cast<std::int64_t>(ledger.proven)},
-                            {.K = "guarded",
-                             .V = static_cast<std::int64_t>(ledger.guarded)},
-                            {.K = "unguarded",
-                             .V = static_cast<std::int64_t>(ledger.unguarded)},
-                            {.K = "typedSites",
-                             .V = static_cast<std::int64_t>(ledger.typedSites)},
-                            {.K = "placedLocals",
-                             .V = static_cast<std::int64_t>(
-                                 ledger.placedLocals)}}},
-                   // RFC 0051 §8: what the unit's options defined, and
-                   // what GuardDefine placed in its safe functions.
-                   {.K = "defined",
-                    .V = llvm::json::Object{{.K = "unit", .V = unit.defined},
-                                            {.K = "unreachable",
-                                             .V = static_cast<std::int64_t>(
-                                                 ledger.defined.unreachable)},
-                                            {.K = "missingReturn",
-                                             .V = static_cast<std::int64_t>(
-                                                 ledger.defined.missingReturn)},
-                                            {.K = "division",
-                                             .V = static_cast<std::int64_t>(
-                                                 ledger.defined.division)},
-                                            {.K = "shifts",
-                                             .V = static_cast<std::int64_t>(
-                                                 ledger.defined.shifts)},
-                                            {.K = "conversions",
-                                             .V = static_cast<std::int64_t>(
-                                                 ledger.defined.conversions)},
-                                            {.K = "probed",
-                                             .V = static_cast<std::int64_t>(
-                                                 ledger.defined.probed)}}},
-                   {.K = "functions", .V = std::move(functions)},
-                   {.K = "fields", .V = std::move(fields)},
-                   {.K = "partial", .V = unit.partial},
-                   {.K = "command",
-                    .V =
-                        llvm::json::Object{
-                            {.K = "directory", .V = unit.directory},
-                            {.K = "arguments", .V = std::move(command)},
-                            {.K = "cxx", .V = unit.cxx}}},
-                   {.K = "files", .V = std::move(files)},
-                   {.K = "errors", .V = std::move(errors)},
-                   {.K = "evidence", .V = std::move(evidence)},
-                   {.K = "library", .V = std::move(library)},
-                   {.K = "rows", .V = std::move(rows)},
-               }}},
+       .V = llvm::json::Array{llvm::json::Object{
+           {.K = "source", .V = unit.source},
+           {.K = "object", .V = unit.object},
+           {.K = "target", .V = unit.target},
+           {.K = "config", .V = std::move(config)},
+           {.K = "summary",
+            .V = llvm::json::
+                Object{{.K = "accesses",
+                        .V = static_cast<std::int64_t>(ledger.accesses())},
+                       {.K = "proven",
+                        .V = static_cast<std::int64_t>(ledger.proven)},
+                       {.K = "guarded",
+                        .V = static_cast<std::int64_t>(ledger.guarded)},
+                       {.K = "unguarded",
+                        .V =
+                            static_cast<std::int64_t>(ledger.unguarded)},
+                       {.K = "typedSites",
+                        .V =
+                            static_cast<std::int64_t>(ledger.typedSites)},
+                       {.K = "placedLocals",
+                        .V =
+                            static_cast<std::int64_t>(ledger.placedLocals)},
+                       {.K = "checkedCasts",
+                        .V =
+                            static_cast<std::int64_t>(ledger.checkedCasts)},
+                       {.K = "checkedMembers",
+                        .V =
+                            static_cast<std::int64_t>(ledger.checkedMembers)}}},
+           // RFC 0051 §8: what the unit's options defined, and
+           // what GuardDefine placed in its safe functions.
+           {.K = "defined",
+            .V =
+                llvm::json::Object{
+                    {.K = "unit", .V = unit.defined},
+                    {.K = "unreachable",
+                     .V = static_cast<std::int64_t>(
+                         ledger.defined.unreachable)},
+                    {.K = "missingReturn",
+                     .V = static_cast<std::int64_t>(ledger.defined
+                                                        .missingReturn)},
+                    {.K = "division",
+                     .V = static_cast<std::int64_t>(ledger.defined.division)},
+                    {.K = "shifts",
+                     .V = static_cast<std::int64_t>(ledger.defined.shifts)},
+                    {.K = "conversions",
+                     .V = static_cast<std::int64_t>(ledger.defined
+                                                        .conversions)},
+                    {.K = "probed",
+                     .V = static_cast<std::int64_t>(ledger.defined.probed)}}},
+           {.K = "functions", .V = std::move(functions)},
+           {.K = "fields", .V = std::move(fields)},
+           {.K = "partial", .V = unit.partial},
+           {.K = "command",
+            .V = llvm::json::Object{{.K = "directory", .V = unit.directory},
+                                    {.K = "arguments", .V = std::move(command)},
+                                    {.K = "cxx", .V = unit.cxx}}},
+           {.K = "files", .V = std::move(files)},
+           {.K = "errors", .V = std::move(errors)},
+           {.K = "evidence", .V = std::move(evidence)},
+           {.K = "library", .V = std::move(library)},
+           {.K = "rows", .V = std::move(rows)},
+       }}},
   };
   std::string text;
   llvm::raw_string_ostream os(text);
@@ -477,6 +482,10 @@ std::string enforcementSummary(const EnforcementLedger &ledger,
   // RFC 0048 §9.
   if (ledger.placedLocals != 0)
     os << "; " << ledger.placedLocals << " placed locals";
+  // RFC 0054 §5.
+  if (ledger.checkedCasts != 0 || ledger.checkedMembers != 0)
+    os << "; " << ledger.checkedCasts << " checked conversions, "
+       << ledger.checkedMembers << " checked union members";
   return text;
 }
 
@@ -510,6 +519,8 @@ struct Audit {
   /// globals of code that is not safe that safe code names.
   llvm::json::Array threads;
   llvm::json::Array sends;
+  /// RFC 0054 §4: functions that are not safe and only convert and call.
+  llvm::json::Array adapters;
   llvm::json::Array threadGlobals;
   /// RFC 0051 §8: what (N1) to (N6) rest on: the units with safe functions
   /// not compiled with -fweavec-safe (their library code keeps the command
@@ -620,6 +631,8 @@ static bool auditLedger(llvm::StringRef path, Audit &audit) {
           audit.threads.push_back(llvm::json::Object(*function));
         if (function->getBoolean("sends").value_or(false))
           audit.sends.push_back(llvm::json::Object(*function));
+        if (function->getBoolean("adapter").value_or(false))
+          audit.adapters.push_back(llvm::json::Object(*function));
       }
     if (hasSafe && !unitDefined && !unit->getBoolean("partial").value_or(false))
       audit.undefinedUnits.push_back(llvm::json::Object{
@@ -862,7 +875,7 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
                "{0:2}",
                llvm::json::Value(llvm::json::Object{
                    {.K = "schema", .V = "weavec-audit"},
-                   {.K = "version", .V = 9},
+                   {.K = "version", .V = 10},
                    {.K = "undefined",
                     .V = llvm::json::Object{{.K = "units",
                                              .V = llvm::json::Value(
@@ -886,6 +899,7 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
                    {.K = "untyped", .V = std::move(audit.untyped)},
                    {.K = "threads", .V = std::move(audit.threads)},
                    {.K = "sends", .V = std::move(audit.sends)},
+                   {.K = "adapters", .V = std::move(audit.adapters)},
                    {.K = "threadGlobals", .V = std::move(audit.threadGlobals)},
                    {.K = "aliased", .V = std::move(audit.aliased)},
                    {.K = "unchecked", .V = std::move(unchecked)},
@@ -942,6 +956,16 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
   if (audit.placed != 0)
     out << audit.placed
         << " locals placed in typed memory (their addresses are kept)\n";
+  // RFC 0054 §4.
+  if (!audit.adapters.empty()) {
+    out << "\nfunctions that only convert and call (the conversion is checked "
+           "in safe code; each can be safe):\n";
+    for (const llvm::json::Value &value : audit.adapters) {
+      const llvm::json::Object &entry = *value.getAsObject();
+      out << "  " << where(entry) << ": "
+          << entry.getString("function").value_or("") << '\n';
+    }
+  }
   // RFC 0047 §7: the conversion's plan, when the ledgers were surveyed.
   if (surveyed) {
     unsigned functions = 0;

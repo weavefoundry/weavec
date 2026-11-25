@@ -108,6 +108,10 @@ struct Want {
     /// RFC 0051 §4.1: the text of `removal`, which only asserts, taken out
     /// (certain).
     Remove,
+    /// RFC 0054 §4: a fix the rule spells itself: `insertions`, and the text
+    /// of `removal` taken out when it is valid, at `level`, on
+    /// `declaration` (`aspect`, `fact` and `description` say what it is).
+    Write,
   };
   Kind kind = Kind::Bound;
   const clang::Decl *declaration = nullptr;
@@ -122,6 +126,15 @@ struct Want {
   // A designated initializer may leave it out.
   // NOLINTNEXTLINE(readability-redundant-member-init)
   std::string replacement = {};
+  /// Write: what goes where; whether the text spells WeaveC's macros.
+  // NOLINTBEGIN(readability-redundant-member-init)
+  std::vector<std::pair<clang::SourceLocation, std::string>> insertions = {};
+  std::string level = {};
+  std::string aspect = {};
+  std::string fact = {};
+  std::string description = {};
+  // NOLINTEND(readability-redundant-member-init)
+  bool macros = false;
 };
 
 class FixPlanner;

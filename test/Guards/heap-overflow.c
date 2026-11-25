@@ -18,6 +18,6 @@ int main(int argc, char **argv) {
   for (int i = 0; i < 4; i++)
     h[i] = i;
   // CHECK: weavec: heap-buffer-overflow at {{.*}}heap-overflow.c:11:10: read of 4 bytes at 0x{{[0-9a-f]+}}
-  // CHECK: is 0 bytes after the 16-byte heap object at
+  // CHECK: is 0 bytes after the 16-byte heap object {{(of type '[^']*' )?}}at
   return sum(h, 4 + argc);
 }

@@ -23,7 +23,7 @@ long hinted(const std::vector<long> &v, std::size_t i) {
 }
 
 const long *aligned(const std::vector<long> &v) {
-  return static_cast<const long *>(__builtin_assume_aligned(v.data(), 64)); // expected-error {{'__builtin_assume_aligned' tells the optimizer what nothing checks}} expected-error {{a pointer is converted to a pointer to another type}}
+  return static_cast<const long *>(__builtin_assume_aligned(v.data(), 64)); // expected-error {{'__builtin_assume_aligned' tells the optimizer what nothing checks}}
 }
 // CHECK: note: fix (certain): write 'v.data()' for '__builtin_assume_aligned(v.data(), 64)'
 

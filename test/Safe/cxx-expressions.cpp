@@ -142,11 +142,13 @@ int arrays() {
 long reinterpreted(Item *item) {
   return *reinterpret_cast<long *>(item); // expected-error {{a pointer is converted to a pointer to another type [weavec-safe:pointer-cast]}}
 }
+// RFC 0054 §2.1 (d): a `void *` to a plain scalar is checked where it is
+// made (the object must be plain).
 int cStyle(const void *p) {
-  return *(const int *)p; // expected-error {{a pointer is converted to a pointer to another type [weavec-safe:pointer-cast]}}
+  return *(const int *)p;
 }
 int fromVoid(void *p) {
-  return *static_cast<int *>(p); // expected-error {{a pointer is converted to a pointer to another type [weavec-safe:pointer-cast]}}
+  return *static_cast<int *>(p);
 }
 void constRemoved(const Item &item) {
   const_cast<Item &>(item).v = 1; // expected-error {{a cast removes 'const' [weavec-safe:pointer-cast]}}
@@ -155,7 +157,7 @@ int cStyleConst(const Item *item) {
   return ((Item *)item)->v; // expected-error {{a cast removes 'const' [weavec-safe:pointer-cast]}}
 }
 int downcast(Base *base) {
-  return static_cast<Derived *>(base)->d; // expected-error {{a base is converted to a derived class without a check [weavec-safe:pointer-cast]}}
+  return static_cast<Derived *>(base)->d; // RFC 0054 §2.2: checked where it is made
 }
 int downcastChecked(Base *base) {
   if (auto *derived = dynamic_cast<Derived *>(base))

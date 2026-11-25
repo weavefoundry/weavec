@@ -213,9 +213,39 @@ std::vector<OwnedToken> lex_file(const std::string &contents) {
 }
 ```
 
+### A hierarchy walked by kind
+
+A class hierarchy whose base says which class an object is, walked with a `switch` and a `static_cast`, is accepted as it is: the cast is checked when it runs ([RFC 0054](/rfcs/0054-one-of-several-types/)), for a class with virtual functions by one comparison of the type information its vtable names. A wrong one stops with `bad-cast`. `dynamic_cast` stays accepted, and costs more.
+
+```cpp accepted
+enum class Kind { Literal, Binary };
+struct Expr { Kind kind; explicit Expr(Kind k) : kind(k) {} virtual ~Expr() = default; };
+struct Literal final : Expr { double value = 0; Literal() : Expr(Kind::Literal) {} };
+struct Binary final : Expr {
+  char op = '+';
+  std::unique_ptr<Expr> left, right;
+  Binary() : Expr(Kind::Binary) {}
+};
+
+double evaluate(const Expr &expr) {
+  switch (expr.kind) {
+  case Kind::Literal:
+    return static_cast<const Literal &>(expr).value;
+  case Kind::Binary: {
+    const auto &binary = static_cast<const Binary &>(expr);
+    const double a = evaluate(*binary.left), b = evaluate(*binary.right);
+    return binary.op == '+' ? a + b : a * b;
+  }
+  }
+  return 0;
+}
+```
+
+A `static_cast` from `void *` to a class (a C library's callback context) is checked the same way, and so is a union with a tag, as in Safe C (`WEAVEC_TAGGED_BY`, `WEAVEC_WHEN`; members without destructors).
+
 ### A variant and its visitor
 
-`std::variant` replaces unions and downcasts; a reference into the alternative ends when the variant is assigned.
+`std::variant` replaces unions; a reference into the alternative ends when the variant is assigned.
 
 ```cpp accepted
 struct Number { double value = 0; };
@@ -728,6 +758,8 @@ What the rules reject that is correct: a mutex beside the data it guards in loca
 | a back pointer: `Weak<T>`, an index                                    | a raw pointer member (read only, checked at run time), or an index                                                                                                                                       |
 | `Rc<T>`                                                                | `std::shared_ptr<const T>`                                                                                                                                                                               |
 | `Rc<RefCell<T>>`                                                       | `std::shared_ptr<T>` to a `WEAVEC_ALIASED` class: conflicting borrows are found at run time by the guards, not by a count; no enum (`std::variant`) inside                                               |
+| `enum` and `match`                                                     | a `std::variant` and `std::visit`; or a class hierarchy walked by a kind and a `static_cast`, checked when it runs (`bad-cast`); or a union with `WEAVEC_TAGGED_BY` (`union-member`)                     |
+| `Any::downcast_ref`, a trait object downcast                           | a `static_cast` from `void *` or to a derived class, checked when it runs                                                                                                                                |
 | a slice index or `unwrap()` that panics                                | a hardened library check (`library-assertion`) or a `null-dereference` report                                                                                                                            |
 | `unsafe`                                                               | `WEAVEC_GUARDED` (still guarded at run time), `WEAVEC_UNSAFE` (not)                                                                                                                                      |
 | integer overflow (a panic in a debug build, wrapping in a release one) | wrapping in both builds; a division by zero stops (`division-by-zero`)                                                                                                                                   |

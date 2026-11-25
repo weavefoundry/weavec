@@ -37,5 +37,5 @@ int main(int argc, char **argv) {
 // INDEX: weavec: summary: library-assertion at {{.*}} in {{.*}}operator[]
 
 // DELETE: weavec: alloc-release-mismatch at {{.*}}report-cxx.cpp:30:{{[0-9]+}}: operator delete of 0x{{[0-9a-f]+}}: allocated by operator new[]
-// DELETE: is the 32-byte heap object at 0x{{[0-9a-f]+}}, allocated by thread T0:
+// DELETE: is the 32-byte heap object {{(of type '[^']*' )?}}at 0x{{[0-9a-f]+}}, allocated by thread T0:
 // DELETE-NEXT: #0 0x{{[0-9a-f]+}} in app::make(int) {{.*}}report-cxx.cpp:15

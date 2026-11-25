@@ -310,31 +310,31 @@ followed by the stack and the released block's paragraph. The test is exact for 
 
 Each error ends with `[weavec-safe:<rule>]`. The [rules reference](/reference/rules/) gives each one's rejected example and its rewrite; `weavec-cc --weavec-explain <rule>` prints the same section.
 
-| Rule             | Rejects                                                                                                                                  |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `index-single`   | indexing or offsetting a pointer to one object (`p[1]`, `p + 2`, `p++`); `p[0]` is `*p`                                                  |
-| `int-to-pointer` | an integer converted to a pointer, other than the constant null                                                                          |
-| `pointer-cast`   | a conversion that could forge a pointer: memory that holds pointers to anything but `void` or `const` bytes, a `void *` to another type  |
-| `pointer-bytes`  | writing an object that holds pointers as bytes, or copying or zeroing part of one                                                        |
-| `union-pointer`  | reading a union member that holds a pointer                                                                                              |
-| `escape`         | keeping a pointer parameter after the call (stored in memory, returned) unless it is `WEAVEC_ESCAPES` or `WEAVEC_LIFETIMEBOUND`          |
-| `call-args`      | a pointer to one object passed, stored or returned where a declaration gives a bound, or given to a library call that may access more    |
-| `variadic`       | a variadic call the [library table](https://github.com/weavefoundry/weavec/blob/main/lib/Core/LibrarySpec.txt) does not describe         |
-| `no-asm`         | inline assembly, `setjmp`, `longjmp`, `__builtin_frame_address`, computed `goto`                                                         |
-| `unsafe-block`   | a `WEAVEC_UNSAFE` block inside a safe function                                                                                           |
-| `bad-annotation` | a bound that names nothing of the right type, or differs between declarations                                                            |
-| `cxx`            | a safe function in C++                                                                                                                   |
-| `counted-pair`   | a count changed without its pointer in the adjacent statement (other than a step), or a struct initializer whose count exceeds its array |
-| `string-index`   | a string indexed or offset by a variable, or stepped back, before its length is known                                                    |
-| `string-write`   | a store through a `WEAVEC_NULL_TERMINATED` pointer, or passing it where the callee may write                                             |
-| `field-address`  | the address of a pointer field leaving the function                                                                                      |
-| `owner-moved`    | an owner used after it was moved or released (a second release included), or before the `realloc` that took it was tested                |
-| `owner-leak`     | an owner dropped while it may still hold a block: at a return, at the end of its scope, when assigned over, when its struct is released  |
-| `owner-source`   | something other than an owner's value stored in an owner (a borrow, a literal, an address, arithmetic), and an owner stepped             |
-| `owner-path`     | an owner moved, released or replaced through a reference, a pointer to `const` or a global read in place                                 |
-| `owner-slot`     | an element or `*pp` moved out of or released without an assignment to the same place in the next statement                               |
-| `stale-borrow`   | a borrow used after the owner it was taken below was moved, released or replaced, by the function or by a call that could                |
-| `call-alias`     | one call given a pointer it could change owners through and another argument above, below or equal to it                                 |
+| Rule             | Rejects                                                                                                                                                 |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index-single`   | indexing or offsetting a pointer to one object (`p[1]`, `p + 2`, `p++`); `p[0]` is `*p`                                                                 |
+| `int-to-pointer` | an integer converted to a pointer, other than the constant null                                                                                         |
+| `pointer-cast`   | a conversion that could forge a pointer and is not one the runtime checks (a `void *` to a struct, a struct to one that begins with it, `container_of`) |
+| `pointer-bytes`  | writing an object that holds pointers as bytes, or copying or zeroing part of one                                                                       |
+| `union-pointer`  | reading a member that holds a pointer of a union without a tag; a tagged union's member's address, or the union apart from its struct                   |
+| `escape`         | keeping a pointer parameter after the call (stored in memory, returned) unless it is `WEAVEC_ESCAPES` or `WEAVEC_LIFETIMEBOUND`                         |
+| `call-args`      | a pointer to one object passed, stored or returned where a declaration gives a bound, or given to a library call that may access more                   |
+| `variadic`       | a variadic call the [library table](https://github.com/weavefoundry/weavec/blob/main/lib/Core/LibrarySpec.txt) does not describe                        |
+| `no-asm`         | inline assembly, `setjmp`, `longjmp`, `__builtin_frame_address`, computed `goto`                                                                        |
+| `unsafe-block`   | a `WEAVEC_UNSAFE` block inside a safe function                                                                                                          |
+| `bad-annotation` | a bound that names nothing of the right type, or differs between declarations                                                                           |
+| `cxx`            | a safe function in C++                                                                                                                                  |
+| `counted-pair`   | a count changed without its pointer in the adjacent statement (other than a step), or a struct initializer whose count exceeds its array                |
+| `string-index`   | a string indexed or offset by a variable, or stepped back, before its length is known                                                                   |
+| `string-write`   | a store through a `WEAVEC_NULL_TERMINATED` pointer, or passing it where the callee may write                                                            |
+| `field-address`  | the address of a pointer field leaving the function                                                                                                     |
+| `owner-moved`    | an owner used after it was moved or released (a second release included), or before the `realloc` that took it was tested                               |
+| `owner-leak`     | an owner dropped while it may still hold a block: at a return, at the end of its scope, when assigned over, when its struct is released                 |
+| `owner-source`   | something other than an owner's value stored in an owner (a borrow, a literal, an address, arithmetic), and an owner stepped                            |
+| `owner-path`     | an owner moved, released or replaced through a reference, a pointer to `const` or a global read in place                                                |
+| `owner-slot`     | an element or `*pp` moved out of or released without an assignment to the same place in the next statement                                              |
+| `stale-borrow`   | a borrow used after the owner it was taken below was moved, released or replaced, by the function or by a call that could                               |
+| `call-alias`     | one call given a pointer it could change owners through and another argument above, below or equal to it                                                |
 
 A rule never tries to prove something about the code: it rejects a construct. When code needs something the rules reject, keep that piece in a small `WEAVEC_GUARDED` helper function and call it; the helper's own accesses stay guarded, and the audit lists it.
 
@@ -356,13 +356,54 @@ The ownership rules are checked only when the program compiles. In the checked m
 
 A safe function has no behavior C leaves undefined ([RFC 0051](/rfcs/0051-nothing-undefined/); [the list](/reference/undefined/) has each of the 221 items of C23's Annex J.2 and what disposes of it). Signed arithmetic wraps, a shift's count is taken modulo the width, a conversion from floating point saturates, every local starts as zeroes and a loop may run forever. A division by zero or of the least value by -1, `__builtin_unreachable()` reached, the end of a function that must return a value reached, and a full stack stop with a report (`division-by-zero`, `division-overflow`, `unreachable`, `missing-return`, `stack-exhaustion`). `restrict`, `__builtin_assume` and the attributes that assert are errors ([`assumed`](/reference/rules/#assumed)); bytes do not become a `bool`; a signal handler is registered by a `WEAVEC_GUARDED` function ([`signal-handler`](/reference/rules/#signal-handler)); a call through a declaration without a prototype, a format that does not match, and unsequenced changes are Clang's errors; and two safe units that declare one function or global two ways do not link ([`definition-mismatch`](/reference/rules/#definition-mismatch)).
 
+## One of several types
+
+A value that is one of several types is written as C writes it, and checked where the type is chosen ([RFC 0054](/rfcs/0054-one-of-several-types/)): each check reads a tag or the runtime's record of an object's type when it runs, in both builds, so no rule has to follow how the value got there.
+
+**A tagged union.** The union says which field of its struct is its tag, and each member which values of the tag it is for. A member is used after a comparison of the tag, which the compiler adds and the optimizer removes where the program already made it; a store of a new value to the tag clears the union; and the address of a member is not taken, so no pointer into a member outlives its check.
+
+```c
+enum kind { KIND_NUMBER, KIND_TEXT, KIND_LIST };
+struct value {
+  enum kind kind;
+  union {
+    double number WEAVEC_WHEN(KIND_NUMBER);
+    char *WEAVEC_OWNED WEAVEC_NULL_TERMINATED text WEAVEC_WHEN(KIND_TEXT);
+    struct list *WEAVEC_OWNED items WEAVEC_WHEN(KIND_LIST);
+  } as WEAVEC_TAGGED_BY(kind);
+};
+
+double as_number(const struct value *v) {
+  switch (v->kind) {
+  case KIND_NUMBER: return v->as.number;
+  case KIND_TEXT:   return strtod(v->as.text, NULL);
+  default:          return 0;
+  }
+}
+```
+
+A member read under the wrong tag stops: `weavec: union-member at value.c:14:12: 'text' read while 'kind' is 0`. Set the tag before the member (the compiler moves a store of the tag that comes after its member, a certain fix), copy the struct rather than the union, and release an owned member before the tag changes: the store of the tag clears it (`owner-leak` otherwise). `WEAVEC_TAGGED_BY(tt, 0x3f)` compares the tag after a mask, for a tag that keeps other bits.
+
+**A struct that begins with another.** An object header and the objects that begin with it convert both ways: up with no check, down with a check that an object of the derived type is there.
+
+```c
+struct object { int type; struct object *next; };
+struct string { struct object header; size_t length; char *WEAVEC_OWNED WEAVEC_COUNTED_BY(length) bytes; };
+
+size_t length_of(struct object *o) {
+  return o->type == TYPE_STRING ? ((struct string *)o)->length : 0;
+}
+```
+
+**Contexts and containers of `void *`.** `struct server *s = context;` asks the runtime whether a `struct server` is at `context`; a wrong one stops with `bad-cast`, which names the type of the block that is there. `container_of` (a pointer to a member, less the member's offset) is checked the same way. Every block of the runtime's heap knows the type its allocation named, and so does every global and every local of a safe function whose address becomes a `void *`; memory with no record is believed, and `WEAVEC_RT_STATS=1` counts those conversions.
+
 ## Converting a module
 
 1. Compile the file with `-fsyntax-only -fweavec-safe` and read the errors (`--weavec-explain` for any rule that is new to you); mark functions that need inline assembly or `setjmp` `WEAVEC_GUARDED` first.
 2. Let the compiler write what it can: `weavec-cc --weavec-fix -- <the file's compile command>` gives indexed pointers the bounds their uses agree on (a `memcpy`'s count, a loop's comparison, a byte tested against zero), marks the parameters a function keeps `WEAVEC_ESCAPES` and the ones it returns `WEAVEC_LIFETIMEBOUND`, runs the rules again and repeats ([`fix`](/reference/rules/#fix), RFC 0049). Each error it cannot fix says in its note what to write. For a whole project, survey the build (`-fweavec-safe-survey -fweavec-ledger=ledger/`) and give `--weavec-fix` the ledger directory.
 3. Give the pointers the fixer left a bound, and new `call-args` errors show the callers that pass pointers without bounds.
 4. Declare the owners: each pointer field that owns its block, each function that returns a block for the caller to release (its result), and each one that takes a block from its caller (its parameter) `WEAVEC_OWNED`. Annotate the function pointer types of allocation hooks too. Pointer fields that do not own stay references. Then fix the ownership errors: a release on each early return, a destructor that releases each owner field, `realloc` into a local, `NULL` after a release from a struct the caller owns, `const` on parameters a callee only reads.
-5. Replace casts between types that hold pointers with typed code; keep what cannot be typed (a `void *` callback context cast back, a header found by stepping back from a pointer, a release through a back pointer, ownership that depends on a flag) in a few `WEAVEC_GUARDED` helpers.
+5. Say each union's tag (`--weavec-fix` writes `WEAVEC_TAGGED_BY` and `WEAVEC_WHEN` when every read of the union's members is under a test of one field) and keep the conversions as they are: a `void *` callback context, a struct taken as the struct that begins with it and `container_of` are checked when they run. Keep what cannot be typed (a release through a back pointer, ownership that depends on a flag) in a few `WEAVEC_GUARDED` helpers.
 6. String helpers that edit in place (trimming, splitting) take a counted buffer; struct initialization allocates into locals first.
 7. [Test](#testing) the result.
 
@@ -378,8 +419,8 @@ Safe C reads like the C an agent would write anyway, with the bounds and the own
 - **A tree** owns its children (`struct tree *WEAVEC_OWNED left, *WEAVEC_OWNED right;`) and refers to its parent (`struct tree *parent;`, a reference); the function that links a child to `t` takes `t` `WEAVEC_ESCAPES`.
 - **A singly linked list** owns each next node and is edited through `struct node *WEAVEC_OWNED *pp`: `struct node *WEAVEC_OWNED n = *pp; *pp = n->next;` unlinks a node.
 - **A hash map** owns its bucket array and each bucket's chain; **an LRU cache** keeps its entries owned by the map and orders them with references.
-- **A sum type** is a tag and one struct pointer per variant, not a union of pointers.
-- **A callback** takes the type it needs (`int (*visit)(struct item *, struct state *)`), not a `void *` context; a library that needs `void *` gets a `WEAVEC_GUARDED` adapter of a few lines.
+- **A sum type** (Rust's `enum`) is a struct with a tag and a union that says it: `WEAVEC_TAGGED_BY(kind)` on the union, `WEAVEC_WHEN(KIND_TEXT)` on each member; a `switch` on the tag is `match` ([one of several types](#one-of-several-types)).
+- **A callback** takes the type it needs (`int (*visit)(struct item *, struct state *)`) or, where a library hands back a `void *` context, converts it back: `struct server *s = context;` is checked when it runs.
 
 ```c
 struct node { struct node *WEAVEC_OWNED next; int v; };

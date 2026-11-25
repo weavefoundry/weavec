@@ -28,7 +28,7 @@
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 3
-#define WEAVEC_H_VERSION_MINOR 4
+#define WEAVEC_H_VERSION_MINOR 5
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -36,8 +36,17 @@
 #endif
 #endif
 
+#if defined(__has_attribute)
+#if __has_attribute(annotate)
+#define WEAVEC_ANNOTATE_ARGS_(...) __attribute__((annotate(__VA_ARGS__)))
+#endif
+#endif
+
 #ifndef WEAVEC_ANNOTATE_
 #define WEAVEC_ANNOTATE_(text)
+#endif
+#ifndef WEAVEC_ANNOTATE_ARGS_
+#define WEAVEC_ANNOTATE_ARGS_(...)
 #endif
 
 /* The spelling must match weavec::frontend::UnsafeAnnotation. */
@@ -182,5 +191,36 @@
  * that may reach it that way: the checked build finds it.
  */
 #define WEAVEC_ALIASED WEAVEC_ANNOTATE_("weavec.aliased")
+
+/*===-- One of several types (RFC 0054) -----------------------------------===*
+ *
+ * A union in a struct says which of the struct's fields tells which member
+ * is live, and each member which values of that field it is for. A safe
+ * function then reads and writes a member only after a comparison of the
+ * field, which the compiler adds (`union-member` when it fails); a store of
+ * a different value to the field clears the union; and the address of a
+ * member is not taken. The struct's layout is unchanged.
+ *
+ *   struct value {
+ *     enum kind kind;
+ *     union {
+ *       double number WEAVEC_WHEN(KIND_NUMBER);
+ *       char *WEAVEC_OWNED text WEAVEC_WHEN(KIND_TEXT);
+ *     } as WEAVEC_TAGGED_BY(kind);
+ *   };
+ *
+ * The spellings must match TaggedByAnnotation and WhenAnnotation
+ * (include/weavec/Frontend/SafeCheck.h).
+ */
+
+/** After a field of union type (or the closing brace of an anonymous
+ * union): `tag`, a field of integer or enumeration type of the same struct,
+ * says which member is live; `WEAVEC_TAGGED_BY(tag, mask)` compares the tag
+ * after `& mask`. */
+#define WEAVEC_TAGGED_BY(...)                                                  \
+  WEAVEC_ANNOTATE_ARGS_("weavec.tagged_by", #__VA_ARGS__)
+/** After a member of a tagged union: the constant values of the tag the
+ * member is for. A member without one is never used by safe code. */
+#define WEAVEC_WHEN(...) WEAVEC_ANNOTATE_ARGS_("weavec.when", __VA_ARGS__)
 
 #endif /* WEAVEC_H */

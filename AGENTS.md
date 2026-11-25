@@ -124,9 +124,22 @@ containers of views or pointers are views however they are made; a
 virtual call reaches what its object was made from; a call of the program
 may change any mutable global; `mutable` makes `const` shallow for a
 caller; and a function returns no borrow its type does not show unless
-the parameter is `WEAVEC_LIFETIMEBOUND`. Full picture:
+the parameter is `WEAVEC_LIFETIMEBOUND`. Since RFC 0054 a value of one of several types is a checked form: a union
+in a struct says its tag (`WEAVEC_TAGGED_BY`, `WEAVEC_WHEN`) and a safe
+function uses a member under a comparison of the tag, which the compiler
+adds (`union-member`), stores the tag only by an assignment (which clears
+the union) and takes no member's address; a `void *` converted to a
+struct, a struct to one that begins with it, `container_of`, a C++ downcast
+and a `static_cast` from `void *` ask the runtime whether an object of the
+target type is there (`bad-cast`); the runtime keeps the type of every
+heap block, registered global and recorded local, from layouts the checker
+computes (`lib/Frontend/SafeTypes.cpp` marks the forms in the AST before
+code is made, `GuardTypes.cpp` expands the marks, `runtime/weavec_types.c`
+answers). Full picture:
 `docs/architecture.md`. Design and the reasoning behind it: `docs/rfcs/`.
-Read `0053-callables-and-containers-by-their-loans.md` first (callables by
+Read `0054-one-of-several-types.md` first (tagged unions, checked
+conversions, the type records; its *Implementation amendments* and
+*Measured gates*), then `0053-callables-and-containers-by-their-loans.md` (callables by
 their loans, containers of views, polymorphic objects, globals,
 `mutable`; its *Implementation amendments* and *Measured gates*), then
 `0052-what-a-call-may-reach.md` (reach, results, views, callables, values
@@ -332,6 +345,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Change what a safe function leaves undefined (definitions, stops, probes, the rules that reject what asserts, the comparison at the link) | `lib/Frontend/GuardDefine.cpp` (`defineSafe`, run first by GuardInsert), the safe unit's options and `promoteSafeWarnings`, `assumingFlag`, `checkLinkInputs` in `lib/Frontend/Driver.cpp`; `lib/Frontend/SafeUndefined.cpp` (`assumed`, `signal-handler`, `bool` bytes, member pointers, owners of a base); `lib/Frontend/Definitions.cpp` (`recordDefinitions`, `emitDefinitions`, `readLink`); the `handler` row clause of `lib/Core/LibrarySpec.txt`; `__weavec_rt_unreachable`, `__weavec_rt_missing_return`, `__weavec_rt_division`, `__ubsan_handle_missing_return` in `runtime/weavec_guard.c`; the alternate signal stacks and `stack-exhaustion` in `runtime/weavec_report.c` (RFC 0051); the list `resources/safe/undefined.md` and `scripts/check-undefined.py`; tests `test/Guards/ir-defined.c*`, `unreachable.cpp`, `missing-return.c*`, `division.c`, `stack-exhaustion.cpp`, `test/Safe/assumed.c*`, `signal-handler.cpp`, `bool-bytes.cpp`, `defined.c*`, `undefined-translation.c*`, `fix-assumed.cpp`, `test/Driver/safe-flags.cpp`, `definitions.cpp` |
 | Change what a callable or a container holds (callables by their loans, the narrowing, binders and pointers to member functions, the library's containers of views, out parameters, polymorphic objects, globals, `mutable`, `= default`, results a type does not show; RFC 0053) | `anyCallable`, `reachOf`, `lambdaReach`, `changedBy`, `deepen`, `holdsCallable`, `closures`, `keptCallable`, `heldIn`, `outStored`, `onlyPolymorphic`, `known`, `shows`, `changesGlobals`, `referencesIn`, the `Global` roots and the `escape` cases of `returned` in `lib/Frontend/SafeCxxFlow.cpp`; `libraryOfViews`, `readsOnly`, `polymorphicHolder`, `mutableOwners`, `runsProgram`, `ownsBlocks`, `changesOnly` in `SafeCxxKinds.h`; tests `test/Safe/cxx-loans-*.cpp` |
 | Change what a call may reach (reach by types, results, views' shallow `const`, lambdas' changes, `call-alias` for callables, kept callables, values built from borrows; RFC 0052) | `reaches`, `writesThrough`, `pointsAt`, `borrowing`, `mayBorrow`, `keptCapture` in `lib/Frontend/SafeCxxKinds.h`; `result`, `fit`, `lambdaChanges`, `lambdaObjects`, `closures`, `keptCallable`, `keptLambdas`, the `Reached` and `Runs` ends in `lib/Frontend/SafeCxxFlow.cpp`; `keptDefault` in `SafeCxx.cpp`; E8 in `lifetime` (`SafeFix.cpp`); tests `test/Safe/cxx-reach-*.cpp` |
+| Change one of several types (tagged unions, checked conversions and downcasts, the type records, `bad-cast`, `union-member`; RFC 0054) | `lib/Frontend/SafeTypes.cpp` (`taggedUnion`, `checkedConversion`, `TypeLayouts`, `TypeMarks`: the AST marks undone while the rules run, the rules `UnionRules`, E9 `tagWant`), the gates in `SafeCheck.cpp` (`checkPointerCast`, `byteViewAllowed`, `checkGlobalInits`), `SafeCxx.cpp`, `SafeUndefined.cpp`, `clearTagged` in `SafeOwnership.cpp`; `lib/Frontend/GuardTypes.cpp` (the markers' expansion, `layoutGlobal`, `typeRecord`, `recordLocals`, `noteAllocations`, `dropObjects`), the checked object as a root in `GuardSafe.cpp` and `GuardFast.cpp`; `runtime/weavec_types.c`, the slot types in `weavec_alloc.c`; tests `test/Safe/tagged-union*.c`, `cxx-tagged-union-uses.cpp`, `checked-cast.c`, `cxx-checked-cast.cpp`, `fix-tagged.c`, `test/Guards/union-member.c`, `bad-cast.c*`, `ir-tagged.c`, `ir-cast.c*`, cases `test/cases/sum/`, `rt_test` `type-at-*`, `frame-records`, `union-member` |
 | Add an annotation                    | Don't, without an RFC: `WEAVEC_UNSAFE` and Safe C's are the only ones (`UnsafeRegions.h`, `SafeCheck.h`, `weavec.h`, `docs/annotations.md`) |
 | Change build flags / warnings        | `cmake/WeaveCWarnings.cmake`, `cmake/WeaveCLLVM.cmake` |
 | Add a CI job                         | `.github/workflows/ci.yml`                             |

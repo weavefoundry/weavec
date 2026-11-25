@@ -504,9 +504,9 @@ configureEnforcement(clang::CompilerInstance &compiler,
   }
   // RFC 0045 §2: the allocated type of each allocation call
   // (`!alloc_token`), which GuardInsert keeps from LLVM's own pass and
-  // GuardExpand makes the allocation's pool.
-  if (weavec.fastSafe())
-    lang.Sanitize.set(clang::SanitizerKind::AllocToken, true);
+  // GuardExpand makes the allocation's pool; RFC 0054 §1.2: in every build,
+  // where a unit that does not pool records the type with the runtime.
+  lang.Sanitize.set(clang::SanitizerKind::AllocToken, true);
   // RFC 0051 §3.1: the end of a C++ function that must return a value
   // stops with `missing-return` in a safe unit (the runtime's handler);
   // C's is GuardDefine's.
@@ -718,6 +718,11 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
   if (safe->annotates) {
     unsafe = std::make_shared<UnsafeRegions>();
     ledger = configureEnforcement(*compiler, weavec, unsafe, safe);
+  } else if (weavec.enforces()) {
+    // RFC 0054 §1.2: a precompiled header is used with the options the
+    // compiles that read it have, the allocations' types among them.
+    compiler->getLangOpts().Sanitize.set(clang::SanitizerKind::AllocToken,
+                                         true);
   }
   // Only code generation takes ASan out at the end of the unit: a
   // precompiled header or module keeps it in its options, as the compiles
@@ -743,7 +748,8 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0) {
            .locks = definition.locks,
            .sends = definition.sends,
            .handlers = definition.handlers,
-           .surveyed = safe->survey && definition.tier == "guarded"});
+           .surveyed = safe->survey && definition.tier == "guarded",
+           .adapter = definition.adapter});
     target.errors = std::move(safe->errors);
     target.evidence = std::move(safe->evidence);
     target.files = std::move(safe->files);

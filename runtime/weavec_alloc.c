@@ -269,6 +269,8 @@ typedef struct {
   /* RFC 0040 section 3: its allocation's and release's stacks. */
   uint32_t allocated;
   uint32_t released;
+  /* RFC 0054 section 1.2: its type's index + 1 (0: none). */
+  uint32_t type;
 } HugeBlock;
 
 static WeavecRtLock initLock;
@@ -376,6 +378,11 @@ static uint32_t *releaseRecords;
 /* RFC 0045 section 3: each slot's pool + 1, parallel to the slot words; 0
  * for a slot no typed allocation holds. */
 static uint32_t *slotPools;
+/* RFC 0054 section 1.2: each slot's type, its index + 1 in the table of
+ * types (weavec_types.c); 0 for a slot whose object has no record of its
+ * type. A slot made live again by an allocation that names no type loses
+ * it; a released block keeps it until then. */
+static uint32_t *slotTypes;
 
 static inline uint32_t *allocStackOf(unsigned region, uint32_t slot) {
   return (uint32_t *)((uintptr_t)allocStacks +
@@ -385,6 +392,12 @@ static inline uint32_t *allocStackOf(unsigned region, uint32_t slot) {
 
 static inline uint32_t *poolOf(unsigned region, uint32_t slot) {
   return (uint32_t *)((uintptr_t)slotPools +
+                      ((uintptr_t)region << (__weavec_rt_heap.shift - 2))) +
+         slot;
+}
+
+static inline uint32_t *typeOf(unsigned region, uint32_t slot) {
+  return (uint32_t *)((uintptr_t)slotTypes +
                       ((uintptr_t)region << (__weavec_rt_heap.shift - 2))) +
          slot;
 }
@@ -674,6 +687,12 @@ static int reserve(unsigned shift) {
       weavecRtExcluded(stacks, meta);
       slotPools = (uint32_t *)stacks;
     }
+    stacks = mmap(NULL, meta, PROT_READ | PROT_WRITE,
+                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (stacks != MAP_FAILED) {
+      weavecRtExcluded(stacks, meta);
+      slotTypes = (uint32_t *)stacks;
+    }
   }
   __weavec_rt_heap.meta = start + data;
   __atomic_store_n(&__weavec_rt_heap.base, start, __ATOMIC_RELEASE);
@@ -961,6 +980,9 @@ static void *makeLive(uint64_t taken, size_t size, size_t slotBytes,
   storeWord(&slotWords(region)[slot], liveWord(size, form));
   if (allocStacks != NULL)
     *allocStackOf(region, slot) = stack;
+  /* (A typed allocation names its type after this.) */
+  if (slotTypes != NULL)
+    *typeOf(region, slot) = 0;
   /* RFC 0042 section 8: the slot's bytes after the object stay zero too,
    * so that a string in the object ends there at the latest. */
   if ((taken & 1) != 0)
@@ -1425,6 +1447,7 @@ static void *hugeAlloc(size_t size, size_t alignment, unsigned form,
   hugeBlocks[at].form = form;
   hugeBlocks[at].allocated = stack;
   hugeBlocks[at].released = 0;
+  hugeBlocks[at].type = 0;
   ++hugeCount;
   shadowLive(base, size, bytes);
   if (map < __atomic_load_n(&hugeLow, __ATOMIC_RELAXED))
@@ -2437,8 +2460,8 @@ poolGive(void *p, unsigned form, size_t bytes,
 
 /* An allocation of `type`: from its pool, else a slot as any other that
  * then belongs to the pool. An over-aligned or huge block is not typed. */
-static void *typedAllocate(size_t size, unsigned form,
-                           struct __weavec_rt_type *type, uint32_t stack) {
+static void *typedBlock(size_t size, unsigned form,
+                        struct __weavec_rt_type *type, uint32_t stack) {
   unsigned c;
   uint32_t index;
   void *block;
@@ -2462,10 +2485,49 @@ static void *typedAllocate(size_t size, unsigned form,
   return block;
 }
 
+/* RFC 0054 section 1.2: a typed block also records its type, which a
+ * pooled slot keeps from one object of its pool to the next. */
+static void *typedAllocate(size_t size, unsigned form,
+                           struct __weavec_rt_type *type, uint32_t stack) {
+  void *block = typedBlock(size, form, type, stack);
+  if (block != NULL)
+    __weavec_rt_note_type(block, type);
+  return block;
+}
+
 /* WEAVEC_RT_STATS=1: the pools made and the free bytes they hold. */
 void weavecRtPoolStats(size_t *count, size_t *bytes) {
   *count = __atomic_load_n(&poolCount, __ATOMIC_ACQUIRE);
   *bytes = __atomic_load_n(&pooledBytes, __ATOMIC_RELAXED);
+}
+
+/*===-- Types (RFC 0054 section 1.2) ---------------------------------------===*/
+
+void weavecRtSetBlockType(uintptr_t base, uint32_t type) {
+  if (inArena(base)) {
+    const SlotRef ref = slotOf(base);
+    if (slotTypes != NULL && ref.base == base)
+      __atomic_store_n(typeOf(ref.region, ref.slot), type, __ATOMIC_RELAXED);
+    return;
+  }
+  take(&hugeLock);
+  if (maybeHuge(base) && hugeIndex(base) >= 0 &&
+      hugeBlocks[hugeIndex(base)].base == base)
+    hugeBlocks[hugeIndex(base)].type = type;
+  give(&hugeLock);
+}
+
+void __weavec_rt_note_type(const void *block, struct __weavec_rt_type *type) {
+  uint32_t index;
+  if (block == NULL || type == NULL)
+    return;
+  index = (uint32_t)__atomic_load_n(&type->type, __ATOMIC_RELAXED);
+  if (index == 0 && type->layout != NULL) {
+    index = weavecRtTypeIndex(type->layout);
+    __atomic_store_n(&type->type, (uint64_t)index, __ATOMIC_RELAXED);
+  }
+  if (index != 0)
+    weavecRtSetBlockType((uintptr_t)block, index);
 }
 
 /*===-- Reports ------------------------------------------------------------===*/
@@ -2480,7 +2542,7 @@ int weavecRtInLiveBlock(uintptr_t address) {
 }
 
 struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address) {
-  struct weavecRtHeapObject object = {0, 0, 0, 0, 0, 0, 0};
+  struct weavecRtHeapObject object = {0, 0, 0, 0, 0, 0, 0, 0};
   if (inArena(address)) {
     const SlotRef ref = slotOf(address);
     const uint32_t word = wordOf(ref);
@@ -2493,6 +2555,9 @@ struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address) {
     object.form = object.live ? weavecRtLiveForm(word) : 0;
     if (object.found && allocStacks != NULL)
       object.allocated = *allocStackOf(ref.region, ref.slot);
+    if (object.found && slotTypes != NULL)
+      object.type =
+          __atomic_load_n(typeOf(ref.region, ref.slot), __ATOMIC_RELAXED);
     /* RFC 0040 section 3: a released block's record. */
     if (object.found && !object.live && releaseRecords != NULL) {
       const uint32_t *record = releaseRecordOf(ref.region, ref.slot);
@@ -2512,6 +2577,7 @@ struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address) {
       object.form = block.form;
       object.allocated = block.allocated;
       object.released = block.released;
+      object.type = block.type;
     }
   }
   return object;

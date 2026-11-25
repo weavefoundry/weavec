@@ -171,6 +171,12 @@ static const core::LibraryEntry *typedRow(const llvm::CallBase &call) {
   return match->entry;
 }
 
+bool arrayNew(const llvm::CallBase &call) {
+  const core::LibraryEntry *row = typedRow(call);
+  return row != nullptr && row->typed->name == "new_typed" &&
+         (row->typedFlags & 1U) != 0;
+}
+
 /// Why an allocation a fast unit's code makes is not typed: a row that
 /// gives an owner without a typed form, or one that reallocates.
 static llvm::StringRef untypedReason(const llvm::CallBase &call) {
@@ -224,8 +230,6 @@ static constexpr llvm::StringLiteral TypeBundle = "weavec.type";
 /// a record of its type (the key, and the pool the runtime resolves), named
 /// by a bundle; the metadata goes.
 static void markAllocations(ModuleContext &module, llvm::Module &ir) {
-  auto *recordType =
-      llvm::StructType::get(module.context, {module.i64, module.i64});
   std::vector<llvm::CallBase *> calls;
   for (llvm::Function &function : ir)
     for (llvm::BasicBlock &block : function)
@@ -249,17 +253,14 @@ static void markAllocations(ModuleContext &module, llvm::Module &ir) {
         !typeIdentified(module, name->getString()))
       continue;
     // An array `new`, which may put a cookie before its elements, apart.
-    const bool array =
-        row->typed->name == "new_typed" && (row->typedFlags & 1U) != 0;
-    auto *record = new llvm::GlobalVariable(
-        ir, recordType, /*isConstant=*/false, llvm::GlobalValue::PrivateLinkage,
-        llvm::ConstantStruct::get(
-            recordType,
-            {llvm::ConstantInt::get(module.i64,
-                                    typeKey(module, name->getString(), array)),
-             llvm::ConstantInt::get(module.i64, 0)}),
-        "__weavec.type");
-    record->setAlignment(llvm::Align(16));
+    const bool array = arrayNew(*call);
+    // RFC 0054 §1.2: with the type's layout, which the block records,
+    // unless a cookie comes before its elements.
+    llvm::GlobalVariable *record = typeRecord(
+        module, typeKey(module, name->getString(), array),
+        array && module.options.safe->cookieTypes.contains(name->getString())
+            ? llvm::StringRef()
+            : name->getString());
     llvm::CallBase *marked = llvm::CallBase::addOperandBundle(
         call, module.context.getOrInsertBundleTag(TypeBundle)->getValue(),
         llvm::OperandBundleDef(TypeBundle.str(),
@@ -401,6 +402,10 @@ static std::uint64_t believedBytes(const ModuleContext &module,
   base = unspilled(base);
   if (const auto *argument = llvm::dyn_cast<llvm::Argument>(base))
     return argument->getDereferenceableBytes();
+  // RFC 0054 §2.2: what a checked conversion gives is one object of its
+  // type, as the runtime found it (or believed it, Y-A1).
+  if (const auto size = checkedObject(*base))
+    return *size;
   const auto *call = llvm::dyn_cast<llvm::CallBase>(base);
   if (call == nullptr)
     return 0;

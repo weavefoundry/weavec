@@ -249,13 +249,94 @@ WEAVEC_RT_API void *__weavec_rt_alloc(size_t size, size_t alignment);
 WEAVEC_RT_API void __weavec_rt_free(void *p);
 WEAVEC_RT_API void *__weavec_rt_realloc(void *p, size_t size);
 
+/* RFC 0054 section 1.1: what an object of a type is made of, for the one
+ * question the runtime answers of it: is an object of type T at this
+ * address? A type is named by its `identity`, a hash of its name, its
+ * size and the offsets where it keeps pointers, so that two definitions
+ * of one name that could forge a pointer from each other's bytes are two
+ * types. Its parts are every base, member and array element of record type
+ * inside it, at any depth, sorted by offset; a part inside a union is
+ * marked, and no conversion finds an object there. */
+enum {
+  /* The type holds no pointer and no `bool`: any type of that kind may
+   * view its bytes. */
+  WeavecRtLayoutPlain = 1,
+  /* A scalar type (the target of a conversion to `int *`). */
+  WeavecRtLayoutScalar = 2
+};
+/* A part inside a union; a pointer (or `bool`) of the type's own bytes,
+ * whose identity is 0: what a view of the bytes as a scalar must not
+ * cover. */
+enum { WeavecRtPartUnion = 1, WeavecRtPartPointer = 2 };
+struct __weavec_rt_part {
+  uint64_t identity;
+  uint32_t offset;
+  /* The element size of an array of the part; 0 for one object. */
+  uint32_t stride;
+  uint32_t elements;
+  uint32_t flags;
+};
+struct __weavec_rt_layout {
+  uint64_t identity;
+  uint64_t size;
+  /* The type's name, an offset from this field. */
+  int64_t name;
+  uint32_t flags;
+  uint32_t count;
+  struct __weavec_rt_part parts[];
+};
+static inline const char *
+weavecRtLayoutName(const struct __weavec_rt_layout *layout) {
+  return layout != NULL && layout->name != 0
+             ? (const char *)&layout->name + layout->name
+             : "?";
+}
+
 /* RFC 0045 section 2: an allocation site's element type, a key the pass
  * hashes from the type's name (and its unit, for a type without linkage),
- * and the pool the site last resolved: (class + 1) << 32 | (pool + 1). */
+ * and the pool the site last resolved: (class + 1) << 32 | (pool + 1).
+ * RFC 0054 section 1.2: its layout, when the unit knew one, and the index
+ * + 1 of the layout in the runtime's table of types, once resolved. */
 struct __weavec_rt_type {
   uint64_t key;
   uint64_t cache;
+  const struct __weavec_rt_layout *layout;
+  uint64_t type;
 };
+/* RFC 0054 section 1.2: the block `block` (an allocation's result, or
+ * null) holds objects of `type`, in a build that does not pool it. */
+WEAVEC_RT_API void __weavec_rt_note_type(const void *block,
+                                         struct __weavec_rt_type *type);
+/* RFC 0054 section 2.2: a safe function converts a pointer to `address`
+ * into a pointer to `target`: `bad-cast` unless an object of that type is
+ * there, or the memory has no record of its type (believed). */
+WEAVEC_RT_API void __weavec_rt_cast(const void *address,
+                                    const struct __weavec_rt_layout *target,
+                                    const struct __weavec_rt_site *site);
+/* The C++ downcast's check failed (the class's own test said no). */
+WEAVEC_RT_API void __weavec_rt_cast_fail(const void *address,
+                                         const struct __weavec_rt_layout *target,
+                                         const struct __weavec_rt_site *site);
+/* RFC 0054 section 3.3: a member of a tagged union used while its tag
+ * says another (`union-member`); the names are offsets from their
+ * fields. */
+struct __weavec_rt_member {
+  int64_t member;
+  int64_t tag;
+  /* 1: a write. */
+  uint32_t write;
+  uint32_t reserved;
+};
+WEAVEC_RT_API void __weavec_rt_union_fail(uint64_t tag,
+                                          const struct __weavec_rt_member *member,
+                                          const struct __weavec_rt_site *site);
+/* RFC 0054 section 1.2: a local of a safe function whose address leaves
+ * it (`size` bytes: an array of `layout`'s type), recorded for its scope:
+ * push gives the depth to pop back to. */
+WEAVEC_RT_API uint32_t
+__weavec_rt_frame_push(const void *address,
+                       const struct __weavec_rt_layout *layout, uint64_t size);
+WEAVEC_RT_API void __weavec_rt_frame_pop(uint32_t depth);
 /* Typed allocations (section 3): a block of `form` from the pool of its
  * type and size class, reused at once after a typed release. */
 WEAVEC_RT_API void *__weavec_rt_alloc_typed(size_t size, unsigned form,
@@ -350,8 +431,20 @@ struct weavecRtHeapObject {
   unsigned form;
   uint32_t allocated;
   uint32_t released;
+  /* RFC 0054 section 1.2: the index + 1 of its type (0: none). */
+  uint32_t type;
 };
 struct weavecRtHeapObject weavecRtHeapObjectAt(uintptr_t address);
+/* RFC 0054 section 1: the block's type (index + 1 in the table of types),
+ * set once an allocation or a conversion gives it one. */
+void weavecRtSetBlockType(uintptr_t base, uint32_t type);
+/* The table of types (weavec_types.c): a layout's index + 1, made on first
+ * use (0 when the table is full), and the layout and name of an index. */
+uint32_t weavecRtTypeIndex(const struct __weavec_rt_layout *layout);
+const struct __weavec_rt_layout *weavecRtTypeLayout(uint32_t type);
+/* The thread's frame records of the frames below `frame`, which are gone
+ * (weavec_types.c). */
+void weavecRtSettleFrames(uintptr_t frame);
 /* RFC 0048 section 3: whether `address` lies in a live slot's object or on
  * the byte after it. */
 int weavecRtInLiveBlock(uintptr_t address);
@@ -742,6 +835,9 @@ struct __weavec_rt_global {
   uint64_t padded;
   int64_t name;
   int64_t location;
+  /* RFC 0054 section 1.2: the global's layout, an offset from this field
+   * (0: none). */
+  int64_t layout;
 };
 /* RFC 0040 section 5.3: the descriptor a frame names in its left redzone
  * ({WeavecRtFrameMagic, descriptor}): its function, size (`reserved`) and
@@ -820,6 +916,11 @@ void weavecRtFailObject(const char *kind, const char *what, uintptr_t address,
 void weavecRtFailMessage(const char *kind, const char *message,
                          const struct __weavec_rt_site *site)
     __attribute__((noreturn));
+/* RFC 0054: a report whose first line ends in `message`, with the paragraph
+ * of the object that holds `address` (none for 0); it stops the program
+ * unless the site reports and goes on. */
+void weavecRtFailTyped(const char *kind, const char *message,
+                       uintptr_t address, const struct __weavec_rt_site *site);
 /* Called by a failure right before it traps, so that the trap ends the
  * program even where the program blocked or caught SIGTRAP and SIGILL. */
 WEAVEC_RT_API void __weavec_rt_trapping(void);
@@ -876,7 +977,7 @@ void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
 /* The library's interface version (libweavec_rt.so.<abi>,
  * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
  * encoding or a site record changes. */
-#define WEAVEC_RT_ABI 48
+#define WEAVEC_RT_ABI 49
 
 /*===-- Internal -----------------------------------------------------------===*/
 
@@ -960,6 +1061,10 @@ enum {
   WeavecRtStatTyped,
   WeavecRtStatPooled,
   WeavecRtStatUnpooled,
+  /* RFC 0054 section 2.2: conversions checked, and those believed because
+   * the memory has no record of its type. */
+  WeavecRtStatCasts,
+  WeavecRtStatBelieved,
   WeavecRtStatCount
 };
 extern unsigned long long weavecRtStats[WeavecRtStatCount];

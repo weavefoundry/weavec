@@ -20,6 +20,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "SafeCxxKinds.h"
+#include "SafeTypes.h"
 #include "weavec/Frontend/UnsafeRegions.h"
 
 #include "clang/AST/ASTLambda.h"
@@ -365,7 +366,9 @@ public:
             "keep the pointer itself rather than its address as an integer");
       return true;
     case clang::CK_BaseToDerived:
-      if (llvm::isa<clang::ExplicitCastExpr>(cast))
+      // RFC 0054 §2.2: a downcast is checked where it is made.
+      if (llvm::isa<clang::ExplicitCastExpr>(cast) &&
+          !checkedConversion(*cast, ast))
         castError(cast->getExprLoc(),
                   "a base is converted to a derived class without a check",
                   "'dynamic_cast' checks the object's type; a 'std::variant' "
@@ -375,7 +378,8 @@ public:
     case clang::CK_LValueBitCast:
       if (llvm::isa<clang::ExplicitCastExpr>(cast) &&
           (to->isPointerType() || cast->isGLValue()) &&
-          !byteView(from, to, cast->isGLValue()))
+          !byteView(from, to, cast->isGLValue()) &&
+          !checkedConversion(*cast, ast))
         castError(cast->getExprLoc(),
                   "a pointer is converted to a pointer to another type",
                   "use the object through its own type; 'std::variant' and "
@@ -415,6 +419,18 @@ public:
     const auto *field =
         llvm::dyn_cast<clang::FieldDecl>(member->getMemberDecl());
     if (field == nullptr || !field->getParent()->isUnion())
+      return true;
+    // RFC 0054 §3.1: a tagged union of members that the bytes hold alone
+    // (none with a destructor) is read under its tag's check.
+    if (taggedMember(*member) &&
+        llvm::none_of(field->getParent()->fields(),
+                      [&](const clang::FieldDecl *other) {
+                        // (A raw pointer member is a reference, RFC 0044
+                        // §8: checked where it is used.)
+                        return kinds.holdsOwners(other->getType()) ||
+                               (kinds.view(other->getType()) &&
+                                !other->getType()->isPointerType());
+                      }))
       return true;
     for (const clang::FieldDecl *other : field->getParent()->fields())
       if (holdsPointer(other->getType()) ||
@@ -1491,7 +1507,8 @@ private:
          .starts = 0,
          .locks = false,
          .sends = false,
-         .handlers = safe ? 0 : countHandlers(function)});
+         .handlers = safe ? 0 : countHandlers(function),
+         .adapter = !safe && convertsAndCalls(function)});
     threadFacts(function, unit.definitions.back());
     return unit.definitions.size() - 1;
   }

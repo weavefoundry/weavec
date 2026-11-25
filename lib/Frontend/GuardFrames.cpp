@@ -479,11 +479,16 @@ void unpoisonBeforeNoReturn(FunctionContext &context) {
   ModuleContext &module = context.module;
   const core::LibrarySpec &spec = core::LibrarySpec::shipped();
   llvm::SmallVector<llvm::CallBase *, 4> calls;
-  llvm::SmallVector<llvm::LandingPadInst *, 4> pads;
+  llvm::SmallVector<llvm::Instruction *, 4> pads;
   for (llvm::BasicBlock &block : context.function)
     for (llvm::Instruction &instruction : block) {
       if (auto *pad = llvm::dyn_cast<llvm::LandingPadInst>(&instruction))
         pads.push_back(pad);
+      // RFC 0054 §1.2: a `setjmp` that returns lands too (from `longjmp`):
+      // the frames below it are gone, and so are their frame records.
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction);
+          call != nullptr && call->hasFnAttr(llvm::Attribute::ReturnsTwice))
+        pads.push_back(call);
       auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
       if (call == nullptr || !call->doesNotReturn() ||
           llvm::isa<llvm::IntrinsicInst>(call))
@@ -513,7 +518,7 @@ void unpoisonBeforeNoReturn(FunctionContext &context) {
   llvm::FunctionCallee landed = module.runtime(
       "landed",
       llvm::FunctionType::get(llvm::Type::getVoidTy(module.context), false));
-  for (llvm::LandingPadInst *pad : pads)
+  for (llvm::Instruction *pad : pads)
     llvm::IRBuilder<>(pad->getNextNode()).CreateCall(landed);
 }
 

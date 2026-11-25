@@ -1127,6 +1127,16 @@ llvm::PreservedAnalyses GuardInsertPass::run(llvm::Module &module,
   guard::thunkLibraryAddresses(context, module);
   // RFC 0045: before the safe functions are prepared, which clones see.
   guard::prepareFast(context, module);
+  // RFC 0054: the checked conversions, tagged unions and recorded locals
+  // of safe functions, and the types of allocations a unit that does not
+  // pool records.
+  for (llvm::Function &function : module)
+    if (!guard::skips(function)) {
+      guard::expandTypeMarkers(context, function);
+      guard::recordLocals(context, function);
+    }
+  guard::dropTypeMarkerDeclarations(module);
+  guard::noteAllocations(context, module);
   // RFC 0042 §5: the field annotations, read before anything moves them.
   guard::readTypedFields(context, module);
   // RFC 0041: safe functions first, which may split one into an entry and
@@ -1182,6 +1192,8 @@ GuardExpandPass::run(llvm::Module &module,
   if (module.getDataLayout().getPointerSizeInBits() != 64)
     return llvm::PreservedAnalyses::all();
   guard::ModuleContext context(module, options);
+  // RFC 0054 §2.2: the checked objects are their pointers again.
+  guard::dropObjects(module);
   auto &functions =
       analyses.getResult<llvm::FunctionAnalysisManagerModuleProxy>(module)
           .getManager();

@@ -84,6 +84,28 @@ inline constexpr llvm::StringLiteral OwnedAnnotation = "weavec.owned";
 /// RFC 0043 amendment: the function leaves every owner below the parameter
 /// null (a destructor of a struct the caller keeps).
 inline constexpr llvm::StringLiteral DropsAnnotation = "weavec.drops";
+/// RFC 0054 §3: a union in a struct whose members are used under a
+/// comparison of the struct's field the annotation names (and, with a
+/// second argument, a mask); the values of that field a member is for.
+inline constexpr llvm::StringLiteral TaggedByAnnotation = "weavec.tagged_by";
+inline constexpr llvm::StringLiteral WhenAnnotation = "weavec.when";
+/// RFC 0054 §1.2: the checker's implicit mark on a local of a safe function
+/// whose address leaves it, recorded for its scope; its one argument is the
+/// index of the local's type in SafeUnit::recordedLocals.
+inline constexpr llvm::StringLiteral RecordedAnnotation = "weavec.recorded";
+/// RFC 0054 §2.3: the markers the checker puts in a safe function's code,
+/// each `ptr <marker>(ptr, i64 index)` returning its pointer: a checked
+/// conversion (SafeUnit::casts), the struct of a tagged union's member
+/// access (SafeUnit::taggedAccesses), and the struct whose tag is stored
+/// (SafeUnit::tagStores). GuardInsert expands them first.
+inline constexpr llvm::StringLiteral CastMarker = "__weavec.cast";
+inline constexpr llvm::StringLiteral MemberMarker = "__weavec.member";
+inline constexpr llvm::StringLiteral TagMarker = "__weavec.tag";
+/// What a checked conversion gives, until the guard passes are done with
+/// it: `ptr __weavec.object(ptr returned, i64 size)`, one object of the
+/// target's size.
+inline constexpr llvm::StringLiteral ObjectMarker = "__weavec.object";
+
 /// RFC 0042 §5: the compiler's own field annotations (not spellings a
 /// program writes).
 inline constexpr llvm::StringLiteral FieldAnnotation = "weavec.field";
@@ -287,6 +309,10 @@ struct SafeUnit {
     /// table's `handler` rows), what the audit lists of code that is not
     /// safe.
     unsigned handlers = 0;
+    /// RFC 0054 §4: a function that is not safe whose body only makes a
+    /// conversion safe code now checks and calls (an adapter of a `void *`
+    /// context): the audit lists it as one that can be safe.
+    bool adapter = false;
   };
   std::vector<Definition> definitions;
   /// RFC 0043 §11: each pointer field of the structs the unit defines
@@ -321,6 +347,74 @@ struct SafeUnit {
   std::vector<ReadFile> files;
   /// FieldBounds::pointee's sizes (0: still incomplete), by index - 1.
   std::vector<std::uint64_t> pointeeSizes;
+
+  /// RFC 0054 §1.1: a type's layout, by the name Clang's allocation tokens
+  /// give the type (`clang::infer_alloc::getAllocTokenMetadata`).
+  struct TypeLayout {
+    /// The type's name, size and the offsets of its pointers, hashed.
+    std::uint64_t identity = 0;
+    std::uint64_t size = 0;
+    /// 1: plain (no pointer, no `bool`); 2: a scalar.
+    std::uint32_t flags = 0;
+    /// As a report names it (`struct circle`).
+    std::string display;
+    struct Part {
+      std::uint64_t identity = 0;
+      std::uint32_t offset = 0;
+      std::uint32_t stride = 0;
+      std::uint32_t elements = 0;
+      std::uint32_t flags = 0;
+    };
+    std::vector<Part> parts;
+  };
+  llvm::StringMap<TypeLayout> layouts;
+  /// RFC 0054 §2: each checked conversion of the unit's safe code, by the
+  /// index its marker carries.
+  struct CheckedCast {
+    /// The target's layout (a key of `layouts`).
+    std::string type;
+    /// The marker's pointer less `delta` is the target object's start (a
+    /// base's offset in it).
+    std::uint64_t delta = 0;
+    /// A class with virtual functions: its vtable's type information is
+    /// compared first (the mangled names of the two classes' type
+    /// information, the target's and the source's).
+    bool polymorphic = false;
+    std::string derivedInfo;
+    std::string baseInfo;
+  };
+  std::vector<CheckedCast> casts;
+  /// RFC 0054 §3: each access of a tagged union's member in safe code.
+  struct TaggedAccess {
+    /// The tag's offset in its struct, its width in bytes, its mask.
+    std::uint64_t tagOffset = 0;
+    unsigned tagWidth = 0;
+    std::uint64_t mask = ~std::uint64_t{0};
+    std::vector<std::uint64_t> values;
+    std::string member;
+    std::string tag;
+    bool write = false;
+  };
+  std::vector<TaggedAccess> taggedAccesses;
+  /// RFC 0054 §3.3: each store of a tag in safe code, which clears the
+  /// union when the value changes.
+  struct TagStore {
+    std::uint64_t tagOffset = 0;
+    unsigned tagWidth = 0;
+    std::uint64_t mask = ~std::uint64_t{0};
+    std::uint64_t unionOffset = 0;
+    std::uint64_t unionSize = 0;
+  };
+  std::vector<TagStore> tagStores;
+  /// RFC 0054 §1.2: the layouts of the unit's globals, by symbol, and of
+  /// its recorded locals, by their mark's index.
+  llvm::StringMap<std::string> globalTypes;
+  std::vector<std::string> recordedLocals;
+  /// The allocated types an array `new` puts a cookie before (the C++
+  /// ABI's: a destructor, or a usual `operator delete[]` that takes the
+  /// size): such a block records no type, since its elements do not begin
+  /// it.
+  llvm::StringSet<> cookieTypes;
 
   /// Whether `name` is a safe function defined in the unit.
   [[nodiscard]] bool isSafe(llvm::StringRef name) const {

@@ -4,7 +4,7 @@ A safe function (`WEAVEC_SAFE`, or every function of a unit compiled with `-fwea
 
 A rule that both languages have says first what it means in C, then, under _In C++_, what it means there. [`safe-cxx`](#safe-cxx) is the page to read before writing safe C++: the kinds of pointer its rules are stated over.
 
-The C examples below include `<weavec.h>`, `<signal.h>`, `<stdbool.h>`, `<stddef.h>`, `<stdio.h>`, `<stdlib.h>` and `<string.h>`; the C++ ones `<weavec.h>`, `<bit>`, `<csignal>` and the standard library's containers, strings, smart pointers and algorithms, as C++20. The design is in [RFC 0041](/rfcs/0041-safe-c/) (bounds), [RFC 0042](/rfcs/0042-typed-memory/) (typed memory), [RFC 0043](/rfcs/0043-ownership/) (ownership), [RFC 0044](/rfcs/0044-safe-cxx/) (C++), [RFC 0046](/rfcs/0046-thread-safety/) (threads), [RFC 0047](/rfcs/0047-conversion-in-place/) (bounds and aliased classes in C++, converting existing code) and [RFC 0048](/rfcs/0048-safe-code-without-the-shadow/) (kept parameters, ends, what a fast build believes). The thread examples include `<atomic>`, `<condition_variable>`, `<future>`, `<mutex>`, `<shared_mutex>` and `<thread>` too.
+The C examples below include `<weavec.h>`, `<signal.h>`, `<stdbool.h>`, `<stddef.h>`, `<stdio.h>`, `<stdlib.h>` and `<string.h>`; the C++ ones `<weavec.h>`, `<bit>`, `<csignal>` and the standard library's containers, strings, smart pointers and algorithms, as C++20. The design is in [RFC 0041](/rfcs/0041-safe-c/) (bounds), [RFC 0042](/rfcs/0042-typed-memory/) (typed memory), [RFC 0043](/rfcs/0043-ownership/) (ownership), [RFC 0044](/rfcs/0044-safe-cxx/) (C++), [RFC 0046](/rfcs/0046-thread-safety/) (threads), [RFC 0047](/rfcs/0047-conversion-in-place/) (bounds and aliased classes in C++, converting existing code), [RFC 0048](/rfcs/0048-safe-code-without-the-shadow/) (kept parameters, ends, what a fast build believes) and [RFC 0054](/rfcs/0054-one-of-several-types/) (tagged unions, checked conversions). The thread examples include `<atomic>`, `<condition_variable>`, `<future>`, `<mutex>`, `<shared_mutex>` and `<thread>` too.
 
 ## safe-cxx
 
@@ -18,6 +18,8 @@ Every pointer, reference and object in a safe function is one of four kinds:
 - A **reference** is a raw pointer kept in a member or in a container's element. The rules do not follow it: the checked build's guards check it when it is used, and the fast build believes it points to an object of its type, live or released. What an object owns is not changed through one, nor through a `std::shared_ptr`, unless its class is declared `WEAVEC_ALIASED` ([`owner-path`](#owner-path)). A function that keeps the address of what a parameter refers to, or of `this`, says so with `WEAVEC_ESCAPES` ([`escape`](#escape)); a local whose address is kept lives in typed memory for its scope.
 
 A raw pointer points to one object unless its declaration, an array or the library says how many: Safe C's bounds (`WEAVEC_COUNTED_BY(n)`, `WEAVEC_ENDED_BY(e)`, `WEAVEC_NULL_TERMINATED` and the rest) mean the same in C++, on parameters, results, members and globals; an array keeps its length when it becomes a pointer; a container's `data()` has its `size()` elements; `main`'s `argv` has `argc`. Such a pointer is indexed and stepped, and each access is compared with its bound when it runs ([`index-single`](#index-single), [`call-args`](#call-args), [`counted-pair`](#counted-pair), [`field-address`](#field-address)). A `std::span` is the same thing as a type; existing code keeps its pointers and declares their bounds.
+
+A value of one of several types is a `std::variant`, a class hierarchy, or a union with a tag. A `static_cast` to a derived class, a `static_cast` from `void *`, and a member of a union that says its tag (`WEAVEC_TAGGED_BY`, `WEAVEC_WHEN`) are checked when they run, in both builds: `bad-cast` when the object is not of the type, `union-member` when the tag says another member ([`pointer-cast`](#pointer-cast), [`union-pointer`](#union-pointer), [RFC 0054](/rfcs/0054-one-of-several-types/)).
 
 The other flow rules are [`owner-moved`](#owner-moved) (an object used after `std::move`) and [`call-alias`](#call-alias). The rules of single expressions are [`index-single`](#index-single), [`pointer-cast`](#pointer-cast), [`pointer-bytes`](#pointer-bytes), [`union-pointer`](#union-pointer), [`int-to-pointer`](#int-to-pointer), [`variadic`](#variadic), [`no-asm`](#no-asm), [`assumed`](#assumed), [`signal-handler`](#signal-handler), [`unsafe-block`](#unsafe-block), [`bad-annotation`](#bad-annotation) and [`not-modeled`](#not-modeled). Rules without an _In C++_ part are C's. A safe function has no behavior the language leaves undefined ([RFC 0051](/rfcs/0051-nothing-undefined/)): what no rule rejects is defined or stops when it runs ([`defined`](#defined)), safe units that disagree do not link ([`definition-mismatch`](#definition-mismatch)), and `--weavec-explain undefined` lists every item of the two languages' lists and what disposes of it.
 
@@ -162,22 +164,38 @@ int *at(unsigned long address) { return (int *)address; }
 
 ## pointer-cast
 
-A pointer converts to another pointer type only when no pointer can be forged: memory that holds pointers converts to nothing but `void` and `const` bytes; a `void *` converts to no other type, but where an allocation made it (`struct node *n = malloc(sizeof *n)`); function pointers do not convert. An allocation that becomes a `T *` is sized by `T` when its size names a type (`malloc(sizeof *p)`, `calloc(n, sizeof(struct node))`), since its block is reused for the type its size names; bytes of a type without pointers may be any such type's (`char *b = malloc(sizeof(struct header) + n)`).
+A pointer converts to another pointer type in one of two ways. The forms that pick one of several types are **checked where they are made** ([RFC 0054](/rfcs/0054-one-of-several-types/)): the runtime is asked whether an object of the target type is at the address, and the program stops with `bad-cast` when none is:
+
+- a `void *` to a pointer to a struct or union (a callback's context, a container's element);
+- a pointer to a struct to a pointer to a struct that begins with it, as its first member or its first member's first member (`(struct circle *)shape` where a `struct circle` begins with a `struct shape`);
+- `container_of`: `(struct d *)((char *)m - offsetof(struct d, f))` with `m` a pointer to the type of `f`;
+- a `void *` to a pointer to a scalar that is not a pointer or a `bool` (`int *`, `unsigned char *`): the object must hold no pointer.
+
+What the conversion gives is a pointer to one object, with the bound and the ownership its declaration states. A struct taken as its first member (`&circle->base`, or `(struct shape *)circle`) needs no check.
+
+Every other conversion is rejected, because it could forge a pointer: memory that holds pointers converts to nothing but `void` and `const` bytes; a struct converts to no unrelated struct; function pointers do not convert. An allocation that becomes a `T *` is sized by `T` when its size names a type (`malloc(sizeof *p)`, `calloc(n, sizeof(struct node))`), since its block is reused for the type its size names; bytes of a type without pointers may be any such type's (`char *b = malloc(sizeof(struct header) + n)`).
 
 ```c rejected
 struct node { struct node *WEAVEC_OWNED next; int v; };
+struct plain { long a; long b; };
+long pun(struct node *n) { return ((struct plain *)n)->a; }
+```
+
+```c accepted
+struct node { struct node *WEAVEC_OWNED next; int v; };
 int peek(void *context) {
-  struct node *n = context;
+  struct node *n = context;     // checked: is a 'struct node' there?
   return n->v;
 }
 ```
 
 ```c accepted
-struct node { struct node *WEAVEC_OWNED next; int v; };
-int peek(const struct node *n) { return n->v; }
+struct shape { int kind; };
+struct circle { struct shape base; double radius; };
+double radius(struct shape *s) {
+  return ((struct circle *)s)->radius;   // checked: a 'struct circle' begins here
+}
 ```
-
-A library that hands back a `void *` context gets a `WEAVEC_GUARDED` adapter of a few lines that converts it and calls the safe function.
 
 ```c rejected
 #include <stdlib.h>
@@ -195,9 +213,11 @@ struct node *WEAVEC_OWNED make(void) {
 }
 ```
 
+A conversion of a pointer into memory that has no record of its type (a block of another allocator, a frame of code another compiler built) is believed, and `WEAVEC_RT_STATS=1` counts it; every block of the runtime's heap, every global and every local of a safe function whose address becomes a `void *` has one.
+
 ### In C++
 
-No `reinterpret_cast`, no `const_cast`, no C-style cast that is one of them, no `static_cast` from `void *` or from a base to a derived class. `dynamic_cast` and `std::variant` are the checked forms. One conversion is allowed ([RFC 0047](/rfcs/0047-conversion-in-place/)): a pointer to an object becomes a pointer to its bytes, `const char`, `const unsigned char` or `const std::byte`, and the same without `const` when the object is trivially copyable and holds no pointer; the bytes are the object's own.
+No `reinterpret_cast`, no `const_cast`, no C-style cast that is one of them. Two conversions are checked where they are made: a `static_cast` (or a C cast) from a base to a derived class, by a pointer or a reference, and a `static_cast` from `void *` to a pointer to a class or a plain scalar. For a class with virtual functions the check is one comparison of the type information the object's vtable names, and the C++ ABI's dynamic cast when that differs; for any other class, the runtime's records. So the common form, a test of the node's kind and a `static_cast`, is the checked one; `dynamic_cast` and `std::variant` stay accepted. One more conversion is allowed ([RFC 0047](/rfcs/0047-conversion-in-place/)): a pointer to an object becomes a pointer to its bytes, `const char`, `const unsigned char` or `const std::byte`, and the same without `const` when the object is trivially copyable and holds no pointer; the bytes are the object's own.
 
 ```cpp accepted
 struct Header { std::uint32_t magic; std::uint32_t size; };
@@ -207,17 +227,17 @@ std::string encode(const Header &h) {
 ```
 
 ```cpp rejected
-struct Shape { virtual ~Shape() = default; };
-struct Circle : Shape { double radius = 1; };
-double radius(Shape *shape) { return static_cast<Circle *>(shape)->radius; }
+struct Header { std::uint32_t magic; std::uint32_t size; };
+Header *peek(char *bytes) { return reinterpret_cast<Header *>(bytes); }
 ```
 
 ```cpp accepted
-struct Shape { virtual ~Shape() = default; };
-struct Circle : Shape { double radius = 1; };
-double radius(Shape *shape) {
-  if (auto *circle = dynamic_cast<Circle *>(shape))
-    return circle->radius;
+enum class Kind { Circle, Square };
+struct Shape { Kind kind; explicit Shape(Kind k) : kind(k) {} virtual ~Shape() = default; };
+struct Circle final : Shape { double radius = 1; Circle() : Shape(Kind::Circle) {} };
+double radius(const Shape &shape) {
+  if (shape.kind == Kind::Circle)
+    return static_cast<const Circle &>(shape).radius;   // checked where it is made
   return 0;
 }
 ```
@@ -254,6 +274,13 @@ void clear(struct item *it) {
 ```
 
 Copy whole objects (`*d = *s`), zero whole objects (`memset(p, 0, n * sizeof *p)`).
+
+A struct with pointers may be given as a `void *` without a bound (a callback's context) to any call, direct or through a function pointer: the callee reaches it only through a checked conversion ([RFC 0054](/rfcs/0054-one-of-several-types/)). So a safe function does not take the address of a library function that writes through a pointer argument (`memcpy`, `memset`, `read`, `fgets` and the rest): called through a pointer, it would write the context's bytes unchecked. Call it by name.
+
+```c rejected
+typedef void *(*copier)(void *, const void *, size_t);
+copier pick(void) { return memcpy; }
+```
 
 A `bool` is 0 or 1 ([RFC 0051](/rfcs/0051-nothing-undefined/)): bytes are not written into an object that holds one, by a library call that writes its argument (`memcpy`, `fread`, `read`, `recv` and the rest) or through a byte pointer, but a whole object zeroed or copied from one of its own type. Give the member the type `uint8_t`, or read the bytes and assign each member.
 
@@ -307,16 +334,63 @@ bool flag(unsigned char byte) { return byte != 0; }
 
 ## union-pointer
 
-A union member that holds a pointer is not read: the union may hold something else.
+A union that holds a pointer says which field of its struct tells which member is live ([RFC 0054](/rfcs/0054-one-of-several-types/)): `WEAVEC_TAGGED_BY(tag)` after the union's field (or after the closing brace of an anonymous union), `tag` an integer or enumeration field of the same struct, and `WEAVEC_WHEN(value, …)` after each member, the values of the tag it is for (`WEAVEC_TAGGED_BY(tag, mask)` compares `tag & mask`). A safe function then uses a member only under a comparison of the tag, which the compiler adds (`union-member` when it fails), and a store of a different value to the tag clears the union. The struct's layout is the one it had.
+
+```c accepted
+enum kind { KIND_NUMBER, KIND_TEXT };
+struct value {
+  enum kind kind;
+  union {
+    double number WEAVEC_WHEN(KIND_NUMBER);
+    const char *WEAVEC_NULL_TERMINATED text WEAVEC_WHEN(KIND_TEXT);
+  } as WEAVEC_TAGGED_BY(kind);
+};
+char first(const struct value *v) {
+  return v->kind == KIND_TEXT ? v->as.text[0] : 0;
+}
+void set(struct value *v, const char *WEAVEC_NULL_TERMINATED WEAVEC_ESCAPES s) {
+  v->kind = KIND_TEXT;          // clears the union, then
+  v->as.text = s;               // the member its value is for
+}
+```
+
+A member of a union without a tag is not read when it holds a pointer: the union may hold something else.
 
 ```c rejected
 union value { long number; char *text; };
 char first(union value *v) { return v->text[0]; }
 ```
 
-Keep a tag beside a struct per variant, or one pointer per variant in a struct.
+Of a tagged union, four uses are rejected, each because a pointer into the union would outlive the check of its tag: the address of a member (a pointer to `const` of a member without pointers is allowed), a member array passed as a pointer that can write, the union copied, passed or returned apart from its struct, or given whole to an initializer of its struct (copy the struct, or initialize one member), and a member stored before its tag in the same block (the store of the tag would clear it). A member with no `WEAVEC_WHEN` is not used.
 
-Nor is a `bool` member read where another member of another type shares its bytes ([RFC 0051](/rfcs/0051-nothing-undefined/)): the bytes may not be 0 or 1.
+```c rejected
+enum kind { KIND_NUMBER, KIND_TEXT };
+struct value {
+  enum kind kind;
+  union {
+    double number WEAVEC_WHEN(KIND_NUMBER);
+    char *text WEAVEC_WHEN(KIND_TEXT);
+  } as WEAVEC_TAGGED_BY(kind);
+};
+char **slot(struct value *v) { return &v->as.text; }
+```
+
+```c rejected
+enum kind { KIND_NUMBER, KIND_TEXT };
+struct value {
+  enum kind kind;
+  union {
+    double number WEAVEC_WHEN(KIND_NUMBER);
+    const char *text WEAVEC_WHEN(KIND_TEXT);
+  } as WEAVEC_TAGGED_BY(kind);
+};
+void set(struct value *v, const char *WEAVEC_ESCAPES s) {
+  v->as.text = s;
+  v->kind = KIND_TEXT;
+}
+```
+
+Nor is a `bool` member read where another member of another type shares its bytes ([RFC 0051](/rfcs/0051-nothing-undefined/)), unless the union is tagged: the bytes may not be 0 or 1.
 
 ```c rejected
 union flag { bool on; unsigned char byte; };
@@ -328,9 +402,13 @@ union flag { bool on; unsigned char byte; };
 unsigned char byte(union flag *f) { return f->byte; }
 ```
 
+A store of the tag counts as a store of null into each `WEAVEC_OWNED` member of the union: release or move the member first ([`owner-leak`](#owner-leak)).
+
+_Fix_ ([`fix`](#fix)): for a union without a tag, `WEAVEC_TAGGED_BY` and `WEAVEC_WHEN`, when every read of its members in the unit is under a `switch` on, or a comparison of, one integer field of the same struct (likely, E9); a tag stored after its member is moved first (certain).
+
 ### In C++
 
-A union with a member that is a pointer, a view or an object with a destructor is not read in a safe function, and neither is a `bool` member that shares its bytes; `std::variant` keeps which alternative is live and checks it.
+The same holds for a union whose members have no destructor and are not views: a tagged one is used under its tag. A union with a member that is a view or an object with a destructor is not read in a safe function, and neither is a `bool` member that shares its bytes with another type's; `std::variant` keeps which alternative is live and checks it.
 
 ```cpp rejected
 union Either { long number; const char *text; };
@@ -853,7 +931,7 @@ int peek(const std::vector<int> &v) {
 
 ## bad-annotation
 
-A bound names a parameter (or, on a field, a sibling field) of the right type, an integer literal, or a macro that expands to one; every declaration of a function gives it the same bounds.
+A bound names a parameter (or, on a field, a sibling field) of the right type, an integer literal, or a macro that expands to one; every declaration of a function gives it the same bounds. A tagged union's `WEAVEC_TAGGED_BY` names an integer field of the same struct, every member of it that holds a pointer says its values with `WEAVEC_WHEN`, and two members for one value are of one type or hold no pointer ([`union-pointer`](#union-pointer)).
 
 ```c rejected
 int sum(const int *WEAVEC_COUNTED_BY(count) v, size_t n);

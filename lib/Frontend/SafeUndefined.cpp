@@ -28,6 +28,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "SafeCheckImpl.h"
+#include "SafeTypes.h"
 #include "weavec/Core/LibrarySpec.h"
 
 #include "clang/AST/ASTContext.h"
@@ -300,8 +301,11 @@ public:
   bool VisitMemberExpr(clang::MemberExpr *member) {
     const auto *field =
         llvm::dyn_cast<clang::FieldDecl>(member->getMemberDecl());
+    // RFC 0054 §3: a tagged union's `bool` is read under its tag, which no
+    // member of another type shares with it.
     if (field == nullptr || !field->getParent()->isUnion() ||
-        !holdsBool(field->getType()) || assigned.contains(member))
+        !holdsBool(field->getType()) || assigned.contains(member) ||
+        taggedMember(*member))
       return true;
     for (const clang::FieldDecl *other : field->getParent()->fields())
       if (other != field && !clang::ASTContext::hasSameUnqualifiedType(
