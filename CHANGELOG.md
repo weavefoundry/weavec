@@ -1,6 +1,43 @@
 # CHANGELOG
 
 
+## [0.25.0](https://github.com/weavefoundry/weavec/compare/v0.24.0...v0.25.0) (2026-11-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* check values of one of several types ([#81](https://github.com/weavefoundry/weavec/issues/81))
+* follow callables and containers by their loans ([#80](https://github.com/weavefoundry/weavec/issues/80))
+* end Safe C++ borrows by what a call may reach ([#79](https://github.com/weavefoundry/weavec/issues/79))
+* close five soundness holes in safe code ([#78](https://github.com/weavefoundry/weavec/issues/78))
+* make safe functions free of undefined behavior ([#77](https://github.com/weavefoundry/weavec/issues/77))
+* check each fact once in fast safe units ([#76](https://github.com/weavefoundry/weavec/issues/76))
+* make rule errors carry fixes, and add --weavec-fix ([#75](https://github.com/weavefoundry/weavec/issues/75))
+* check fast safe code against what it holds ([#74](https://github.com/weavefoundry/weavec/issues/74))
+* convert existing C++ to safe C++ in place ([#73](https://github.com/weavefoundry/weavec/issues/73))
+* make safe C++ free of data races ([#72](https://github.com/weavefoundry/weavec/issues/72))
+* make safe code fast with type-stable memory ([#71](https://github.com/weavefoundry/weavec/issues/71))
+* add Safe C++, checked for moves, borrows, and views ([#69](https://github.com/weavefoundry/weavec/issues/69))
+
+### Features
+
+* add Safe C++, checked for moves, borrows, and views ([#69](https://github.com/weavefoundry/weavec/issues/69)) ([c1056db](https://github.com/weavefoundry/weavec/commit/c1056dbf786c9251294edfabc98d85e86a26d88c))
+* check each fact once in fast safe units ([#76](https://github.com/weavefoundry/weavec/issues/76)) ([2d56b9f](https://github.com/weavefoundry/weavec/commit/2d56b9f177823de014a7176a1c125d81e2e6acf7))
+* check fast safe code against what it holds ([#74](https://github.com/weavefoundry/weavec/issues/74)) ([392b720](https://github.com/weavefoundry/weavec/commit/392b72011e6a475f28e3b3e7c1363e4abda502b1))
+* check values of one of several types ([#81](https://github.com/weavefoundry/weavec/issues/81)) ([0f328ca](https://github.com/weavefoundry/weavec/commit/0f328caced568c9262b1ed67e0699582e2a7c39b))
+* convert existing C++ to safe C++ in place ([#73](https://github.com/weavefoundry/weavec/issues/73)) ([59a4bd7](https://github.com/weavefoundry/weavec/commit/59a4bd7124398daca758d646da809dffc4b1b9cf))
+* end Safe C++ borrows by what a call may reach ([#79](https://github.com/weavefoundry/weavec/issues/79)) ([0af7123](https://github.com/weavefoundry/weavec/commit/0af7123fcc758f2dbb9bfddacc9535142fa44e27))
+* follow callables and containers by their loans ([#80](https://github.com/weavefoundry/weavec/issues/80)) ([8a305f8](https://github.com/weavefoundry/weavec/commit/8a305f8d60ca81d35a67f7e4e3a04fd0edfc481f))
+* make rule errors carry fixes, and add --weavec-fix ([#75](https://github.com/weavefoundry/weavec/issues/75)) ([bffda03](https://github.com/weavefoundry/weavec/commit/bffda0365329f366526e77ab0ee954c86f714b24))
+* make safe C++ free of data races ([#72](https://github.com/weavefoundry/weavec/issues/72)) ([3066dd7](https://github.com/weavefoundry/weavec/commit/3066dd728b0e141e15bac1b347dab64ecef831b9))
+* make safe code fast with type-stable memory ([#71](https://github.com/weavefoundry/weavec/issues/71)) ([9b33263](https://github.com/weavefoundry/weavec/commit/9b33263428415983db7b4ed63c499a3c59581a41))
+* make safe functions free of undefined behavior ([#77](https://github.com/weavefoundry/weavec/issues/77)) ([fecadb1](https://github.com/weavefoundry/weavec/commit/fecadb1768e52589f74c80672f23fb2ef01f2f18))
+
+
+### Bug Fixes
+
+* close five soundness holes in safe code ([#78](https://github.com/weavefoundry/weavec/issues/78)) ([b7c1295](https://github.com/weavefoundry/weavec/commit/b7c12956b6d519a7ce4ff88551a9b6978146c85e))
+
 ## v0.24.0 (2026-11-13)
 
 ### Features
