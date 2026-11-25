@@ -905,10 +905,10 @@ darwin-arm64, Homebrew LLVM 23.1.0, main at `8a305f8d` (RFC 0053, PR 80),
 and this branch (`build/rfc54/rel`); the agents of G3 to G6 had a frozen
 copy of this branch's compiler as amendments 1, 2 and 12 left it
 (`build/rfc54/tc`). Evidence is in `build/rfc54/` (not committed). The
-library grows by 2,814 lines of code (30,338 to 33,152), in
+library grows by 2,948 lines of code (30,338 to 33,286), in
 `SafeTypes.cpp`, `GuardTypes.cpp`, `SafeCheck.cpp` and `SafeFix.cpp`; the
-runtime by 372 (8,786 to 9,158), in `weavec_types.c` and `weavec_alloc.c`
-(G9; the draft expected 1,600 and 500).
+runtime by 419 (8,786 to 9,205), in `weavec_types.c` and `weavec_alloc.c`
+(G9, with the review's fixes; the draft expected 1,600 and 500).
 
 **S0: passes.** (a) the marks reach the passes (amendment 1); (b) the
 trial interpreter's 41 `static_cast`s checked cost 1.009 of the same build
@@ -965,7 +965,18 @@ local types of one name in one unit that the allocation's name does not
 tell apart. The checked build stops the last two at the access. The
 round's false errors were fixed (amendments 8, 18), but for `qsort` of an
 array of structs that hold pointers, `pointer-bytes` of RFC 0042's library
-rows.
+rows. A review of the branch after the round found six more holes, all
+closed and pinned: a downcast from a base with no virtual functions read
+its first field as a vtable (amendment 3); a safe C function could pass
+`memcpy`'s address to a callback that forged a handle's pointers
+(amendment 18); a union initialized whole kept a member its tag was not
+for (amendment 6); the bases of a template's instances, a local class's
+and those in `extern "C++"` were not known, so a downcast to one was not
+checked; an array `new` whose cookie comes before its elements recorded
+the type at the cookie (amendment 12); and a frame left by `longjmp` or a throw kept its records,
+so a correct conversion in a later frame stopped (amendment 15). Two were
+left: same-named static locals in one C unit share a layout's name, and a
+conversion to a global's type scans the unit's globals linearly.
 
 **G7, cost elsewhere: fails narrowly.** Medians of 9, interleaved, with the
 final compilers, against main's fast and checked builds: the json port
@@ -974,7 +985,10 @@ and 1.003, tinyxml2 1.005 and 1.005, the trial interpreter 1.001 and 1.012
 (limits 1.01 and 1.02); a guarded Lua 1.012 (limit 1.02). The LRU port's
 fast build is 1 ms over on 70 ms, and was 1.014 and 1.010 in the two
 earlier runs. Amendment 15's first form, every address of a C++ local
-recorded, cost tinyxml2 1.159.
+recorded, cost tinyxml2 1.159. These were measured before the review's
+fixes, which add work only where a frame is left by a landing pad, a
+catch or a return from `setjmp`, and drop the record of an array `new`
+with a cookie; G7 was not measured again.
 
 **G8, compile time: passes.** CPU time of compiling the trial interpreter,
 two json ports, tinyxml2, the safe and ownership cases and Lua: 1.006 of
