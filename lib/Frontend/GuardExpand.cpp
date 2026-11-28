@@ -198,8 +198,12 @@ static const llvm::StringSet<> &releasingWrappers() {
           llvm::any_of(entry.params, [](const core::LibraryParam &param) {
             return param.effect == core::LibraryParam::Effect::Release ||
                    param.effect == core::LibraryParam::Effect::Realloc;
-          }))
+          })) {
         found.insert("__weavec_rt_" + entry.wrapper->name);
+        // RFC 0055 §3: a fast unit's `realloc` calls its typed form.
+        if (entry.typed)
+          found.insert("__weavec_rt_" + entry.typed->name);
+      }
     return found;
   }();
   return Names;

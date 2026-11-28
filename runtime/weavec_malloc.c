@@ -124,6 +124,10 @@ __attribute__((constructor(101))) static void findProgramAllocator(void) {
   programFree = (void (*)(void *))programs("free", (const void *)free);
   programRealloc =
       (void *(*)(void *, size_t))programs("realloc", (const void *)realloc);
+  /* (RFC 0055 section 7: the short paths stay off.) */
+  if (programMalloc != NULL || programCalloc != NULL || programFree != NULL ||
+      programRealloc != NULL)
+    weavecRtForeign = 1;
 }
 
 /* An arena block (a typed allocation's, RFC 0045) is the runtime's to
@@ -165,6 +169,14 @@ void *__weavec_rt_realloc_at(void *p, size_t size,
   if (programRealloc != NULL && !arenaBlock(p))
     return programRealloc(p, size);
   return weavecRtReallocAt(p, size, site);
+}
+
+void *__weavec_rt_realloc_typed(void *p, size_t size,
+                                struct __weavec_rt_type *type,
+                                const struct __weavec_rt_site *site) {
+  if (programRealloc != NULL && !arenaBlock(p))
+    return programRealloc(p, size);
+  return weavecRtReallocTyped(p, size, type, site);
 }
 
 void *__weavec_rt_reallocf_at(void *p, size_t size,

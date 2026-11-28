@@ -24,6 +24,6 @@
 // CHECK-NOT: __weavec_rt_shadow
 // CHECK: ret void
 
-// SUMMARY: weavec: {{.*}}ir-trusted.cpp: {{.*}}; {{[0-9]+}} typed allocation sites, {{[1-9][0-9]*}} trusted library functions
+// SUMMARY: weavec: {{.*}}ir-trusted.cpp: {{.*}}; {{[0-9]+}} typed allocation sites, {{[0-9]+}} typed releases, {{[1-9][0-9]*}} trusted library functions
 // AUDIT: library functions fast units run without guards
 // AUDIT: std::{{.*}}vector<int, std::{{.*}}allocator<int>{{ ?}}>::push_back

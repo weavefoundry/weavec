@@ -367,6 +367,9 @@ bool writeEnforcementLedger(const EnforcementLedger &ledger,
                        {.K = "typedSites",
                         .V =
                             static_cast<std::int64_t>(ledger.typedSites)},
+                       {.K = "typedReleases",
+                        .V =
+                            static_cast<std::int64_t>(ledger.typedReleases)},
                        {.K = "placedLocals",
                         .V =
                             static_cast<std::int64_t>(ledger.placedLocals)},
@@ -472,9 +475,10 @@ std::string enforcementSummary(const EnforcementLedger &ledger,
   if (kind("lock") != 0 || starts != 0)
     os << "; " << kind("lock") << " locked classes, " << starts
        << " thread starts";
-  // RFC 0045 §10.
+  // RFC 0045 §10, RFC 0055 §7.
   if (ledger.typedSites != 0 || !ledger.library.empty())
     os << "; " << ledger.typedSites << " typed allocation sites, "
+       << ledger.typedReleases << " typed releases, "
        << llvm::count_if(
               ledger.library,
               [](const auto &entry) { return entry.kind == "trusted"; })
@@ -502,7 +506,8 @@ struct Audit {
   llvm::json::Array guarded;
   /// Library calls of safe functions that kept a checked wrapper.
   llvm::json::Array wrapped;
-  /// Reference fields, tested where safe code loads them.
+  /// Reference fields, tested where checked safe code loads them (RFC 0055
+  /// §2).
   llvm::json::Array references;
   /// RFC 0044 §12: members that share an object safe C++ may change, and
   /// members that erase the type of what they hold.
@@ -1012,8 +1017,8 @@ int runAudit(llvm::ArrayRef<const char *> operands) {
        "operation", "reason");
   list("library calls of safe functions that keep a checked wrapper",
        audit.wrapped, "operation", "");
-  list("reference fields (tested where safe code loads them)", audit.references,
-       "field", "");
+  list("reference fields (tested where checked safe code loads them)",
+       audit.references, "field", "");
   list("bounds on members that code which is not safe can write (nothing "
        "compares them where it does: T-A1, V-A1)",
        unchecked, "field", "");

@@ -578,6 +578,9 @@ void guardMadeViews(ModuleContext &module, llvm::Function &function);
 void cloneTrusted(ModuleContext &module, llvm::Module &ir);
 /// §2, in GuardExpand: the typed allocation sites' calls.
 void typeAllocations(ModuleContext &module, llvm::Function &function);
+/// RFC 0055 §3: the type record a fast unit's allocation call carries to
+/// GuardExpand, or null; a `realloc`'s redirection passes it on.
+[[nodiscard]] llvm::Value *allocationRecord(const llvm::CallBase &call);
 /// §4: an access of `width` bytes at `pointer` lies inside what a believed
 /// pointer covers, and so gets no guard.
 [[nodiscard]] bool believedAccess(const ModuleContext &module,
@@ -600,8 +603,8 @@ llvm::Constant *layoutGlobal(ModuleContext &module, llvm::StringRef key);
 /// its type, `{key, cache, layout, type}`.
 llvm::GlobalVariable *typeRecord(ModuleContext &module, std::uint64_t key,
                                  llvm::StringRef layoutKey);
-/// Whether `call` is an array `new` (its row's `typed(new_typed, …)` flag
-/// 1), which may put a cookie before its elements (GuardFast.cpp).
+/// Whether `call` is an array `new` (its row's `typed(take, …)` form 2),
+/// which may put a cookie before its elements (GuardFast.cpp).
 bool arrayNew(const llvm::CallBase &call);
 /// §2.2, §3.3: a safe function's checked conversions and tagged unions'
 /// accesses and tag stores, as checks.

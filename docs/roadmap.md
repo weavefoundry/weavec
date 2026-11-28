@@ -4,7 +4,7 @@ Rough ordering of the major pieces of work. This page is the one-screen view;
 the design detail and the reasoning live in the [RFCs](rfcs/README.md) each
 milestone links to. Everything here is subject to change as we learn.
 
-The design today is [RFC 0054](rfcs/0054-one-of-several-types.md) for values of one of several types (tagged unions, checked conversions and downcasts), [RFC 0053](rfcs/0053-callables-and-containers-by-their-loans.md) for callables and containers by their loans and [RFC 0052](rfcs/0052-what-a-call-may-reach.md) for what a call may reach in safe C++ (reach by types, results, views, callables, values built from borrows), [RFC 0051](rfcs/0051-nothing-undefined.md) for what a safe function may not leave undefined (the list of the two languages' undefined behavior, the definitions and the stops, the rules that reject what asserts, the comparison of safe units at the link), [RFC 0050](rfcs/0050-checked-once.md) for what a fast safe unit checks once (views, the typed allocator's paths, Safe C's library calls), [RFC 0049](rfcs/0049-errors-that-carry-their-fix.md) for the fixes errors carry and `--weavec-fix`, [RFC 0048](rfcs/0048-safe-code-without-the-shadow.md) for what a fast safe unit checks and believes, [RFC 0047](rfcs/0047-conversion-in-place.md) for converting existing C++, [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
+The design today is [RFC 0055](rfcs/0055-a-heap-for-safe-code.md) for the heap of fast safe code (the threads' entries and the short paths, typed `realloc`, one contract for both languages), [RFC 0054](rfcs/0054-one-of-several-types.md) for values of one of several types (tagged unions, checked conversions and downcasts), [RFC 0053](rfcs/0053-callables-and-containers-by-their-loans.md) for callables and containers by their loans and [RFC 0052](rfcs/0052-what-a-call-may-reach.md) for what a call may reach in safe C++ (reach by types, results, views, callables, values built from borrows), [RFC 0051](rfcs/0051-nothing-undefined.md) for what a safe function may not leave undefined (the list of the two languages' undefined behavior, the definitions and the stops, the rules that reject what asserts, the comparison of safe units at the link), [RFC 0050](rfcs/0050-checked-once.md) for what a fast safe unit checks once (views, the typed allocator's paths, Safe C's library calls), [RFC 0049](rfcs/0049-errors-that-carry-their-fix.md) for the fixes errors carry and `--weavec-fix`, [RFC 0048](rfcs/0048-safe-code-without-the-shadow.md) for what a fast safe unit checks and believes, [RFC 0047](rfcs/0047-conversion-in-place.md) for converting existing C++, [RFC 0046](rfcs/0046-thread-safety.md), [RFC 0045](rfcs/0045-type-stable-memory.md) and [RFC 0044](rfcs/0044-safe-cxx.md) for safe C++, [RFC 0043](rfcs/0043-ownership.md), [RFC 0042](rfcs/0042-typed-memory.md) and [RFC 0041](rfcs/0041-safe-c.md) for safe C, and [RFC 0038](rfcs/0038-drop-in-everywhere.md), over the
 sweep and colors of [RFC 0037](rfcs/0037-complete-sweep-and-colors.md), the
 reuse after a sweep of [RFC 0036](rfcs/0036-deterministic-heap-reuse.md)
 and the guards of [RFC 0035](rfcs/0035-guard-by-default.md). The
@@ -12,7 +12,37 @@ milestones before it are summarized under _History_; their RFCs keep the
 detail, and the per-RFC validation records of the milestones before RFC
 0030 remain in the repository history at tag `v0.10.0`.
 
-## Now: RFC 0054 — One of several types
+## Now: RFC 0055 — A heap for safe code
+
+Design: [RFC 0055 — A heap for safe code](rfcs/0055-a-heap-for-safe-code.md)
+(Accepted, built; its _Implementation amendments_ and _Measured gates_ say
+how). The checks Rust also makes cost the ports 0 to 2% over Clang; nearly
+all the rest of what the fast build cost was its allocator. Now each thread
+keeps an entry of free slots for each pool it uses: a typed allocation is a
+pop and one stored word, a release a compared and stored word, the object
+zeroed and a push, with no compare-and-swap, record or counter. A
+`realloc` keeps its block's type, and the reference test (O4) is the
+checked build's in Safe C as in Safe C++, so a program with Safe C keeps its
+pooled slots' shadow. Pools are keyed by layout as well as name. Runtime
+ABI 50, ledger 15.
+
+- [x] **The RFC**, accepted as drafted on 2026-11-27.
+- [x] **S0**: the short path met its limits (json49 1.005, the Safe C port
+      1.22, a pair 9 ns); the compare-and-swap went; the in-line forms
+      gained under 2% and were not built.
+- [x] **The path** (G4): a pair 0.52 of the system allocator's time on
+      Darwin (main 1.16), 0.82 of glibc's (main 1.73).
+- [x] **RFC 0049's port** (G2): 0.98 of Clang (main 1.20).
+- [x] **A round** (G10): one way to share a pool found (two definitions of
+      a name across a library, on main too), closed.
+- [ ] **New code** (G2, G3): RFC 0044's port 1.21 of Clang (asks 1.10),
+      the Safe C port 1.19 (asks 1.00) and 1.8 times Rust (asks 1.5; main
+      3.0), LRU 1.25: the heap is at parity, and what is left is WeaveC's
+      own code.
+- [ ] **Nothing slower** (G5, G7): tinyxml2 1.4% slower than main (its
+      layout; asks 1%), the interpreter's peak memory 0.9% over main's.
+
+## Before: RFC 0054 — One of several types
 
 Design: [RFC 0054 — One of several types](rfcs/0054-one-of-several-types.md)
 (Accepted, built; its _Implementation amendments_ and _Measured gates_ say

@@ -106,13 +106,17 @@
 #                    unwinds the stack (a throw): the stack's shadow is not
 #                    cleared before it, as it is before any other call that
 #                    does not return.
-#   typed(N, F)      (RFC 0045 section 2) in a fast safe unit, a call whose
-#                    type the compiler infers becomes the runtime's
-#                    __weavec_rt_N with the call's arguments, the site's
-#                    type record and the flags F where N takes them:
-#                    alloc_typed (size, form F, record), calloc_typed (count,
-#                    size, record), new_typed (size, record, F: 1 an array,
-#                    2 nothrow).
+#   typed(N, F)      (RFC 0045 section 2, RFC 0055 section 7) in a fast
+#                    safe unit, a call whose type the compiler infers
+#                    becomes the runtime's __weavec_rt_N with the call's
+#                    arguments, the site's type record and the flags F
+#                    where N takes them: take (size, record, F: the form, 0
+#                    malloc, 1 new, 2 new[], and 4 nothrow), calloc_typed
+#                    (count, size, record), realloc_typed (section 3: the
+#                    block, size, record and the site of the row's wrapper,
+#                    in place of the wrapper); and a release by safe code
+#                    becomes give (the block, its size or all ones, the
+#                    form F, the site) in place of the row's wrapper.
 #   chk(A: c0, c1, ...)
 #                    A is an alias of the row (a fortified form): its k-th
 #                    argument is the row's argument c_k, dropped ('_', a
@@ -204,25 +208,31 @@
 # with its site, so that a bad release names its line; a C row's wrapper
 # for a release is its name and `_at`.
 # RFC 0043 section 2: the allocations give the caller an owner.
-malloc (int) -> ptr:owned typed(alloc_typed, 0);
+malloc (int) -> ptr:owned typed(take, 0);
 calloc (int, int) -> ptr:owned typed(calloc_typed, 0);
 aligned_alloc (int, int) -> ptr:owned;
 valloc (int) -> ptr:owned;
-free (none:null-ok:release) -> void wrapper(free_at);
-realloc (none:null-ok:realloc, int) -> ptr:owned wrapper(realloc_at);
+free (none:null-ok:release) -> void wrapper(free_at) typed(give, 0);
+# RFC 0055 section 3 (D3): in a fast safe unit a `realloc` gives a block of
+# the old block's type, or of the site's for a null or untyped one.
+realloc (none:null-ok:realloc, int) -> ptr:owned wrapper(realloc_at) \
+    typed(realloc_typed, 0);
 reallocf (none:null-ok:realloc, int) -> ptr:owned wrapper(reallocf_at);
 reallocarray (none:null-ok:realloc, int, int) -> ptr:owned \
     wrapper(reallocarray_at);
 # RFC 0045 section 2: C++'s allocation functions, typed in a fast unit (an
 # over-aligned form is not).
-_Znwm (int) -> ptr:owned typed(new_typed, 0);
-_Znam (int) -> ptr:owned typed(new_typed, 1);
-_ZnwmRKSt9nothrow_t (int, other) -> ptr:owned typed(new_typed, 2);
-_ZnamRKSt9nothrow_t (int, other) -> ptr:owned typed(new_typed, 3);
-_ZdlPv (none:null-ok:release) -> void wrapper(delete_at);
-_ZdlPvm (none:null-ok:release, int) -> void wrapper(delete_sized_at);
-_ZdaPv (none:null-ok:release) -> void wrapper(delete_array_at);
-_ZdaPvm (none:null-ok:release, int) -> void wrapper(delete_array_sized_at);
+_Znwm (int) -> ptr:owned typed(take, 1);
+_Znam (int) -> ptr:owned typed(take, 2);
+_ZnwmRKSt9nothrow_t (int, other) -> ptr:owned typed(take, 5);
+_ZnamRKSt9nothrow_t (int, other) -> ptr:owned typed(take, 6);
+_ZdlPv (none:null-ok:release) -> void wrapper(delete_at) typed(give, 1);
+_ZdlPvm (none:null-ok:release, int) -> void wrapper(delete_sized_at) \
+    typed(give, 1);
+_ZdaPv (none:null-ok:release) -> void wrapper(delete_array_at) \
+    typed(give, 2);
+_ZdaPvm (none:null-ok:release, int) -> void \
+    wrapper(delete_array_sized_at) typed(give, 2);
 
 posix_memalign (w:bytes(8):owner, int, int) -> int;
 # glibc: allocates the result of realpath(path, NULL) in one call.

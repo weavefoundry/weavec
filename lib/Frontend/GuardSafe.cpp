@@ -375,13 +375,14 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
   llvm::GlobalVariable *record = nullptr;
   if (typed) {
     record = typeRecord(module, typeKey(module, name, /*array=*/false), name);
+    // RFC 0055 §7: the short path's entry, as a `malloc` (form 0).
     allocate = module.runtime(
-        "alloc_typed",
-        llvm::FunctionType::get(module.ptr,
-                                {module.i64, module.i32, module.ptr}, false));
+        "take", llvm::FunctionType::get(
+                    module.ptr, {module.i64, module.ptr, module.i32}, false));
     release = module.runtime(
-        "free_at", llvm::FunctionType::get(llvm::Type::getVoidTy(context),
-                                           {module.ptr, module.ptr}, false));
+        "give", llvm::FunctionType::get(
+                    llvm::Type::getVoidTy(context),
+                    {module.ptr, module.i64, module.i32, module.ptr}, false));
   }
 
   llvm::IRBuilder<> entry(&*function.getEntryBlock().getFirstInsertionPt());
@@ -416,7 +417,7 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
     llvm::Value *block = nullptr;
     if (typed) {
       block = builder.CreateCall(
-          allocate, {bytes, llvm::ConstantInt::get(module.i32, 0), record});
+          allocate, {bytes, record, llvm::ConstantInt::get(module.i32, 0)});
     } else if (alignment <= 16) {
       block = builder.CreateCall(
           allocate, {llvm::ConstantInt::get(module.i64, 1), bytes});
@@ -444,8 +445,9 @@ static void placeOnHeap(ModuleContext &module, llvm::Function &function,
     llvm::Value *block = builder.CreateLoad(module.ptr, slot);
     if (typed)
       builder.CreateCall(
-          release,
-          {block, module.site(builder.getCurrentDebugLocation(), SiteTyped)});
+          release, {block, llvm::ConstantInt::getAllOnesValue(module.i64),
+                    llvm::ConstantInt::get(module.i32, 0),
+                    module.site(builder.getCurrentDebugLocation(), SiteTyped)});
     else
       builder.CreateCall(release, {block});
     builder.CreateStore(llvm::ConstantPointerNull::get(module.ptr), slot);
@@ -1870,9 +1872,10 @@ private:
   /// block is not reused while something refers to it, so the test is
   /// exact for the heap.
   void testReferences() {
-    // RFC 0048 §2.1: a fast C++ unit believes what it loads; the checked
-    // mode tests it (O4), and so does Safe C.
-    if (!referenceTests || (shadowless(module) && module.options.safe->cxx))
+    // RFC 0048 §2.1, RFC 0055 §2 (D2): a fast unit believes what it loads,
+    // in C as in C++ (by Y2 it reaches memory of its type); the checked
+    // build tests it (O4), and so does a unit in verify mode.
+    if (!referenceTests || (shadowless(module) && !module.verify()))
       return;
     std::vector<llvm::LoadInst *> loads;
     for (llvm::Instruction &instruction : llvm::instructions(function)) {

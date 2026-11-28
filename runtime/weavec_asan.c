@@ -159,10 +159,14 @@ void __weavec_rt_fast_program(void) {
   }
   __weavec_rt_typed_program();
 }
-/* RFC 0050 section 3.1: a unit compiled -fweavec-checks=verify, or one
- * with Safe C: pooled slots are marked released, so that its monitors and
- * Safe C's reference test see them. */
-void __weavec_rt_tests_released(void) { weavecRtTestsReleased = 1; }
+/* RFC 0050 section 3.1, RFC 0055 section 2 (D2): a unit compiled
+ * -fweavec-checks=verify, or a checked safe unit: pooled slots are marked
+ * released, so that its monitors and the reference test (O4) see them, and
+ * the calling thread's entries go off. */
+void __weavec_rt_tests_released(void) {
+  weavecRtTestsReleased = 1;
+  weavecRtSettleEntries();
+}
 
 __attribute__((constructor)) static void readContainers(void) {
   const char *value = getenv("WEAVEC_RT_CONTAINERS");

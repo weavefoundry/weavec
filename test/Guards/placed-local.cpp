@@ -80,8 +80,8 @@ WEAVEC_GUARDED long hold() {
 
 // A function in a namespace is marked before its code is made too.
 // NS-LABEL: define {{.*}}@_ZN6garden3sowEv(
-// NS: call {{.*}}@__weavec_rt_alloc_typed(
-// NS: call void @__weavec_rt_free_at(
+// NS: call {{.*}}@__weavec_rt_take(
+// NS: call void @__weavec_rt_give(
 namespace garden {
 long sow() {
   Tree tree;
@@ -102,8 +102,8 @@ struct Pointed {
   long *mem = pool;
 };
 // NS-LABEL: define {{.*}}@_Z4madev(
-// NS: call {{.*}}@__weavec_rt_alloc_typed(
-// NS: call {{.*}}@__weavec_rt_alloc_typed(
+// NS: call {{.*}}@__weavec_rt_take(
+// NS: call {{.*}}@__weavec_rt_take(
 long made() {
   auto tagged = Tagged(3);
   Pointed pointed;

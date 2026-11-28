@@ -10,7 +10,7 @@
 [[gnu::noinline]] static void drop(void *WEAVEC_OWNED p) { free(p); }
 
 // CHECK-LABEL: define {{.*}}@first(
-// CHECK-NOT: __weavec_rt_alloc_typed
+// CHECK-NOT: __weavec_rt_take
 // CHECK: call {{.*}}@malloc(
 void first(void) {
   struct node {
@@ -22,7 +22,7 @@ void first(void) {
 }
 
 // CHECK-LABEL: define {{.*}}@second(
-// CHECK-NOT: __weavec_rt_alloc_typed
+// CHECK-NOT: __weavec_rt_take
 // CHECK: call {{.*}}@malloc(
 void second(void) {
   struct node {
@@ -34,7 +34,7 @@ void second(void) {
 }
 
 // CHECK-LABEL: define {{.*}}@lone(
-// CHECK: call {{.*}}@__weavec_rt_alloc_typed(
+// CHECK: call {{.*}}@__weavec_rt_take(
 void lone(void) {
   struct lone {
     long v;
