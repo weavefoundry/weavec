@@ -223,8 +223,9 @@ struct LibraryEntry {
   bool wide = false;
   std::optional<LibFormat> format;
   std::optional<LibWrapper> wrapper;
-  /// RFC 0045 §2: `typed(N, F)`, the runtime's typed allocation entry point
-  /// `__weavec_rt_N` (`alloc_typed`, `calloc_typed`, `new_typed`) and its
+  /// RFC 0045 §2, RFC 0055 §7: `typed(N, F)`, the runtime's typed entry
+  /// point `__weavec_rt_N` (`take`, `calloc_typed`, `realloc_typed`, and
+  /// `give` for a release) and its
   /// flags.
   std::optional<LibWrapper> typed;
   unsigned typedFlags = 0;

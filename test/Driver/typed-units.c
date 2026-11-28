@@ -57,13 +57,15 @@ int viewed(const struct view *w) { return total(w->of); }
 // LEDGER-NEXT: "sends": false
 // LEDGER-NEXT: "starts": 0
 // LEDGER-NEXT: "tier": "guarded"
-// LEDGER: "reason": "reference"
-// LEDGER: "version": 14
+// RFC 0055 §2 (D2): a fast unit tests no reference (O4 is the checked
+// build's).
+// LEDGER-NOT: "reason": "reference"
+// LEDGER: "version": 15
 
 // AUDIT: 2 of 3 functions safe
 // AUDIT: functions that are not safe (safe code trusts them
 // AUDIT-NEXT: typed-units.c:{{[0-9]+}}: main (guarded)
-// AUDIT: reference fields (tested where safe code loads them):
+// AUDIT: reference fields (tested where checked safe code loads them):
 // AUDIT-NEXT: typed-units.c:{{[0-9]+}}: view.of
 // A header's struct, in two units' ledgers, is listed once.
 // TWICE: reference fields

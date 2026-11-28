@@ -19,7 +19,7 @@ struct Keep {
 void keep(Keep &k, long &WEAVEC_ESCAPES x) { k.p = &x; }
 
 // CHECK-LABEL: define {{.*}}@_Z5staleR4Keep(
-// CHECK-NOT: __weavec_rt_new_typed
+// CHECK-NOT: __weavec_rt_take
 // CHECK: call {{.*}}@_Znwm(
 void stale(Keep &k) {
   struct Node {
@@ -35,7 +35,7 @@ void stale(Keep &k) {
 }
 
 // CHECK-LABEL: define {{.*}}@_Z6victimR4Keep(
-// CHECK-NOT: __weavec_rt_new_typed
+// CHECK-NOT: __weavec_rt_take
 // CHECK: call {{.*}}@_Znwm(
 // OUT: name = public
 void victim(Keep &k) {
@@ -50,7 +50,7 @@ void victim(Keep &k) {
 }
 
 // CHECK-LABEL: define {{.*}}@_Z4lonev(
-// CHECK: call {{.*}}@__weavec_rt_new_typed(
+// CHECK: call {{.*}}@__weavec_rt_take(
 long lone() {
   struct Lone {
     long v = 3;

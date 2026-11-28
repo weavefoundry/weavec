@@ -220,6 +220,7 @@ struct __weavec_rt_heap_t {
 
 WEAVEC_RT_API extern struct __weavec_rt_heap_t __weavec_rt_heap;
 
+
 /* A free or dead slot's word is `next << 2 | state`, the index + 1 of the
  * next slot on its list (0 for none); a live slot's is `size << 4 | form <<
  * 2 | state` (RFC 0039 section 4: what allocated it). */
@@ -303,6 +304,32 @@ struct __weavec_rt_type {
   const struct __weavec_rt_layout *layout;
   uint64_t type;
 };
+/* RFC 0055 section 7: a fast safe unit's typed allocation of `size` bytes
+ * and its typed release (`size` SIZE_MAX when the release is not sized):
+ * `how` is the form (WeavecRtFormMalloc, WeavecRtFormNew,
+ * WeavecRtFormNewArray), and for a take WeavecRtHowNothrow, a `new` that
+ * returns null rather than throw. Each is section 5's short path, and
+ * otherwise the entry point of its form (alloc_typed, new_typed, free_at,
+ * delete_at, delete_sized_at and their array forms). */
+enum { WeavecRtHowForm = 3, WeavecRtHowNothrow = 4 };
+
+WEAVEC_RT_API void *__weavec_rt_take(size_t size, struct __weavec_rt_type *type,
+                                     unsigned how);
+WEAVEC_RT_API void __weavec_rt_give(void *p, size_t size, unsigned how,
+                                    const struct __weavec_rt_site *site);
+/* A program that defines its own `malloc`, `free`, `operator new` or
+ * `operator delete`: the short paths stay off (its allocations are its
+ * own). */
+extern int weavecRtForeign;
+/* RFC 0055 section 3: a fast unit's `realloc` (D3): the old block's type
+ * wins, from its type's pool; `type`, the site's, gives a null or untyped
+ * block its type; `site` as `realloc_at`'s (a typed one returns the old
+ * block to its pool). */
+WEAVEC_RT_API void *__weavec_rt_realloc_typed(void *p, size_t size,
+                                              struct __weavec_rt_type *type,
+                                              const struct __weavec_rt_site *site);
+void *weavecRtReallocTyped(void *p, size_t size, struct __weavec_rt_type *type,
+                           const struct __weavec_rt_site *site);
 /* RFC 0054 section 1.2: the block `block` (an allocation's result, or
  * null) holds objects of `type`, in a build that does not pool it. */
 WEAVEC_RT_API void __weavec_rt_note_type(const void *block,
@@ -374,11 +401,15 @@ void weavecRtAltStackDrop(void);
  * container annotations of every unit are ignored. */
 WEAVEC_RT_API void __weavec_rt_fast_program(void);
 extern int weavecRtFastProgram;
-/* RFC 0050 section 3.1: called by each unit compiled with
- * -fweavec-checks=verify and each with Safe C, which read a released
- * block's shadow: a pooled slot's shadow says released. */
+/* RFC 0050 section 3.1, RFC 0055 section 2 (D2): called by each unit
+ * compiled with -fweavec-checks=verify and each checked safe unit, which
+ * read a released block's shadow: a pooled slot's shadow says released, and
+ * the short paths are off. */
 WEAVEC_RT_API void __weavec_rt_tests_released(void);
 extern int weavecRtTestsReleased;
+/* RFC 0055 section 4: the calling thread's entries off, when the short
+ * paths are (another thread's go off at its next slow path). */
+void weavecRtSettleEntries(void);
 /* Allocates as `allocForm` does, from the pool of `type` when it has one. */
 void *weavecRtAllocTyped(size_t size, unsigned form,
                          struct __weavec_rt_type *type);
@@ -977,7 +1008,7 @@ void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
 /* The library's interface version (libweavec_rt.so.<abi>,
  * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
  * encoding or a site record changes. */
-#define WEAVEC_RT_ABI 49
+#define WEAVEC_RT_ABI 50
 
 /*===-- Internal -----------------------------------------------------------===*/
 

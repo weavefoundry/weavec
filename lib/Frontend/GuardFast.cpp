@@ -151,6 +151,12 @@ std::uint64_t typeKey(const ModuleContext &module, llvm::StringRef name,
     std::ignore = llvm::sys::fs::make_absolute(path);
     key ^= llvm::xxh3_64bits(path.str()) * 0x9E3779B97F4A7C15ULL;
   }
+  // RFC 0055 G10: and of the type's layout (RFC 0054 §1.1: its size and
+  // where it keeps pointers), so that two definitions of one name that a
+  // link does not compare (one in a library) never share a pool.
+  if (const auto found = module.options.safe->layouts.find(name);
+      found != module.options.safe->layouts.end())
+    key ^= std::rotl(found->second.identity, 17) * 0xC2B2AE3D27D4EB4FULL;
   if (array)
     key = std::rotl(key, 1) ^ 0x5BD1E9955BD1E995ULL;
   return key != 0 ? key : 1;
@@ -165,20 +171,22 @@ static const core::LibraryEntry *typedRow(const llvm::CallBase &call) {
   const std::optional<core::LibraryMatch> match =
       core::LibrarySpec::shipped().lookup(libraryName(callee->getName()),
                                           call.arg_size());
+  // (A typed release is the redirection's, GuardLibrary.cpp.)
   if (!match || match->entry == nullptr || match->alias != nullptr ||
-      !match->entry->typed || match->entry->params.size() != call.arg_size())
+      !match->entry->typed || match->entry->typed->name == "give" ||
+      match->entry->params.size() != call.arg_size())
     return nullptr;
   return match->entry;
 }
 
 bool arrayNew(const llvm::CallBase &call) {
   const core::LibraryEntry *row = typedRow(call);
-  return row != nullptr && row->typed->name == "new_typed" &&
-         (row->typedFlags & 1U) != 0;
+  return row != nullptr && row->typed->name == "take" &&
+         (row->typedFlags & 3U) == 2;
 }
 
 /// Why an allocation a fast unit's code makes is not typed: a row that
-/// gives an owner without a typed form, or one that reallocates.
+/// gives an owner without a typed form.
 static llvm::StringRef untypedReason(const llvm::CallBase &call) {
   const llvm::Function *callee = call.getCalledFunction();
   if (callee == nullptr)
@@ -189,10 +197,8 @@ static llvm::StringRef untypedReason(const llvm::CallBase &call) {
   if (!match || match->entry == nullptr)
     return {};
   const core::LibraryEntry &entry = *match->entry;
-  if (llvm::any_of(entry.params, [](const core::LibraryParam &param) {
-        return param.effect == core::LibraryParam::Effect::Realloc;
-      }))
-    return "reallocated";
+  // (RFC 0055 §3: a `realloc` is typed; `reallocf` and `reallocarray` have
+  // no typed form.)
   if (entry.typed)
     return "no type";
   return entry.owned ? "no typed form" : llvm::StringRef();
@@ -225,6 +231,12 @@ static void noteLibrary(const ModuleContext &module, llvm::StringRef kind,
 /// to GuardExpand: the inliner keeps a call's bundles where it drops its
 /// `!alloc_token` (a call it turns into an `invoke`).
 static constexpr llvm::StringLiteral TypeBundle = "weavec.type";
+
+llvm::Value *allocationRecord(const llvm::CallBase &call) {
+  const std::optional<llvm::OperandBundleUse> bundle =
+      call.getOperandBundle(TypeBundle);
+  return bundle && !bundle->Inputs.empty() ? bundle->Inputs[0].get() : nullptr;
+}
 
 /// Before the optimizer: each allocation call whose type Clang inferred gets
 /// a record of its type (the key, and the pool the runtime resolves), named
@@ -304,8 +316,12 @@ void typeAllocations(ModuleContext &module, llvm::Function &function) {
     llvm::SmallVector<llvm::Value *, 3> arguments;
     if (name == "calloc_typed")
       arguments = {call->getArgOperand(0), call->getArgOperand(1), record};
-    else if (name == "alloc_typed")
-      arguments = {call->getArgOperand(0), flags, record};
+    // RFC 0055 §3: a `realloc` its row's wrapper did not take (one in an
+    // unsafe region), with its site.
+    else if (name == "realloc_typed")
+      arguments = {call->getArgOperand(0), call->getArgOperand(1), record,
+                   module.site(call->getDebugLoc(),
+                               typedRelease(module, function) ? SiteTyped : 0)};
     else
       arguments = {call->getArgOperand(0), record, flags};
     llvm::SmallVector<llvm::Type *, 3> types;
@@ -348,11 +364,13 @@ static void announce(ModuleContext &module, llvm::Module &ir,
 }
 
 void prepareFast(ModuleContext &module, llvm::Module &ir) {
-  // RFC 0050 §3.1: a program with a unit in verify mode, whose monitors
-  // read a released block's shadow, or with Safe C, whose reference test
-  // does, marks pooled slots released.
+  // RFC 0050 §3.1, RFC 0055 §2 (D2): a program with a unit in verify mode,
+  // whose monitors read a released block's shadow, or with a checked safe
+  // unit, whose reference test does (O4), marks pooled slots released and
+  // takes no short path; a program of fast units keeps its pooled slots'
+  // shadow whichever language released them.
   if (module.verify() ||
-      (module.options.safe != nullptr && !module.options.safe->cxx &&
+      (module.options.safe != nullptr && !module.options.safe->fast &&
        llvm::any_of(ir, [&](const llvm::Function &function) {
          return isSafe(module, function);
        })))

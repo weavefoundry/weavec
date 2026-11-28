@@ -46,7 +46,7 @@ int hits = 0; // a global that is not safe to share: its error is in the plan
 // LEDGER: "function": "first"
 // LEDGER: "surveyed": true
 // LEDGER: "partial": false
-// LEDGER: "version": 14
+// LEDGER: "version": 15
 
 // AUDIT: conversion: 3 of 7 functions safe (43%); 2 more have no error
 // AUDIT-NEXT: fixes: 0 certain, 1 likely ('weavec-cc --weavec-fix <ledger>' applies them)

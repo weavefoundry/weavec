@@ -1,11 +1,13 @@
 // RFC 0045 §3, §9: in a program built from fast safe units, a block safe
-// code releases is the next block of its type, at once; until then a stale
-// pointer to it (here through guarded code) still finds it released, and
-// the report says the program was built for speed. Built with
-// -fweavec-safe-checks=full, the block waits for a sweep instead.
+// code releases is the next block of its type, at once. RFC 0050 (D3), RFC
+// 0055 §2 (D2): until then the slot keeps the shadow of the object it held,
+// in a program of Safe C as of Safe C++, so a stale pointer to it (here
+// through guarded code) reads the zeroed object. Built with
+// -fweavec-safe-checks=full, the block waits for a sweep instead, and the
+// stale read stops.
 // RUN: %weavec_cc -O2 -fweavec-safe %s -o %t
 // RUN: %t | FileCheck %s --check-prefix=FAST
-// RUN: not --crash %t stale 2>&1 | FileCheck %s
+// RUN: %t stale | FileCheck %s --check-prefix=STALE
 // RUN: %weavec_cc -O2 -fweavec-safe -fweavec-safe-checks=full %s -o %t.full
 // RUN: %t.full | FileCheck %s --check-prefix=FULL
 // RUN: not --crash %t.full stale 2>&1 | FileCheck %s --check-prefix=FULLREPORT
@@ -48,12 +50,13 @@ int main(int argc, char **argv) {
     return 1;
   keep(a);
   drop(a);
-  if (stale(argc, argv))
-    // CHECK: weavec: heap-use-after-free at {{.*}}typed-reuse.c:{{[0-9]+}}:{{[0-9]+}}: read of 4 bytes
-    // CHECK: weavec: note: built for speed; rebuild with -fweavec-safe-checks=full for allocation stacks and exact use-after-free reports
-    // FULLREPORT: weavec: heap-use-after-free
+  if (stale(argc, argv)) {
+    // STALE: stale 0
+    // FULLREPORT: weavec: heap-use-after-free at {{.*}}typed-reuse.c:{{[0-9]+}}:{{[0-9]+}}: read of 4 bytes
     // FULLREPORT-NOT: built for speed
-    return peek();
+    printf("stale %d\n", peek());
+    return 0;
+  }
   struct node *b = make(2);
   if (b == NULL)
     return 1;

@@ -121,7 +121,7 @@ int main() {
 // LEDGER-NEXT: "owns": false
 // LEDGER-NEXT: "sends": false
 // LEDGER-NEXT: "starts": 1
-// LEDGER: "version": 14
+// LEDGER: "version": 15
 
 // AUDIT: functions that are not safe and start threads or use locks
 // AUDIT-NEXT: safe-cxx-threads.cpp:{{[0-9]+}}: spawn (guarded)

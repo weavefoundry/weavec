@@ -50,6 +50,7 @@ __weavec_rt_getpeername
 __weavec_rt_gets
 __weavec_rt_getsockname
 __weavec_rt_getsockopt
+__weavec_rt_give
 __weavec_rt_glibcxx_assert_fail
 __weavec_rt_globals_register
 __weavec_rt_globals_unregister
@@ -82,6 +83,7 @@ __weavec_rt_range_ok
 __weavec_rt_readv
 __weavec_rt_realloc
 __weavec_rt_realloc_at
+__weavec_rt_realloc_typed
 __weavec_rt_reallocarray_at
 __weavec_rt_reallocf_at
 __weavec_rt_realpath
@@ -118,6 +120,7 @@ __weavec_rt_strtoull
 __weavec_rt_strtoumax
 __weavec_rt_sysctl
 __weavec_rt_sysctlbyname
+__weavec_rt_take
 __weavec_rt_tests_released
 __weavec_rt_trapping
 __weavec_rt_typed_program

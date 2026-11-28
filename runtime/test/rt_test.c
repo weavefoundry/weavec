@@ -1656,8 +1656,8 @@ static void testPoolReusesByType(void) {
 /* RFC 0050 section 3.1 (D3): in a fast program a slot that safe code
  * released into its pool keeps its object's shadow, so that the next object
  * of its size writes none; its word still says released, so a second
- * release is a double free. A program with a verify unit or with Safe C
- * marks it released. */
+ * release is a double free. RFC 0055 section 2 (D2): a program with a
+ * verify or a checked unit marks it released. */
 static struct __weavec_rt_type poolC = {0x0fedcba987654321ULL, 0};
 
 static void shadowedDoubleRelease(void) {
@@ -1693,7 +1693,7 @@ static void testPoolKeepsShadow(void) {
       __weavec_rt_alloc_typed(36, WeavecRtFormMalloc, &poolC));
   CHECK(q == p);
   CHECK(addressable(q, 36) && !addressable(q, 37));
-  /* A program with a verify unit or Safe C marks it released. */
+  /* A program with a verify or a checked unit marks it released. */
   __weavec_rt_tests_released();
   __weavec_rt_free_at(q, &typedRelease);
   CHECK(!addressable(p, 1));
@@ -1758,6 +1758,194 @@ static void testPoolNew(void) {
   __weavec_rt_free_at(q, &typedRelease);
   q = __weavec_rt_calloc_typed(tooMany, 2, &poolA);
   CHECK(q == NULL);
+}
+
+/* RFC 0055 sections 4 and 5: the short paths, on in a fast program that
+ * keeps its pooled slots' shadow, records no heap stacks and counts
+ * nothing. The state a test changes it puts back. */
+static int comparePointers(const void *a, const void *b) {
+  const uintptr_t x = (uintptr_t) * (void *const *)a;
+  const uintptr_t y = (uintptr_t) * (void *const *)b;
+  return x < y ? -1 : x > y;
+}
+static struct __weavec_rt_type poolD = {0x00d0d0d0d0d0d0d1ULL, 0};
+static struct __weavec_rt_type poolE = {0x00e0e0e0e0e0e0e1ULL, 0};
+typedef struct {
+  int fast, tests;
+  unsigned stacks;
+} ShortPaths;
+static ShortPaths shortPathsOn(void) {
+  const ShortPaths saved = {weavecRtFastProgram, weavecRtTestsReleased,
+                            weavecRtHeapStacks};
+  weavecRtFastProgram = 1;
+  weavecRtTestsReleased = 0;
+  weavecRtHeapStacks = 0;
+  return saved;
+}
+static void shortPathsBack(ShortPaths saved) {
+  weavecRtFastProgram = saved.fast;
+  weavecRtTestsReleased = saved.tests;
+  weavecRtHeapStacks = saved.stacks;
+}
+
+static void givenTwice(void) {
+  void *p;
+  (void)shortPathsOn();
+  p = __weavec_rt_take(40, &poolD, WeavecRtFormMalloc);
+  __weavec_rt_give(p, SIZE_MAX, WeavecRtFormMalloc, &typedRelease);
+  __weavec_rt_give(opaque(p), SIZE_MAX, WeavecRtFormMalloc, &typedRelease);
+}
+
+static void givenAsAnother(void) {
+  void *p;
+  (void)shortPathsOn();
+  p = __weavec_rt_take(40, &poolD, WeavecRtFormMalloc);
+  __weavec_rt_give(p, SIZE_MAX, WeavecRtFormMalloc, &typedRelease);
+  /* (Taken as `new` from the entry, given as `free`.) */
+  p = __weavec_rt_take(40, &poolD, WeavecRtFormNew);
+  __weavec_rt_give(p, SIZE_MAX, WeavecRtFormMalloc, &typedRelease);
+}
+
+static void testEntriesOnAndOff(void) {
+  /* On: a released slot is the next take of its type, its shadow kept and
+   * its object zeroed; the same block taken and given many times is one
+   * slot. A second release, and a release of another form, stop. Off (a
+   * checked unit in the program): the slot's shadow says released. */
+  const ShortPaths saved = shortPathsOn();
+  unsigned char *p =
+      (unsigned char *)opaque(__weavec_rt_take(40, &poolD, WeavecRtFormMalloc));
+  unsigned char *q;
+  unsigned i;
+  CHECK(p != NULL && inArena(p));
+  memset(p, 0x5a, 40);
+  __weavec_rt_give(p, SIZE_MAX, WeavecRtFormMalloc, &typedRelease);
+  CHECK(addressable(p, 40) && !addressable(p, 41));
+  CHECK(p[0] == 0 && p[39] == 0);
+  for (i = 0; i < 1000; ++i) {
+    q = (unsigned char *)opaque(
+        __weavec_rt_take(40, &poolD, WeavecRtFormMalloc));
+    CHECK(q == p);
+    __weavec_rt_give(q, 40, WeavecRtFormMalloc, &typedRelease);
+  }
+  CHECK(stopsIn(givenTwice));
+  CHECK(stopsIn(givenAsAnother));
+  __weavec_rt_tests_released();
+  q = (unsigned char *)opaque(__weavec_rt_take(40, &poolD, WeavecRtFormMalloc));
+  __weavec_rt_give(q, SIZE_MAX, WeavecRtFormMalloc, &typedRelease);
+  CHECK(!addressable(q, 1));
+  shortPathsBack(saved);
+}
+
+static void testEntriesRefillAndFlush(void) {
+  /* More slots of one pool than an entry holds go to the pool's shared
+   * list and come back: every block of the second round is one of the
+   * first's, and no two takes give one slot. */
+  enum { Many = 5000 };
+  const ShortPaths saved = shortPathsOn();
+  void **first = (void **)malloc(Many * sizeof(void *));
+  void **second = (void **)malloc(Many * sizeof(void *));
+  unsigned i;
+  unsigned found = 0;
+  CHECK(first != NULL && second != NULL);
+  for (i = 0; i < Many; ++i)
+    first[i] = __weavec_rt_take(56, &poolE, WeavecRtFormMalloc);
+  for (i = 0; i < Many; ++i)
+    __weavec_rt_give(first[i], 56, WeavecRtFormMalloc, &typedRelease);
+  for (i = 0; i < Many; ++i)
+    second[i] = __weavec_rt_take(56, &poolE, WeavecRtFormMalloc);
+  qsort(first, Many, sizeof(void *), comparePointers);
+  qsort(second, Many, sizeof(void *), comparePointers);
+  for (i = 0; i < Many; ++i) {
+    found += first[i] == second[i];
+    if (i != 0)
+      CHECK(second[i] != second[i - 1]);
+  }
+  CHECK(found == Many);
+  for (i = 0; i < Many; ++i)
+    __weavec_rt_give(second[i], SIZE_MAX, WeavecRtFormMalloc, &typedRelease);
+  free(first);
+  free(second);
+  shortPathsBack(saved);
+}
+
+static void testReallocKeepsType(void) {
+  /* RFC 0055 section 3 (D3): a pooled block that grows into another class
+   * comes from its own type's pool, whatever the site names; the old slot
+   * goes back to its pool. A null block takes the site's type. */
+  const ShortPaths saved = shortPathsOn();
+  unsigned char *p =
+      (unsigned char *)opaque(__weavec_rt_take(24, &poolD, WeavecRtFormMalloc));
+  unsigned char *q;
+  unsigned char *r;
+  memset(p, 7, 24);
+  q = (unsigned char *)opaque(
+      __weavec_rt_realloc_typed(p, 3000, &poolE, &typedRelease));
+  CHECK(q != NULL && q != p && q[0] == 7 && q[23] == 7 && q[24] == 0);
+  CHECK(addressable(q, 3000));
+  r = (unsigned char *)opaque(__weavec_rt_take(24, &poolD, WeavecRtFormMalloc));
+  CHECK(r == p);
+  __weavec_rt_give(q, SIZE_MAX, WeavecRtFormMalloc, &typedRelease);
+  /* The block of 3000 bytes is poolD's, not poolE's. */
+  q = (unsigned char *)opaque(
+      __weavec_rt_take(3000, &poolE, WeavecRtFormMalloc));
+  r = (unsigned char *)opaque(__weavec_rt_realloc_typed(r, 3000, &poolD,
+                                                        &typedRelease));
+  CHECK(r != q);
+  __weavec_rt_give(q, SIZE_MAX, WeavecRtFormMalloc, &typedRelease);
+  __weavec_rt_give(r, SIZE_MAX, WeavecRtFormMalloc, &typedRelease);
+  q = (unsigned char *)opaque(
+      __weavec_rt_realloc_typed(NULL, 40, &poolE, &typedRelease));
+  __weavec_rt_give(q, SIZE_MAX, WeavecRtFormMalloc, &typedRelease);
+  r = (unsigned char *)opaque(__weavec_rt_take(40, &poolE, WeavecRtFormMalloc));
+  CHECK(r == q);
+  __weavec_rt_give(r, SIZE_MAX, WeavecRtFormMalloc, &typedRelease);
+  shortPathsBack(saved);
+}
+
+/* RFC 0055 section 4, G8: blocks one thread takes and another gives back
+ * move through the pool's shared list; none is handed out twice. */
+enum { Crossing = 4096 };
+static void *crossing[Crossing];
+static void *giveAll(void *unused) {
+  unsigned i;
+  (void)unused;
+  for (i = 0; i < Crossing; ++i)
+    __weavec_rt_give(crossing[i], 72, WeavecRtFormMalloc, &typedRelease);
+  return NULL;
+}
+static volatile int churning;
+static void *churn(void *unused) {
+  (void)unused;
+  while (churning) {
+    void *p = __weavec_rt_take(72, &poolE, WeavecRtFormMalloc);
+    memset(p, 1, 72);
+    __weavec_rt_give(p, 72, WeavecRtFormMalloc, &typedRelease);
+  }
+  return NULL;
+}
+
+static void testEntriesAcrossThreads(void) {
+  const ShortPaths saved = shortPathsOn();
+  unsigned round;
+  pthread_t thread;
+  for (round = 0; round < 20; ++round) {
+    unsigned i;
+    for (i = 0; i < Crossing; ++i)
+      crossing[i] = __weavec_rt_take(72, &poolE, WeavecRtFormMalloc);
+    CHECK(pthread_create(&thread, NULL, giveAll, NULL) == 0);
+    CHECK(pthread_join(thread, NULL) == 0);
+    qsort(crossing, Crossing, sizeof(void *), comparePointers);
+    for (i = 1; i < Crossing; ++i)
+      CHECK(crossing[i] != crossing[i - 1]);
+  }
+  /* A sweep that stops a thread on its short paths leaves its slots be. */
+  churning = 1;
+  CHECK(pthread_create(&thread, NULL, churn, NULL) == 0);
+  for (round = 0; round < 20; ++round)
+    weavecRtSweep();
+  churning = 0;
+  CHECK(pthread_join(thread, NULL) == 0);
+  shortPathsBack(saved);
 }
 
 static void testThreadCaches(void) {
@@ -2104,6 +2292,10 @@ static const struct {
     {"pool-untyped-release", testPoolUntypedRelease},
     {"pool-slots-are-scanned", testPoolSlotsAreScanned},
     {"pool-new", testPoolNew},
+    {"entries-on-and-off", testEntriesOnAndOff},
+    {"entries-refill-and-flush", testEntriesRefillAndFlush},
+    {"entries-across-threads", testEntriesAcrossThreads},
+    {"realloc-keeps-type", testReallocKeepsType},
     {"fork", testFork},
     {"fault-handler-restored", testFaultHandlerRestored},
     {"unwinder", testUnwinder},

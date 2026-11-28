@@ -732,16 +732,23 @@ bool LibrarySpecParser::parseClause(LibraryEntry &entry,
   if (clause == "typed") {
     if (entry.typed)
       return fail("duplicate clause 'typed'");
-    if (!entry.owned)
-      return fail("'typed' needs a 'ptr:owned' result");
     if (!expect('(', "after 'typed'"))
       return false;
     auto entryPoint = name("a typed entry point");
     if (!entryPoint || !expect(',', "in 'typed'"))
       return false;
-    if (*entryPoint != "alloc_typed" && *entryPoint != "calloc_typed" &&
-        *entryPoint != "new_typed")
-      return fail("'typed' names alloc_typed, calloc_typed or new_typed");
+    if (*entryPoint != "take" && *entryPoint != "calloc_typed" &&
+        *entryPoint != "realloc_typed" && *entryPoint != "give")
+      return fail("'typed' names take, calloc_typed, realloc_typed or give");
+    // RFC 0055 §7: a typed release takes the block its first argument
+    // releases; an allocation gives an owner.
+    if (*entryPoint == "give"
+            ? entry.params.empty() ||
+                  entry.params.front().effect != LibraryParam::Effect::Release
+            : !entry.owned)
+      return fail(*entryPoint == "give"
+                      ? "'typed(give, …)' needs a released first argument"
+                      : "'typed' needs a 'ptr:owned' result");
     auto flags = index("the flags");
     if (!flags || !expect(')', "after 'typed(…'"))
       return false;

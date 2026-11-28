@@ -750,9 +750,38 @@ static bool redirect(LibraryCall &call, bool late) {
     arguments.push_back(site);
     types.push_back(module.ptr);
   }
-  llvm::FunctionCallee callee = module.runtime(
-      entry.wrapper->name,
-      llvm::FunctionType::get(call.call.getType(), types, entry.variadic));
+  // RFC 0055 §3 (D3): a fast unit's `realloc` whose type Clang inferred
+  // keeps its block's type; the site's record types a null or untyped one.
+  // §7: a release by safe code is the short path's `give`, with the size a
+  // sized release names (or all ones) and its form.
+  llvm::StringRef wrapper = entry.wrapper->name;
+  if (entry.typed && entry.typed->name == "give" && !entry.variadic &&
+      releases && typedRelease(module, *call.call.getFunction()) &&
+      limit == nullptr) {
+    llvm::Value *size = named > 1
+                            ? arguments[1]
+                            : llvm::ConstantInt::getAllOnesValue(module.i64);
+    if (!size->getType()->isIntegerTy(64))
+      return false;
+    arguments = {arguments[0], size,
+                 llvm::ConstantInt::get(module.i32, entry.typedFlags), site};
+    types = {module.ptr, module.i64, module.i32, module.ptr};
+    wrapper = entry.typed->name;
+    if (module.options.ledger)
+      ++module.options.ledger->typedReleases;
+  }
+  if (llvm::Value *record = allocationRecord(call.call);
+      record != nullptr && entry.typed && !entry.variadic &&
+      entry.typed->name == "realloc_typed") {
+    arguments.insert(arguments.end() - 1, record);
+    types.insert(types.end() - 1, module.ptr);
+    wrapper = entry.typed->name;
+    if (module.options.ledger)
+      ++module.options.ledger->typedSites;
+  }
+  llvm::FunctionCallee callee =
+      module.runtime(wrapper, llvm::FunctionType::get(call.call.getType(),
+                                                      types, entry.variadic));
   llvm::IRBuilder<> builder(&call.call);
   // RFC 0039 §2: an `invoke` stays one (the wrappers do not throw).
   llvm::CallBase *replacement = nullptr;

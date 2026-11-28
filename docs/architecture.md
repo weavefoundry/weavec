@@ -640,14 +640,27 @@ A released slot joins its class's *quarantine* and is never reused from
 there: only a sweep moves it to the free list (RFC 0036 §3.2), in address
 order, so that slots are reused in order. RFC 0045 §3: a slot a typed
 allocation took belongs to the pool of its type and class (`slotPools`, a
-side table beside the slot words); a typed release zeroes it, marks it
-released in the shadow, leaves its word claimed (so a second release is a
-double free) and pushes it on the pool, through a per-thread cache of the
-pool, for the next allocation of that type; any other release takes it
-out of its pool and quarantines it. Pools hold at most the larger of the
+side table beside the slot words); a typed release zeroes it, leaves its
+word claimed (so a second release is a double free) and pushes it on the
+pool for the next allocation of that type; any other release takes it out
+of its pool and quarantines it. RFC 0055 §4–§5: each thread has an *entry*
+for each pool, at the pool's number, with room for 128 free slots (each
+named by its address, its word and the size of the object whose shadow it
+keeps), in a reservation the sweep does not read. In a fast program
+(`shortPaths()`: no checked or verify unit, no heap stacks, no counters,
+no allocator of the program's own) a take is a pop from the entry and one
+stored word (`__weavec_rt_take`), and a give compares the slot's word with
+the live word it expects, stores the released one, zeroes the object and
+pushes (`__weavec_rt_give`); the slot keeps its object's shadow (RFC 0050
+§3.1). An empty entry is refilled by half from the pool's shared list, or
+with fresh slots of the class that join the pool; a full one gives half
+back; the bytes are counted then. Otherwise every entry is off (both
+counts 0), the slow paths keep the counts apart, and a pooled slot's
+shadow says released. A `realloc` of a typed block keeps its type
+(`__weavec_rt_realloc_typed`). Pools hold at most the larger of the
 quarantine's budget and the live heap; past that a pooled slot goes to the
 quarantine, the only way it changes type. The sweep reads a pooled slot's
-bytes as roots and does not flush the threads' pool caches. Each thread caches, per small
+bytes as roots and does not flush the threads' entries. Each thread caches, per small
 class (up to 32 KiB), up to 32 free slots it takes from the free lists at
 once and up to 32 released ones it gives the quarantine at once (RFC 0037
 §2.1): a release claims the slot's word by compare-and-swap, so a racing

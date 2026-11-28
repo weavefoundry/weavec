@@ -145,29 +145,46 @@ static inline uint32_t entrySlot(uint64_t entry) {
  * object of `size` bytes records it, plus one, in bits 40 to 62 (0: its
  * shadow says released). */
 enum { EntryShadowShift = 40, EntryShadowLimit = (1 << 23) - 1 };
-static inline uint64_t withShadow(uint64_t entry, size_t size) {
-  return size < EntryShadowLimit
-             ? entry | (uint64_t)(size + 1) << EntryShadowShift
-             : entry;
-}
 static inline size_t entryShadow(uint64_t entry) {
   return (size_t)(entry >> EntryShadowShift) & EntryShadowLimit;
 }
 
-/* RFC 0045 section 3: a thread's free slots of one pool (pool + 1; 0 for
- * none), direct-mapped by the pool's index. */
-enum { PoolCaches = 64, PoolCacheSlots = 64 };
+/* RFC 0045 section 3, RFC 0055 section 4: the pools (their index + 1, so
+ * that 0 names none), and a thread's free slots of each, in an entry at
+ * the pool's index: `count` slots in `slots`, room for `capacity`. A free
+ * slot is named by its address, its word and its shared form (the size + 1
+ * of the object whose shadow it keeps among it). An entry that is
+ * off has both counts 0: a take finds it empty and a give full, so that
+ * both go the slow way. Entry 0 is always off (a site whose record names
+ * no pool yet). The entries and the slots are in no heap slot (H4). */
+enum { PoolLimit = 4096, PoolCacheSlots = 128, PoolCacheBytes = 256 * 1024 };
 typedef struct {
-  uint32_t pool;
+  uintptr_t base;
+  uint32_t *word;
+  /* The slot as the pools' shared lists keep it: slotEntry, with the size
+   * + 1 of the object whose shadow it keeps (entryShadow; 0: released). */
+  uint64_t shared;
+} PoolSlot;
+typedef struct {
   uint32_t count;
-  uint64_t slots[PoolCacheSlots];
-} PoolCache;
+  uint32_t capacity;
+  PoolSlot *slots;
+} PoolEntry;
 
 typedef struct ThreadCache {
+  /* RFC 0055 section 4: the thread's entries (the shared table of off
+   * entries while it has none of its own); while its short paths are off
+   * (`entriesOn` 0) the slow paths count each pool's slots in `held`
+   * instead, so that the entries stay off. */
+  PoolEntry *entries;
+  uint32_t *held;
+  PoolSlot *poolSlots;
+  unsigned entriesOn;
+  /* Its block of the entries' reservation, + 1 (0: none). */
+  unsigned entryBlock;
   struct ThreadCache *next;
   SlotCache alloc[CachedClasses];
   SlotCache release[CachedClasses];
-  PoolCache pools[PoolCaches];
   /* The bytes this thread moved into the pools (negative: out of them)
    * since it last folded them into the shared count. */
   intptr_t pooledDelta;
@@ -1015,6 +1032,9 @@ static unsigned cacheLimit(unsigned c) {
 /* The calling thread's cache, made on its first use; null when it has none
  * (it is exiting, or the cache cannot be mapped). */
 static ThreadCache *makeCache(void);
+/* RFC 0055 section 4: a cache's entries, and their return. */
+static void takeEntries(ThreadCache *cache);
+static void giveEntries(ThreadCache *cache);
 
 static inline ThreadCache *threadCache(void) {
   ThreadCache *cache;
@@ -1037,8 +1057,10 @@ static __attribute__((noinline)) ThreadCache *makeCache(void) {
     return NULL;
   for (c = 0; c < cachedClasses; ++c)
     cache->alloc[c].limit = cache->release[c].limit = cacheLimit(c);
+  takeEntries(cache);
   if (setCacheValue(cache) != 0) {
     (void)setCacheValue(NULL);
+    giveEntries(cache);
     (void)munmap(cache, sizeof(ThreadCache));
     return NULL;
   }
@@ -1166,6 +1188,7 @@ static void dropCache(void *value) {
       *at = cache->next;
   }
   give(&cacheListLock);
+  giveEntries(cache);
   (void)munmap(cache, sizeof(ThreadCache));
 }
 
@@ -1855,21 +1878,56 @@ void *__weavec_rt_alloc(size_t size, size_t alignment) {
   return allocForm(size, alignment, WeavecRtFormMalloc, NULL);
 }
 
+/* RFC 0055 section 5: the short path, with the slow one out of line so
+ * that the short one keeps no frame. An entry that is on and empty is
+ * refilled by half from its pool's shared list (or, for a pool that grows,
+ * with fresh slots that join it) before anything else is tried. */
+static int refillEntry(ThreadCache *self, size_t size,
+                       struct __weavec_rt_type *type);
+static __attribute__((noinline)) void *
+allocTypedSlow(size_t size, unsigned form, struct __weavec_rt_type *type) {
+  ThreadCache *self = ownCache();
+  if (self != NULL && refillEntry(self, size, type)) {
+    void *block = poolTake(size, form, type);
+    if (block != NULL)
+      return block;
+  }
+  return allocForm(size, 0, form, type);
+}
+
 void *weavecRtAllocTyped(size_t size, unsigned form,
                          struct __weavec_rt_type *type) {
   void *block = poolTake(size, form, type);
-  return block != NULL ? block : allocForm(size, 0, form, type);
+  if (__builtin_expect(block != NULL, 1))
+    return block;
+  return allocTypedSlow(size, form, type);
 }
 
+
+static __attribute__((noinline)) void
+releaseSlow(void *p, unsigned form, size_t size, const void *caller,
+            const struct __weavec_rt_site *site);
 
 void weavecRtReleaseForm(void *p, unsigned form, size_t size,
                          const void *caller,
                          const struct __weavec_rt_site *site) {
-  ThreadCache *self;
-  uint32_t stack = 0;
   if (p == NULL || poolGive(p, form, size, site))
     return;
+  releaseSlow(p, form, size, caller, site);
+}
+
+static int flushEntry(ThreadCache *self, void *p,
+                      const struct __weavec_rt_site *site);
+static __attribute__((noinline)) void
+releaseSlow(void *p, unsigned form, size_t size, const void *caller,
+            const struct __weavec_rt_site *site) {
+  ThreadCache *self;
+  uint32_t stack = 0;
   self = ownCache();
+  /* (An entry that is on and full gives half its slots to its pool's
+   * shared list first.) */
+  if (self != NULL && flushEntry(self, p, site) && poolGive(p, form, size, site))
+    return;
   if (self != NULL && self->depth != 0 && self->locks != 0) {
     /* (A release that does not fit waits for no one: the block stays.) */
     if (self->deferredCount < sizeof self->deferred / sizeof self->deferred[0]) {
@@ -2012,12 +2070,12 @@ size_t __weavec_rt_size(const void *p) {
 
 /* A pool holds the free slots of one class that allocations of one type
  * reuse at once, zeroed; a slot leaves it only through the quarantine. Its
- * slots
- * (slotEntry values) live in the runtime's own memory, never in a released
- * block: each pool has room for PoolSlots of them in a reservation of its
- * own, made when the pool is (RFC 0048 section 8: a type with a million
- * objects keeps their slots). */
-enum { PoolLimit = 4096, PoolHashSlots = 8192, PoolSlots = 1 << 22 };
+ * shared list of slots (slotEntry values, with the shadow they keep) lives
+ * in the runtime's own memory, never in a released block: each pool has
+ * room for PoolSlots of them in a reservation of its own, made when the
+ * pool is (RFC 0048 section 8: a type with a million objects keeps their
+ * slots). */
+enum { PoolHashSlots = 8192, PoolSlots = 1 << 22 };
 typedef struct {
   WeavecRtLock lock;
   uint32_t cls;
@@ -2199,61 +2257,298 @@ static void foldPooled(ThreadCache *cache) {
   cache->pooledDelta = 0;
 }
 
-/* Gives a thread's slots of one pool back to it. With `check`, a slot that
- * is not one of the pool's (a cache a fork copied mid-push) is left. */
-static void flushPool(PoolCache *entry, int check) {
-  if (entry->pool != 0 && check) {
-    unsigned kept = 0;
-    unsigned i;
-    for (i = 0; i < entry->count; ++i) {
-      const uint64_t slot = entry->slots[i];
-      if (entryRegion(slot) >= __weavec_rt_heap.regions ||
-          entrySlot(slot) >= regionState[entryRegion(slot)].bump ||
-          wordOf(refOfEntry(slot)) != ClaimedWord ||
-          *poolOf(entryRegion(slot), entrySlot(slot)) != entry->pool)
-        continue;
-      entry->slots[kept++] = slot;
-    }
-    entry->count = kept;
+/*===-- A thread's entries (RFC 0055 section 4) -----------------------------===*/
+
+/* The shared table of off entries: a thread without entries of its own
+ * points to it, and nothing writes it (a take finds each entry empty, a
+ * give full). */
+static PoolEntry offEntries[PoolLimit + 1];
+
+/* Each thread's entries, the slow paths' counts and the slots, in a block
+ * of one reservation that the sweep does not read (its slots are in no
+ * pool's sweep, and a stale copy of a slot's address must keep no block in
+ * the quarantine). A block goes back to the free list when its thread
+ * ends; a thread that finds none uses the off table. */
+enum { EntryBlocks = 1024 };
+static uintptr_t entryArea;
+static size_t entryBlockBytes;
+static uint32_t entryBump;
+static uint32_t entryFree[EntryBlocks];
+static uint32_t entryFreeCount;
+static WeavecRtLock entryLock;
+
+static size_t entriesBytes(void) {
+  return (sizeof(PoolEntry) + sizeof(uint32_t)) * (PoolLimit + 1);
+}
+
+static void takeEntries(ThreadCache *cache) {
+  uint32_t block = 0;
+  uintptr_t at;
+  cache->entries = offEntries;
+  cache->held = NULL;
+  cache->poolSlots = NULL;
+  cache->entriesOn = 0;
+  cache->entryBlock = 0;
+  weavecRtLock(&entryLock);
+  if (entryArea == 0) {
+    const size_t bytes =
+        entriesBytes() + sizeof(PoolSlot) * PoolCacheSlots * (PoolLimit + 1);
+    void *map;
+    entryBlockBytes = (bytes + pageBytes - 1) & ~(pageBytes - 1);
+    map = mmap(NULL, entryBlockBytes * EntryBlocks, PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    entryArea = map == MAP_FAILED ? 1 : (uintptr_t)map;
+    if (map != MAP_FAILED)
+      weavecRtExcluded(map, entryBlockBytes * EntryBlocks);
   }
-  if (entry->pool != 0 && entry->count != 0)
-    givePooled(entry->pool, entry->slots, entry->count);
-  entry->count = 0;
+  if (entryArea != 1) {
+    if (entryFreeCount != 0)
+      block = entryFree[--entryFreeCount] + 1;
+    else if (entryBump < EntryBlocks)
+      block = ++entryBump;
+  }
+  weavecRtUnlock(&entryLock);
+  if (block == 0)
+    return;
+  at = entryArea + (uintptr_t)(block - 1) * entryBlockBytes;
+  cache->entryBlock = block;
+  cache->entries = (PoolEntry *)at;
+  cache->held = (uint32_t *)(at + sizeof(PoolEntry) * (PoolLimit + 1));
+  cache->poolSlots = (PoolSlot *)(at + entriesBytes());
+}
+
+/* A cache's block back to the free list, zeroed (a fresh mapping), so that
+ * the next thread's entries start off. Its slots were flushed. */
+static void giveEntries(ThreadCache *cache) {
+  const unsigned block = cache->entryBlock;
+  if (block == 0)
+    return;
+  cache->entries = offEntries;
+  cache->entryBlock = 0;
+  if (mmap((void *)(entryArea + (uintptr_t)(block - 1) * entryBlockBytes),
+           entryBlockBytes, PROT_READ | PROT_WRITE,
+           MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1,
+           0) == MAP_FAILED)
+    return;
+  weavecRtLock(&entryLock);
+  entryFree[entryFreeCount++] = block - 1;
+  weavecRtUnlock(&entryLock);
+}
+
+/* RFC 0050 section 3.1 (D3): in a fast program a slot that safe code
+ * releases into its pool keeps the shadow of the object it held, so that
+ * its next object of the same size writes none; the slot's word says
+ * released. RFC 0055 section 2 (D2): a program with a verify or a checked
+ * unit marks it released, so that the monitors and the reference test
+ * (O4) see it; a program of fast units keeps it whichever language
+ * released it. */
+static inline int keepsShadow(void) {
+  return weavecRtFastProgram && !weavecRtTestsReleased;
+}
+
+/* RFC 0055 section 4: whether the threads' entries are on. In a fast
+ * program that keeps its pooled slots' shadow, records no heap stacks and
+ * counts nothing, the common case of a typed allocation is one pop from the
+ * thread's entry for its pool and one stored word, and of its release a
+ * compared and stored word, the object zeroed and one push; everything
+ * else takes the slow paths, which keep the thread's slots in `held` while
+ * this is false (the entries stay off). */
+int weavecRtForeign;
+
+static inline int shortPaths(void) {
+  return keepsShadow() && !weavecRtHeapStacks && !weavecRtStatsOn &&
+         !weavecRtForeign && slotPools != NULL;
+}
+
+/* The room of a thread's entry for pool `index`: 128 slots, or as many as
+ * hold 64 KiB, at least 4, so that a thread keeps no more of a large
+ * class's free slots than of a small one's bytes. A refill and a flush move
+ * half. */
+static inline unsigned entryRoom(uint32_t index) {
+  const size_t fit =
+      PoolCacheBytes / __weavec_rt_heap.table[pools[index - 1].cls].size;
+  return fit >= PoolCacheSlots ? PoolCacheSlots : fit < 4 ? 4 : (unsigned)fit;
+}
+
+/* The slow paths' count of a cache's free slots of pool `index`: its
+ * entry's while the short paths are on (an entry the thread had not used
+ * gets its room), else `held`'s. The entries are turned on, or off, here:
+ * a thread's first slow pool operation after the program's state changed
+ * moves every count over. */
+static uint32_t *entryCount(ThreadCache *cache, uint32_t index) {
+  const int on = shortPaths();
+  if (on != (int)cache->entriesOn) {
+    uint32_t i;
+    for (i = 1; i <= PoolLimit; ++i) {
+      PoolEntry *entry = &cache->entries[i];
+      if (on) {
+        if (cache->held[i] != 0) {
+          entry->count = cache->held[i];
+          entry->capacity = entryRoom(i);
+          entry->slots = cache->poolSlots + (size_t)i * PoolCacheSlots;
+          cache->held[i] = 0;
+        }
+      } else if (entry->capacity != 0) {
+        cache->held[i] = entry->count;
+        entry->count = 0;
+        entry->capacity = 0;
+      }
+    }
+    cache->entriesOn = (unsigned)on;
+  }
+  if (!on)
+    return &cache->held[index];
+  if (cache->entries[index].capacity == 0) {
+    cache->entries[index].slots =
+        cache->poolSlots + (size_t)index * PoolCacheSlots;
+    cache->entries[index].capacity = entryRoom(index);
+  }
+  return &cache->entries[index].count;
+}
+
+void weavecRtSettleEntries(void) {
+  ThreadCache *self = ownCache();
+  if (self != NULL && self->poolSlots != NULL && self->depth == 0)
+    (void)entryCount(self, 1);
+}
+
+static inline PoolSlot *slotsOfEntry(ThreadCache *cache, uint32_t index) {
+  return cache->poolSlots + (size_t)index * PoolCacheSlots;
+}
+
+/* A free slot of a shared list (slotEntry with the size of the shadow it
+ * keeps) as an entry names it, and the shared form of `ref` keeping the
+ * shadow of `size` + 1 bytes (0: none). */
+static inline void unpackSlot(uint64_t shared, PoolSlot *slot) {
+  const SlotRef ref = refOfEntry(shared);
+  slot->base = ref.base;
+  slot->word = &slotWords(ref.region)[ref.slot];
+  slot->shared = shared;
+}
+static inline uint64_t packSlot(SlotRef ref, uint64_t shadow) {
+  return slotEntry(ref.region, ref.slot, 1) | shadow << EntryShadowShift;
+}
+static unsigned takeInto(uint32_t index, PoolSlot *slots, unsigned want) {
+  uint64_t shared[PoolCacheSlots / 2];
+  const unsigned n = takePooled(index, shared, want);
+  unsigned i;
+  for (i = 0; i < n; ++i)
+    unpackSlot(shared[i], &slots[i]);
+  return n;
+}
+
+/* Gives `n` of a thread's free slots of pool `index` to its shared list,
+ * counted in bulk (H6). With `check`, a slot that is not one of the pool's
+ * (a cache a fork copied mid-push) is left. */
+static void flushSlots(ThreadCache *cache, uint32_t index,
+                       const PoolSlot *slots, unsigned n, int check) {
+  const size_t slotBytes = __weavec_rt_heap.table[pools[index - 1].cls].size;
+  uint64_t shared[PoolCacheSlots];
+  unsigned kept = 0;
+  unsigned i;
+  for (i = 0; i < n && !check; ++i)
+    shared[kept++] = slots[i].shared;
+  for (i = 0; i < n && check; ++i) {
+    const uintptr_t base = slots[i].base;
+    SlotRef ref;
+    if (!inArena(base))
+      continue;
+    ref = slotOf(base);
+    if (ref.base != base || ref.region >= __weavec_rt_heap.regions ||
+        ref.slot >= regionState[ref.region].bump ||
+        wordOf(ref) != ClaimedWord || *poolOf(ref.region, ref.slot) != index)
+      continue;
+    shared[kept++] = slots[i].shared;
+  }
+  if (kept != 0)
+    givePooled(index, shared, kept);
+  cache->liveDelta -= (intptr_t)(slotBytes * n);
+  cache->pooledDelta += (intptr_t)(slotBytes * kept);
 }
 
 static void flushPools(ThreadCache *cache, int check) {
-  unsigned i;
-  for (i = 0; i < PoolCaches; ++i) {
-    flushPool(&cache->pools[i], check);
-    cache->pools[i].pool = 0;
-  }
+  uint32_t i;
+  if (cache->poolSlots != NULL)
+    for (i = 1; i <= PoolLimit; ++i) {
+      uint32_t *count = cache->entriesOn ? &cache->entries[i].count
+                                         : &cache->held[i];
+      if (*count != 0) {
+        flushSlots(cache, i, slotsOfEntry(cache, i), *count, check);
+        *count = 0;
+      }
+    }
+  foldLive(cache);
   foldPooled(cache);
+}
+
+/* RFC 0055 section 4: slots of class `c` that join pool `index` (of
+ * `type`) at once, into a thread's entry whose pool's shared list is empty:
+ * zeroed whole when they were used before, released into the pool (their
+ * word says so), with their pool and type written once (H1). The shadow of
+ * each is written when it is first taken. How many. */
+static unsigned joinPool(uint32_t index, unsigned c, uint32_t typeIndex,
+                         PoolSlot *slots, unsigned want) {
+  const size_t slotBytes = __weavec_rt_heap.table[c].size;
+  uint64_t fresh[PoolCacheSlots / 2];
+  const unsigned n = popClass(c, fresh, want);
+  unsigned i;
+  for (i = 0; i < n; ++i) {
+    const SlotRef ref = refOfEntry(fresh[i]);
+    if ((fresh[i] & 1) != 0)
+      zeroFill(ref.base, slotBytes);
+    storeWord(&slotWords(ref.region)[ref.slot], ClaimedWord);
+    *poolOf(ref.region, ref.slot) = index;
+    if (slotTypes != NULL)
+      __atomic_store_n(typeOf(ref.region, ref.slot), typeIndex,
+                       __ATOMIC_RELAXED);
+    if (allocStacks != NULL)
+      *allocStackOf(ref.region, ref.slot) = 0;
+    /* (The newest last, so that slots are handed out in address order.) */
+    slots[n - 1 - i].base = ref.base;
+    slots[n - 1 - i].word = &slotWords(ref.region)[ref.slot];
+    slots[n - 1 - i].shared = packSlot(ref, 0);
+  }
+  return n;
+}
+
+/* The index + 1 of `type`'s layout in the table of types, or 0. */
+static uint32_t typeIndexOf(struct __weavec_rt_type *type) {
+  uint32_t index = (uint32_t)__atomic_load_n(&type->type, __ATOMIC_RELAXED);
+  if (index == 0 && type->layout != NULL) {
+    index = weavecRtTypeIndex(type->layout);
+    __atomic_store_n(&type->type, (uint64_t)index, __ATOMIC_RELAXED);
+  }
+  return index;
 }
 
 /* An allocation of class `c` from pool `index`; null when it is empty. */
 static void *poolAlloc(uint32_t index, unsigned c, size_t size, unsigned form,
-                       uint32_t stack) {
+                       uint32_t stack, struct __weavec_rt_type *type) {
   ThreadCache *cache = cacheFor(c);
   const size_t slotBytes = __weavec_rt_heap.table[c].size;
   uint64_t taken;
-  if (cache != NULL) {
-    PoolCache *entry = &cache->pools[index % PoolCaches];
-    if (entry->pool != index) {
-      flushPool(entry, 0);
-      entry->pool = index;
-    }
-    if (entry->count == 0) {
-      entry->count = takePooled(index, entry->slots, PoolCacheSlots / 2);
-      if (entry->count == 0)
+  if (cache != NULL && cache->poolSlots != NULL) {
+    uint32_t *count = entryCount(cache, index);
+    PoolSlot *slots = slotsOfEntry(cache, index);
+    if (*count == 0) {
+      const unsigned pooled = takeInto(index, slots, entryRoom(index) / 2);
+      unsigned n = pooled;
+      /* (A pool that grows takes fresh slots by the half entry, not one at
+       * a time.) */
+      if (n == 0 && shortPaths())
+        n = joinPool(index, c, typeIndexOf(type), slots, entryRoom(index) / 2);
+      if (n == 0)
         return NULL;
+      *count = n;
+      /* (H6: a thread's free slots count as live.) */
+      cache->liveDelta += (intptr_t)(slotBytes * n);
+      cache->pooledDelta -= (intptr_t)(slotBytes * pooled);
+      if (cache->liveDelta >= FoldBytes)
+        foldLive(cache);
+      if (cache->pooledDelta <= -(intptr_t)FoldBytes)
+        foldPooled(cache);
     }
-    taken = entry->slots[--entry->count];
-    cache->liveDelta += (intptr_t)slotBytes;
-    if (cache->liveDelta >= FoldBytes)
-      foldLive(cache);
-    cache->pooledDelta -= (intptr_t)slotBytes;
-    if (cache->pooledDelta <= -(intptr_t)FoldBytes)
-      foldPooled(cache);
+    taken = slots[--*count].shared;
   } else {
     if (takePooled(index, &taken, 1) == 0)
       return NULL;
@@ -2266,17 +2561,50 @@ static void *poolAlloc(uint32_t index, unsigned c, size_t size, unsigned form,
   return makeLive(taken & ~(uint64_t)1, size, slotBytes, form, stack);
 }
 
-/* RFC 0050 section 3.1 (D3): in a fast program a slot that safe code
- * releases into its pool keeps the shadow of the object it held, so that
- * its next object of the same size writes none; the slot's word says
- * released. A program with a verify unit or with Safe C marks it released,
- * so that the monitors and Safe C's reference test see it. */
-static inline int keepsShadow(void) {
-  return weavecRtFastProgram && !weavecRtTestsReleased;
+/* The object of `size` bytes at `base` zeroed: a small one's granules by
+ * stores (no loop, which the compiler would make a call to memset of, and
+ * no call, so that the short path keeps no frame). */
+static __attribute__((noinline)) void zeroLarge(uintptr_t base, size_t size) {
+  zeroFill(base, size);
+}
+static inline __attribute__((always_inline)) void zeroObject(uintptr_t base,
+                                                             size_t size) {
+  uint64_t *word = (uint64_t *)base;
+  switch ((size + 15) >> 4) {
+  case 8:
+    word[14] = word[15] = 0;
+    __attribute__((fallthrough));
+  case 7:
+    word[12] = word[13] = 0;
+    __attribute__((fallthrough));
+  case 6:
+    word[10] = word[11] = 0;
+    __attribute__((fallthrough));
+  case 5:
+    word[8] = word[9] = 0;
+    __attribute__((fallthrough));
+  case 4:
+    word[6] = word[7] = 0;
+    __attribute__((fallthrough));
+  case 3:
+    word[4] = word[5] = 0;
+    __attribute__((fallthrough));
+  case 2:
+    word[2] = word[3] = 0;
+    __attribute__((fallthrough));
+  case 1:
+    word[0] = word[1] = 0;
+    __attribute__((fallthrough));
+  case 0:
+    break;
+  default:
+    zeroLarge(base, size);
+    break;
+  }
 }
 
 /* The claimed slot `ref` of class `c`, whose object had `size` bytes, into
- * pool `index`: released (its shadow says so, and a second release is a
+ * pool `index`: released (its word says so, and a second release is a
  * double free), zeroed, so that a stale pointer to it reads an empty object
  * and nothing it held is kept by a sweep, and handed to the next allocation
  * of its type and class. */
@@ -2284,174 +2612,199 @@ static void poolRelease(SlotRef ref, unsigned c, uint32_t index, size_t size) {
   ThreadCache *cache = cacheFor(c);
   const size_t slotBytes = __weavec_rt_heap.table[c].size;
   const int keep = keepsShadow();
-  const uint64_t slot = keep ? withShadow(slotEntry(ref.region, ref.slot, 1), size)
-                             : slotEntry(ref.region, ref.slot, 1);
-  if (size <= 128) {
-    /* A small object's granules, inline (the slot holds them all). */
-    uint64_t *word = (uint64_t *)ref.base;
-    uint64_t *const end = word + ((size + 15) & ~(size_t)15) / 8;
-    for (; word < end; word += 2) {
-      word[0] = 0;
-      word[1] = 0;
-    }
-  } else {
-    zeroFill(ref.base, size);
-  }
+  PoolSlot slot;
+  zeroObject(ref.base, size);
   if (!keep)
     shadowDead(ref.base, slotBytes);
   weavecRtCount(WeavecRtStatPooled);
-  if (cache == NULL) {
+  slot.base = ref.base;
+  slot.word = &slotWords(ref.region)[ref.slot];
+  slot.shared = packSlot(ref, keep && size < EntryShadowLimit ? size + 1 : 0);
+  if (cache == NULL || cache->poolSlots == NULL) {
     addPooled((intptr_t)slotBytes);
     addLive(-(intptr_t)slotBytes);
-    givePooled(index, &slot, 1);
+    givePooled(index, &slot.shared, 1);
     return;
   }
   {
-    PoolCache *entry = &cache->pools[index % PoolCaches];
-    if (entry->pool != index) {
-      flushPool(entry, 0);
-      entry->pool = index;
+    uint32_t *count = entryCount(cache, index);
+    PoolSlot *slots = slotsOfEntry(cache, index);
+    const unsigned room = entryRoom(index);
+    if (*count >= room) {
+      flushSlots(cache, index, slots, *count - room / 2, 0);
+      memmove(slots, slots + (*count - room / 2), room / 2 * sizeof(PoolSlot));
+      *count = room / 2;
+      if (cache->liveDelta <= -(intptr_t)FoldBytes)
+        foldLive(cache);
+      if (cache->pooledDelta >= (intptr_t)FoldBytes)
+        foldPooled(cache);
     }
-    if (entry->count == PoolCacheSlots) {
-      givePooled(index, entry->slots, PoolCacheSlots / 2);
-      memmove(entry->slots, entry->slots + PoolCacheSlots / 2,
-              PoolCacheSlots / 2 * sizeof(uint64_t));
-      entry->count = PoolCacheSlots / 2;
-    }
-    entry->slots[entry->count++] = slot;
-    cache->liveDelta -= (intptr_t)slotBytes;
-    if (cache->liveDelta <= -(intptr_t)FoldBytes)
-      foldLive(cache);
-    cache->pooledDelta += (intptr_t)slotBytes;
-    if (cache->pooledDelta >= (intptr_t)FoldBytes)
-      foldPooled(cache);
+    slots[(*count)++] = slot;
   }
 }
 
-/* RFC 0050 section 3.2: in a fast program that records no heap stacks, the
- * common case of a typed allocation is one pop from the thread's cache of
- * its pool (a slot whose shadow already says live for this size writes
- * none: D3), and of its release one push; everything else takes the paths
- * above. The thread's depth is raised around each, as the allocator's own
- * are, so that a signal handler that allocates meanwhile takes the paths
- * above. */
-static inline int shortPaths(void) {
-  return weavecRtFastProgram && !weavecRtHeapStacks && slotPools != NULL;
+/* RFC 0055 section 5: the short paths. Either returns null (0) for the
+ * slow path, which is RFC 0050's, when anything is to be checked, reported,
+ * counted or moved: a site whose record names another class's pool, a
+ * thread without its cache, or inside the allocator (a signal handler's
+ * call), an entry that is off, empty or full, a word that is not the live
+ * word the release expects. */
+/* The slot at `base`, live with an object of `size` bytes whose shadow its
+ * last object's was not. */
+static __attribute__((noinline, returns_nonnull)) void *
+takeShadow(uintptr_t base, size_t size) {
+  shadowLive(base, size, __weavec_rt_heap.table[slotOf(base).region].size);
+  return (void *)base;
 }
 
-static void *poolTake(size_t size, unsigned form,
-                      struct __weavec_rt_type *type) {
+static inline __attribute__((always_inline)) void *
+poolTake(size_t size, unsigned form, struct __weavec_rt_type *type) {
   const uint64_t cached = __atomic_load_n(&type->cache, __ATOMIC_RELAXED);
   const unsigned c = classFor(size);
   ThreadCache *self;
-  PoolCache *entry;
-  uint64_t taken;
+  PoolEntry *entry;
+  PoolSlot *slot;
   uint32_t index;
-  size_t slotBytes;
-  SlotRef ref;
-  if (!shortPaths() || c >= cachedClasses)
-    return NULL;
+  uint32_t count;
+  /* (A type allocated in many classes, an array's, finds the pool of this
+   * one in the table without the lock.) */
   index = (uint32_t)(cached >> 32) == c + 1 ? (uint32_t)cached
                                              : lookPool(type->key, c);
-  if (index == 0)
+  if (index == 0 || !__atomic_load_n(&cacheKeyReady, __ATOMIC_RELAXED))
     return NULL;
-  self = ownCache();
-  if (self == NULL || self->depth != 0)
+  self = (ThreadCache *)cacheValue();
+  if ((uintptr_t)self <= (uintptr_t)CacheGone || self->depth != 0)
     return NULL;
-  entry = &self->pools[index % PoolCaches];
-  if (entry->pool != index || entry->count == 0)
+  entry = &self->entries[index];
+  count = entry->count;
+  if (count == 0)
     return NULL;
-  ++self->depth;
-  __atomic_signal_fence(__ATOMIC_SEQ_CST);
-  taken = entry->slots[--entry->count];
-  ref = refOfEntry(taken);
-  slotBytes = __weavec_rt_heap.table[c].size;
-  storeWord(&slotWords(ref.region)[ref.slot], liveWord(size, form));
-  if (allocStacks != NULL)
-    *allocStackOf(ref.region, ref.slot) = 0;
-  /* (A slot whose last object had another size, an array's, takes the
-   * shadow of this one.) */
-  if (entryShadow(taken) != size + 1)
-    shadowLive(ref.base, size, slotBytes);
-  self->liveDelta += (intptr_t)slotBytes;
-  self->pooledDelta -= (intptr_t)slotBytes;
-  if (self->liveDelta >= FoldBytes)
-    foldLive(self);
-  if (self->pooledDelta <= -(intptr_t)FoldBytes)
-    foldPooled(self);
-  weavecRtCount(WeavecRtStatAllocations);
-  weavecRtCount(WeavecRtStatTyped);
-  __atomic_signal_fence(__ATOMIC_SEQ_CST);
-  if (--self->depth == 0 && self->deferredCount != 0)
-    releaseDeferred(self);
-  return (void *)ref.base;
+  slot = &entry->slots[count - 1];
+  entry->count = count - 1;
+  storeWord(slot->word, liveWord(size, form));
+  /* (H5: a slot whose last object had another size, an array's or a
+   * string's, takes the shadow of this one.) */
+  if (__builtin_expect(entryShadow(slot->shared) != size + 1, 0))
+    return takeShadow(slot->base, size);
+  return (void *)slot->base;
 }
 
-/* (The object's granules are zeroed by stores, not by a call to memset,
- * which the compiler would otherwise make of the loop.) */
-__attribute__((no_builtin("memset"))) static int
+static inline __attribute__((always_inline)) int
 poolGive(void *p, unsigned form, size_t bytes,
          const struct __weavec_rt_site *site) {
   const uintptr_t address = (uintptr_t)p;
   ThreadCache *self;
-  PoolCache *entry;
+  PoolEntry *entry;
+  PoolSlot *slot;
   SlotRef ref;
-  uint32_t word;
+  uint32_t *word;
+  uint32_t value;
   uint32_t index;
-  unsigned c;
+  uint32_t count;
   size_t size;
   if (site == NULL || (site->flags & WeavecRtSiteTyped) == 0 ||
-      !inArena(address) || !shortPaths())
+      !inArena(address))
     return 0;
   ref = slotOf(address);
-  word = wordOf(ref);
-  c = regionClass[ref.region];
+  word = &slotWords(ref.region)[ref.slot];
+  value = loadWord(word);
+  size = weavecRtLiveSize(value);
+  if (ref.base != address ||
+      (value & ((1U << WeavecRtLiveShift) - 1)) !=
+          ((form << WeavecRtWordShift) | WeavecRtLive) ||
+      (bytes != SIZE_MAX && bytes != size))
+    return 0;
   index = *poolOf(ref.region, ref.slot);
-  size = weavecRtLiveSize(word);
-  /* (Anything to report, or to check, goes the long way.) */
-  if (ref.base != address || (word & WeavecRtWordState) != WeavecRtLive ||
-      index == 0 || c >= cachedClasses ||
-      (form != WeavecRtFormAny && weavecRtLiveForm(word) != WeavecRtFormAny &&
-       (weavecRtLiveForm(word) != form || (bytes != SIZE_MAX && bytes != size))))
+  if (index == 0 || !__atomic_load_n(&cacheKeyReady, __ATOMIC_RELAXED))
     return 0;
-  self = ownCache();
-  if (self == NULL || self->depth != 0)
+  self = (ThreadCache *)cacheValue();
+  if ((uintptr_t)self <= (uintptr_t)CacheGone || self->depth != 0)
     return 0;
-  entry = &self->pools[index % PoolCaches];
-  if (entry->pool != index || entry->count == PoolCacheSlots)
+  entry = &self->entries[index];
+  count = entry->count;
+  if (count == entry->capacity)
+    return 0;
+  /* (No compare-and-swap, D4: two threads that release one block at the
+   * same instant may both push it; Safe C++'s thread rules reject such a
+   * program, and the slot stays memory of its type, Y2.) */
+  storeWord(word, ClaimedWord);
+  zeroObject(address, size);
+  slot = &entry->slots[count];
+  slot->base = address;
+  slot->word = word;
+  slot->shared = packSlot(ref, size + 1);
+  entry->count = count + 1;
+  return 1;
+}
+
+/* RFC 0055 section 4: refill and flush, with the thread's depth raised
+ * around the pool's lock as the allocator's own paths raise it. Each says
+ * whether it moved slots. */
+static int refillEntry(ThreadCache *self, size_t size,
+                       struct __weavec_rt_type *type) {
+  const unsigned c = classFor(size);
+  const size_t slotBytes =
+      c < cachedClasses ? __weavec_rt_heap.table[c].size : 0;
+  PoolEntry *entry;
+  unsigned pooled;
+  unsigned n;
+  uint32_t index;
+  if (self->depth != 0 || !self->entriesOn || c >= cachedClasses ||
+      !shortPaths())
+    return 0;
+  index = resolvePool(type, c);
+  if (index == 0)
+    return 0;
+  entry = &self->entries[index];
+  if (entry->capacity == 0 || entry->count != 0)
     return 0;
   ++self->depth;
   __atomic_signal_fence(__ATOMIC_SEQ_CST);
-  if (!claim(ref, word, 0))
-    badSlot(p, weavecRtReleaseName(form), site);
-  weavecRtCount(WeavecRtStatReleases);
-  if (size <= 128) {
-    uint64_t *at = (uint64_t *)ref.base;
-    uint64_t *const end = at + ((size + 15) & ~(size_t)15) / 8;
-    for (; at < end; at += 2) {
-      at[0] = 0;
-      at[1] = 0;
-    }
-  } else {
-    zeroFill(ref.base, size);
-  }
-  weavecRtCount(WeavecRtStatPooled);
-  if (keepsShadow()) {
-    entry->slots[entry->count++] =
-        withShadow(slotEntry(ref.region, ref.slot, 1), size);
-  } else {
-    shadowDead(ref.base, __weavec_rt_heap.table[c].size);
-    entry->slots[entry->count++] = slotEntry(ref.region, ref.slot, 1);
-  }
-  {
-    const size_t slotBytes = __weavec_rt_heap.table[c].size;
-    self->liveDelta -= (intptr_t)slotBytes;
-    self->pooledDelta += (intptr_t)slotBytes;
-    if (self->liveDelta <= -(intptr_t)FoldBytes)
-      foldLive(self);
-    if (self->pooledDelta >= (intptr_t)FoldBytes)
-      foldPooled(self);
-  }
+  pooled = takeInto(index, entry->slots, entry->capacity / 2);
+  n = pooled != 0 ? pooled
+                  : joinPool(index, c, typeIndexOf(type), entry->slots,
+                             entry->capacity / 2);
+  entry->count = n;
+  /* (H6: a thread's free slots count as live.) */
+  self->liveDelta += (intptr_t)(slotBytes * n);
+  self->pooledDelta -= (intptr_t)(slotBytes * pooled);
+  if (self->liveDelta >= FoldBytes)
+    foldLive(self);
+  if (self->pooledDelta <= -(intptr_t)FoldBytes)
+    foldPooled(self);
+  __atomic_signal_fence(__ATOMIC_SEQ_CST);
+  if (--self->depth == 0 && self->deferredCount != 0)
+    releaseDeferred(self);
+  return n != 0;
+}
+
+static int flushEntry(ThreadCache *self, void *p,
+                      const struct __weavec_rt_site *site) {
+  const uintptr_t address = (uintptr_t)p;
+  PoolEntry *entry;
+  SlotRef ref;
+  uint32_t index;
+  if (site == NULL || (site->flags & WeavecRtSiteTyped) == 0 ||
+      !inArena(address) || self->depth != 0 || !self->entriesOn ||
+      !shortPaths())
+    return 0;
+  ref = slotOf(address);
+  index = *poolOf(ref.region, ref.slot);
+  if (index == 0)
+    return 0;
+  entry = &self->entries[index];
+  if (entry->capacity == 0 || entry->count != entry->capacity)
+    return 0;
+  ++self->depth;
+  __atomic_signal_fence(__ATOMIC_SEQ_CST);
+  flushSlots(self, index, entry->slots, entry->capacity / 2, 0);
+  memmove(entry->slots, entry->slots + entry->capacity / 2,
+          entry->capacity / 2 * sizeof(PoolSlot));
+  entry->count = entry->capacity / 2;
+  if (self->liveDelta <= -(intptr_t)FoldBytes)
+    foldLive(self);
+  if (self->pooledDelta >= (intptr_t)FoldBytes)
+    foldPooled(self);
   __atomic_signal_fence(__ATOMIC_SEQ_CST);
   if (--self->depth == 0 && self->deferredCount != 0)
     releaseDeferred(self);
@@ -2473,7 +2826,7 @@ static void *typedBlock(size_t size, unsigned form,
   index = resolvePool(type, c);
   if (index == 0)
     return allocate(size, 0, form, stack);
-  block = poolAlloc(index, c, size, form, stack);
+  block = poolAlloc(index, c, size, form, stack, type);
   if (block != NULL)
     return block;
   block = allocate(size, 0, form, stack);
@@ -2493,6 +2846,110 @@ static void *typedAllocate(size_t size, unsigned form,
   if (block != NULL)
     __weavec_rt_note_type(block, type);
   return block;
+}
+
+/* RFC 0055 section 3 (D3): a fast unit's `realloc`. A block that moves to
+ * another class keeps its type: a pooled one comes from the pool of its
+ * key in the new class and the old slot goes back to its pool (a typed
+ * site's release) or out of it; one of no pool but a recorded type is
+ * untyped with that record; a null or untyped one takes the site's type.
+ * A block that stays in its class, or that is not the arena's, is
+ * `realloc_at`'s. */
+void *weavecRtReallocTyped(void *p, size_t size, struct __weavec_rt_type *type,
+                           const struct __weavec_rt_site *site) {
+  const uintptr_t address = (uintptr_t)p;
+  struct __weavec_rt_type own = {0, 0, NULL, 0};
+  struct __weavec_rt_type *as = type;
+  uint32_t recorded = 0;
+  SlotRef ref;
+  uint32_t value;
+  size_t old;
+  void *moved;
+  if (p == NULL)
+    return type != NULL ? weavecRtAllocTyped(size, WeavecRtFormMalloc, type)
+                        : __weavec_rt_alloc(size, 0);
+  if (!inArena(address))
+    return weavecRtReallocAt(p, size, site);
+  ref = slotOf(address);
+  value = wordOf(ref);
+  /* (What is wrong with the block, `realloc_at` reports.) */
+  if (ref.base != address || (value & WeavecRtWordState) != WeavecRtLive ||
+      (weavecRtLiveForm(value) != WeavecRtFormMalloc &&
+       weavecRtLiveForm(value) != WeavecRtFormAny) ||
+      classFor(size) == regionClass[ref.region])
+    return weavecRtReallocAt(p, size, site);
+  old = weavecRtLiveSize(value);
+  if (slotTypes != NULL)
+    recorded = __atomic_load_n(typeOf(ref.region, ref.slot), __ATOMIC_RELAXED);
+  if (slotPools != NULL && *poolOf(ref.region, ref.slot) != 0) {
+    const uint64_t key = pools[*poolOf(ref.region, ref.slot) - 1].key;
+    if (type == NULL || type->key != key) {
+      own.key = key;
+      own.type = recorded;
+      as = &own;
+    }
+  } else if (recorded != 0 || type == NULL) {
+    as = NULL;
+  }
+  moved = as != NULL ? weavecRtAllocTyped(size, WeavecRtFormMalloc, as)
+                     : __weavec_rt_alloc(size, 0);
+  if (moved == NULL)
+    return NULL;
+  memcpy(moved, p, old < size ? old : size);
+  /* The old block's record of its type, which the site's never changes. */
+  if (recorded != 0)
+    weavecRtSetBlockType((uintptr_t)moved, recorded);
+  weavecRtReleaseForm(p, WeavecRtFormMalloc, SIZE_MAX, NULL, site);
+  return moved;
+}
+
+/* RFC 0055 section 7: the entry points a fast unit calls. */
+static __attribute__((noinline)) void *
+takeSlow(size_t size, struct __weavec_rt_type *type, unsigned how) {
+  const unsigned form = how & WeavecRtHowForm;
+  if (form == WeavecRtFormMalloc)
+    return __weavec_rt_alloc_typed(size, form, type);
+  return __weavec_rt_new_typed(
+      size, type,
+      (form == WeavecRtFormNewArray ? WeavecRtNewArray : 0U) |
+          ((how & WeavecRtHowNothrow) != 0 ? WeavecRtNewNothrow : 0U));
+}
+
+void *__weavec_rt_take(size_t size, struct __weavec_rt_type *type,
+                       unsigned how) {
+  void *block = poolTake(size, how & WeavecRtHowForm, type);
+  if (__builtin_expect(block != NULL, 1))
+    return block;
+  return takeSlow(size, type, how);
+}
+
+static __attribute__((noinline)) void
+giveSlow(void *p, size_t size, unsigned how,
+         const struct __weavec_rt_site *site) {
+  switch (how & WeavecRtHowForm) {
+  case WeavecRtFormNew:
+    if (size == SIZE_MAX)
+      __weavec_rt_delete_at(p, site);
+    else
+      __weavec_rt_delete_sized_at(p, size, site);
+    return;
+  case WeavecRtFormNewArray:
+    if (size == SIZE_MAX)
+      __weavec_rt_delete_array_at(p, site);
+    else
+      __weavec_rt_delete_array_sized_at(p, size, site);
+    return;
+  default:
+    __weavec_rt_free_at(p, site);
+    return;
+  }
+}
+
+void __weavec_rt_give(void *p, size_t size, unsigned how,
+                      const struct __weavec_rt_site *site) {
+  if (__builtin_expect(poolGive(p, how & WeavecRtHowForm, size, site), 1))
+    return;
+  giveSlow(p, size, how, site);
 }
 
 /* WEAVEC_RT_STATS=1: the pools made and the free bytes they hold. */
@@ -2521,11 +2978,7 @@ void __weavec_rt_note_type(const void *block, struct __weavec_rt_type *type) {
   uint32_t index;
   if (block == NULL || type == NULL)
     return;
-  index = (uint32_t)__atomic_load_n(&type->type, __ATOMIC_RELAXED);
-  if (index == 0 && type->layout != NULL) {
-    index = weavecRtTypeIndex(type->layout);
-    __atomic_store_n(&type->type, (uint64_t)index, __ATOMIC_RELAXED);
-  }
+  index = typeIndexOf(type);
   if (index != 0)
     weavecRtSetBlockType((uintptr_t)block, index);
 }
@@ -2595,10 +3048,12 @@ void weavecRtLockAll(void) {
   weavecRtLock(&poolLock);
   for (i = 0; i < poolCount; ++i)
     weavecRtLock(&pools[i].lock);
+  weavecRtLock(&entryLock);
 }
 
 void weavecRtUnlockAll(void) {
   unsigned i;
+  weavecRtUnlock(&entryLock);
   for (i = poolCount; i-- > 0;)
     weavecRtUnlock(&pools[i].lock);
   weavecRtUnlock(&poolLock);
@@ -2638,6 +3093,7 @@ static void forkChild(void) {
       caches = cache;
     } else {
       drainCache(cache, 1);
+      giveEntries(cache);
       (void)munmap(cache, sizeof(ThreadCache));
     }
     cache = next;

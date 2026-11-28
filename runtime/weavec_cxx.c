@@ -192,6 +192,13 @@ static int replaced(void) {
   return state == 2;
 }
 
+/* RFC 0055 section 7: a program that replaced C++'s allocation functions
+ * keeps the short paths off, known before its own code runs. */
+__attribute__((constructor(101))) static void findReplaced(void) {
+  if (replaced())
+    weavecRtForeign = 1;
+}
+
 /* A form the arena could not serve, as the C++ library's: the new-handler
  * until one succeeds, then null (nothrow) or std::bad_alloc. A -static
  * program's link resolves the library's functions (weak references). */

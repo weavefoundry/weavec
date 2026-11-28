@@ -93,7 +93,7 @@ int main() {
 // LEDGER: "tier": "safe"
 // LEDGER: "function": "main"
 // LEDGER: "tier": "safe"
-// LEDGER: "version": 14
+// LEDGER: "version": 15
 // AUDIT: 4 of 5 functions safe
 // AUDIT: functions that are not safe
 // AUDIT-NEXT: safe-cxx-units.cpp:{{[0-9]+}}: raw (guarded)
