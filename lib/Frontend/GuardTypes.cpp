@@ -14,9 +14,10 @@
 //     class with virtual functions, one comparison of the type information
 //     its vtable names, and the C++ ABI's dynamic cast when that is not
 //     equal; else a call of the runtime's `__weavec_rt_cast`. What it gives
-//     is `__weavec.object(pointer, size)`, one object of the target's size,
-//     which GuardSafe and the fast mode take as a root until GuardExpand
-//     removes it (§2.2);
+//     is `__weavec.object(pointer, size, extent)`, one object of the
+//     target's size among the `extent` bytes of objects of the type the
+//     runtime found there (amendment 22), which GuardSafe and the fast mode
+//     take as a root until GuardExpand removes it (§2.2);
 //   - each access of a tagged union's member (`__weavec.member`) is
 //     preceded by a load of the tag and its comparison with the member's
 //     values (`union-member` when it fails); each store of a tag
@@ -128,13 +129,14 @@ llvm::GlobalVariable *typeRecord(ModuleContext &module, std::uint64_t key,
   return record;
 }
 
-/// `ptr __weavec.object(ptr returned, i64 size)`.
+/// `ptr __weavec.object(ptr returned, i64 size, i64 extent)`: one object of
+/// `size` bytes, among `extent` bytes of objects of its type (amendment 22).
 static llvm::FunctionCallee objectMarker(ModuleContext &module) {
   llvm::Function *existing = module.module.getFunction(ObjectMarker);
   if (existing != nullptr)
     return existing;
-  auto *type =
-      llvm::FunctionType::get(module.ptr, {module.ptr, module.i64}, false);
+  auto *type = llvm::FunctionType::get(
+      module.ptr, {module.ptr, module.i64, module.i64}, false);
   auto *function = llvm::Function::Create(
       type, llvm::GlobalValue::ExternalLinkage, ObjectMarker, module.module);
   function->setDoesNotThrow();
@@ -242,7 +244,12 @@ private:
                                         module.i64, -static_cast<std::int64_t>(
                                                         record.delta))));
     llvm::Constant *site = module.site(location, 0);
+    llvm::Constant *one = llvm::ConstantInt::get(module.i64, size);
+    // Amendment 22: the bytes of objects of the type from the object's start,
+    // as the runtime's records show them; one object where nothing asks them.
+    llvm::Value *extent = one;
     {
+      llvm::BasicBlock *head = call.getParent();
       llvm::Instruction *then = llvm::SplitBlockAndInsertIfThen(
           builder.CreateNot(isNull), call.getIterator(), false);
       llvm::IRBuilder<> check(then);
@@ -294,18 +301,22 @@ private:
                                {module.ptr, module.ptr, module.ptr}, false)),
             {object, layout, site});
       } else {
-        check.CreateCall(
-            module.runtime("cast",
-                           llvm::FunctionType::get(
-                               llvm::Type::getVoidTy(module.context),
-                               {module.ptr, module.ptr, module.ptr}, false)),
+        llvm::Value *bytes = check.CreateCall(
+            module.runtime(
+                "cast",
+                llvm::FunctionType::get(
+                    module.i64, {module.ptr, module.ptr, module.ptr}, false)),
             {object, layout, site});
+        llvm::IRBuilder<> join(&call.getParent()->front());
+        llvm::PHINode *phi = join.CreatePHI(module.i64, 2);
+        phi->addIncoming(one, head);
+        phi->addIncoming(bytes, then->getParent());
+        extent = phi;
       }
     }
     builder.SetInsertPoint(&call);
     llvm::Value *checked =
-        builder.CreateCall(objectMarker(module),
-                           {object, llvm::ConstantInt::get(module.i64, size)});
+        builder.CreateCall(objectMarker(module), {object, one, extent});
     // What the code had: the pointer it converted, now derived from the
     // checked object.
     llvm::Value *given =
@@ -511,6 +522,14 @@ void dropObjects(const llvm::Module &ir) {
     eraseMarker(*call, call->getArgOperand(0));
   if (marker->use_empty())
     marker->eraseFromParent();
+}
+
+llvm::Value *checkedExtent(llvm::Value &value) {
+  auto *call = llvm::dyn_cast<llvm::CallInst>(&value);
+  if (call == nullptr || call->getCalledFunction() == nullptr ||
+      call->getCalledFunction()->getName() != ObjectMarker)
+    return nullptr;
+  return call->getArgOperand(2);
 }
 
 std::optional<std::uint64_t> checkedObject(const llvm::Value &value) {

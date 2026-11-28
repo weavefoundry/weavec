@@ -171,7 +171,7 @@ A pointer converts to another pointer type in one of two ways. The forms that pi
 - `container_of`: `(struct d *)((char *)m - offsetof(struct d, f))` with `m` a pointer to the type of `f`;
 - a `void *` to a pointer to a scalar that is not a pointer or a `bool` (`int *`, `unsigned char *`): the object must hold no pointer.
 
-What the conversion gives is a pointer to one object, with the bound and the ownership its declaration states. A struct taken as its first member (`&circle->base`, or `(struct shape *)circle`) needs no check.
+What the conversion gives is a pointer to one object, with the bound and the ownership its declaration states; where its value is an allocation, the elements of the type the runtime finds there from the pointer, the rest of an array of the type, so `void *g = realloc(p, n * sizeof *p); struct item *q = g;` reads `q[n - 1]`. A struct taken as its first member (`&circle->base`, or `(struct shape *)circle`) needs no check.
 
 Every other conversion is rejected, because it could forge a pointer: memory that holds pointers converts to nothing but `void` and `const` bytes; a struct converts to no unrelated struct; function pointers do not convert. An allocation that becomes a `T *` is sized by `T` when its size names a type (`malloc(sizeof *p)`, `calloc(n, sizeof(struct node))`), since its block is reused for the type its size names; bytes of a type without pointers may be any such type's (`char *b = malloc(sizeof(struct header) + n)`).
 

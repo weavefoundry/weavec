@@ -26,9 +26,9 @@ struct Wide : Plain { long a = 0; };
 double radius(const Shape &shape) { return static_cast<const Circle &>(shape).r; }
 
 // CHECK-LABEL: define {{.*}} @_Z4wideP5Plain(
-// CHECK: call void @__weavec_rt_cast(ptr {{.*}}, ptr nonnull @__weavec.layout.{{[0-9A-F]+}}, ptr nonnull @__weavec.site
+// CHECK: call i64 @__weavec_rt_cast(ptr {{.*}}, ptr nonnull @__weavec.layout.{{[0-9A-F]+}}, ptr nonnull @__weavec.site
 long wide(Plain *p) { return static_cast<Wide *>(p)->a; }
 
 // CHECK-LABEL: define {{.*}} @_Z5ticksPv(
-// CHECK: call void @__weavec_rt_cast(
+// CHECK: call i64 @__weavec_rt_cast(
 long ticks(void *context) { return static_cast<Wide *>(context)->a; }

@@ -608,10 +608,14 @@ bool arrayNew(const llvm::CallBase &call);
 void expandTypeMarkers(ModuleContext &module, llvm::Function &function);
 /// Clang's declarations of the markers, once none is called.
 void dropTypeMarkerDeclarations(const llvm::Module &ir);
-/// §2.2: what a checked conversion gives, `__weavec.object(p, size)`, is
-/// one object of `size` bytes: its size, when `value` is one.
+/// §2.2: what a checked conversion gives, `__weavec.object(p, size,
+/// extent)`, is one object of `size` bytes: its size, when `value` is one.
 [[nodiscard]] std::optional<std::uint64_t>
 checkedObject(const llvm::Value &value);
+/// Amendment 22: the bytes from a checked object's start that are objects of
+/// its type, as the runtime found them (at least `size`); null when `value`
+/// is not one.
+[[nodiscard]] llvm::Value *checkedExtent(llvm::Value &value);
 /// In GuardExpand: the checked objects are their pointers again.
 void dropObjects(const llvm::Module &ir);
 /// §1.2: a safe function's recorded locals, pushed and popped with their

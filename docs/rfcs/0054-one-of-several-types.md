@@ -897,6 +897,34 @@ building it and from what S0 and the gates found. They override the body.
     audit's.
 21. **Reports name a block's type** wherever they describe a heap block,
     in text and in JSON (`"type"`), not only after `bad-cast`.
+22. **What a checked conversion gives is bounded by what the records show
+    (§2.1, amends amendment 2).** One object of the target's size is what
+    the fast mode believes and what an access at a constant offset needs no
+    check inside, but the root's bound is the run of objects of the target's
+    type that follow one another from the pointer, as the record of what
+    holds it shows: `__weavec_rt_cast` returns it, and the marker is
+    `__weavec.object(pointer, size, extent)`. The run reaches the end of a
+    heap block, global or recorded local that is an array of the type (its
+    size a multiple of the type's) from an element's start, and the last
+    element of an array member of that type; a plain scalar over a plain
+    object runs whole elements to the end; a block with no type that takes
+    the conversion's (amendment 14) is an array of it when its size is a
+    multiple of the type's. Everything else is one object: a member that is
+    not an array, a header with data after it, memory with no record (a
+    believed conversion), a null pointer, and a polymorphic downcast, which
+    reads a vtable and not a record. The bound is not narrowed by the
+    operand's: what a conversion gives is a root of its own, as it was, and
+    every byte of the run is of the target's type, so a pointer loaded from
+    it is one that typed memory keeps. A local's declaration states no bound
+    (RFC 0042 gives it its value's), and the checker lets a converted
+    allocation be indexed (`index-single`), so one object stopped a program
+    the rules accept: `void *g = realloc(p, 7 * sizeof *p); struct b *q =
+    g;` stopped with `pointer-out-of-bounds` at `q[6]`, in every build
+    (RFC 0055's adversarial round, G10). A pointer the checker sees as one
+    object (a `void *` parameter's, a comparator's) still cannot be
+    indexed. `WEAVEC_RT_ABI` is raised (the entry point returns a value);
+    pinned by `test/Guards/cast-extent.c`, `ir-cast.c`, cases
+    `test/cases/sum/cast-grown*.c` and `rt_test` `type-at-run`.
 
 ## Measured gates
 

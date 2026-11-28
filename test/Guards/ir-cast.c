@@ -16,7 +16,7 @@ struct circle { struct shape base; double radius; };
 
 // CHECK-LABEL: define {{.*}} @radius{{(.weavec.safe)?}}(
 // CHECK: %[[NULL:[0-9]+]] = icmp eq ptr %s, null
-// CHECK: call void @__weavec_rt_cast(ptr %s, ptr @[[CIRCLE]], ptr @__weavec.site
+// CHECK: call i64 @__weavec_rt_cast(ptr %s, ptr @[[CIRCLE]], ptr @__weavec.site
 // CHECK-NOT: __weavec.object
 // CHECK: ret double
 // OFF-LABEL: define {{.*}} @radius{{(.weavec.safe)?}}(
@@ -38,3 +38,21 @@ WEAVEC_SAFE double record(void) {
 // CHECK: %[[BLOCK:[^ ]*]] = call {{.*}}ptr @calloc(
 // CHECK-NEXT: call void @__weavec_rt_note_type(ptr %[[BLOCK]], ptr @[[TYPE]])
 struct circle *make(void) { return calloc(1, sizeof(struct circle)); }
+
+// Amendment 22: what a conversion gives is bounded by the bytes of objects of
+// its type the runtime found from the pointer (one object for null), so an
+// allocation's elements stay readable through a `void *`.
+// CHECK-LABEL: define {{.*}} @element{{(.weavec.safe)?}}(
+// CHECK: %[[FOUND:[0-9]+]] = call i64 @__weavec_rt_cast(ptr %[[BLOCK:[^,]+]], ptr @[[CIRCLE]], ptr @__weavec.site
+// CHECK: %[[EXTENT:[0-9]+]] = phi i64 [ 16, %{{[^ ]+}} ], [ %[[FOUND]], %{{[0-9]+}} ]
+// CHECK: %[[END:[0-9]+]] = getelementptr i8, ptr %[[BLOCK]], i64 %[[EXTENT]]
+// CHECK: %[[HI:[0-9]+]] = ptrtoint ptr %[[END]] to i64
+// CHECK: call preserve_allcc void @__weavec_rt_bounds_fail(i64 %{{[0-9]+}}, i64 8, i64 %{{[0-9]+}}, i64 %{{[0-9]+}}, ptr
+// CHECK: ret double
+WEAVEC_SAFE double element(int n, int i) {
+  void *WEAVEC_OWNED v = calloc(n, sizeof(struct circle));
+  struct circle *WEAVEC_OWNED c = v;
+  double r = c[i].radius;
+  free(c);
+  return r;
+}
