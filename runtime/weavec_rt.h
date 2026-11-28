@@ -309,10 +309,13 @@ WEAVEC_RT_API void __weavec_rt_note_type(const void *block,
                                          struct __weavec_rt_type *type);
 /* RFC 0054 section 2.2: a safe function converts a pointer to `address`
  * into a pointer to `target`: `bad-cast` unless an object of that type is
- * there, or the memory has no record of its type (believed). */
-WEAVEC_RT_API void __weavec_rt_cast(const void *address,
-                                    const struct __weavec_rt_layout *target,
-                                    const struct __weavec_rt_site *site);
+ * there, or the memory has no record of its type (believed). Returns the
+ * bytes from `address` that are objects of `target` one after another, as
+ * the record of what holds it shows: the rest of an array of the type, or
+ * one object (amendment 22). */
+WEAVEC_RT_API uint64_t __weavec_rt_cast(const void *address,
+                                        const struct __weavec_rt_layout *target,
+                                        const struct __weavec_rt_site *site);
 /* The C++ downcast's check failed (the class's own test said no). */
 WEAVEC_RT_API void __weavec_rt_cast_fail(const void *address,
                                          const struct __weavec_rt_layout *target,
@@ -977,7 +980,7 @@ void weavecRtSymbolize(const uintptr_t *pcs, unsigned count,
 /* The library's interface version (libweavec_rt.so.<abi>,
  * libweavec_rt.<abi>.dylib), raised whenever an entry point, the shadow
  * encoding or a site record changes. */
-#define WEAVEC_RT_ABI 49
+#define WEAVEC_RT_ABI 50
 
 /*===-- Internal -----------------------------------------------------------===*/
 

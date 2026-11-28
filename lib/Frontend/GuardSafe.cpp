@@ -1215,12 +1215,14 @@ private:
     }
     auto *call = llvm::cast<llvm::CallInst>(value);
     llvm::IRBuilder<> builder(call->getNextNode());
+    // RFC 0054 §2.2: a checked conversion's object, among the objects of its
+    // type the runtime found after it (amendment 22); accesses inside the
+    // one object need no check.
     if (const auto size = checkedObject(*call)) {
       constantSizes[value] = {.bytes = *size, .mayBeNull = true};
       return known[value] = {.lo = call,
-                             .hi = builder.CreateGEP(
-                                 module.i8, call,
-                                 llvm::ConstantInt::get(module.i64, *size))};
+                             .hi = builder.CreateGEP(module.i8, call,
+                                                     checkedExtent(*call))};
     }
     llvm::Value *bytes = nullptr;
     const FunctionBounds *callee = calleeBounds(module, *call);

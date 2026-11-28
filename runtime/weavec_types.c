@@ -203,9 +203,6 @@ static const struct FrameRecord *recordAt(uintptr_t address) {
 
 enum Answer { No, Yes, Believed };
 
-/* Whether an object of `target` is `offset` bytes into an object of
- * `object`, which holds `extent` bytes from that object's start (an array
- * of it, when larger). */
 /* Whether a pointer of `object`'s own bytes overlaps [offset, end). */
 static int coversPointer(const struct __weavec_rt_layout *object,
                          uint64_t offset, uint64_t end) {
@@ -224,9 +221,16 @@ static int coversPointer(const struct __weavec_rt_layout *object,
   return 0;
 }
 
+/* Whether an object of `target` is `offset` bytes into an object of
+ * `object`, which holds `extent` bytes from that object's start (an array
+ * of it, when larger); when it is, `*run` may be set to the bytes from there
+ * that are objects of `target` one after another (amendment 22). */
 static enum Answer objectHolds(const struct __weavec_rt_layout *object,
                                uint64_t offset, uint64_t extent,
-                               const struct __weavec_rt_layout *target) {
+                               const struct __weavec_rt_layout *target,
+                               uint64_t *run) {
+  const uint64_t start = offset;
+  uint64_t limit = extent;
   uint32_t i;
   if (target->size != 0 && offset + target->size > extent)
     return No;
@@ -236,16 +240,25 @@ static enum Answer objectHolds(const struct __weavec_rt_layout *object,
   if (object->size != 0 && offset >= object->size &&
       extent % object->size != 0)
     return Believed;
+  /* Amendment 22: the bytes the record describes, from which the objects of
+   * `target` that follow one another at `start` are counted. */
+  if (object->size != 0 && extent % object->size != 0)
+    limit = object->size;
   if (object->size != 0)
     offset %= object->size;
-  if (offset == 0 && object->identity == target->identity)
+  if (offset == 0 && object->identity == target->identity) {
+    *run = limit - start;
     return Yes;
+  }
   /* Section 2.1 (d): a plain scalar views bytes where no pointer is. */
   if ((target->flags & WeavecRtLayoutScalar) != 0 &&
       (target->flags & WeavecRtLayoutPlain) != 0 &&
       ((object->flags & WeavecRtLayoutPlain) != 0 ||
-       !coversPointer(object, offset, offset + target->size)))
+       !coversPointer(object, offset, offset + target->size))) {
+    if ((object->flags & WeavecRtLayoutPlain) != 0 && target->size != 0)
+      *run = (limit - start) / target->size * target->size;
     return Yes;
+  }
   for (i = 0; i < object->count; ++i) {
     const struct __weavec_rt_part *part = &object->parts[i];
     uint64_t at;
@@ -256,15 +269,22 @@ static enum Answer objectHolds(const struct __weavec_rt_layout *object,
     at = offset - part->offset;
     if (part->stride == 0 ? at == 0
                           : at % part->stride == 0 &&
-                                at / part->stride < part->elements)
+                                at / part->stride < part->elements) {
+      /* An array member's elements, from this one to its last. */
+      if (part->stride != 0)
+        *run = (part->elements - at / part->stride) * part->stride;
       return Yes;
+    }
   }
   return No;
 }
 
-/* The answer for `address`, and the layout of what holds it, if any. */
+/* The answer for `address`. `*run` is left as one object of `target`, or
+ * set to the bytes from `address` that the record of what holds it shows
+ * to be objects of `target`, one after another (amendment 22). */
 static enum Answer answer(uintptr_t address,
-                          const struct __weavec_rt_layout *target) {
+                          const struct __weavec_rt_layout *target,
+                          uint64_t *run) {
   struct weavecRtHeapObject block = weavecRtHeapObjectAt(address);
   if (block.found) {
     const struct __weavec_rt_layout *object = weavecRtTypeLayout(block.type);
@@ -279,11 +299,15 @@ static enum Answer answer(uintptr_t address,
         const uint32_t index = weavecRtTypeIndex(target);
         if (index != 0)
           weavecRtSetBlockType(block.base, index);
+        /* It now holds an array of the type when its size is a multiple of
+         * the type's, as objectHolds reads a typed block. */
+        if (index != 0 && target->size != 0 && block.size % target->size == 0)
+          *run = block.size;
         return Yes;
       }
       return Believed;
     }
-    return objectHolds(object, offset, block.size, target);
+    return objectHolds(object, offset, block.size, target, run);
   }
   {
     const struct __weavec_rt_global *global = weavecRtGlobalAt(address);
@@ -297,7 +321,7 @@ static enum Answer answer(uintptr_t address,
       if (object == NULL)
         return Believed;
       return objectHolds(object, address - global->address, global->size,
-                         target);
+                         target, run);
     }
   }
   {
@@ -308,7 +332,7 @@ static enum Answer answer(uintptr_t address,
       const struct FrameRecord *record = recordAt(address);
       if (record != NULL)
         return objectHolds(record->layout, address - record->address,
-                           record->size, target);
+                           record->size, target, run);
     }
   }
   return Believed;
@@ -325,18 +349,22 @@ badCast(const void *address, const struct __weavec_rt_layout *target,
   weavecRtFailTyped("bad-cast", message, (uintptr_t)address, site);
 }
 
-void __weavec_rt_cast(const void *address,
-                      const struct __weavec_rt_layout *target,
-                      const struct __weavec_rt_site *site) {
+uint64_t __weavec_rt_cast(const void *address,
+                          const struct __weavec_rt_layout *target,
+                          const struct __weavec_rt_site *site) {
   enum Answer result;
+  uint64_t run;
   if (address == NULL || target == NULL)
-    return;
+    return target != NULL ? target->size : 0;
+  run = target->size;
   weavecRtCount(WeavecRtStatCasts);
-  result = answer((uintptr_t)address, target);
+  result = answer((uintptr_t)address, target, &run);
   if (result == Believed)
     weavecRtCount(WeavecRtStatBelieved);
   else if (result == No)
     badCast(address, target, site);
+  /* Never less than the one object the conversion gives (section 2.1). */
+  return result == Yes && run > target->size ? run : target->size;
 }
 
 void __weavec_rt_cast_fail(const void *address,

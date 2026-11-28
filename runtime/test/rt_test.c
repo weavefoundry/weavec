@@ -1998,6 +1998,49 @@ static void testTypeAtArray(void) {
   free(castBlock);
 }
 
+static void testTypeAtRun(void) {
+  /* Amendment 22: a conversion is told the bytes of objects of its type that
+   * follow one another from the pointer, to the end of an array of the type;
+   * one object of a member, and of memory with no record. */
+  long local[4];
+  makeLayouts();
+  castBlock = opaque(malloc(64));
+  __weavec_rt_note_type(castBlock, &circleType);
+  CHECK(__weavec_rt_cast(castBlock, &circleLayout.head, &trapSite) == 64);
+  CHECK(__weavec_rt_cast((char *)castBlock + 32, &circleLayout.head,
+                         &trapSite) == 32);
+  CHECK(__weavec_rt_cast(castBlock, &shapeLayout, &trapSite) == 4);
+  free(castBlock);
+  /* A header with data after it: one object. */
+  castBlock = opaque(malloc(24));
+  __weavec_rt_note_type(castBlock, &circleType);
+  CHECK(__weavec_rt_cast(castBlock, &circleLayout.head, &trapSite) == 16);
+  free(castBlock);
+  /* A block with no type takes the conversion's, as an array when its size
+   * is a multiple of the type's. */
+  castBlock = opaque(malloc(48));
+  CHECK(__weavec_rt_cast(castBlock, &squareLayout.head, &trapSite) == 48);
+  CHECK(__weavec_rt_cast((char *)castBlock + 16, &squareLayout.head,
+                         &trapSite) == 32);
+  free(castBlock);
+  castBlock = opaque(malloc(40));
+  CHECK(__weavec_rt_cast(castBlock, &squareLayout.head, &trapSite) == 16);
+  free(castBlock);
+  /* A plain scalar: whole elements to the block's end. */
+  castBlock = opaque(malloc(24));
+  CHECK(__weavec_rt_cast(castBlock, &longLayout, &trapSite) == 24);
+  CHECK(__weavec_rt_cast((char *)castBlock + 8, &longLayout, &trapSite) ==
+        16);
+  free(castBlock);
+  /* A scalar in a struct beside a pointer: one. */
+  castBlock = opaque(malloc(32));
+  __weavec_rt_note_type(castBlock, &holderType);
+  CHECK(__weavec_rt_cast(castBlock, &longLayout, &trapSite) == 8);
+  free(castBlock);
+  /* No record: believed, one object. */
+  CHECK(__weavec_rt_cast(opaque(local), &circleLayout.head, &trapSite) == 16);
+}
+
 static void castMiddle(void) {
   __weavec_rt_cast((char *)castBlock + 8, &circleLayout.head, &trapSite);
 }
@@ -2111,6 +2154,7 @@ static const struct {
     {"heap-stacks", testHeapStacks},
     {"type-at-heap", testTypeAtHeap},
     {"type-at-array", testTypeAtArray},
+    {"type-at-run", testTypeAtRun},
     {"type-at-untyped", testTypeAtUntyped},
     {"frame-records", testFrameRecords},
     {"union-member", testUnionMember},

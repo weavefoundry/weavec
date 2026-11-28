@@ -395,7 +395,7 @@ size_t length_of(struct object *o) {
 }
 ```
 
-**Contexts and containers of `void *`.** `struct server *s = context;` asks the runtime whether a `struct server` is at `context`; a wrong one stops with `bad-cast`, which names the type of the block that is there. `container_of` (a pointer to a member, less the member's offset) is checked the same way. Every block of the runtime's heap knows the type its allocation named, and so does every global and every local of a safe function whose address becomes a `void *`; memory with no record is believed, and `WEAVEC_RT_STATS=1` counts those conversions.
+**Contexts and containers of `void *`.** `struct server *s = context;` asks the runtime whether a `struct server` is at `context`; a wrong one stops with `bad-cast`, which names the type of the block that is there. `container_of` (a pointer to a member, less the member's offset) is checked the same way. Every block of the runtime's heap knows the type its allocation named, and so does every global and every local of a safe function whose address becomes a `void *`; memory with no record is believed, and `WEAVEC_RT_STATS=1` counts those conversions. The converted pointer is bounded by the objects of its type the runtime finds from it: the rest of an array of the type, so a block grown through a `void *` (`void *g = realloc(items, n * sizeof *items); struct item *grown = g;`) is read to its new last element, and one object anywhere else.
 
 ## Converting a module
 
